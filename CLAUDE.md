@@ -81,6 +81,12 @@ docs/RUNBOOK.md   debugging/ops (ssh, logs, db, nginx, cert, admin bootstrap)
 - Every code-touching change **extends the test base**: unit tests for the changed logic **and**, when applicable, a testcontainers integration test proving the behaviour end-to-end. Running the existing suite green is necessary but not sufficient.
 - A behaviour change landing with no test delta is incomplete. Docs/config/mechanical changes may skip tests — state the reason.
 
+**Frontend (SPA)**
+- **Mobile-first & responsive — mandatory.** The site must be fully usable on phones (target ≈360 px wide) as well as desktop. Use Vuetify's responsive grid + breakpoints (`v-container`/`v-row`/`v-col`, `d-*` display utilities, `useDisplay()`), fluid layouts, and a mobile nav pattern (drawer / bottom nav) — never fixed pixel widths that overflow small screens. Keep the `viewport` meta in `index.html`.
+- Touch targets ≥ 44 px; no hover-only affordances (tap + keyboard must both work).
+- **Verify at mobile width before shipping any UI change** (DevTools / Playwright at 360–414 px), not just desktop. A change that only looks right on desktop is incomplete.
+- Dark/light theme both supported; RU-only copy.
+
 **Toolchain**
 - Use **mise** for local work: `mise install` once, then `./dev.sh <target>` (dev.sh routes go/npm through mise). Versions are pinned in `mise.toml`.
 - `golangci-lint` is recommended but optional locally; the mandatory lint gate is `gofmt` + `go vet`.
