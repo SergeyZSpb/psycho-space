@@ -2,6 +2,34 @@
   <v-container class="py-6" style="max-width: 820px">
     <h1 class="text-h5 mb-4">Вишлист</h1>
 
+    <!-- Intro / context: what this is + solicit ideas -->
+    <v-card variant="tonal" color="primary" class="pa-5 mb-6">
+      <div class="d-flex align-center ga-2 mb-2">
+        <v-icon icon="mdi-lightbulb-on-outline" />
+        <h2 class="text-h6 font-weight-bold">что это вообще такое</h2>
+      </div>
+      <p class="text-body-2 mb-2">
+        психоспасе — приложулька для своих, чисто плейграунд для нас. Сейчас тут один
+        раздел — вот этот <strong>вишлист</strong> — но дальше будет больше, оххх.
+      </p>
+      <p class="text-body-2 mb-3">
+        Собираем идеи, <strong>что бы такого запилить</strong>: что-нибудь крутое,
+        интерактивное и на несколько человек. Кидай идею, голосуй за чужие, комментируй —
+        лучшие реально запилим.
+      </p>
+      <div class="d-flex flex-wrap ga-2">
+        <v-chip size="small" color="primary" variant="elevated" prepend-icon="mdi-plus">
+          добавь идею ниже
+        </v-chip>
+        <v-chip size="small" color="primary" variant="elevated" prepend-icon="mdi-arrow-up-bold">
+          голосуй
+        </v-chip>
+        <v-chip size="small" color="primary" variant="elevated" prepend-icon="mdi-comment-outline">
+          комментируй
+        </v-chip>
+      </div>
+    </v-card>
+
     <!-- Add-idea form -->
     <v-card class="pa-4 mb-6">
       <v-form @submit.prevent="submit">
