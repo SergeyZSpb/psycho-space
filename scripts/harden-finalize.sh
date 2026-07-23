@@ -32,7 +32,14 @@ AllowTcpForwarding yes
 EOF
 
 sshd -t
-systemctl restart ssh || systemctl restart sshd
+# Keep socket activation disabled so the Port directive takes effect (Ubuntu 24.04).
+systemctl disable --now ssh.socket 2>/dev/null || true
+systemctl restart ssh.service 2>/dev/null || systemctl restart ssh || systemctl restart sshd
+sleep 1
+if ! ss -tlnp 2>/dev/null | grep -q ":$SSH_PORT "; then
+    echo "ERROR: sshd not listening on $SSH_PORT after restart — NOT closing port 22." >&2
+    exit 1
+fi
 
 ufw delete allow 22/tcp >/dev/null 2>&1 || true
 

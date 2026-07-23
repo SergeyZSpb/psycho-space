@@ -151,7 +151,17 @@ PubkeyAuthentication yes
 EOF
 # validate before applying
 sshd -t
-systemctl restart ssh || systemctl restart sshd
+# Ubuntu 22.10+/24.04 use ssh.socket activation, which IGNORES the Port directive
+# in sshd_config (sshd would keep listening only on 22). Disable the socket so
+# sshd binds the ports we configured (22 + the hardened port).
+systemctl disable --now ssh.socket 2>/dev/null || true
+systemctl enable ssh.service 2>/dev/null || true
+systemctl restart ssh.service 2>/dev/null || systemctl restart ssh || systemctl restart sshd
+# Fail loud if the hardened port didn't come up (still reachable on 22 here).
+sleep 1
+if ! ss -tlnp 2>/dev/null | grep -q ":$SSH_PORT "; then
+    echo "WARN: sshd is not listening on $SSH_PORT — check 'systemctl status ssh' and ss -tlnp" >&2
+fi
 
 # --- firewall ---------------------------------------------------------------
 ufw allow 22/tcp        >/dev/null
