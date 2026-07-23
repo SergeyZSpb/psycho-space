@@ -19,7 +19,7 @@ const vkStateCookie = "psycho_vk_state"
 func (s *Server) handleVKState(w http.ResponseWriter, r *http.Request) {
 	state, err := crypto.RandomToken(16)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -47,42 +47,42 @@ type vkCallbackReq struct {
 // session (approved) or reports the allowlist status (pending/blocked).
 func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 	if !s.d.Config.VK.Configured() {
-		writeError(w, http.StatusServiceUnavailable, "vk_not_configured")
+		writeError(w, r, http.StatusServiceUnavailable, "vk_not_configured")
 		return
 	}
 	ctx := r.Context()
 
 	var req vkCallbackReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request")
+		writeError(w, r, http.StatusBadRequest, "bad_request")
 		return
 	}
 	// Consent must precede any personal-data processing.
 	if req.ConsentVersion == "" {
-		writeError(w, http.StatusBadRequest, "consent_required")
+		writeError(w, r, http.StatusBadRequest, "consent_required")
 		return
 	}
 	if req.Code == "" || req.CodeVerifier == "" || req.DeviceID == "" {
-		writeError(w, http.StatusBadRequest, "bad_request")
+		writeError(w, r, http.StatusBadRequest, "bad_request")
 		return
 	}
 	// CSRF: the returned state must match the cookie we set in /vk/state.
 	c, err := r.Cookie(vkStateCookie)
 	if err != nil || c.Value == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(req.State)) != 1 {
-		writeError(w, http.StatusBadRequest, "bad_state")
+		writeError(w, r, http.StatusBadRequest, "bad_state")
 		return
 	}
 
 	tok, err := s.d.VK.ExchangeCode(ctx, req.Code, req.CodeVerifier, req.DeviceID)
 	if err != nil {
 		slog.ErrorContext(ctx, "vk code exchange failed", "err", err)
-		writeError(w, http.StatusBadGateway, "vk_exchange_failed")
+		writeError(w, r, http.StatusBadGateway, "vk_exchange_failed")
 		return
 	}
 	info, err := s.d.VK.UserInfo(ctx, tok.AccessToken)
 	if err != nil {
 		slog.ErrorContext(ctx, "vk user_info failed", "err", err)
-		writeError(w, http.StatusBadGateway, "vk_userinfo_failed")
+		writeError(w, r, http.StatusBadGateway, "vk_userinfo_failed")
 		return
 	}
 
@@ -92,12 +92,12 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if uid == "" {
 		slog.ErrorContext(ctx, "vk returned no user id")
-		writeError(w, http.StatusBadGateway, "vk_no_user_id")
+		writeError(w, r, http.StatusBadGateway, "vk_no_user_id")
 		return
 	}
 	if tok.UserID != "" && info.UserID != "" && tok.UserID != info.UserID {
 		slog.ErrorContext(ctx, "vk user_id mismatch between token and user_info")
-		writeError(w, http.StatusBadGateway, "vk_user_mismatch")
+		writeError(w, r, http.StatusBadGateway, "vk_user_mismatch")
 		return
 	}
 
@@ -110,7 +110,7 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "account upsert failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	clearCookie(w, vkStateCookie, s.d.Config.CookieSecure())
@@ -123,7 +123,7 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 	raw, err := s.d.Sessions.Create(ctx, acc.ID)
 	if err != nil {
 		slog.ErrorContext(ctx, "session create failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	s.d.Sessions.SetCookie(w, raw)
@@ -134,7 +134,7 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	acc, ok := s.currentAccount(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, r, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"account": publicAccount(acc)})
@@ -200,11 +200,11 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		acc, ok := s.currentAccount(r)
 		if !ok {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+			writeError(w, r, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		if !acc.IsApproved() {
-			writeError(w, http.StatusForbidden, "not_approved")
+			writeError(w, r, http.StatusForbidden, "not_approved")
 			return
 		}
 		ctx := context.WithValue(r.Context(), accountCtxKey, acc)
@@ -217,7 +217,19 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		acc, ok := accountFromContext(r.Context())
 		if !ok || !acc.IsAdmin() {
-			writeError(w, http.StatusForbidden, "forbidden")
+			writeError(w, r, http.StatusForbidden, "forbidden")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireSuperadmin must be chained after requireAuth.
+func (s *Server) requireSuperadmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		acc, ok := accountFromContext(r.Context())
+		if !ok || !acc.IsSuperadmin() {
+			writeError(w, r, http.StatusForbidden, "forbidden")
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -19,9 +19,11 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/logging"
+	"github.com/SergeyZSpb/psycho-space/internal/observability"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
 	"github.com/SergeyZSpb/psycho-space/internal/web"
+	"github.com/SergeyZSpb/psycho-space/internal/wishlist"
 	"github.com/SergeyZSpb/psycho-space/migrations"
 )
 
@@ -31,6 +33,15 @@ func main() {
 	slog.Info("starting psycho-space", "env", cfg.Env, "addr", cfg.HTTPAddr, "vk_configured", cfg.VK.Configured())
 
 	ctx := context.Background()
+
+	// Tracing: spans (and trace IDs) are always generated; export only when
+	// PSYCHOSPACE_OTLP_ENDPOINT is set.
+	shutdownTracer, err := observability.Init(ctx, "psycho-space", cfg.OTLPEndpoint)
+	if err != nil {
+		slog.Error("tracer init failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() { _ = shutdownTracer(context.Background()) }()
 
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -57,6 +68,7 @@ func main() {
 	}
 	accounts := account.NewService(pool, account.NewPostgresRepository(), enc, bi)
 	sessions := session.NewManager(pool, cfg.SessionKey, cfg.SessionTTL, cfg.CookieSecure())
+	wishlistSvc := wishlist.NewService(pool, wishlist.NewPostgresRepository())
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
 
 	srv := httpapi.NewServer(httpapi.Deps{
@@ -66,10 +78,11 @@ func main() {
 		VK:       vkClient,
 		Accounts: accounts,
 		Sessions: sessions,
+		Wishlist: wishlistSvc,
 	})
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           srv.Handler(),
+		Handler:           observability.WrapHandler(srv.Handler(), "http.server"),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

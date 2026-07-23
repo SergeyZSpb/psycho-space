@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -19,8 +20,10 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
+	"github.com/SergeyZSpb/psycho-space/internal/observability"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
+	"github.com/SergeyZSpb/psycho-space/internal/wishlist"
 	"github.com/SergeyZSpb/psycho-space/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
@@ -67,6 +70,11 @@ func TestMain(m *testing.M) {
 		fmt.Println("migrate:", err)
 		os.Exit(1)
 	}
+	// Generate trace IDs (no export) so error responses carry a real trace_id.
+	if _, err := observability.Init(ctx, "psycho-space-test", ""); err != nil {
+		fmt.Println("tracer:", err)
+		os.Exit(1)
+	}
 
 	code := m.Run()
 
@@ -90,20 +98,22 @@ func buildApp(vkBaseURL string) http.Handler {
 		Env: "dev",
 		VK:  config.VK{AppID: "app-1", ServiceToken: "svc", RedirectURI: vkRedirect, BaseURL: vkBaseURL},
 	}
-	return httpapi.NewServer(httpapi.Deps{
+	h := httpapi.NewServer(httpapi.Deps{
 		Config:   cfg,
 		Pool:     pool,
 		WebFS:    fstest.MapFS{"index.html": {Data: []byte("<html>psycho</html>")}},
 		VK:       vkClient,
 		Accounts: newAccountService(),
 		Sessions: sessions,
+		Wishlist: wishlist.NewService(pool, wishlist.NewPostgresRepository()),
 	}).Handler()
+	return observability.WrapHandler(h, "http.server")
 }
 
 // buildAppNoVK builds the app with VK intentionally unconfigured.
 func buildAppNoVK() http.Handler {
 	sessions := session.NewManager(pool, key(3), time.Hour, false)
-	return httpapi.NewServer(httpapi.Deps{
+	h := httpapi.NewServer(httpapi.Deps{
 		Config:   config.Config{Env: "dev"}, // VK empty → not configured
 		Pool:     pool,
 		WebFS:    fstest.MapFS{"index.html": {Data: []byte("x")}},
@@ -111,6 +121,7 @@ func buildAppNoVK() http.Handler {
 		Accounts: newAccountService(),
 		Sessions: sessions,
 	}).Handler()
+	return observability.WrapHandler(h, "http.server")
 }
 
 // fakeVK stands in for id.vk.ru: returns tokens then the profile.
@@ -126,4 +137,44 @@ func fakeVK(userID, first, last string) *httptest.Server {
 			http.NotFound(w, r)
 		}
 	}))
+}
+
+// fakeVKDynamic mints a distinct user per login: the `code` sent in the callback
+// IS the numeric user id, so one server can create many users (name = "User <id>").
+func fakeVKDynamic() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth2/auth":
+			code := r.Form.Get("code")
+			fmt.Fprintf(w, `{"access_token":"AT-%s","refresh_token":"RT","id_token":"IDT","expires_in":3600,"user_id":%s}`, code, code)
+		case "/oauth2/user_info":
+			uid := strings.TrimPrefix(r.Form.Get("access_token"), "AT-")
+			fmt.Fprintf(w, `{"user":{"user_id":"%s","first_name":"User","last_name":%q,"avatar":"https://vk/av.jpg"}}`, uid, uid)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// accountIDByUID looks up an account's id by its VK user id (via blind index).
+func accountIDByUID(t *testing.T, uid string) string {
+	t.Helper()
+	bi, _ := crypto.NewBlindIndexer(key(2))
+	var id string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id::text FROM accounts WHERE vk_user_ref = $1`, bi.Index(uid)).Scan(&id); err != nil {
+		t.Fatalf("accountIDByUID(%s): %v", uid, err)
+	}
+	return id
+}
+
+// setRoleStatus sets role+status directly (mirrors the bootstrap superadmin script).
+func setRoleStatus(t *testing.T, id, role, status string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE accounts SET role=$2, status=$3, updated_at=now() WHERE id=$1::uuid`, id, role, status); err != nil {
+		t.Fatalf("setRoleStatus: %v", err)
+	}
 }

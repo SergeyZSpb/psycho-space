@@ -45,13 +45,12 @@ CREATE TABLE wishlist_items (
 );
 CREATE INDEX idx_wishlist_items_active ON wishlist_items (created_at DESC) WHERE deleted_at IS NULL;
 
+-- Votes are ephemeral toggles (not audit-tracked): hard-deleted on un-vote,
+-- one vote per (item, account) enforced by a plain unique constraint.
 CREATE TABLE wishlist_votes (
     id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     item_id    uuid NOT NULL REFERENCES wishlist_items (id),
     account_id uuid NOT NULL REFERENCES accounts (id),
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    deleted_at timestamptz
+    UNIQUE (item_id, account_id)
 );
--- One active vote per (item, account); un-voting soft-deletes, re-voting inserts anew.
-CREATE UNIQUE INDEX uq_wishlist_vote ON wishlist_votes (item_id, account_id) WHERE deleted_at IS NULL;

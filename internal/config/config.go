@@ -18,6 +18,10 @@ type Config struct {
 	BaseURL  string `env:"PSYCHOSPACE_BASE_URL" envDefault:"http://localhost:8080"`
 	LogDir   string `env:"PSYCHOSPACE_LOG_DIR" envDefault:""` // empty -> stdout only
 
+	// OTLPEndpoint enables trace export when set (e.g. localhost:4318). Traces
+	// are always generated; leaving this empty means "generate but don't export".
+	OTLPEndpoint string `env:"PSYCHOSPACE_OTLP_ENDPOINT" envDefault:""`
+
 	DatabaseURL string `env:"PSYCHOSPACE_DATABASE_URL,required"`
 
 	SessionTTL time.Duration `env:"PSYCHOSPACE_SESSION_TTL" envDefault:"720h"` // 30 days

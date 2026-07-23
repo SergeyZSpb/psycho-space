@@ -9,6 +9,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
+	"github.com/SergeyZSpb/psycho-space/internal/wishlist"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,6 +24,7 @@ type Deps struct {
 	VK       *vk.Client
 	Accounts *account.Service
 	Sessions *session.Manager
+	Wishlist *wishlist.Service
 }
 
 // Server carries handler dependencies.
@@ -38,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
+	r.Use(traceHeader)
 	r.Use(requestLogger)
 	r.Use(bodyLimit(1 << 20)) // 1 MiB request cap
 
@@ -51,6 +54,25 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/vk/callback", s.handleVKCallback)
 			r.Get("/me", s.handleMe)
 			r.Post("/logout", s.handleLogout)
+		})
+
+		// Wishlist — approved users only.
+		r.Route("/wishlist", func(r chi.Router) {
+			r.Use(s.requireAuth)
+			r.Get("/items", s.handleWishlistList)
+			r.Post("/items", s.handleWishlistCreate)
+			r.Post("/items/{id}/vote", s.handleVote)
+			r.Delete("/items/{id}/vote", s.handleUnvote)
+		})
+
+		// Admin — approve/block for admins; promote for superadmin only.
+		r.Route("/admin", func(r chi.Router) {
+			r.Use(s.requireAuth)
+			r.Use(s.requireAdmin)
+			r.Get("/accounts", s.handleAdminList)
+			r.Post("/accounts/{id}/approve", s.handleAdminApprove)
+			r.Post("/accounts/{id}/block", s.handleAdminBlock)
+			r.With(s.requireSuperadmin).Post("/accounts/{id}/promote", s.handleAdminPromote)
 		})
 	})
 

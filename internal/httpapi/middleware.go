@@ -5,8 +5,20 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/SergeyZSpb/psycho-space/internal/observability"
 	"github.com/go-chi/chi/v5/middleware"
 )
+
+// traceHeader echoes the request's trace id back to the client so it is visible
+// in the browser/network tab and can be surfaced in error modals.
+func traceHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := observability.TraceID(r.Context()); id != "" {
+			w.Header().Set("X-Trace-Id", id)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // bodyLimit caps request bodies to n bytes.
 func bodyLimit(n int64) func(http.Handler) http.Handler {
@@ -36,6 +48,7 @@ func requestLogger(next http.Handler) http.Handler {
 			"status", ww.Status(),
 			"bytes", ww.BytesWritten(),
 			"duration_ms", time.Since(start).Milliseconds(),
+			"trace_id", observability.TraceID(r.Context()),
 		)
 	})
 }
