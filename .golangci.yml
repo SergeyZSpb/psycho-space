@@ -1,0 +1,23 @@
+# golangci-lint config (used when the tool is installed; dev.sh runs it if present).
+run:
+  timeout: 3m
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+    - bodyclose
+    - misspell
+
+issues:
+  exclude-rules:
+    # Test files may ignore some errors for brevity.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec

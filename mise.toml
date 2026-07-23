@@ -1,0 +1,9 @@
+# Toolchain pins for psycho-space. Run `mise install` once, then `mise exec -- <cmd>`
+# (or activate mise in your shell) so everyone builds against the same versions.
+[tools]
+go = "1.26.3"
+node = "24.16.0"
+
+[env]
+# Keep the Go build/module cache inside the repo-adjacent home cache (default is fine);
+# nothing project-specific needed here yet.

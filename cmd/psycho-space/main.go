@@ -1,0 +1,71 @@
+// Command psycho-space is the single binary that serves the embedded Vue SPA
+// and the JSON API. It loads config, connects to Postgres, applies migrations,
+// then serves HTTP with graceful shutdown.
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/SergeyZSpb/psycho-space/internal/config"
+	"github.com/SergeyZSpb/psycho-space/internal/db"
+	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
+	"github.com/SergeyZSpb/psycho-space/internal/logging"
+	"github.com/SergeyZSpb/psycho-space/internal/web"
+	"github.com/SergeyZSpb/psycho-space/migrations"
+)
+
+func main() {
+	cfg := config.MustLoad()
+	logging.Setup(cfg.LogDir, slog.LevelInfo)
+	slog.Info("starting psycho-space", "env", cfg.Env, "addr", cfg.HTTPAddr, "vk_configured", cfg.VK.Configured())
+
+	ctx := context.Background()
+
+	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		slog.Error("database connection failed", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	if err := db.Migrate(ctx, pool, migrations.FS); err != nil {
+		slog.Error("migrations failed", "err", err)
+		os.Exit(1)
+	}
+
+	srv := httpapi.NewServer(pool, web.DistFS())
+	httpServer := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	go func() {
+		slog.Info("http listening", "addr", cfg.HTTPAddr)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("http server failed", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	slog.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("graceful shutdown failed", "err", err)
+	}
+}

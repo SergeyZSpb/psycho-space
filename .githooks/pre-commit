@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "=== psycho-space pre-commit ==="
+exec ./dev.sh pre-commit
