@@ -96,6 +96,9 @@ jobs:
           VK_APP_ID: ${{ secrets.VK_APP_ID }}
           VK_SVC: ${{ secrets.VK_SERVICE_TOKEN }}
           VK_REDIR: ${{ secrets.VK_REDIRECT_URI }}
+          VK_VERIFY: ${{ secrets.VK_VERIFY_IDTOKEN }}
+          VK_JWKS_URL: ${{ secrets.VK_JWKS_URL }}
+          VK_ISSUER: ${{ secrets.VK_ISSUER }}
         run: |
           umask 077
           cat > app.env <<EOF
@@ -110,6 +113,9 @@ jobs:
           PSYCHOSPACE_VK_APP_ID=${VK_APP_ID}
           PSYCHOSPACE_VK_SERVICE_TOKEN=${VK_SVC}
           PSYCHOSPACE_VK_REDIRECT_URI=${VK_REDIR}
+          PSYCHOSPACE_VK_VERIFY_IDTOKEN=${VK_VERIFY:-false}
+          PSYCHOSPACE_VK_JWKS_URL=${VK_JWKS_URL}
+          PSYCHOSPACE_VK_ISSUER=${VK_ISSUER}
           EOF
 
       - name: Ship + apply

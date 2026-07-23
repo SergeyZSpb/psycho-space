@@ -79,6 +79,16 @@ func (m *Manager) Revoke(ctx context.Context, raw string) error {
 	return err
 }
 
+// RevokeAllForAccount soft-deletes every active session for an account (used
+// when access is revoked/blocked so the cut is immediate everywhere).
+func (m *Manager) RevokeAllForAccount(ctx context.Context, accountID string) error {
+	_, err := m.q.Exec(ctx,
+		`UPDATE sessions SET deleted_at = now() WHERE account_id = $1::uuid AND deleted_at IS NULL`,
+		accountID,
+	)
+	return err
+}
+
 // SetCookie writes the session cookie.
 func (m *Manager) SetCookie(w http.ResponseWriter, raw string) {
 	http.SetCookie(w, &http.Cookie{
@@ -87,7 +97,7 @@ func (m *Manager) SetCookie(w http.ResponseWriter, raw string) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   m.secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(m.ttl.Seconds()),
 	})
 }
@@ -100,7 +110,7 @@ func (m *Manager) ClearCookie(w http.ResponseWriter) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   m.secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
 }

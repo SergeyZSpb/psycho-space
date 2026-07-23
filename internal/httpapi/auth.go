@@ -100,6 +100,14 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadGateway, "vk_user_mismatch")
 		return
 	}
+	// Defense-in-depth: verify the id_token signature (JWKS) when enabled.
+	if s.d.VKVerifier != nil {
+		if err := s.d.VKVerifier.Verify(tok.IDToken, uid); err != nil {
+			slog.ErrorContext(ctx, "vk id_token verification failed", "err", err)
+			writeError(w, r, http.StatusBadGateway, "vk_idtoken_invalid")
+			return
+		}
+	}
 
 	// Open-registration mode auto-approves brand-new accounts (standard role).
 	autoApprove := false

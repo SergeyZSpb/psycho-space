@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
@@ -77,6 +78,11 @@ func (s *Server) adminSetStatus(w http.ResponseWriter, r *http.Request, status s
 		writeError(w, r, http.StatusBadRequest, "bad_request")
 		return
 	}
+	// You cannot block yourself (avoids self-lockout, incl. the superadmin).
+	if status == account.StatusBlocked && id == actor.ID {
+		writeError(w, r, http.StatusForbidden, "cannot_modify_self")
+		return
+	}
 	target, err := s.d.Accounts.GetByID(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, account.ErrNotFound) {
@@ -100,6 +106,12 @@ func (s *Server) adminSetStatus(w http.ResponseWriter, r *http.Request, status s
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
+	}
+	// Revoke all sessions so a blocked user is cut off immediately everywhere.
+	if status == account.StatusBlocked {
+		if err := s.d.Sessions.RevokeAllForAccount(r.Context(), id); err != nil {
+			slog.ErrorContext(r.Context(), "revoke sessions on block failed", "err", err)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

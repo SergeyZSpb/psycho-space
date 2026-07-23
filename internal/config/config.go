@@ -48,6 +48,13 @@ type VK struct {
 	RedirectURI  string `env:"PSYCHOSPACE_VK_REDIRECT_URI" envDefault:""`
 	// BaseURL is the VK ID API base; overridable in tests. Empty -> production.
 	BaseURL string `env:"PSYCHOSPACE_VK_BASE_URL" envDefault:"https://id.vk.ru"`
+
+	// VerifyIDToken turns on OIDC id_token signature verification (via JWKS).
+	// Off by default so go-live isn't blocked on confirming VK's exact JWKS URL;
+	// enable once JWKSURL is confirmed against the live app.
+	VerifyIDToken bool   `env:"PSYCHOSPACE_VK_VERIFY_IDTOKEN" envDefault:"false"`
+	JWKSURL       string `env:"PSYCHOSPACE_VK_JWKS_URL" envDefault:""`
+	Issuer        string `env:"PSYCHOSPACE_VK_ISSUER" envDefault:""`
 }
 
 // Configured reports whether the VK integration has the secrets it needs.
@@ -77,6 +84,9 @@ func Load() (Config, error) {
 	}
 	if cfg.SessionKey, err = decodeKey("PSYCHOSPACE_SESSION_KEY", cfg.SessionKeyB64, 32); err != nil {
 		return Config{}, err
+	}
+	if cfg.VK.VerifyIDToken && cfg.VK.JWKSURL == "" {
+		return Config{}, fmt.Errorf("config: PSYCHOSPACE_VK_VERIFY_IDTOKEN is on but PSYCHOSPACE_VK_JWKS_URL is empty")
 	}
 	return cfg, nil
 }

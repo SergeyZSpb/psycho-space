@@ -4,6 +4,7 @@ package httpapi
 import (
 	"io/fs"
 	"net/http"
+	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/config"
@@ -13,20 +14,33 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/wishlist"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/httprate"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Deps bundles everything the handlers need. Fields may be nil in tests that
 // don't exercise the corresponding routes.
 type Deps struct {
-	Config   config.Config
-	Pool     *pgxpool.Pool
-	WebFS    fs.FS
-	VK       *vk.Client
-	Accounts *account.Service
-	Sessions *session.Manager
-	Wishlist *wishlist.Service
-	Settings *settings.Service
+	Config     config.Config
+	Pool       *pgxpool.Pool
+	WebFS      fs.FS
+	VK         *vk.Client
+	Accounts   *account.Service
+	Sessions   *session.Manager
+	Wishlist   *wishlist.Service
+	Settings   *settings.Service
+	VKVerifier *vk.IDTokenVerifier // nil = id_token verification disabled
+}
+
+// rateLimit builds a per-client-IP rate limiter that renders the canonical JSON
+// error envelope (with trace_id) on 429.
+func (s *Server) rateLimit(reqs int, window time.Duration) func(http.Handler) http.Handler {
+	return httprate.Limit(reqs, window,
+		httprate.WithKeyFuncs(httprate.KeyByIP),
+		httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited")
+		}),
+	)
 }
 
 // Server carries handler dependencies.
@@ -49,11 +63,15 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/healthz", s.handleHealthz)
 
 	r.Route("/api", func(r chi.Router) {
+		r.Use(s.rateLimit(240, time.Minute)) // blanket per-IP guard
+
 		r.Get("/ping", handlePing)
 
 		r.Route("/auth", func(r chi.Router) {
-			r.Get("/vk/state", s.handleVKState)
-			r.Post("/vk/callback", s.handleVKCallback)
+			// Tighter limit on the abuse-sensitive login endpoints.
+			authLimit := s.rateLimit(30, time.Minute)
+			r.With(authLimit).Get("/vk/state", s.handleVKState)
+			r.With(authLimit).Post("/vk/callback", s.handleVKCallback)
 			r.Get("/me", s.handleMe)
 			r.Post("/logout", s.handleLogout)
 		})

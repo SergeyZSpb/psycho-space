@@ -73,15 +73,26 @@ func main() {
 	settingsSvc := settings.NewService(pool)
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
 
+	var vkVerifier *vk.IDTokenVerifier
+	if cfg.VK.VerifyIDToken {
+		vkVerifier, err = vk.NewIDTokenVerifier(ctx, cfg.VK.JWKSURL, cfg.VK.Issuer)
+		if err != nil {
+			slog.Error("vk id_token verifier init failed", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("vk id_token verification enabled", "jwks", cfg.VK.JWKSURL)
+	}
+
 	srv := httpapi.NewServer(httpapi.Deps{
-		Config:   cfg,
-		Pool:     pool,
-		WebFS:    web.DistFS(),
-		VK:       vkClient,
-		Accounts: accounts,
-		Sessions: sessions,
-		Wishlist: wishlistSvc,
-		Settings: settingsSvc,
+		Config:     cfg,
+		Pool:       pool,
+		WebFS:      web.DistFS(),
+		VK:         vkClient,
+		Accounts:   accounts,
+		Sessions:   sessions,
+		Wishlist:   wishlistSvc,
+		Settings:   settingsSvc,
+		VKVerifier: vkVerifier,
 	})
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
