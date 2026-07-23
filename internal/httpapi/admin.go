@@ -1,12 +1,40 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/go-chi/chi/v5"
 )
+
+// handleSettingsGet returns global settings (admins can read).
+func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
+	open, err := s.d.Settings.OpenRegistration(r.Context())
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"open_registration": open})
+}
+
+// handleSetOpenRegistration toggles open registration (superadmin only). When
+// on, new users are auto-approved (standard user role) on first login.
+func (s *Server) handleSetOpenRegistration(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, r, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if err := s.d.Settings.SetOpenRegistration(r.Context(), req.Enabled); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"open_registration": req.Enabled})
+}
 
 func (s *Server) handleAdminList(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")

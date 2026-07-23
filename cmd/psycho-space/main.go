@@ -21,6 +21,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/logging"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
+	"github.com/SergeyZSpb/psycho-space/internal/settings"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
 	"github.com/SergeyZSpb/psycho-space/internal/web"
 	"github.com/SergeyZSpb/psycho-space/internal/wishlist"
@@ -69,6 +70,7 @@ func main() {
 	accounts := account.NewService(pool, account.NewPostgresRepository(), enc, bi)
 	sessions := session.NewManager(pool, cfg.SessionKey, cfg.SessionTTL, cfg.CookieSecure())
 	wishlistSvc := wishlist.NewService(pool, wishlist.NewPostgresRepository())
+	settingsSvc := settings.NewService(pool)
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
 
 	srv := httpapi.NewServer(httpapi.Deps{
@@ -79,6 +81,7 @@ func main() {
 		Accounts: accounts,
 		Sessions: sessions,
 		Wishlist: wishlistSvc,
+		Settings: settingsSvc,
 	})
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

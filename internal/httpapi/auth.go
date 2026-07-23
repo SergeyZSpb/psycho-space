@@ -101,12 +101,22 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Open-registration mode auto-approves brand-new accounts (standard role).
+	autoApprove := false
+	if s.d.Settings != nil {
+		if open, err := s.d.Settings.OpenRegistration(ctx); err != nil {
+			slog.ErrorContext(ctx, "read open_registration failed", "err", err)
+		} else {
+			autoApprove = open
+		}
+	}
 	acc, err := s.d.Accounts.UpsertOnLogin(ctx, account.LoginInput{
 		VKUserID:       uid,
 		FirstName:      info.FirstName,
 		LastName:       info.LastName,
 		Avatar:         info.Avatar,
 		ConsentVersion: req.ConsentVersion,
+		AutoApprove:    autoApprove,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "account upsert failed", "err", err)

@@ -8,6 +8,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
+	"github.com/SergeyZSpb/psycho-space/internal/settings"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
 	"github.com/SergeyZSpb/psycho-space/internal/wishlist"
 	"github.com/go-chi/chi/v5"
@@ -25,6 +26,7 @@ type Deps struct {
 	Accounts *account.Service
 	Sessions *session.Manager
 	Wishlist *wishlist.Service
+	Settings *settings.Service
 }
 
 // Server carries handler dependencies.
@@ -56,16 +58,20 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/logout", s.handleLogout)
 		})
 
-		// Wishlist — approved users only.
+		// Wishlist — approved users only. Items and comments are both upvotable.
 		r.Route("/wishlist", func(r chi.Router) {
 			r.Use(s.requireAuth)
 			r.Get("/items", s.handleWishlistList)
 			r.Post("/items", s.handleWishlistCreate)
 			r.Post("/items/{id}/vote", s.handleVote)
 			r.Delete("/items/{id}/vote", s.handleUnvote)
+			r.Get("/items/{id}/comments", s.handleCommentList)
+			r.Post("/items/{id}/comments", s.handleCommentCreate)
+			r.Post("/comments/{id}/vote", s.handleCommentVote)
+			r.Delete("/comments/{id}/vote", s.handleCommentUnvote)
 		})
 
-		// Admin — approve/block for admins; promote for superadmin only.
+		// Admin — approve/block for admins; promote + settings for superadmin only.
 		r.Route("/admin", func(r chi.Router) {
 			r.Use(s.requireAuth)
 			r.Use(s.requireAdmin)
@@ -73,6 +79,8 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/accounts/{id}/approve", s.handleAdminApprove)
 			r.Post("/accounts/{id}/block", s.handleAdminBlock)
 			r.With(s.requireSuperadmin).Post("/accounts/{id}/promote", s.handleAdminPromote)
+			r.Get("/settings", s.handleSettingsGet)
+			r.With(s.requireSuperadmin).Put("/settings/open-registration", s.handleSetOpenRegistration)
 		})
 	})
 

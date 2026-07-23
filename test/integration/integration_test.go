@@ -22,6 +22,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
+	"github.com/SergeyZSpb/psycho-space/internal/settings"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
 	"github.com/SergeyZSpb/psycho-space/internal/wishlist"
 	"github.com/SergeyZSpb/psycho-space/migrations"
@@ -106,6 +107,7 @@ func buildApp(vkBaseURL string) http.Handler {
 		Accounts: newAccountService(),
 		Sessions: sessions,
 		Wishlist: wishlist.NewService(pool, wishlist.NewPostgresRepository()),
+		Settings: settings.NewService(pool),
 	}).Handler()
 	return observability.WrapHandler(h, "http.server")
 }

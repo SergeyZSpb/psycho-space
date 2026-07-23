@@ -21,6 +21,8 @@ type encRow struct {
 }
 
 // UpsertParams carries the encrypted fields to insert/update on login.
+// DefaultStatus is applied only on INSERT (new account); an existing account's
+// status is never changed by login.
 type UpsertParams struct {
 	Ref            []byte
 	VKUserIDEnc    []byte
@@ -28,6 +30,7 @@ type UpsertParams struct {
 	LastNameEnc    []byte
 	AvatarEnc      []byte
 	ConsentVersion string
+	DefaultStatus  string
 }
 
 // Repository is the storage boundary for accounts. All methods take a db.DBTX so

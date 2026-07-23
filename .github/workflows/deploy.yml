@@ -1,5 +1,8 @@
 name: deploy
 
+# `main` auto-deploys to the production box. The build job runs the full test
+# suite (unit + integration) and only then builds the binary; the deploy job
+# ships it over SSH. Feature/PR branches never deploy — they run ci.yml (tests).
 on:
   push:
     branches: [main]

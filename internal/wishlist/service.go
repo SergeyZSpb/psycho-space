@@ -55,3 +55,44 @@ func (s *Service) Vote(ctx context.Context, itemID, accountID string) error {
 func (s *Service) Unvote(ctx context.Context, itemID, accountID string) error {
 	return s.repo.RemoveVote(ctx, s.q, itemID, accountID)
 }
+
+// AddComment adds a comment to an item.
+func (s *Service) AddComment(ctx context.Context, itemID, authorID, body string) (Comment, error) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return Comment{}, ErrEmptyComment
+	}
+	if len(body) > maxCommentBody {
+		return Comment{}, ErrTooLong
+	}
+	ok, err := s.repo.Exists(ctx, s.q, itemID)
+	if err != nil {
+		return Comment{}, err
+	}
+	if !ok {
+		return Comment{}, ErrNotFound
+	}
+	return s.repo.CreateComment(ctx, s.q, itemID, authorID, body)
+}
+
+// ListComments returns the comments on an item (top-voted first).
+func (s *Service) ListComments(ctx context.Context, itemID, viewerID string) ([]Comment, error) {
+	return s.repo.ListComments(ctx, s.q, itemID, viewerID)
+}
+
+// VoteComment upvotes a comment (idempotent).
+func (s *Service) VoteComment(ctx context.Context, commentID, accountID string) error {
+	ok, err := s.repo.CommentExists(ctx, s.q, commentID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrCommentNotFound
+	}
+	return s.repo.AddCommentVote(ctx, s.q, commentID, accountID)
+}
+
+// UnvoteComment removes a comment upvote (idempotent).
+func (s *Service) UnvoteComment(ctx context.Context, commentID, accountID string) error {
+	return s.repo.RemoveCommentVote(ctx, s.q, commentID, accountID)
+}

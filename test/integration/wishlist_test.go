@@ -122,6 +122,126 @@ func TestWishlistFlow(t *testing.T) {
 	}
 }
 
+func TestComments(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	app := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app.Close()
+
+	author := loginAs(t, app.URL, "1101", "user")
+	voter := loginAs(t, app.URL, "1102", "user")
+
+	// Author creates an item + a comment.
+	_, created := doJSON(t, author, http.MethodPost, app.URL+"/api/wishlist/items",
+		map[string]string{"title": "Идея с обсуждением"})
+	itemID := created["id"].(string)
+
+	s, comment := doJSON(t, author, http.MethodPost, app.URL+"/api/wishlist/items/"+itemID+"/comments",
+		map[string]string{"body": "первый коммент"})
+	if s != http.StatusCreated {
+		t.Fatalf("create comment: %d %v", s, comment)
+	}
+	commentID := comment["id"].(string)
+	if comment["author"].(map[string]any)["display_name"] != "User 1101" {
+		t.Fatalf("comment author = %v", comment["author"])
+	}
+
+	// item list now shows comment_count 1.
+	items := listItems(t, author, app.URL)
+	if items[0]["comment_count"].(float64) != 1 {
+		t.Fatalf("comment_count = %v", items[0]["comment_count"])
+	}
+
+	// Another user upvotes the comment.
+	if s, _ := doJSON(t, voter, http.MethodPost, app.URL+"/api/wishlist/comments/"+commentID+"/vote", nil); s != http.StatusNoContent {
+		t.Fatalf("comment vote: %d", s)
+	}
+	// Voter sees votes=1, voted_by_me=true; author sees votes=1, voted_by_me=false.
+	cs := listComments(t, voter, app.URL, itemID)
+	if cs[0]["votes"].(float64) != 1 || cs[0]["voted_by_me"] != true {
+		t.Fatalf("voter view: %v", cs[0])
+	}
+	cs = listComments(t, author, app.URL, itemID)
+	if cs[0]["votes"].(float64) != 1 || cs[0]["voted_by_me"] != false {
+		t.Fatalf("author view: %v", cs[0])
+	}
+
+	// Retract the comment vote → back to 0.
+	if s, _ := doJSON(t, voter, http.MethodDelete, app.URL+"/api/wishlist/comments/"+commentID+"/vote", nil); s != http.StatusNoContent {
+		t.Fatalf("comment unvote: %d", s)
+	}
+	cs = listComments(t, voter, app.URL, itemID)
+	if cs[0]["votes"].(float64) != 0 || cs[0]["voted_by_me"] != false {
+		t.Fatalf("after comment unvote: %v", cs[0])
+	}
+
+	// Empty comment rejected.
+	if s, body := doJSON(t, author, http.MethodPost, app.URL+"/api/wishlist/items/"+itemID+"/comments",
+		map[string]string{"body": "  "}); s != http.StatusUnprocessableEntity || body["error"] != "comment_required" {
+		t.Fatalf("empty comment: %d %v", s, body)
+	}
+}
+
+func TestOpenRegistration(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	app := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app.Close()
+
+	super := loginAs(t, app.URL, "3001", "superadmin")
+
+	// A regular admin cannot toggle (superadmin only), but can read.
+	admin := loginAs(t, app.URL, "3009", "admin")
+	if s, _ := doJSON(t, admin, http.MethodPut, app.URL+"/api/admin/settings/open-registration",
+		map[string]bool{"enabled": true}); s != http.StatusForbidden {
+		t.Fatalf("admin toggle: want 403, got %d", s)
+	}
+	if s, _ := doJSON(t, admin, http.MethodGet, app.URL+"/api/admin/settings", nil); s != http.StatusOK {
+		t.Fatalf("admin read settings: %d", s)
+	}
+
+	// Superadmin enables open registration.
+	if s, _ := doJSON(t, super, http.MethodPut, app.URL+"/api/admin/settings/open-registration",
+		map[string]bool{"enabled": true}); s != http.StatusOK {
+		t.Fatalf("super enable: %d", s)
+	}
+
+	// A brand-new user is now auto-approved (standard user role) on first login.
+	njar, _ := cookiejar.New(nil)
+	resp := loginPending(t, &http.Client{Jar: njar}, app.URL, "3100")
+	if resp["status"] != "approved" {
+		t.Fatalf("open-reg new user: want approved, got %v", resp)
+	}
+	if resp["account"].(map[string]any)["role"] != "user" {
+		t.Fatalf("auto-approved role = %v, want user", resp["account"].(map[string]any)["role"])
+	}
+
+	// Disable → next new user is pending again.
+	if s, _ := doJSON(t, super, http.MethodPut, app.URL+"/api/admin/settings/open-registration",
+		map[string]bool{"enabled": false}); s != http.StatusOK {
+		t.Fatalf("super disable: %d", s)
+	}
+	pjar, _ := cookiejar.New(nil)
+	resp = loginPending(t, &http.Client{Jar: pjar}, app.URL, "3101")
+	if resp["status"] != "pending" {
+		t.Fatalf("after disable: want pending, got %v", resp)
+	}
+}
+
+func listComments(t *testing.T, cli *http.Client, base, itemID string) []map[string]any {
+	t.Helper()
+	resp, err := cli.Get(base + "/api/wishlist/items/" + itemID + "/comments")
+	if err != nil {
+		t.Fatalf("list comments: %v", err)
+	}
+	defer resp.Body.Close()
+	var m struct {
+		Comments []map[string]any `json:"comments"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&m)
+	return m.Comments
+}
+
 func listItems(t *testing.T, cli *http.Client, base string) []map[string]any {
 	t.Helper()
 	resp, err := cli.Get(base + "/api/wishlist/items?sort=top")

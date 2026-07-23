@@ -23,12 +23,15 @@ func NewService(q db.DBTX, repo Repository, enc *crypto.Encryptor, bi *crypto.Bl
 }
 
 // LoginInput is the profile pulled from VK plus the consent version.
+// AutoApprove (open-registration mode) approves a NEW account immediately with
+// the standard user role; it never affects an existing account.
 type LoginInput struct {
 	VKUserID       string
 	FirstName      string
 	LastName       string
 	Avatar         string
 	ConsentVersion string
+	AutoApprove    bool
 }
 
 // UpsertOnLogin creates or refreshes the account for a VK user and records consent.
@@ -50,6 +53,10 @@ func (s *Service) UpsertOnLogin(ctx context.Context, in LoginInput) (*Account, e
 		return nil, err
 	}
 
+	defaultStatus := StatusPending
+	if in.AutoApprove {
+		defaultStatus = StatusApproved
+	}
 	row, err := s.repo.Upsert(ctx, s.q, UpsertParams{
 		Ref:            s.bi.Index(in.VKUserID),
 		VKUserIDEnc:    vkEnc,
@@ -57,6 +64,7 @@ func (s *Service) UpsertOnLogin(ctx context.Context, in LoginInput) (*Account, e
 		LastNameEnc:    lnEnc,
 		AvatarEnc:      avEnc,
 		ConsentVersion: in.ConsentVersion,
+		DefaultStatus:  defaultStatus,
 	})
 	if err != nil {
 		return nil, err

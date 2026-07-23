@@ -26,8 +26,8 @@ func (PostgresRepository) Upsert(ctx context.Context, q db.DBTX, p UpsertParams)
 	return scanRow(q.QueryRow(ctx, `
 		INSERT INTO accounts
 			(vk_user_ref, vk_user_id_enc, first_name_enc, last_name_enc, avatar_url_enc,
-			 last_login_at, consent_at, consent_version)
-		VALUES ($1, $2, $3, $4, $5, now(), now(), $6)
+			 status, last_login_at, consent_at, consent_version)
+		VALUES ($1, $2, $3, $4, $5, $7, now(), now(), $6)
 		ON CONFLICT (vk_user_ref) DO UPDATE SET
 			vk_user_id_enc  = EXCLUDED.vk_user_id_enc,
 			first_name_enc  = EXCLUDED.first_name_enc,
@@ -38,7 +38,7 @@ func (PostgresRepository) Upsert(ctx context.Context, q db.DBTX, p UpsertParams)
 			consent_at      = now(),
 			consent_version = EXCLUDED.consent_version
 		RETURNING `+selectCols,
-		p.Ref, p.VKUserIDEnc, p.FirstNameEnc, p.LastNameEnc, p.AvatarEnc, p.ConsentVersion))
+		p.Ref, p.VKUserIDEnc, p.FirstNameEnc, p.LastNameEnc, p.AvatarEnc, p.ConsentVersion, p.DefaultStatus))
 }
 
 func (PostgresRepository) GetByID(ctx context.Context, q db.DBTX, id string) (encRow, error) {

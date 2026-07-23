@@ -1,12 +1,18 @@
 name: ci
 
+# Feature/PR branches: run the full test suite only (NO deploy). `main` is the
+# auto-deploy branch and is handled by deploy.yml instead.
 on:
   pull_request:
   push:
     branches-ignore: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,13 +23,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: build
+
+      - name: Go build
         run: ./dev.sh build
-      - name: lint
+
+      - name: Lint (gofmt + go vet)
         run: ./dev.sh lint
-      - name: unit tests
+
+      - name: Unit tests
         run: ./dev.sh test
-      - name: web (type-check + unit)
+
+      - name: Web checks (type-check + vitest)
         run: ./dev.sh web
-      - name: integration tests (testcontainers)
+
+      - name: Web build (catch bundling errors)
+        run: |
+          if [ -f web/package.json ]; then
+            ( cd web && npm run build )
+          else
+            echo "no web/ yet — skipping"
+          fi
+
+      - name: Integration tests (testcontainers Postgres + fake VK)
         run: ./dev.sh integration
