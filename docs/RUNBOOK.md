@@ -125,3 +125,27 @@ curl -fsS https://psycho-space.ru/api/ping        # {"message":"pong"}
 ssh psycho 'sudo fail2ban-client status sshd'
 ssh psycho 'sudo ss -tlnp'                        # confirm sshd is on the hardened port only
 ```
+
+**Ubuntu 24.04 note:** sshd is run as the standalone `ssh.service` with `ssh.socket`
+**disabled** — socket activation ignores the `Port` directive in `sshd_config`, so
+the hardened port only works with the socket off. `bootstrap.sh`/`harden-finalize.sh`
+handle this; if sshd ever reverts to listening only on 22, run
+`sudo systemctl disable --now ssh.socket && sudo systemctl restart ssh.service`.
+
+## SSH recovery / re-enabling root
+
+Hardening disables root SSH **login** (`PermitRootLogin no`) and closes port 22 — it
+does **not** remove or lock the root account. Recovery, in order of preference:
+
+1. **`deploy` has full sudo — the normal path.** `ssh -p <port> deploy@<ip>` then
+   `sudo -i` for a root shell. To re-enable root SSH login:
+   ```bash
+   sudo sed -i 's/^PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config.d/99-psycho.conf
+   sudo sshd -t && sudo systemctl restart ssh
+   sudo ufw allow 22/tcp     # only if you also want port 22 reopened
+   ```
+2. **Provider console (VNC / serial / recovery mode)** in the hosting panel — the
+   ultimate fallback if SSH is entirely unreachable; logs in as root locally,
+   bypassing SSH. Use it to undo any sshd/ufw change that locked you out.
+
+You rarely need root over SSH — `deploy` + sudo covers all admin.
