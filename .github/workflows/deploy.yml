@@ -11,6 +11,10 @@ concurrency:
   group: deploy-prod
   cancel-in-progress: false
 
+env:
+  # Playwright e2e is on-demand; don't download browsers during npm ci in CI.
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
 jobs:
   build:
     runs-on: ubuntu-latest

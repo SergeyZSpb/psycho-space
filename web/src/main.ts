@@ -4,6 +4,7 @@ import '@mdi/font/css/materialdesignicons.css';
 import App from './App.vue';
 import router from './router';
 import vuetify from './plugins/vuetify';
+import './styles/mobile.css';
 
 const app = createApp(App);
 

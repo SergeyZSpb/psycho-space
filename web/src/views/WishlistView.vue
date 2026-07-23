@@ -22,7 +22,13 @@
           counter
         />
         <div class="d-flex justify-end">
-          <v-btn type="submit" color="primary" :loading="creating" prepend-icon="mdi-plus">
+          <v-btn
+            type="submit"
+            color="primary"
+            :block="smAndDown"
+            :loading="creating"
+            prepend-icon="mdi-plus"
+          >
             Добавить
           </v-btn>
         </div>
@@ -62,10 +68,14 @@
         <!-- Body -->
         <div class="flex-grow-1">
           <div class="d-flex align-center ga-2">
-            <h3 class="text-subtitle-1 font-weight-bold">{{ item.title }}</h3>
-            <v-chip v-if="item.mine" size="x-small" color="secondary" variant="tonal">вы</v-chip>
+            <h3 class="text-subtitle-1 font-weight-bold ps-wrap flex-grow-1" style="min-width: 0">
+              {{ item.title }}
+            </h3>
+            <v-chip v-if="item.mine" size="x-small" color="secondary" variant="tonal" class="flex-shrink-0">
+              вы
+            </v-chip>
           </div>
-          <p v-if="item.body" class="text-body-2 text-medium-emphasis mt-1" style="white-space: pre-wrap">
+          <p v-if="item.body" class="text-body-2 text-medium-emphasis mt-1 ps-wrap" style="white-space: pre-wrap">
             {{ item.body }}
           </p>
 
@@ -93,6 +103,7 @@
             <v-btn
               variant="text"
               size="small"
+              :aria-label="`Комментарии (${item.comment_count})`"
               :prepend-icon="expanded.has(item.id) ? 'mdi-comment-remove-outline' : 'mdi-comment-outline'"
               @click="toggleComments(item)"
             >
@@ -115,6 +126,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue';
+import { useDisplay } from 'vuetify';
 import VoteButton from '../components/VoteButton.vue';
 import CommentSection from '../components/CommentSection.vue';
 import { wishlistApi } from '../api/endpoints';
@@ -124,6 +136,7 @@ import { useErrorStore } from '../stores/error';
 import type { WishlistItem, WishlistSort } from '../api/types';
 
 const errorStore = useErrorStore();
+const { smAndDown } = useDisplay();
 
 const items = ref<WishlistItem[]>([]);
 const loading = ref(false);

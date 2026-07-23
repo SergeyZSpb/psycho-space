@@ -67,6 +67,9 @@ target_integration() {
 target_web() {
   if [ -f web/package.json ]; then
     echo "== web (type-check + unit) =="
+    # Don't download Playwright browsers on npm ci here — the e2e suite is a
+    # separate on-demand check (npm run test:e2e), not part of this fast gate.
+    export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
     ( cd web && npm_ ci --no-audit --no-fund && npm_ run type-check && npm_ run test )
   else
     echo "info: no web/ frontend yet — skipping" >&2

@@ -1,0 +1,35 @@
+/* Mobile ergonomics + overflow guards. Loaded after Vuetify styles so these win.
+   This is real production responsive CSS — no test-only behaviour lives here. */
+
+/* Long unbroken strings (URLs, ААААА…, handles) must never force horizontal scroll. */
+.ps-wrap {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Selection-control labels (checkbox/switch) wrap instead of overflowing on narrow screens. */
+.v-selection-control .v-label {
+  white-space: normal;
+  line-height: 1.3;
+}
+
+@media (max-width: 600px) {
+  /* Comfortable tap targets (>= 44px) for interactive controls. min-height wins
+     over Vuetify's size-driven height; icon buttons also get min-width. */
+  .v-btn {
+    min-height: 44px;
+  }
+  .v-btn--icon {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .v-list-item {
+    min-height: 44px;
+  }
+
+  /* The cookie snackbar's default 344px min-width can edge past a 360px viewport. */
+  .v-snackbar__wrapper {
+    min-width: 0;
+    max-width: calc(100vw - 16px);
+  }
+}

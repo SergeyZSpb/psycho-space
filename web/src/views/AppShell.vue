@@ -49,6 +49,7 @@
           icon="mdi-logout"
           variant="text"
           title="Выйти"
+          aria-label="Выйти"
           class="ml-1"
           @click="doLogout"
         />
@@ -74,7 +75,9 @@ const errorStore = useErrorStore();
 const router = useRouter();
 const { mdAndUp } = useDisplay();
 
-const drawer = ref(true);
+// Permanent + open on desktop; on mobile/tablet it's a temporary drawer that
+// starts closed (opened via the app-bar nav icon) so it never overlays content.
+const drawer = ref(mdAndUp.value);
 
 const initials = computed(() => {
   const name = auth.account?.display_name?.trim() ?? '';

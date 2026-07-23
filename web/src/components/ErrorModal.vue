@@ -1,5 +1,5 @@
 <template>
-  <v-dialog v-model="errorStore.open" max-width="480" persistent>
+  <v-dialog v-model="errorStore.open" :max-width="mobile ? undefined : 480" :fullscreen="mobile" persistent>
     <v-card>
       <v-card-title class="d-flex align-center ga-2">
         <v-icon color="error" icon="mdi-alert-circle" />
@@ -49,11 +49,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
+import { useDisplay } from 'vuetify';
 import { useErrorStore } from '../stores/error';
 
 const errorStore = useErrorStore();
 const copied = ref(false);
+
+// Fullscreen dialog on phones so the error + trace id are comfortably readable.
+const { smAndDown } = useDisplay();
+const mobile = computed(() => smAndDown.value);
 
 function selectAll(e: FocusEvent) {
   (e.target as HTMLInputElement | null)?.select();

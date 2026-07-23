@@ -25,20 +25,20 @@
           </v-avatar>
         </a>
 
-        <div class="flex-grow-1">
+        <div class="flex-grow-1" style="min-width: 0">
           <div class="d-flex align-center ga-2 flex-wrap">
-            <span class="font-weight-bold text-body-2">{{ c.author.display_name || 'аноним' }}</span>
+            <span class="font-weight-bold text-body-2 ps-wrap">{{ c.author.display_name || 'аноним' }}</span>
             <a
               v-if="handle(c.author.vk_url)"
               :href="c.author.vk_url"
               target="_blank"
               rel="noopener noreferrer"
-              class="handle-link text-caption"
+              class="handle-link text-caption ps-wrap"
             >{{ handle(c.author.vk_url) }}</a>
             <v-chip v-if="c.mine" size="x-small" color="secondary" variant="tonal">вы</v-chip>
           </div>
 
-          <p class="text-body-2 mt-1 mb-2" style="white-space: pre-wrap">{{ c.body }}</p>
+          <p class="text-body-2 mt-1 mb-2 ps-wrap" style="white-space: pre-wrap">{{ c.body }}</p>
 
           <div class="d-flex align-center ga-3">
             <VoteButton
@@ -74,6 +74,7 @@
           color="primary"
           size="small"
           variant="tonal"
+          :block="smAndDown"
           :loading="creating"
           prepend-icon="mdi-comment-plus-outline"
         >
@@ -86,6 +87,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
+import { useDisplay } from 'vuetify';
 import VoteButton from './VoteButton.vue';
 import { wishlistApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
@@ -98,6 +100,7 @@ const props = defineProps<{ itemId: string }>();
 const emit = defineEmits<{ created: [] }>();
 
 const errorStore = useErrorStore();
+const { smAndDown } = useDisplay();
 
 const comments = ref<WishlistComment[]>([]);
 const loading = ref(false);

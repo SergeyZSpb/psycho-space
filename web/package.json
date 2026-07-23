@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@babel/runtime": "7.29.7",
@@ -19,6 +21,7 @@
     "vuetify": "3.12.11"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@types/node": "22.20.1",
     "@vitejs/plugin-vue": "5.2.4",
     "@vue/test-utils": "2.4.11",

@@ -38,9 +38,9 @@
           <span v-else>{{ initial(acc.display_name) }}</span>
         </v-avatar>
 
-        <div class="flex-grow-1" style="min-width: 200px">
+        <div class="flex-grow-1" style="min-width: 160px">
           <div class="d-flex align-center ga-2 flex-wrap">
-            <a :href="acc.vk_url || undefined" target="_blank" rel="noopener noreferrer" class="name-link">
+            <a :href="acc.vk_url || undefined" target="_blank" rel="noopener noreferrer" class="name-link ps-wrap">
               {{ acc.display_name }}
             </a>
             <v-chip size="x-small" :color="roleColor(acc.role)" variant="tonal">{{ acc.role }}</v-chip>
