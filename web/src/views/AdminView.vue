@@ -74,18 +74,40 @@
           >
             отозвать доступ
           </v-btn>
-          <!-- superadmin only -->
-          <v-btn
-            v-if="auth.isSuperadmin && acc.role === 'user'"
-            color="primary"
-            variant="tonal"
-            size="small"
-            prepend-icon="mdi-shield-plus"
-            :loading="busyId === acc.id"
-            @click="act(acc, 'promote')"
-          >
-            сделать админом
-          </v-btn>
+          <!-- Role control: approved accounts only, superadmin only. -->
+          <template v-if="auth.isSuperadmin && acc.status === 'approved'">
+            <v-btn
+              v-if="acc.role === 'user'"
+              color="primary"
+              variant="tonal"
+              size="small"
+              prepend-icon="mdi-shield-plus"
+              :loading="busyId === acc.id"
+              @click="act(acc, 'promote')"
+            >
+              Сделать админом
+            </v-btn>
+            <v-btn
+              v-else-if="acc.role === 'admin'"
+              color="warning"
+              variant="tonal"
+              size="small"
+              prepend-icon="mdi-shield-off-outline"
+              :loading="busyId === acc.id"
+              @click="act(acc, 'demote')"
+            >
+              Разжаловать
+            </v-btn>
+            <v-chip
+              v-else
+              size="small"
+              color="primary"
+              variant="tonal"
+              prepend-icon="mdi-shield-crown-outline"
+            >
+              суперадмин
+            </v-chip>
+          </template>
         </div>
       </div>
     </v-card>
@@ -172,12 +194,13 @@ async function load() {
   }
 }
 
-async function act(acc: AdminAccount, action: 'approve' | 'block' | 'promote') {
+async function act(acc: AdminAccount, action: 'approve' | 'block' | 'promote' | 'demote') {
   busyId.value = acc.id;
   try {
     if (action === 'approve') await adminApi.approve(acc.id);
     else if (action === 'block') await adminApi.block(acc.id);
-    else await adminApi.promote(acc.id);
+    else if (action === 'promote') await adminApi.promote(acc.id);
+    else await adminApi.demote(acc.id);
     await load();
   } catch (err) {
     // The backend returns 403 when an admin tries to act on an admin/superadmin;

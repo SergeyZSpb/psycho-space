@@ -44,8 +44,8 @@ const fallbackHTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>психоспасе</title>
 <style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;
-font-family:system-ui,sans-serif;background:#0f0a1e;color:#ece6ff}main{max-width:640px;padding:40px;text-align:center}
-h1{color:#8a5cf6;text-shadow:0 0 20px #8a5cf699}</style></head>
+font-family:system-ui,sans-serif;background:#0b1513;color:#d5f5ef}main{max-width:640px;padding:40px;text-align:center}
+h1{color:#2dd4bf;text-shadow:0 0 20px #2dd4bf99}</style></head>
 <body><main><h1>психоспасе</h1>
 <p>это супер нейрослоп приложулька оххх оххх психоспасе</p>
 <p style="opacity:.6;font-size:14px">frontend не собран — запусти <code>npm run build</code> в <code>web/</code></p>

@@ -4,7 +4,8 @@ export type Role = 'user' | 'admin' | 'superadmin';
 export type AccountStatus = 'pending' | 'approved' | 'blocked';
 export type WishlistSort = 'top' | 'new';
 
-// The public account shape returned by /api/auth/me and the approved login result.
+// The public account shape returned by /api/auth/me and the login result.
+// `handle` (first 8 hex of the blind index) is shown on the pending screen.
 export interface Account {
   id: string;
   display_name: string;
@@ -12,6 +13,7 @@ export interface Account {
   vk_url: string;
   role: Role;
   status: AccountStatus;
+  handle: string;
 }
 
 // The richer shape the admin console lists (adds handle + created_at).
@@ -61,7 +63,9 @@ export interface AdminSettings {
   open_registration: boolean;
 }
 
-// The two shapes of a successful /api/auth/vk/callback response.
-export type LoginResult =
-  | { status: 'approved'; account: Account }
-  | { status: 'pending' | 'blocked'; handle: string };
+// /api/auth/vk/callback now ALWAYS returns the account (and sets a session
+// cookie) regardless of status; the client routes by account.status.
+export interface LoginResult {
+  status: AccountStatus;
+  account: Account;
+}

@@ -92,3 +92,16 @@ func (PostgresRepository) Promote(ctx context.Context, q db.DBTX, id string) err
 	}
 	return nil
 }
+
+func (PostgresRepository) Demote(ctx context.Context, q db.DBTX, id string) error {
+	tag, err := q.Exec(ctx,
+		`UPDATE accounts SET role = 'user', updated_at = now()
+		 WHERE id = $1::uuid AND deleted_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

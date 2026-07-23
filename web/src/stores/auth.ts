@@ -40,6 +40,25 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  // Force a re-fetch of /me (used by the pending-screen poll and after login).
+  // Returns the current account (or null on 401). A 401 clears the session and
+  // is treated as "logged out"; other errors leave the last-known account intact.
+  async function refresh(): Promise<Account | null> {
+    try {
+      const res = await authApi.me();
+      account.value = res.account;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        account.value = null;
+      } else {
+        console.warn('auth: /me refresh failed', err);
+      }
+    } finally {
+      loaded.value = true;
+    }
+    return account.value;
+  }
+
   async function logout(): Promise<void> {
     try {
       await authApi.logout();
@@ -57,6 +76,7 @@ export const useAuthStore = defineStore('auth', () => {
     isSuperadmin,
     setAccount,
     ensureLoaded,
+    refresh,
     logout,
   };
 });

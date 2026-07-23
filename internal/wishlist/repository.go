@@ -14,9 +14,14 @@ type Repository interface {
 	AddVote(ctx context.Context, q db.DBTX, itemID, accountID string) error
 	RemoveVote(ctx context.Context, q db.DBTX, itemID, accountID string) error
 
+	ItemAuthor(ctx context.Context, q db.DBTX, itemID string) (string, error)
+	SoftDeleteItem(ctx context.Context, q db.DBTX, itemID string) error
+
 	CreateComment(ctx context.Context, q db.DBTX, itemID, authorID, body string) (Comment, error)
 	ListComments(ctx context.Context, q db.DBTX, itemID, viewerID string) ([]Comment, error)
 	CommentExists(ctx context.Context, q db.DBTX, commentID string) (bool, error)
+	CommentAuthor(ctx context.Context, q db.DBTX, commentID string) (string, error)
+	SoftDeleteComment(ctx context.Context, q db.DBTX, commentID string) error
 	AddCommentVote(ctx context.Context, q db.DBTX, commentID, accountID string) error
 	RemoveCommentVote(ctx context.Context, q db.DBTX, commentID, accountID string) error
 }

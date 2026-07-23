@@ -50,6 +50,18 @@
               @toggle="toggleVote(c)"
             />
             <span class="text-caption text-medium-emphasis">{{ shortTime(c.created_at) }}</span>
+            <v-spacer />
+            <!-- Delete: author or admin. -->
+            <v-btn
+              v-if="canDelete(c)"
+              variant="text"
+              size="x-small"
+              color="error"
+              icon="mdi-trash-can-outline"
+              title="Удалить комментарий"
+              aria-label="Удалить комментарий"
+              @click="askDelete(c)"
+            />
           </div>
         </div>
       </div>
@@ -82,6 +94,20 @@
         </v-btn>
       </div>
     </v-form>
+
+    <!-- Delete-comment confirmation. -->
+    <v-dialog v-model="confirmOpen" max-width="400">
+      <v-card>
+        <v-card-title>Удалить комментарий?</v-card-title>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="confirmOpen = false">Отмена</v-btn>
+          <v-btn color="error" variant="tonal" :loading="deleting" @click="confirmDelete">
+            Удалить
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -93,12 +119,14 @@ import { wishlistApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import { applyToggle } from '../lib/vote';
 import { vkHandle as handle } from '../lib/vk';
+import { useAuthStore } from '../stores/auth';
 import { useErrorStore } from '../stores/error';
 import type { WishlistComment } from '../api/types';
 
 const props = defineProps<{ itemId: string }>();
-const emit = defineEmits<{ created: [] }>();
+const emit = defineEmits<{ created: []; deleted: [] }>();
 
+const auth = useAuthStore();
 const errorStore = useErrorStore();
 const { smAndDown } = useDisplay();
 
@@ -108,6 +136,14 @@ const draft = ref('');
 const draftError = ref('');
 const creating = ref(false);
 const votingId = ref<string | null>(null);
+
+const confirmOpen = ref(false);
+const pending = ref<WishlistComment | null>(null);
+const deleting = ref(false);
+
+function canDelete(c: WishlistComment): boolean {
+  return c.mine || auth.isAdmin;
+}
 
 function initial(name: string): string {
   const n = name.trim();
@@ -178,6 +214,28 @@ async function toggleVote(c: WishlistComment) {
     errorStore.report(err);
   } finally {
     votingId.value = null;
+  }
+}
+
+function askDelete(c: WishlistComment) {
+  pending.value = c;
+  confirmOpen.value = true;
+}
+
+async function confirmDelete() {
+  const c = pending.value;
+  if (!c) return;
+  deleting.value = true;
+  try {
+    await wishlistApi.deleteComment(c.id);
+    comments.value = comments.value.filter((x) => x.id !== c.id);
+    emit('deleted');
+    confirmOpen.value = false;
+    pending.value = null;
+  } catch (err) {
+    errorStore.report(err); // 403 forbidden / 404 not_found
+  } finally {
+    deleting.value = false;
   }
 }
 

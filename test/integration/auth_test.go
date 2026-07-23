@@ -66,9 +66,14 @@ func TestVKLoginFlow(t *testing.T) {
 	if status != http.StatusOK || resp["status"] != "pending" {
 		t.Fatalf("first login: status=%d body=%v; want pending", status, resp)
 	}
-	handle, _ := resp["handle"].(string)
+	acc0, _ := resp["account"].(map[string]any)
+	handle, _ := acc0["handle"].(string)
 	if len(handle) != 8 {
-		t.Fatalf("handle = %q, want 8 hex chars", handle)
+		t.Fatalf("handle = %q, want 8 hex chars (account=%v)", handle, acc0)
+	}
+	// Pending users get a session so the SPA can poll for approval.
+	if ms, me := doJSON(t, cli, http.MethodGet, app.URL+"/api/auth/me", nil); ms != http.StatusOK || me["account"].(map[string]any)["status"] != "pending" {
+		t.Fatalf("pending /me: status=%d body=%v; want 200 pending", ms, me)
 	}
 
 	// Approve the pending account.

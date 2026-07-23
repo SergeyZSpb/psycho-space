@@ -3,7 +3,7 @@ import { createVuetify } from 'vuetify';
 import { aliases, mdi } from 'vuetify/iconsets/mdi';
 import { BRAND_ACCENT } from '../constants';
 
-// Material look via Vuetify defaults; purple-ish brand accent as `primary`.
+// Material look via Vuetify defaults; teal brand accent as `primary`.
 // Deliberately simple — the design is expected to be reworked later.
 export const vuetify = createVuetify({
   icons: {
@@ -18,19 +18,19 @@ export const vuetify = createVuetify({
       light: {
         dark: false,
         colors: {
-          primary: BRAND_ACCENT,
-          secondary: '#6d4bd8',
+          primary: '#0d9488', // teal-600 — readable on light
+          secondary: '#14b8a6', // teal-500
           surface: '#ffffff',
-          background: '#f5f3fb',
+          background: '#f0fdfa', // teal-50
         },
       },
       dark: {
         dark: true,
         colors: {
-          primary: BRAND_ACCENT,
-          secondary: '#b79cff',
-          surface: '#1a1230',
-          background: '#0f0a1e',
+          primary: BRAND_ACCENT, // teal-400 (#2dd4bf) — pops on the dark bg
+          secondary: '#14b8a6', // teal-500
+          surface: '#12201e', // dark teal surface
+          background: '#0b1513', // near-black teal
         },
       },
     },

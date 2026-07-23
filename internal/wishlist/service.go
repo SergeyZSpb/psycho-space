@@ -56,6 +56,30 @@ func (s *Service) Unvote(ctx context.Context, itemID, accountID string) error {
 	return s.repo.RemoveVote(ctx, s.q, itemID, accountID)
 }
 
+// DeleteItem soft-deletes an item. The author, or any admin/superadmin, may delete it.
+func (s *Service) DeleteItem(ctx context.Context, itemID, actorID string, isAdmin bool) error {
+	author, err := s.repo.ItemAuthor(ctx, s.q, itemID)
+	if err != nil {
+		return err
+	}
+	if author != actorID && !isAdmin {
+		return ErrForbidden
+	}
+	return s.repo.SoftDeleteItem(ctx, s.q, itemID)
+}
+
+// DeleteComment soft-deletes a comment. The author, or any admin/superadmin, may delete it.
+func (s *Service) DeleteComment(ctx context.Context, commentID, actorID string, isAdmin bool) error {
+	author, err := s.repo.CommentAuthor(ctx, s.q, commentID)
+	if err != nil {
+		return err
+	}
+	if author != actorID && !isAdmin {
+		return ErrForbidden
+	}
+	return s.repo.SoftDeleteComment(ctx, s.q, commentID)
+}
+
 // AddComment adds a comment to an item.
 func (s *Service) AddComment(ctx context.Context, itemID, authorID, body string) (Comment, error) {
 	body = strings.TrimSpace(body)

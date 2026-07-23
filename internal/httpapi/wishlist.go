@@ -78,6 +78,46 @@ func (s *Server) handleUnvote(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
+	viewer, _ := accountFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	if !validUUID(id) {
+		writeError(w, r, http.StatusBadRequest, "bad_request")
+		return
+	}
+	err := s.d.Wishlist.DeleteItem(r.Context(), id, viewer.ID, viewer.IsAdmin())
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, wishlist.ErrNotFound):
+		writeError(w, r, http.StatusNotFound, "not_found")
+	case errors.Is(err, wishlist.ErrForbidden):
+		writeError(w, r, http.StatusForbidden, "forbidden")
+	default:
+		writeError(w, r, http.StatusInternalServerError, "internal")
+	}
+}
+
+func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
+	viewer, _ := accountFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	if !validUUID(id) {
+		writeError(w, r, http.StatusBadRequest, "bad_request")
+		return
+	}
+	err := s.d.Wishlist.DeleteComment(r.Context(), id, viewer.ID, viewer.IsAdmin())
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, wishlist.ErrCommentNotFound):
+		writeError(w, r, http.StatusNotFound, "not_found")
+	case errors.Is(err, wishlist.ErrForbidden):
+		writeError(w, r, http.StatusForbidden, "forbidden")
+	default:
+		writeError(w, r, http.StatusInternalServerError, "internal")
+	}
+}
+
 // itemsResponse enriches items with author display info (decrypted once per author).
 func (s *Server) itemsResponse(r *http.Request, viewer *account.Account, items []wishlist.Item) []map[string]any {
 	authors := map[string]*account.Account{}

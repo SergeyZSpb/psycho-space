@@ -69,6 +69,7 @@ router.beforeEach(async (to) => {
   const requiresApproved = to.matched.some((r) => r.meta.requiresApproved);
   const requiresAdmin = to.matched.some((r) => r.meta.requiresAdmin);
 
+  // /app/* — approved users only.
   if (requiresApproved) {
     if (!auth.isAuthed) return { name: 'landing' };
     if (!auth.isApproved) return { name: 'pending' };
@@ -77,9 +78,16 @@ router.beforeEach(async (to) => {
     return { name: 'wishlist' };
   }
 
-  // Already signed in + approved? Skip the landing, go straight to the app.
-  if (to.name === 'landing' && auth.isAuthed && auth.isApproved) {
-    return { name: 'wishlist' };
+  // /pending — must have a session (pending users now have one). Approved users
+  // don't belong here; a signed-out user has no handle to show.
+  if (to.name === 'pending') {
+    if (!auth.isAuthed) return { name: 'landing' };
+    if (auth.isApproved) return { name: 'wishlist' };
+  }
+
+  // Landing — route a signed-in user by status: approved -> app, else pending.
+  if (to.name === 'landing' && auth.isAuthed) {
+    return auth.isApproved ? { name: 'wishlist' } : { name: 'pending' };
   }
 
   return true;

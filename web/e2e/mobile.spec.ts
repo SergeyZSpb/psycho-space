@@ -51,16 +51,26 @@ for (const theme of THEMES) {
       }
     });
 
-    test('pending + blocked', async ({ page }) => {
+    test('pending + blocked (handle from /me, auto-refresh + Проверить)', async ({ page }) => {
+      // Pending users now have a session; handle/status come from /api/auth/me.
       await seedClient(page, theme);
-      await stubBackend(page, 'anon');
+      await stubBackend(page, 'pending');
 
-      await page.goto('/pending?status=pending&handle=ab12cd34');
+      await page.goto('/pending');
       await expect(page.getByText(/Попроси Сергея/)).toBeVisible();
       await expect(page.getByText('ab12cd34')).toBeVisible();
+      await expect(page.getByText(/Страница обновляется автоматически/)).toBeVisible();
       await expectNoOverflow(page, `pending ${theme}`);
+      if (isMobile(page)) {
+        await expectTapTarget(page.getByRole('button', { name: 'Проверить' }), 'pending refresh');
+      }
+      // Manual re-check keeps a still-pending user on the page.
+      await page.getByRole('button', { name: 'Проверить' }).click();
+      await expect(page.getByText(/Попроси Сергея/)).toBeVisible();
 
-      await page.goto('/pending?status=blocked');
+      // Blocked variant.
+      await stubBackend(page, 'blocked');
+      await page.goto('/pending');
       await expect(page.getByRole('heading', { name: /Доступ отозван/ })).toBeVisible();
       await expectNoOverflow(page, `blocked ${theme}`);
     });
@@ -78,34 +88,39 @@ for (const theme of THEMES) {
       await expectNoOverflow(page, `consent ${theme}`);
     });
 
-    test('wishlist: cards, upvote, add-idea, comments expanded', async ({ page }) => {
+    test('wishlist: cards, upvote, add-idea, comments expanded by default, delete, toggle', async ({ page }) => {
       await seedClient(page, theme);
       await stubBackend(page, 'user');
       await page.goto('/app/wishlist');
 
       await expect(page.getByRole('heading', { name: 'Вишлист', exact: true })).toBeVisible();
       await expect(page.getByText('Тёмная тема для всего')).toBeVisible();
-      await expectNoOverflow(page, `wishlist ${theme}`);
+
+      // Comments show by default now (no click). Same stubbed comments per item.
+      await expect(page.getByText(/Полностью поддерживаю/).first()).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Комментарии' }).first()).toBeVisible();
+      await expectNoOverflow(page, `wishlist (comments expanded) ${theme}`);
+
+      // A standard user sees delete only on their own idea (i3) + own comment (c2).
+      await expect(page.getByRole('button', { name: 'Удалить идею' })).toHaveCount(1);
+      await expect(page.getByRole('button', { name: 'Удалить комментарий' }).first()).toBeVisible();
 
       if (isMobile(page)) {
         await expectTapTarget(page.getByRole('button', { name: 'Голос' }).first(), 'item upvote');
         await expectTapTarget(page.getByRole('button', { name: 'Добавить', exact: true }), 'add-idea submit');
-      }
-
-      // expand comments on the first item (lazy-loaded)
-      await page.getByRole('button', { name: /Комментарии/ }).first().click();
-      await expect(page.getByText(/Полностью поддерживаю/)).toBeVisible();
-      await expect(page.getByRole('heading', { name: 'Комментарии' })).toBeVisible();
-      await expectNoOverflow(page, `wishlist + comments ${theme}`);
-
-      if (isMobile(page)) {
+        await expectTapTarget(page.getByRole('button', { name: 'Удалить идею' }), 'item delete');
         const section = page.locator('.comment-section').first();
         await expectTapTarget(section.getByRole('button', { name: 'Голос' }).first(), 'comment upvote');
-        await expectTapTarget(page.getByRole('button', { name: 'Добавить комментарий' }), 'add-comment submit');
+        await expectTapTarget(page.getByRole('button', { name: 'Добавить комментарий' }).first(), 'add-comment submit');
       }
+
+      // Click-to-toggle: collapsing the first item removes its comments section.
+      const before = await page.locator('.comment-section').count();
+      await page.getByRole('button', { name: /Комментарии/ }).first().click();
+      await expect(page.locator('.comment-section')).toHaveCount(before - 1);
     });
 
-    test('admin: list, actions, superadmin settings switch, tabs', async ({ page }) => {
+    test('admin: list, actions, settings switch, role controls, tabs', async ({ page }) => {
       await seedClient(page, theme);
       await stubBackend(page, 'superadmin');
       await page.goto('/app/admin');
@@ -120,9 +135,16 @@ for (const theme of THEMES) {
         await expectTapTarget(page.getByRole('button', { name: /отозвать доступ/ }).first(), 'admin block');
       }
 
+      // Approved tab → superadmin role controls: promote / demote / superadmin label.
       await page.getByRole('tab', { name: 'Одобрены' }).click();
       await expect(page.getByText('Обычный Юзер')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Сделать админом' }).first()).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Разжаловать' }).first()).toBeVisible();
+      await expect(page.getByText('суперадмин').first()).toBeVisible();
       await expectNoOverflow(page, `admin approved tab ${theme}`);
+      if (isMobile(page)) {
+        await expectTapTarget(page.getByRole('button', { name: 'Сделать админом' }).first(), 'promote button');
+      }
     });
 
     test('app shell: nav drawer + app-bar actions', async ({ page }) => {

@@ -15,19 +15,19 @@ const html = `<!doctype html>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: ${WIDTH}px; height: ${HEIGHT}px; }
   body {
-    background: #0f0a1e;
+    background: #08201b;
     font-family: 'DejaVu Sans', 'Liberation Sans', system-ui, sans-serif;
-    color: #ece6ff;
+    color: #e6fffb;
     overflow: hidden;
     position: relative;
   }
   .glow {
     position: absolute; inset: 0;
-    background: radial-gradient(60% 65% at 50% 38%, rgba(138,92,246,0.45) 0%, rgba(138,92,246,0) 70%);
+    background: radial-gradient(60% 65% at 50% 38%, rgba(45,212,191,0.45) 0%, rgba(45,212,191,0) 70%);
   }
   .frame {
     position: absolute; inset: 24px;
-    border: 2px solid rgba(138,92,246,0.35);
+    border: 2px solid rgba(45,212,191,0.35);
     border-radius: 28px;
   }
   .wrap {
@@ -37,16 +37,16 @@ const html = `<!doctype html>
   }
   .brand {
     font-size: 150px; font-weight: 800; letter-spacing: 2px; line-height: 1;
-    color: #b79cff;
-    text-shadow: 0 0 60px rgba(138,92,246,0.75), 0 0 22px rgba(138,92,246,0.6);
+    color: #5eead4;
+    text-shadow: 0 0 60px rgba(45,212,191,0.75), 0 0 22px rgba(45,212,191,0.6);
   }
   .tagline {
     margin-top: 34px; font-size: 40px; font-weight: 400; line-height: 1.25;
-    color: #d9d0ff; opacity: 0.92; max-width: 900px;
+    color: #c7f5ee; opacity: 0.92; max-width: 900px;
   }
   .footer {
     position: absolute; bottom: 54px; left: 0; right: 0;
-    text-align: center; font-size: 26px; color: #8a5cf6; font-weight: 700; letter-spacing: 1px;
+    text-align: center; font-size: 26px; color: #2dd4bf; font-weight: 700; letter-spacing: 1px;
   }
 </style></head>
 <body>

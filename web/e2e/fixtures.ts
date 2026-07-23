@@ -3,26 +3,31 @@ import type { Page, Route } from '@playwright/test';
 // Realistic backend fixtures + Playwright route interception, so the authed views
 // render without a real backend or VK. The stubbing lives ONLY here in the tests.
 
-export type StubRole = 'user' | 'superadmin' | 'anon';
+export type StubRole = 'user' | 'superadmin' | 'pending' | 'blocked' | 'anon';
 
 // Inline SVG data-uri avatar — "loads" offline so avatar layout is deterministic.
 const AVATAR =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="#8a5cf6"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="#2dd4bf"/></svg>',
   );
 
 // A long unbroken string to prove overflow-wrap works (no spaces, no overflow).
 const LONG_UNBROKEN = 'этооооченьдлинноесловобезпробеловкотороедолжнопереноситьсяаненевызыватьгоризонтальныйскролл';
 
-function account(role: Exclude<StubRole, 'anon'>) {
+// The /me (and login) account for a given stub kind. Now always carries `handle`
+// and a status matching the kind (pending/blocked users have sessions too).
+function account(kind: Exclude<StubRole, 'anon'>) {
+  const role = kind === 'superadmin' ? 'superadmin' : 'user';
+  const status = kind === 'pending' ? 'pending' : kind === 'blocked' ? 'blocked' : 'approved';
   return {
     id: 'me-1',
-    display_name: role === 'superadmin' ? 'Сергей Зобнин' : 'Тест Пользователь',
+    display_name: kind === 'superadmin' ? 'Сергей Зобнин' : 'Тест Пользователь',
     avatar_url: AVATAR,
     vk_url: 'https://vk.com/id1',
     role,
-    status: 'approved',
+    status,
+    handle: 'ab12cd34',
   };
 }
 
@@ -144,6 +149,16 @@ function accountsByStatus(status: string) {
       status,
       created_at: '2026-07-17T10:00:00Z',
     },
+    {
+      id: 'a4',
+      handle: '55554444',
+      display_name: 'Сам Суперадмин',
+      avatar_url: AVATAR,
+      vk_url: 'https://vk.com/id1004',
+      role: 'superadmin',
+      status,
+      created_at: '2026-07-16T10:00:00Z',
+    },
   ];
   return base;
 }
@@ -170,6 +185,10 @@ export async function stubBackend(page: Page, role: StubRole = 'user'): Promise<
       return json(200, { account: account(role) });
     }
     if (path === '/api/auth/vk/state' && method === 'GET') return json(200, { state: 'x' });
+    if (path === '/api/auth/vk/callback' && method === 'POST') {
+      const acc = account(role === 'anon' ? 'user' : role);
+      return json(200, { status: acc.status, account: acc });
+    }
     if (path === '/api/auth/logout') return noContent();
 
     // --- wishlist ---
@@ -206,13 +225,16 @@ export async function stubBackend(page: Page, role: StubRole = 'user'): Promise<
     }
     if (/^\/api\/wishlist\/items\/[^/]+\/vote$/.test(path)) return noContent();
     if (/^\/api\/wishlist\/comments\/[^/]+\/vote$/.test(path)) return noContent();
+    // delete an idea / a comment (no trailing segment) -> 204
+    if (/^\/api\/wishlist\/items\/[^/]+$/.test(path) && method === 'DELETE') return noContent();
+    if (/^\/api\/wishlist\/comments\/[^/]+$/.test(path) && method === 'DELETE') return noContent();
 
     // --- admin ---
     if (path === '/api/admin/accounts' && method === 'GET') {
       const status = url.searchParams.get('status') ?? 'pending';
       return json(200, { accounts: accountsByStatus(status) });
     }
-    if (/^\/api\/admin\/accounts\/[^/]+\/(approve|block|promote)$/.test(path)) return noContent();
+    if (/^\/api\/admin\/accounts\/[^/]+\/(approve|block|promote|demote)$/.test(path)) return noContent();
     if (path === '/api/admin/settings' && method === 'GET') {
       return json(200, { open_registration: false });
     }

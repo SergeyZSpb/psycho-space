@@ -6,8 +6,8 @@ export const VK_APP_ID = 54691267;
 // Consent version recorded on login (152-ФЗ). Bump when the consent text changes.
 export const CONSENT_VERSION = 'v1';
 
-// Brand accent (purple-ish). Kept in sync with the Vuetify theme primary color.
-export const BRAND_ACCENT = '#8a5cf6';
+// Brand accent (teal). Kept in sync with the Vuetify dark-theme primary color.
+export const BRAND_ACCENT = '#2dd4bf';
 
 // localStorage keys.
 export const LS_THEME = 'ps-theme';

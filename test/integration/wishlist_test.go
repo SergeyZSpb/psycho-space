@@ -228,6 +228,94 @@ func TestOpenRegistration(t *testing.T) {
 	}
 }
 
+func TestDeleteItemAndComment(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	app := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app.Close()
+
+	author := loginAs(t, app.URL, "5001", "user")
+	other := loginAs(t, app.URL, "5002", "user")
+	admin := loginAs(t, app.URL, "5003", "admin")
+
+	_, item := doJSON(t, author, http.MethodPost, app.URL+"/api/wishlist/items", map[string]string{"title": "удали меня"})
+	itemID := item["id"].(string)
+	_, c := doJSON(t, author, http.MethodPost, app.URL+"/api/wishlist/items/"+itemID+"/comments", map[string]string{"body": "коммент"})
+	commentID := c["id"].(string)
+
+	// A different standard user cannot delete someone else's comment or item.
+	if s, _ := doJSON(t, other, http.MethodDelete, app.URL+"/api/wishlist/comments/"+commentID, nil); s != http.StatusForbidden {
+		t.Fatalf("other delete comment: want 403, got %d", s)
+	}
+	if s, _ := doJSON(t, other, http.MethodDelete, app.URL+"/api/wishlist/items/"+itemID, nil); s != http.StatusForbidden {
+		t.Fatalf("other delete item: want 403, got %d", s)
+	}
+
+	// An admin can delete any comment.
+	if s, _ := doJSON(t, admin, http.MethodDelete, app.URL+"/api/wishlist/comments/"+commentID, nil); s != http.StatusNoContent {
+		t.Fatalf("admin delete comment: %d", s)
+	}
+	if cs := listComments(t, author, app.URL, itemID); len(cs) != 0 {
+		t.Fatalf("comment still present after delete: %v", cs)
+	}
+
+	// The author can delete their own item; then it's gone and re-delete is 404.
+	if s, _ := doJSON(t, author, http.MethodDelete, app.URL+"/api/wishlist/items/"+itemID, nil); s != http.StatusNoContent {
+		t.Fatalf("author delete item: %d", s)
+	}
+	for _, it := range listItems(t, author, app.URL) {
+		if it["id"] == itemID {
+			t.Fatalf("item still listed after delete")
+		}
+	}
+	if s, _ := doJSON(t, author, http.MethodDelete, app.URL+"/api/wishlist/items/"+itemID, nil); s != http.StatusNotFound {
+		t.Fatalf("re-delete item: want 404, got %d", s)
+	}
+}
+
+func TestSuperadminUnrevokableAndDemote(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	app := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app.Close()
+
+	s1 := loginAs(t, app.URL, "6001", "superadmin")
+	loginAs(t, app.URL, "6002", "superadmin")
+	id2 := accountIDByUID(t, "6002")
+
+	// A superadmin is unrevokable — even another superadmin can't block them.
+	if s, body := doJSON(t, s1, http.MethodPost, app.URL+"/api/admin/accounts/"+id2+"/block", nil); s != http.StatusForbidden || body["error"] != "cannot_block_superadmin" {
+		t.Fatalf("block superadmin: status=%d body=%v; want 403 cannot_block_superadmin", s, body)
+	}
+
+	// Promote a user to admin, then demote back to user.
+	loginAs(t, app.URL, "6003", "user")
+	id3 := accountIDByUID(t, "6003")
+	if s, _ := doJSON(t, s1, http.MethodPost, app.URL+"/api/admin/accounts/"+id3+"/promote", nil); s != http.StatusNoContent {
+		t.Fatalf("promote: %d", s)
+	}
+	if r := roleOf(t, id3); r != "admin" {
+		t.Fatalf("after promote role=%q", r)
+	}
+	if s, _ := doJSON(t, s1, http.MethodPost, app.URL+"/api/admin/accounts/"+id3+"/demote", nil); s != http.StatusNoContent {
+		t.Fatalf("demote: %d", s)
+	}
+	if r := roleOf(t, id3); r != "user" {
+		t.Fatalf("after demote role=%q", r)
+	}
+
+	// A superadmin cannot be demoted.
+	if s, body := doJSON(t, s1, http.MethodPost, app.URL+"/api/admin/accounts/"+id2+"/demote", nil); s != http.StatusForbidden || body["error"] != "cannot_modify_superadmin" {
+		t.Fatalf("demote superadmin: status=%d body=%v; want 403 cannot_modify_superadmin", s, body)
+	}
+
+	// A regular admin cannot demote (route is superadmin-only).
+	admin := loginAs(t, app.URL, "6004", "admin")
+	if s, _ := doJSON(t, admin, http.MethodPost, app.URL+"/api/admin/accounts/"+id3+"/demote", nil); s != http.StatusForbidden {
+		t.Fatalf("admin demote: want 403, got %d", s)
+	}
+}
+
 func listComments(t *testing.T, cli *http.Client, base, itemID string) []map[string]any {
 	t.Helper()
 	resp, err := cli.Get(base + "/api/wishlist/items/" + itemID + "/comments")

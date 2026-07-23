@@ -133,11 +133,9 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	clearCookie(w, vkStateCookie, s.d.Config.CookieSecure())
 
-	if !acc.IsApproved() {
-		writeJSON(w, http.StatusOK, map[string]any{"status": acc.Status, "handle": acc.Handle})
-		return
-	}
-
+	// Always issue a session — even for pending/blocked — so the client can poll
+	// /api/auth/me and proceed the moment an admin approves, without re-running
+	// the VK flow. requireAuth still gates resource access on approval.
 	raw, err := s.d.Sessions.Create(ctx, acc.ID)
 	if err != nil {
 		slog.ErrorContext(ctx, "session create failed", "err", err)
@@ -145,7 +143,7 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.d.Sessions.SetCookie(w, raw)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "approved", "account": publicAccount(acc)})
+	writeJSON(w, http.StatusOK, map[string]any{"status": acc.Status, "account": publicAccount(acc)})
 }
 
 // handleMe returns the current account, or 401.
@@ -192,6 +190,7 @@ func publicAccount(a *account.Account) map[string]any {
 		"vk_url":       a.VKURL(),
 		"role":         a.Role,
 		"status":       a.Status,
+		"handle":       a.Handle, // shown on the pending screen; harmless elsewhere
 	}
 }
 

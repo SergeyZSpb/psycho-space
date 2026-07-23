@@ -41,6 +41,28 @@ deploy/     systemd unit, nginx conf, psycho-deploy + make-superadmin helpers
 docs/RUNBOOK.md   debugging/ops (ssh, logs, db, nginx, cert, admin bootstrap)
 ```
 
+## Architecture & flows (orientation for a new session)
+
+**Request path:** Browser → nginx (TLS/certbot, security headers, CSP) → the Go binary on `127.0.0.1:8080` (serves the embedded SPA **and** `/api`) → `pgxpool` → PostgreSQL. One binary, one box, systemd. The frontend is not separately hosted.
+
+**Auth / accounts.** VK ID *confidential backend code-exchange*: the SPA does OneTap + PKCE, POSTs `{code, device_id, state, code_verifier, consent_version}` to `/api/auth/vk/callback`; the backend exchanges the code at `id.vk.ru` (with `service_token`), fetches `user_info`, upserts the account (profile fields AES-256-GCM encrypted; lookup via `HMAC-SHA256(vk_user_id)` blind index; VK tokens discarded), and **always issues an httpOnly session cookie — even for pending/blocked** so the SPA can poll `/api/auth/me` and proceed the instant an admin approves. `requireAuth` still gates resources on `status == approved`.
+
+**Roles & allowlist.** `user < admin < superadmin`. The **superadmin** (created once via `make-superadmin`) is the only role that can **promote/demote** admins; **admins** approve (accept) and **block (revoke → sessions killed)**; the superadmin is **unrevokable** (can't be blocked). **Open-registration** is a superadmin toggle (`app_settings.open_registration`) that auto-approves new users as `user`.
+
+**Wishlist.** Items and comments are both **upvotable** (toggle, retractable). Author-or-admin may **delete** either (soft delete). Item list carries `comment_count`.
+
+**Errors & tracing.** Every non-2xx returns `{error: "<code>", trace_id}` (never `err.Error()`), and every response sets `X-Trace-Id`. OpenTelemetry always generates spans/trace-ids; export is opt-in (`PSYCHOSPACE_OTLP_ENDPOINT`). The SPA shows a copyable trace_id error modal.
+
+**API map** (all under `/api`, session-cookie auth):
+- `auth`: `GET vk/state`, `POST vk/callback`, `GET me`, `POST logout`.
+- `wishlist` (approved): `GET/POST items`, `DELETE items/{id}`, `POST/DELETE items/{id}/vote`, `GET/POST items/{id}/comments`, `DELETE comments/{id}`, `POST/DELETE comments/{id}/vote`.
+- `admin` (admin+): `GET accounts?status=`, `POST accounts/{id}/{approve,block}`; superadmin-only: `{promote,demote}`, `GET settings`, `PUT settings/open-registration`.
+- Rate limits: 30/min per IP on the VK login endpoints, 240/min blanket on `/api`.
+
+**Data model** (`migrations/`, forward-only): `accounts` (blind-index `vk_user_ref`, `*_enc` fields, role/status, consent), `sessions` (`token_hash` = keyed HMAC, `expires_at`), `wishlist_items`, `wishlist_votes`, `wishlist_comments`, `wishlist_comment_votes`, `app_settings`.
+
+**Adding a feature:** new package under `internal/<domain>/` (`repository.go` interface + `postgres_repository.go` + `service.go` + `errors.go`), a `NNN_*.sql` migration, wire it into `main.go` DI + `httpapi.Deps` + routes, and extend `test/integration/`.
+
 ## Conventions
 
 **Go / service design**
@@ -74,7 +96,7 @@ docs/RUNBOOK.md   debugging/ops (ssh, logs, db, nginx, cert, admin bootstrap)
 - Set a git identity appropriate to you before committing (`git config user.name/user.email`).
 - Push over HTTPS with a personal access token; don't persist the token in `.git/config` — push via an inline `https://x-access-token:$TOKEN@github.com/...` URL.
 - **Conventional Commits:** `<type>(<scope>): <subject>` — types `feat|fix|refactor|perf|test|docs|chore|build|ci|style|revert`. Imperative, ≤72 chars, no trailing period. Explain the *why* in the body for non-trivial changes.
-- **Feature branch → PR** for changes; CI must be green before merge. (Solo maintainer may self-merge once CI passes.) The scaffold/bootstrap commit lands on `main` directly.
+- **Push directly to `main`** (single maintainer). `main` auto-deploys, so every push goes to prod — the mandatory pre-commit gate + the deploy job's full test suite are the safety net. Feature branches + PRs are optional (use one only when you want to stage/review something before it deploys).
 - **Pre-commit hook is mandatory and never bypassed** (`--no-verify` is forbidden). It runs `./dev.sh pre-commit` = build → lint → unit → web → integration. `dev.sh` self-heals `core.hooksPath` on every run. If a check fails, fix the cause — never skip.
 
 **Tests are a deliverable**
@@ -98,11 +120,11 @@ For each work item:
 2. **Branch** — `<type>-short-slug` off an up-to-date `main`; implement in small, reviewable slices.
 3. **Extend the test base** — unit tests for the changed logic **and** a testcontainers integration test when there's an end-to-end path (see *Tests are a deliverable*).
 4. **Gate** — `./dev.sh pre-commit` must pass (build → lint → unit → web → integration). Never `--no-verify`; fix the cause.
-5. **Commit + push** — Conventional Commits. Open a PR for review-gated changes; scaffold/docs may land on `main` directly.
-6. **Watch CI to completion — don't fire-and-forget.** A **feature/PR branch** runs `ci.yml` (tests only, no deploy) — watch it to green and fix any red job at the root before merging. When the change lands on **`main`**, it **auto-deploys** (`deploy.yml`) — watch that run to green too, then verify the deploy (health check / the behaviour you changed). A red deploy means prod is stale; treat it as unfinished work.
+5. **Commit + push to `main`** — Conventional Commits. This deploys, so only push a green, verified change.
+6. **Watch the deploy to completion — don't fire-and-forget.** Pushing to `main` triggers `deploy.yml` (runs the full suite, then ships over SSH). Watch that run to green, then verify (health check / the behaviour you changed). A red deploy means prod is stale — treat it as unfinished work.
 7. **Write back** — fold durable decisions into the living doc; update this file if a convention changed.
 
-**Branch → CI → deploy model:** feature/PR branches = `ci.yml` (build · lint · unit · web · integration), **no deploy**. `main` = `deploy.yml` (same tests, then auto-deploy over SSH). So merging to `main` *is* the deploy trigger — only merge a green, verified change.
+**CI vs deploy:** `main` = `deploy.yml` (build · lint · unit · web · integration, then auto-deploy over SSH) — the normal path. Any non-`main` branch/PR = `ci.yml` (same tests, no deploy) — only if you deliberately want to stage something before it deploys.
 
 ## Completion protocol (Definition of Done)
 
@@ -112,8 +134,8 @@ Close a work item with a compact checklist — mark each **✅ done · ⏭️ sk
 |------|--------|
 | Requirements grounded (living doc read) | |
 | Test base extended — unit + integration (or stated reason) | |
-| `./dev.sh pre-commit` green · **PR CI watched to green** | |
-| Merged to `main` → **auto-deploy watched to green + verified** *(or noted as an owner action)* | |
+| `./dev.sh pre-commit` green | |
+| Pushed to `main` → **auto-deploy watched to green + verified** *(or noted as an owner action)* | |
 | Living doc current to as-built; LLM-continuation block updated | |
 | Secrets/PII posture respected — nothing sensitive committed | |
 

@@ -90,7 +90,7 @@ onBeforeUnmount(() => cleanup?.());
   font-weight: 800;
   letter-spacing: 1px;
   color: rgb(var(--v-theme-primary));
-  text-shadow: 0 0 28px rgba(138, 92, 246, 0.45);
+  text-shadow: 0 0 28px rgba(45, 212, 191, 0.45);
 }
 .hero-cringe {
   max-width: 640px;

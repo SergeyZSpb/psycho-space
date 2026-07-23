@@ -49,4 +49,5 @@ var (
 	ErrEmptyTitle      = errors.New("wishlist: title required")
 	ErrEmptyComment    = errors.New("wishlist: comment body required")
 	ErrTooLong         = errors.New("wishlist: field too long")
+	ErrForbidden       = errors.New("wishlist: not allowed")
 )

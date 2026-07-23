@@ -2,8 +2,10 @@ package wishlist
 
 import (
 	"context"
+	"errors"
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
+	"github.com/jackc/pgx/v5"
 )
 
 // PostgresRepository is the pgx-backed Repository.
@@ -103,6 +105,40 @@ func (PostgresRepository) AddCommentVote(ctx context.Context, q db.DBTX, comment
 func (PostgresRepository) RemoveCommentVote(ctx context.Context, q db.DBTX, commentID, accountID string) error {
 	_, err := q.Exec(ctx,
 		`DELETE FROM wishlist_comment_votes WHERE comment_id = $1::uuid AND account_id = $2::uuid`, commentID, accountID)
+	return err
+}
+
+func (PostgresRepository) ItemAuthor(ctx context.Context, q db.DBTX, itemID string) (string, error) {
+	var author string
+	err := q.QueryRow(ctx,
+		`SELECT account_id::text FROM wishlist_items WHERE id = $1::uuid AND deleted_at IS NULL`, itemID,
+	).Scan(&author)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return author, err
+}
+
+func (PostgresRepository) SoftDeleteItem(ctx context.Context, q db.DBTX, itemID string) error {
+	_, err := q.Exec(ctx,
+		`UPDATE wishlist_items SET deleted_at = now(), updated_at = now() WHERE id = $1::uuid AND deleted_at IS NULL`, itemID)
+	return err
+}
+
+func (PostgresRepository) CommentAuthor(ctx context.Context, q db.DBTX, commentID string) (string, error) {
+	var author string
+	err := q.QueryRow(ctx,
+		`SELECT account_id::text FROM wishlist_comments WHERE id = $1::uuid AND deleted_at IS NULL`, commentID,
+	).Scan(&author)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrCommentNotFound
+	}
+	return author, err
+}
+
+func (PostgresRepository) SoftDeleteComment(ctx context.Context, q db.DBTX, commentID string) error {
+	_, err := q.Exec(ctx,
+		`UPDATE wishlist_comments SET deleted_at = now(), updated_at = now() WHERE id = $1::uuid AND deleted_at IS NULL`, commentID)
 	return err
 }
 

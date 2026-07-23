@@ -31,18 +31,31 @@
                   variant="text"
                   size="small"
                   :title="copied ? 'Скопировано' : 'Скопировать код'"
+                  aria-label="Скопировать код"
                   @click="copyHandle"
                 />
               </div>
-              <p v-else class="text-caption text-disabled">
-                (код не передан — вернись на главную и войди заново)
-              </p>
             </template>
 
+            <p class="text-caption text-medium-emphasis mt-4 d-flex align-center justify-center ga-2">
+              <v-progress-circular indeterminate size="14" width="2" />
+              Страница обновляется автоматически
+            </p>
+
             <v-divider class="my-5" />
-            <v-btn variant="text" color="primary" :to="{ name: 'landing' }">
-              На главную
-            </v-btn>
+
+            <div class="d-flex flex-wrap justify-center ga-2">
+              <v-btn
+                color="primary"
+                variant="tonal"
+                prepend-icon="mdi-refresh"
+                :loading="checking"
+                @click="check"
+              >
+                Проверить
+              </v-btn>
+              <v-btn variant="text" color="primary" @click="signOut">На главную</v-btn>
+            </div>
           </v-card>
         </v-col>
       </v-row>
@@ -51,19 +64,44 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { useRoute } from 'vue-router';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import PublicLayout from '../components/layout/PublicLayout.vue';
+import { useAuthStore } from '../stores/auth';
 
-const route = useRoute();
+const POLL_MS = 7000;
 
-const handle = computed(() => {
-  const h = route.query.handle;
-  return Array.isArray(h) ? (h[0] ?? '') : (h ?? '');
-});
-const isBlocked = computed(() => route.query.status === 'blocked');
+const auth = useAuthStore();
+const router = useRouter();
 
+const handle = computed(() => auth.account?.handle ?? '');
+const isBlocked = computed(() => auth.account?.status === 'blocked');
+
+const checking = ref(false);
 const copied = ref(false);
+let timer: ReturnType<typeof setInterval> | undefined;
+
+// Re-check status: approved -> app, signed-out (401) -> landing, else stay.
+async function check() {
+  if (checking.value) return;
+  checking.value = true;
+  try {
+    const acc = await auth.refresh();
+    if (!acc) {
+      await router.push({ name: 'landing' });
+    } else if (acc.status === 'approved') {
+      await router.push({ name: 'wishlist' });
+    }
+  } finally {
+    checking.value = false;
+  }
+}
+
+async function signOut() {
+  await auth.logout();
+  await router.push({ name: 'landing' });
+}
+
 async function copyHandle() {
   if (!handle.value) return;
   try {
@@ -74,6 +112,13 @@ async function copyHandle() {
     /* clipboard blocked — the code is visible to copy by hand */
   }
 }
+
+onMounted(() => {
+  timer = setInterval(check, POLL_MS);
+});
+onUnmounted(() => {
+  if (timer) clearInterval(timer);
+});
 </script>
 
 <style scoped>
@@ -84,7 +129,7 @@ async function copyHandle() {
   letter-spacing: 2px;
   padding: 8px 16px;
   border-radius: 10px;
-  background: rgba(138, 92, 246, 0.14);
+  background: rgba(45, 212, 191, 0.14);
   color: rgb(var(--v-theme-primary));
   user-select: all;
 }

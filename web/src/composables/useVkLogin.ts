@@ -57,15 +57,14 @@ export function useVkLogin() {
       consent_version: CONSENT_VERSION,
     });
 
-    if (result.status === 'approved') {
-      auth.setAccount(result.account);
+    // The backend always returns the account + sets a session cookie now; route
+    // by status. Pending/blocked users have a session and read their handle from
+    // /me on the pending screen.
+    auth.setAccount(result.account);
+    if (result.account.status === 'approved') {
       await router.push({ name: 'wishlist' });
     } else {
-      // pending | blocked — the handle is shown on the pending screen.
-      await router.push({
-        name: 'pending',
-        query: { status: result.status, handle: result.handle },
-      });
+      await router.push({ name: 'pending' });
     }
   }
 

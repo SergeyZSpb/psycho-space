@@ -41,4 +41,5 @@ type Repository interface {
 	ListByStatus(ctx context.Context, q db.DBTX, status string) ([]encRow, error)
 	SetStatus(ctx context.Context, q db.DBTX, id, status string) error
 	Promote(ctx context.Context, q db.DBTX, id string) error
+	Demote(ctx context.Context, q db.DBTX, id string) error
 }

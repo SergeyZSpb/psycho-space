@@ -47,6 +47,13 @@ export const wishlistApi = {
 
   unvote: (id: string) => apiFetch<void>(`/api/wishlist/items/${id}/vote`, { method: 'DELETE' }),
 
+  // Delete an idea — 204 | 403 forbidden | 404 not_found. Author or admin.
+  deleteItem: (id: string) => apiFetch<void>(`/api/wishlist/items/${id}`, { method: 'DELETE' }),
+
+  // Delete a comment — same semantics as deleteItem.
+  deleteComment: (id: string) =>
+    apiFetch<void>(`/api/wishlist/comments/${id}`, { method: 'DELETE' }),
+
   // Comments — pre-sorted top-voted first by the backend.
   comments: (itemId: string) =>
     apiFetch<{ comments: WishlistComment[] }>(`/api/wishlist/items/${itemId}/comments`),
@@ -78,6 +85,9 @@ export const adminApi = {
 
   // Any admin may read the settings.
   settings: () => apiFetch<AdminSettings>('/api/admin/settings'),
+
+  // superadmin-only; 403 otherwise.
+  demote: (id: string) => apiFetch<void>(`/api/admin/accounts/${id}/demote`, { method: 'POST' }),
 
   // superadmin-only; 403 otherwise. Returns the applied state.
   setOpenRegistration: (enabled: boolean) =>

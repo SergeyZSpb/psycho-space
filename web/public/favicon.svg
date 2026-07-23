@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="психоспасе">
   <defs>
     <radialGradient id="glow" cx="50%" cy="42%" r="65%">
-      <stop offset="0%" stop-color="#8a5cf6" stop-opacity="0.55" />
-      <stop offset="100%" stop-color="#8a5cf6" stop-opacity="0" />
+      <stop offset="0%" stop-color="#2dd4bf" stop-opacity="0.55" />
+      <stop offset="100%" stop-color="#2dd4bf" stop-opacity="0" />
     </radialGradient>
   </defs>
-  <rect width="64" height="64" rx="14" fill="#0f0a1e" />
+  <rect width="64" height="64" rx="14" fill="#0b1513" />
   <rect width="64" height="64" rx="14" fill="url(#glow)" />
   <text
     x="50%"
@@ -15,6 +15,6 @@
     font-family="'Segoe UI', Roboto, system-ui, sans-serif"
     font-size="30"
     font-weight="800"
-    fill="#a879ff"
+    fill="#5eead4"
   >пс</text>
 </svg>

@@ -172,6 +172,16 @@ func accountIDByUID(t *testing.T, uid string) string {
 	return id
 }
 
+// roleOf reads an account's current role.
+func roleOf(t *testing.T, id string) string {
+	t.Helper()
+	var role string
+	if err := pool.QueryRow(context.Background(), `SELECT role FROM accounts WHERE id = $1::uuid`, id).Scan(&role); err != nil {
+		t.Fatalf("roleOf: %v", err)
+	}
+	return role
+}
+
 // setRoleStatus sets role+status directly (mirrors the bootstrap superadmin script).
 func setRoleStatus(t *testing.T, id, role, status string) {
 	t.Helper()

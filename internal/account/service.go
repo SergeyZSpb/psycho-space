@@ -113,6 +113,11 @@ func (s *Service) Promote(ctx context.Context, id string) error {
 	return s.repo.Promote(ctx, s.q, id)
 }
 
+// Demote returns an account to the standard user role.
+func (s *Service) Demote(ctx context.Context, id string) error {
+	return s.repo.Demote(ctx, s.q, id)
+}
+
 func (s *Service) encOptional(v string) ([]byte, error) {
 	if v == "" {
 		return nil, nil

@@ -92,6 +92,11 @@ func (s *Server) adminSetStatus(w http.ResponseWriter, r *http.Request, status s
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
+	// The superadmin is unrevokable: nobody can block them.
+	if status == account.StatusBlocked && target.IsSuperadmin() {
+		writeError(w, r, http.StatusForbidden, "cannot_block_superadmin")
+		return
+	}
 	// Guard against privilege issues: only a superadmin may modify admins/superadmins.
 	if target.IsAdmin() && !actor.IsSuperadmin() {
 		writeError(w, r, http.StatusForbidden, "forbidden")
@@ -132,6 +137,34 @@ func (s *Server) handleAdminPromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.d.Accounts.Promote(r.Context(), id); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminDemote returns an admin to the standard user role. Route is gated to
+// superadmin only; the superadmin themselves cannot be demoted (unrevokable).
+func (s *Server) handleAdminDemote(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validUUID(id) {
+		writeError(w, r, http.StatusBadRequest, "bad_request")
+		return
+	}
+	target, err := s.d.Accounts.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, account.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "not_found")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+	if target.IsSuperadmin() {
+		writeError(w, r, http.StatusForbidden, "cannot_modify_superadmin")
+		return
+	}
+	if err := s.d.Accounts.Demote(r.Context(), id); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
