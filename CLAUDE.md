@@ -57,8 +57,8 @@ docs/RUNBOOK.md   debugging/ops (ssh, logs, db, nginx, cert, admin bootstrap)
 - Consent (152-ФЗ) is captured before any PD processing: the VK widget is gated behind an explicit consent checkbox; `consent_at`/`consent_version` are recorded.
 
 **Git & workflow**
-- Git identity for this repo: **`SergeyZSpb` / `sergei.s.zobnin@gmail.com`** (set with `git config user.name/user.email`; do not use any other identity).
-- Push auth uses the `GITHUB_PSYCHOSPACE_PAT` env var (read-write). Do not persist the token in `.git/config` — push via an inline `https://x-access-token:$TOKEN@github.com/...` URL.
+- Set a git identity appropriate to you before committing (`git config user.name/user.email`).
+- Push over HTTPS with a personal access token; don't persist the token in `.git/config` — push via an inline `https://x-access-token:$TOKEN@github.com/...` URL.
 - **Conventional Commits:** `<type>(<scope>): <subject>` — types `feat|fix|refactor|perf|test|docs|chore|build|ci|style|revert`. Imperative, ≤72 chars, no trailing period. Explain the *why* in the body for non-trivial changes.
 - **Feature branch → PR** for changes; CI must be green before merge. (Solo maintainer may self-merge once CI passes.) The scaffold/bootstrap commit lands on `main` directly.
 - **Pre-commit hook is mandatory and never bypassed** (`--no-verify` is forbidden). It runs `./dev.sh pre-commit` = build → lint → unit → web → integration. `dev.sh` self-heals `core.hooksPath` on every run. If a check fails, fix the cause — never skip.

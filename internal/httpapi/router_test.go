@@ -17,8 +17,9 @@ func testWebFS() fs.FS {
 }
 
 func newTestHandler() http.Handler {
-	// nil pool: /healthz tolerates it; we don't exercise DB here.
-	return NewServer(nil, testWebFS()).Handler()
+	// nil pool/services: /healthz tolerates nil pool; these tests only exercise
+	// ping and the SPA fallback.
+	return NewServer(Deps{WebFS: testWebFS()}).Handler()
 }
 
 func TestPing(t *testing.T) {

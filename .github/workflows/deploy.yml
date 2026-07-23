@@ -121,11 +121,11 @@ jobs:
             psycho-space app.env \
             deploy/systemd/psycho-space.service \
             deploy/nginx/psycho-space.conf \
-            deploy/psycho-deploy.sh deploy/make-admin.sh \
+            deploy/psycho-deploy.sh deploy/make-superadmin.sh \
             "$SSH_USER@$HOST:/tmp/psycho-deploy/"
           ssh -i ~/.ssh/id -p "$PORT" "$SSH_USER@$HOST" 'set -e
-            sudo install -m0755 /tmp/psycho-deploy/psycho-deploy.sh /usr/local/bin/psycho-deploy
-            sudo install -m0755 /tmp/psycho-deploy/make-admin.sh    /usr/local/bin/make-admin
+            sudo install -m0755 /tmp/psycho-deploy/psycho-deploy.sh     /usr/local/bin/psycho-deploy
+            sudo install -m0755 /tmp/psycho-deploy/make-superadmin.sh   /usr/local/bin/make-superadmin
             sudo psycho-deploy'
 
       - name: External health gate

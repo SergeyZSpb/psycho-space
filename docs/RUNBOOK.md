@@ -87,19 +87,21 @@ psql "postgres://psychospace:<POSTGRES_PASSWORD>@127.0.0.1:5433/psychospace?sslm
 
 Treat everything you pull this way as confidential; profile columns are ciphertext regardless.
 
-## Admin bootstrap (first login)
+## Superadmin bootstrap (first login)
+
+The **superadmin** is created once via script; only the superadmin can promote other users to **admin** in-app (admins can approve/revoke but not mint admins).
 
 1. Owner logs in via VK once → sees a **pending** screen with a short code (the first 8 hex of their `vk_user_ref`).
-2. Promote that account to admin + approved:
+2. Promote that account to superadmin + approved:
 
 ```bash
-ssh psycho 'sudo /usr/local/bin/make-admin <handle>'     # deployed helper, or the SQL directly:
+ssh psycho 'sudo /usr/local/bin/make-superadmin <handle>'   # deployed helper, or the SQL directly:
 ssh psycho "sudo -u postgres psql psychospace -c \
-  \"UPDATE accounts SET role='admin', status='approved', updated_at=now() \
+  \"UPDATE accounts SET role='superadmin', status='approved', updated_at=now() \
     WHERE encode(vk_user_ref,'hex') LIKE '<handle>%';\""
 ```
 
-3. Reload the app — the owner now has the admin page to approve everyone else.
+3. Reload the app — the owner now has the admin page to approve people and promote admins.
 
 ## nginx & TLS
 

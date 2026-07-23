@@ -77,9 +77,9 @@ install -d -m 750 -o psychospace -g psychospace /var/log/psycho-space
 install -d -m 755 -o root       -g root       /var/www/certbot
 
 # --- privileged helpers (from the public repo) ------------------------------
-curl -fsSL "$REPO_RAW/deploy/psycho-deploy.sh" -o /usr/local/bin/psycho-deploy
-curl -fsSL "$REPO_RAW/deploy/make-admin.sh"    -o /usr/local/bin/make-admin
-chmod 755 /usr/local/bin/psycho-deploy /usr/local/bin/make-admin
+curl -fsSL "$REPO_RAW/deploy/psycho-deploy.sh"   -o /usr/local/bin/psycho-deploy
+curl -fsSL "$REPO_RAW/deploy/make-superadmin.sh" -o /usr/local/bin/make-superadmin
+chmod 755 /usr/local/bin/psycho-deploy /usr/local/bin/make-superadmin
 
 # --- systemd unit -----------------------------------------------------------
 curl -fsSL "$REPO_RAW/deploy/systemd/psycho-space.service" -o /etc/systemd/system/psycho-space.service

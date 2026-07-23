@@ -13,10 +13,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/config"
+	"github.com/SergeyZSpb/psycho-space/internal/crypto"
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/logging"
+	"github.com/SergeyZSpb/psycho-space/internal/session"
+	"github.com/SergeyZSpb/psycho-space/internal/vk"
 	"github.com/SergeyZSpb/psycho-space/internal/web"
 	"github.com/SergeyZSpb/psycho-space/migrations"
 )
@@ -40,7 +44,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := httpapi.NewServer(pool, web.DistFS())
+	// Crypto + domain wiring.
+	enc, err := crypto.NewEncryptor(cfg.EncKey)
+	if err != nil {
+		slog.Error("encryptor init failed", "err", err)
+		os.Exit(1)
+	}
+	bi, err := crypto.NewBlindIndexer(cfg.HMACKey)
+	if err != nil {
+		slog.Error("blind indexer init failed", "err", err)
+		os.Exit(1)
+	}
+	accounts := account.NewService(pool, account.NewPostgresRepository(), enc, bi)
+	sessions := session.NewManager(pool, cfg.SessionKey, cfg.SessionTTL, cfg.CookieSecure())
+	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
+
+	srv := httpapi.NewServer(httpapi.Deps{
+		Config:   cfg,
+		Pool:     pool,
+		WebFS:    web.DistFS(),
+		VK:       vkClient,
+		Accounts: accounts,
+		Sessions: sessions,
+	})
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           srv.Handler(),

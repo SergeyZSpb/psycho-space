@@ -10,7 +10,8 @@ CREATE TABLE accounts (
     first_name_enc  bytea,
     last_name_enc   bytea,
     avatar_url_enc  bytea,
-    role            text NOT NULL DEFAULT 'user'    CHECK (role   IN ('user', 'admin')),
+    -- superadmin (bootstrap via script) can promote admins; admin can approve/revoke.
+    role            text NOT NULL DEFAULT 'user'    CHECK (role   IN ('user', 'admin', 'superadmin')),
     status          text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'blocked')),
     last_login_at   timestamptz,
     -- 152-ФЗ consent audit trail.
