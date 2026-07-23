@@ -1,0 +1,27 @@
+[Unit]
+Description=psycho-space app
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+User=psychospace
+Group=psychospace
+EnvironmentFile=/etc/psycho-space/app.env
+ExecStart=/opt/psycho-space/psycho-space
+Restart=always
+RestartSec=2
+
+# Hardening — the app binds 127.0.0.1:8080 (unprivileged) and only writes logs.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/psycho-space
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

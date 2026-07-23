@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: build
+        run: ./dev.sh build
+      - name: lint
+        run: ./dev.sh lint
+      - name: unit tests
+        run: ./dev.sh test
+      - name: web (type-check + unit)
+        run: ./dev.sh web
+      - name: integration tests (testcontainers)
+        run: ./dev.sh integration

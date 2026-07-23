@@ -1,0 +1,139 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Build frontend into embed dir (if present)
+        run: |
+          if [ -f web/package.json ]; then
+            ( cd web && npm ci --no-audit --no-fund && npm run build )
+          else
+            echo "no web/ yet — embedding placeholder"
+          fi
+
+      - name: Web checks (if present)
+        run: ./dev.sh web
+
+      - name: Unit + integration tests
+        run: |
+          ./dev.sh test
+          ./dev.sh integration
+
+      - name: Build linux binary (embeds SPA + migrations)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o psycho-space ./cmd/psycho-space
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: psycho-space-binary
+          path: psycho-space
+          retention-days: 5
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: psycho-space-binary
+
+      # Until the server is provisioned and prod secrets are set, skip deploy
+      # cleanly instead of failing the run.
+      - name: Guard on secrets
+        id: guard
+        env:
+          HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -n "$HOST" ] && [ -n "$KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Deploy secrets not set yet — skipping deploy (provision the box + add prod secrets first)."
+          fi
+
+      - name: Prepare SSH
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id
+          chmod 600 ~/.ssh/id
+          ssh-keyscan -p "$PORT" "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Render app.env from secrets
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          DB_PW: ${{ secrets.POSTGRES_PASSWORD }}
+          ENC: ${{ secrets.APP_ENC_KEY }}
+          HMACK: ${{ secrets.APP_HMAC_KEY }}
+          SESS: ${{ secrets.APP_SESSION_KEY }}
+          VK_APP_ID: ${{ secrets.VK_APP_ID }}
+          VK_SVC: ${{ secrets.VK_SERVICE_TOKEN }}
+          VK_REDIR: ${{ secrets.VK_REDIRECT_URI }}
+        run: |
+          umask 077
+          cat > app.env <<EOF
+          PSYCHOSPACE_ENV=prod
+          PSYCHOSPACE_HTTP_ADDR=127.0.0.1:8080
+          PSYCHOSPACE_BASE_URL=https://psycho-space.ru
+          PSYCHOSPACE_LOG_DIR=/var/log/psycho-space
+          PSYCHOSPACE_DATABASE_URL=postgres://psychospace:${DB_PW}@127.0.0.1:5432/psychospace?sslmode=disable
+          PSYCHOSPACE_ENC_KEY=${ENC}
+          PSYCHOSPACE_HMAC_KEY=${HMACK}
+          PSYCHOSPACE_SESSION_KEY=${SESS}
+          PSYCHOSPACE_VK_APP_ID=${VK_APP_ID}
+          PSYCHOSPACE_VK_SERVICE_TOKEN=${VK_SVC}
+          PSYCHOSPACE_VK_REDIRECT_URI=${VK_REDIR}
+          EOF
+
+      - name: Ship + apply
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/id -p "$PORT" "$SSH_USER@$HOST" 'rm -rf /tmp/psycho-deploy && mkdir -p /tmp/psycho-deploy'
+          scp -i ~/.ssh/id -P "$PORT" \
+            psycho-space app.env \
+            deploy/systemd/psycho-space.service \
+            deploy/nginx/psycho-space.conf \
+            deploy/psycho-deploy.sh deploy/make-admin.sh \
+            "$SSH_USER@$HOST:/tmp/psycho-deploy/"
+          ssh -i ~/.ssh/id -p "$PORT" "$SSH_USER@$HOST" 'set -e
+            sudo install -m0755 /tmp/psycho-deploy/psycho-deploy.sh /usr/local/bin/psycho-deploy
+            sudo install -m0755 /tmp/psycho-deploy/make-admin.sh    /usr/local/bin/make-admin
+            sudo psycho-deploy'
+
+      - name: External health gate
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          for _ in $(seq 1 10); do
+            if curl -fsS https://psycho-space.ru/healthz; then exit 0; fi
+            sleep 3
+          done
+          echo "external health check failed" >&2
+          exit 1
