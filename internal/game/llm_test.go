@@ -365,6 +365,128 @@ func TestClampAnger(t *testing.T) {
 	}
 }
 
+// The real payload that cost a player a turn in prod (trace
+// 3da1f8809b2112b24f01348c384d3c9f): YandexGPT closed the options array after one
+// item, parked the other three under a "[" key, and left a raw newline inside the
+// last key — "invalid character '\n' in string literal". Everything the turn
+// needs is in there, so it must be recovered rather than 422'd.
+func TestSalvagesGarbledJSONFromProd(t *testing.T) {
+	const content = `{"reply": "Не нужна мне твоя помощь, отвали!", "art": "vanya_angry", ` +
+		`"anger": 70, "achieved": false, "game_over": false, ` +
+		`"options": ["Может, всё-таки присядем?"], ` +
+		`"[": ["Поговорим о том, что тебя беспокоит?", "Может, о друге вспомним?", "А ты пить совсем не любишь?"], ` +
+		"\"]}\n\": []}"
+
+	// Precondition: the payload really is invalid JSON, so this test exercises
+	// the recovery path rather than the happy one.
+	var probe judgeReply
+	if json.Unmarshal([]byte(content), &probe) == nil {
+		t.Fatal("payload should be invalid JSON; the test has lost its point")
+	}
+
+	srv := llmServer(t, content, http.StatusOK, nil, nil)
+	defer srv.Close()
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	res, err := ev.Judge(context.Background(), testChar(), nil, "Давай я тебе помогу", 60)
+	if err != nil {
+		t.Fatalf("Judge should salvage this reply, got: %v", err)
+	}
+	if res.Reply != "Не нужна мне твоя помощь, отвали!" {
+		t.Errorf("reply = %q", res.Reply)
+	}
+	if res.Anger != 70 {
+		t.Errorf("anger = %d; want the 70 the model asked for", res.Anger)
+	}
+	if res.Achieved || res.GameOver {
+		t.Errorf("res = %+v; want the run still live", res)
+	}
+	// The three options parked under the junk key are recovered, so the player
+	// still gets a full set of choices.
+	if len(res.Options) != optionCount {
+		t.Fatalf("options = %v; want %d recovered", res.Options, optionCount)
+	}
+	if res.Options[0] != "Может, всё-таки присядем?" || res.Options[3] != "А ты пить совсем не любишь?" {
+		t.Errorf("recovered options in unexpected order: %v", res.Options)
+	}
+}
+
+func TestSalvageJudgeReply(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		ok      bool
+		wantOpt int
+	}{
+		{
+			name: "raw newline inside a string",
+			// Real tab and newline characters inside the JSON strings.
+			content: "{\"reply\": \"Ну\tтак\", \"art\": \"vanya_angry\", \"options\": [\"a\nb\"]}",
+			ok:      true,
+			wantOpt: 1,
+		},
+		{
+			name:    "junk keys are dropped",
+			content: `{"reply":"Ну","art":"vanya_angry","totally":"unexpected","options":["a","b","c","d"]}`,
+			ok:      true,
+			wantOpt: 4,
+		},
+		{
+			// Nothing to show the player: not a usable turn.
+			name:    "empty reply is not salvageable",
+			content: `{"reply":"   ","art":"vanya_angry","options":["a"]}`,
+			ok:      false,
+		},
+		{
+			// A content-filter refusal was never JSON — it must still 422.
+			name:    "prose is not salvageable",
+			content: "Не люблю менять тему разговора, но эта тема кажется мне спорной.",
+			ok:      false,
+		},
+		{
+			name:    "truncated beyond repair",
+			content: `{"reply":"Ну","art":"vanya_a`,
+			ok:      false,
+		},
+		{
+			// Stray arrays only fill up to the option count, never past it.
+			name: "stray options are capped",
+			content: `{"reply":"Ну","options":["a"],"x":["b","c","d","e","f"],` +
+				"\"y\n\":[\"g\"]}",
+			ok:      true,
+			wantOpt: optionCount,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := salvageJudgeReply(tt.content)
+			if ok != tt.ok {
+				t.Fatalf("salvaged = %v; want %v (got %+v)", ok, tt.ok, got)
+			}
+			if ok && len(got.Options) != tt.wantOpt {
+				t.Fatalf("options = %v; want %d", got.Options, tt.wantOpt)
+			}
+		})
+	}
+}
+
+// The repair must not touch the JSON's own structure or already-escaped text.
+func TestEscapeControlCharsInStrings(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{`{"a":"b"}`, `{"a":"b"}`},
+		{"{\"a\":\"line\nbreak\"}", `{"a":"line\nbreak"}`},
+		{`{"a":"already\nescaped"}`, `{"a":"already\nescaped"}`},
+		// A newline between tokens is structure, not string content: left alone.
+		{"{\n\"a\":\"b\"\n}", "{\n\"a\":\"b\"\n}"},
+		// An escaped quote must not be read as the end of the string.
+		{`{"a":"quote\" inside"}`, `{"a":"quote\" inside"}`},
+	}
+	for _, tt := range tests {
+		if got := escapeControlCharsInStrings(tt.in); got != tt.want {
+			t.Errorf("escape(%q) = %q; want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestOptionsWhilePlaying(t *testing.T) {
 	if optionsWhilePlaying(true, []string{"a", "b"}) != nil {
 		t.Fatal("achieved should return no options")

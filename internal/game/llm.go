@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -153,7 +154,23 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 
 	var jr judgeReply
 	content := cr.Choices[0].Message.Content
-	if err := json.Unmarshal([]byte(content), &jr); err != nil {
+	err = json.Unmarshal([]byte(content), &jr)
+	salvaged := false
+	if err != nil {
+		// A small model garbles its own JSON now and then — a raw newline inside a
+		// string, a stray key where a bracket belonged. The turn is still in there,
+		// so try to recover it rather than charging the player for the model's
+		// typo. Only a genuinely unreadable reply (a content-filter refusal in
+		// prose, say) falls through to the error below.
+		if recovered, ok := salvageJudgeReply(content); ok {
+			jr, err, salvaged = recovered, nil, true
+			slog.WarnContext(ctx, "game llm reply salvaged",
+				"model", e.model, "character", ch.Key,
+				"content", clampRunes(content, maxLoggedRunes),
+				"options", len(jr.Options))
+		}
+	}
+	if err != nil {
 		// The usual cause is the provider's content filter answering in plain
 		// prose instead of the model (it ignores response_format). This is the
 		// only place the raw material exists, and prod runs at Info so the Debug
@@ -197,7 +214,7 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		"total_tokens", cr.Usage.TotalTokens, "est_cost_rub", estCost,
 		"achieved", jr.Achieved, "game_over", gameOver, "art", art,
 		"anger_in", anger, "anger_out", newAnger, "anger_from_model", jr.Anger != nil,
-		"options", len(jr.Options), "reply", jr.Reply)
+		"salvaged", salvaged, "options", len(jr.Options), "reply", jr.Reply)
 	// Full request/response bodies (no auth header) at Debug for deep inspection.
 	slog.DebugContext(ctx, "game llm raw", "request", string(raw), "response", string(body))
 
@@ -210,6 +227,103 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		// Won or beaten, the dialogue is over regardless of what the model returned.
 		Options: optionsWhilePlaying(jr.Achieved || gameOver, jr.Options),
 	}, nil
+}
+
+// judgeReplyKeys are the fields we ask the model for; anything else in the
+// object is the model's own noise.
+var judgeReplyKeys = map[string]bool{
+	"reply": true, "art": true, "achieved": true,
+	"game_over": true, "anger": true, "options": true,
+}
+
+// salvageJudgeReply tries to recover a turn from JSON the model got slightly
+// wrong. It repairs raw control characters inside string literals — the common
+// slip — and then reads the fields it knows, which also drops any junk keys. A
+// reply with no text is not a usable turn, and neither is prose that was never
+// JSON, so both report false and become ErrLLMUnparsable as before.
+func salvageJudgeReply(content string) (judgeReply, bool) {
+	fixed := escapeControlCharsInStrings(content)
+	var jr judgeReply
+	if err := json.Unmarshal([]byte(fixed), &jr); err != nil {
+		return judgeReply{}, false
+	}
+	if strings.TrimSpace(jr.Reply) == "" {
+		return judgeReply{}, false
+	}
+	// A small model sometimes closes the options array early and parks the rest
+	// under a junk key ("[", "]}"), which would leave the player one choice.
+	if len(jr.Options) < optionCount {
+		jr.Options = append(jr.Options, strayOptions(fixed, len(jr.Options))...)
+	}
+	return jr, true
+}
+
+// strayOptions collects answer options from arrays of strings parked under keys
+// we never asked for, up to the number still missing. Keys are visited in sorted
+// order so the recovered options are the same on every run.
+func strayOptions(jsonText string, have int) []string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(jsonText), &obj); err != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		if !judgeReplyKeys[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+
+	var out []string
+	for _, k := range keys {
+		var arr []string
+		if json.Unmarshal(obj[k], &arr) != nil {
+			continue
+		}
+		for _, s := range arr {
+			if have+len(out) >= optionCount {
+				return out
+			}
+			if strings.TrimSpace(s) != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+// escapeControlCharsInStrings escapes raw newlines, carriage returns and tabs
+// that appear inside JSON string literals, which encoding/json rejects outright.
+// It tracks whether it is inside a string and whether the previous byte began an
+// escape, so it never rewrites the JSON's own structure or an already-escaped
+// sequence.
+func escapeControlCharsInStrings(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	inString, escaped := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case escaped:
+			b.WriteByte(c)
+			escaped = false
+		case inString && c == '\\':
+			b.WriteByte(c)
+			escaped = true
+		case c == '"':
+			inString = !inString
+			b.WriteByte(c)
+		case inString && c == '\n':
+			b.WriteString(`\n`)
+		case inString && c == '\r':
+			b.WriteString(`\r`)
+		case inString && c == '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // snippetRunes bounds a body quoted into an error message; maxLoggedRunes bounds
@@ -250,7 +364,7 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 
 Игрок выбирает реплики и пытается достичь цели. Каждый ход:
 - верни новое значение напряжения (поле "anger", целое 0–%d). Грубость, издёвка, угрозы, снисходительность, давление, повтор одного и того же — поднимают на 10–25. Искреннее участие, тепло, разговор о его больных темах по-доброму — опускают на 5–15. Пустая нейтральная болтовня — ±0–5, но если игрок топчется на месте несколько ходов, напряжение растёт. Меняй не больше чем на 25 за ход и никогда не оставляй значение без изменений просто так;
-- ответь ОДНОЙ короткой репликой в образе (поле "reply");
+- ответь ОДНОЙ короткой репликой в образе (поле "reply"). Ты не знаешь, как игрока зовут: никогда не вставляй подстановки вроде [Имя], [имя игрока] или <name> — обращайся безлично («слышь», «сосед», «ты»);
 - выбери подходящий арт строго из списка [%s] (поле "art"). Арт — это либо текущее состояние персонажа (злой → подозрительный → нейтральный → теплеет → раскрывается), либо сюжетный арт без персонажа. Ключи артов говорящие: подбирай арт по смыслу текущей темы и настроения (например, если речь зашла о его близком друге — покажи арт с этим другом). По ходу диалога арт меняется от злого к более тёплому (иногда обратно к злому — на грубость). Когда игрок достигает цели — выбери арт прохода в подъезд;
 - реши, достиг ли игрок цели именно этой репликой (поле "achieved": true/false). Ставь true только когда игрок действительно разглядел глубину персонажа, а не отделался поверхностным;
 - реши, не сорвался ли ты окончательно (поле "game_over": true/false). Ставь true ТОЛЬКО когда игрок довёл тебя до срыва по условию срыва выше — тогда ты бьёшь его, и разговор на этом окончен. Это редкий исход: сначала огрызайся и мрачней, бей только если игрок упорно продолжает. Если "achieved": true, то "game_over" всегда false;

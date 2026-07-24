@@ -5,11 +5,11 @@ import { ApiError } from '../api/client';
 // Human-readable RU explanation for the error codes worth explaining. Anything
 // not listed falls back to the modal's generic wording.
 const FRIENDLY_MESSAGES: Record<string, string> = {
-  // The AI answered, but with something the game can't use — usually its own
-  // content filter refusing the topic. Nothing is broken and the turn is not
-  // lost: another line will work.
+  // The AI answered, but with something the game can't use: either it garbled its
+  // own reply beyond repair, or its content filter refused the topic. Either way
+  // it is the model's problem, not the player's, and the turn is not lost.
   llm_unparsable:
-    'ИИ не смог обработать эту реплику — скорее всего, сработал его фильтр. ' +
+    'ИИ выдал ответ, который игра не смогла разобрать — бывает. ' +
     'Попробуй выбрать другой вариант ответа, а этот код отправь Сергею, чтобы он проверил.',
 };
 

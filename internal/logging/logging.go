@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	"github.com/SergeyZSpb/psycho-space/internal/observability"
 )
 
 type ctxKey struct{}
@@ -40,12 +42,18 @@ func accountID(ctx context.Context) string {
 	return "anonymous"
 }
 
-// contextHandler stamps account_id (from the context holder, or "anonymous") on
-// every record, so all log lines carry it.
+// contextHandler stamps account_id (from the context holder, or "anonymous") and
+// trace_id (from the request's span, when there is one) on every record, so all
+// log lines carry both. The trace id is the one the user is shown in the error
+// modal and asked to quote, so every line written while serving that request has
+// to be findable by it — not just the http_request summary.
 type contextHandler struct{ slog.Handler }
 
 func (h contextHandler) Handle(ctx context.Context, r slog.Record) error {
 	r.AddAttrs(slog.String("account_id", accountID(ctx)))
+	if id := observability.TraceID(ctx); id != "" {
+		r.AddAttrs(slog.String("trace_id", id))
+	}
 	return h.Handler.Handle(ctx, r)
 }
 

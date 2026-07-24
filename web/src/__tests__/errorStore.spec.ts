@@ -16,8 +16,12 @@ describe('error store', () => {
     expect(store.code).toBe('llm_unparsable');
     expect(store.status).toBe(422);
     expect(store.traceId).toBe('trace-abc');
-    expect(store.message).toContain('ИИ не смог обработать');
+    // Tells the player what to do next and who to send the code to...
+    expect(store.message).toContain('вариант');
     expect(store.message).toContain('Сергею');
+    // ...without guessing the cause. It used to blame the content filter, which
+    // was wrong for the far more common case of the model garbling its own JSON.
+    expect(store.message).not.toContain('фильтр');
   });
 
   it('leaves the message empty for codes with no special wording', () => {

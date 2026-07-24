@@ -65,14 +65,21 @@ It's an **LLM-judged** character dialogue: convince дядя Ваня (a strange
 
 > **The third theme is alcohol on purpose — do not make it drugs.** It used to be substance use, and YandexGPT's content filter answered those turns with plain Russian prose instead of the JSON we ask for; the parse failed and the player got an error. The tell in the log is a **`game llm reply not json`** line **~100 ms** after its `game llm request` (real generations take 1–2.5 s). `TestContentAvoidsDrugFlavouredPrompts` guards the prompt material against regressing.
 >
-> **Two distinct judge failures — check the status code first:**
+> **Three outcomes when the reply isn't clean JSON — check the status code first:**
 >
 > | Symptom | Status / code | Meaning |
 > |---|---|---|
-> | Model answered, but not with usable JSON (filter refusal) | **422 `llm_unparsable`** | Not an outage. The same line fails again, so the SPA explains it in Russian and asks the player to pick a different option. |
+> | Reply was *nearly* valid JSON — raw newline inside a string, options array closed early with the rest under a junk key | **200**, `game llm reply salvaged` at Warn | Recovered: the turn goes through. YandexGPT 5 Lite does this a few percent of the time — see *Salvaging* below. |
+> | Reply is unrecoverable — prose (filter refusal), empty `reply`, truncated | **422 `llm_unparsable`** | Not an outage. The same line fails again, so the SPA explains it in Russian and asks the player to pick a different option. |
 > | Transport error, non-200, or no choices at all | **502 `llm_error`** | The provider is down / misconfigured. |
 >
-> The 422 path logs everything at Error in one line — `game llm reply not json` with `content`, `raw_response`, `finish_reason`, `parse_err`, token usage, latency, `choice`, `account_id`, `trace_id` (both bodies clamped to 2000 runes). Find one by trace id: `ssh psycho 'sudo grep <trace-id> /var/log/psycho-space/app.log' | jq .`
+> The 422 path logs everything at Error in one line — `game llm reply not json` with `content`, `raw_response`, `finish_reason`, `parse_err`, token usage, latency, `choice`, `account_id`, `trace_id` (both bodies clamped to 2000 runes). Find one by trace id — **every** log line carries it, not just `http_request`:
+>
+> ```bash
+> ssh psycho 'sudo grep <trace-id> /var/log/psycho-space/app.log' | jq .
+> ```
+>
+> **Salvaging** (`salvageJudgeReply` in `llm.go`): raw control characters inside string literals get escaped, unknown keys are ignored, and answer options parked under junk keys are recovered up to `optionCount` (junk keys visited in sorted order, so recovery is deterministic). A salvaged turn logs `salvaged=true` on its `game llm response` line, so `sudo grep '"salvaged":true' /var/log/psycho-space/app.log | wc -l` gives the rate. If that rate climbs, the answer is a better prompt or a bigger model — not more salvaging.
 
 - **Three endings.** `achieved` → he lets you in (`hallway_pass`). **`game_over`** → you pushed him too far, he throws a punch and the run is lost (`vanya_game_over_hits_us`, forced server-side; the SPA shows an `error` alert titled «Game over»). Neither → the dialogue simply ran out of options. `achieved` always wins over `game_over` on the same turn.
 - **The tension scale is the balance mechanism** (`MaxAnger` 100, `StartAnger` 40 — he opens hostile, and both are published in `GET /api/game/config` as `max_anger`/`start_anger` so the client never hardcodes them). It is the game's only cross-turn state besides the transcript: the SPA **sends** `anger` with each `/attempt` and the judge **returns** the new value, which the prompt tells it to raise 10–25 for rudeness/pressure/treading water and lower 5–15 for genuine warmth. **At `MaxAnger` the backend ends the run itself**, whatever the model said about `game_over` — a judge left to its own devices almost never pulls the trigger, which is why the game used to be unloseable. Three server-side guarantees: the incoming value is clamped (a tampering client can neither disable the scale nor pre-lose), an **omitted** `anger` drifts **up by 5** rather than stalling (a stalled scale is an unloseable run), and a win still beats a full scale on the same turn. Logged per turn as `anger_in` / `anger_out` / `anger_from_model`.

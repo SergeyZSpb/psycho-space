@@ -130,6 +130,14 @@ func startFakeLLM() *httptest.Server {
 		case strings.Contains(last, "теплеет"):
 			// A calming turn: the judge lowers the scale.
 			content = `{"reply":"Ну... ладно","art":"vanya_warming","anger":25,"achieved":false,"options":["a","b","c","d"]}`
+		case strings.Contains(last, "кривой"):
+			// The shape YandexGPT actually produced in prod: options closed early,
+			// the rest parked under a "[" key, and a raw newline in the last key.
+			// The backend must salvage the turn instead of failing it.
+			content = `{"reply": "Не нужна мне твоя помощь!", "art": "vanya_angry", "anger": 70, ` +
+				`"achieved": false, "game_over": false, "options": ["Может, присядем?"], ` +
+				`"[": ["А про друга расскажешь?", "Ты пить-то любишь?", "Давай поговорим"], ` +
+				"\"]}\n\": []}"
 		case strings.Contains(last, "цензура"):
 			// Stands in for the provider's content filter: HTTP 200, but plain
 			// prose instead of the JSON we asked for.

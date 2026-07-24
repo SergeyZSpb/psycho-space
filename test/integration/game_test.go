@@ -111,6 +111,20 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("a lost run should clear options: %v", rMax)
 	}
 
+	// Garbled-but-recoverable JSON (fake LLM keys on "кривой") is salvaged: the
+	// turn goes through with all four options, instead of costing the player a
+	// move for the model's typo.
+	st, rFix := attemptAnger("кривой", 60)
+	if st != http.StatusOK {
+		t.Fatalf("garbled reply: status %d res %v; want 200 (salvaged)", st, rFix)
+	}
+	if rFix["reply"] != "Не нужна мне твоя помощь!" || rFix["anger"].(float64) != 70 {
+		t.Fatalf("salvaged turn = %v; want the model's reply and anger 70", rFix)
+	}
+	if opts, _ := rFix["options"].([]any); len(opts) != 4 {
+		t.Fatalf("salvaged options = %v; want the 3 stray ones recovered", rFix["options"])
+	}
+
 	// A content-filter refusal (fake LLM keys on "цензура"): HTTP 200 from the
 	// provider but prose instead of JSON. That is the dialogue's problem, not an
 	// outage — 422 with a stable code, so the SPA can tell the player to pick a
