@@ -103,6 +103,9 @@ jobs:
           VK_VERIFY: ${{ secrets.VK_VERIFY_IDTOKEN }}
           VK_JWKS_URL: ${{ secrets.VK_JWKS_URL }}
           VK_ISSUER: ${{ secrets.VK_ISSUER }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
         run: |
           umask 077
           cat > app.env <<EOF
@@ -120,6 +123,9 @@ jobs:
           PSYCHOSPACE_VK_VERIFY_IDTOKEN=${VK_VERIFY:-false}
           PSYCHOSPACE_VK_JWKS_URL=${VK_JWKS_URL}
           PSYCHOSPACE_VK_ISSUER=${VK_ISSUER}
+          PSYCHOSPACE_LLM_BASE_URL=${LLM_BASE_URL}
+          PSYCHOSPACE_LLM_API_KEY=${LLM_API_KEY}
+          PSYCHOSPACE_LLM_MODEL=${LLM_MODEL}
           EOF
 
       - name: Ship + apply

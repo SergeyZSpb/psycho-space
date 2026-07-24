@@ -8,6 +8,7 @@ import type {
   AccountStatus,
   AdminSettings,
   GameConfig,
+  GameExchange,
   GameLeaderboardEntry,
   GameRun,
   GameStats,
@@ -82,12 +83,12 @@ export const gameApi = {
   // or answer keys — those stay server-side.
   config: (game: string) => apiFetch<GameConfig>(`/api/game/config?game=${game}`),
 
-  // Judge one dialogue turn server-side. `history` is the ids of options already
-  // chosen. Contract is stable when the judge becomes LLM-driven.
-  attempt: (game: string, character: string, history: string[], optionId: string) =>
+  // Judge one dialogue turn via the LLM. `transcript` is the conversation so
+  // far; `choice` is the player's latest line ("" on the opening turn).
+  attempt: (game: string, character: string, transcript: GameExchange[], choice: string) =>
     apiFetch<GameTurnResult>('/api/game/attempt', {
       method: 'POST',
-      body: { game_key: game, character_key: character, history, option_id: optionId },
+      body: { game_key: game, character_key: character, transcript, choice },
     }),
 
   // Record a finished play-through (goal reached or step budget spent).

@@ -71,11 +71,11 @@ func main() {
 	accounts := account.NewService(pool, account.NewPostgresRepository(), enc, bi)
 	sessions := session.NewManager(pool, cfg.SessionKey, cfg.SessionTTL, cfg.CookieSecure())
 	wishlistSvc := wishlist.NewService(pool, wishlist.NewPostgresRepository())
-	// Game AI judge: mock until LLM credentials are provisioned; the evaluator is
-	// the single swap point (see game.NewEvaluator).
-	gameEval := game.NewEvaluator(cfg.LLM.Enabled(), cfg.LLM.Model)
+	// Game AI judge: OpenAI-compatible LLM (Yandex Cloud / DeepSeek). When not
+	// configured, the game's /attempt endpoint returns 503 (see handler).
+	gameEval := game.NewOpenAIEvaluator(cfg.LLM)
 	slog.Info("game evaluator", "llm_configured", cfg.LLM.Enabled(), "model", cfg.LLM.Model)
-	gameSvc := game.NewServiceWithEvaluator(pool, game.NewPostgresRepository(), gameEval)
+	gameSvc := game.NewService(pool, game.NewPostgresRepository(), gameEval)
 	settingsSvc := settings.NewService(pool)
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
 

@@ -2,15 +2,17 @@
 // judge, plus recorded results (game_runs) for a leaderboard.
 //
 // The first game is "smalltalk_khimki": you must convince a character (default:
-// сосед дядя Витя at the подъезд) to let you pass, choosing answer options turn
-// by turn. Each turn an Evaluator judges whether the goal is reached yet and
-// picks the character's emotion/asset to show. Today the Evaluator is a
-// deterministic MockEvaluator; later it becomes an OpenAI-compatible LLM
-// (Yandex Cloud, DeepSeek) — the client contract does not change.
+// сосед дядя Ваня at the подъезд) to let you pass, choosing answer options turn
+// by turn. Each turn the Evaluator (an OpenAI-compatible LLM — Yandex Cloud /
+// DeepSeek; see llm.go) replies in character, judges whether the goal is reached
+// yet, picks the character's emotion, and generates the next answer options
+// (fewer each turn). The game requires an LLM endpoint to be configured
+// (config.LLM); when it is not, the /attempt endpoint returns 503.
 //
-// Character profiles (motivation, persona, talk style, options, emotions) are
+// Character profiles (goal, motivation, persona, talk style, emotions) are
 // config (see content.go), editable without touching the frontend; a default
-// character is selected per game.
+// character is selected per game. Answer options are NOT authored — the LLM
+// generates them.
 package game
 
 import (
@@ -58,7 +60,6 @@ type PlayerStats struct {
 var (
 	ErrUnknownGame      = errors.New("game: unknown game key")
 	ErrUnknownCharacter = errors.New("game: unknown character")
-	ErrOptionNotFound   = errors.New("game: option not found")
 	ErrStepsRange       = errors.New("game: steps out of range")
 )
 

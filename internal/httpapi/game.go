@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -25,30 +26,34 @@ func (s *Server) handleGameConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, g)
 }
 
-// handleGameAttempt judges one dialogue turn. The result shape is stable whether
-// judging is mock (today) or LLM-driven (later).
+// handleGameAttempt judges one dialogue turn via the LLM. Requires a configured
+// LLM endpoint (config.LLM); otherwise 503, like VK.
 func (s *Server) handleGameAttempt(w http.ResponseWriter, r *http.Request) {
+	if !s.d.Config.LLM.Enabled() {
+		writeError(w, r, http.StatusServiceUnavailable, "llm_not_configured")
+		return
+	}
 	var req struct {
-		GameKey      string   `json:"game_key"`
-		CharacterKey string   `json:"character_key"`
-		History      []string `json:"history"` // ids of options chosen so far
-		OptionID     string   `json:"option_id"`
+		GameKey      string          `json:"game_key"`
+		CharacterKey string          `json:"character_key"`
+		Transcript   []game.Exchange `json:"transcript"` // conversation so far
+		Choice       string          `json:"choice"`     // player's latest line ("" = opening turn)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_request")
 		return
 	}
-	res, err := s.d.Game.Judge(r.Context(), req.GameKey, req.CharacterKey, req.History, req.OptionID)
+	res, err := s.d.Game.Judge(r.Context(), req.GameKey, req.CharacterKey, req.Transcript, req.Choice)
 	if err != nil {
 		switch {
 		case errors.Is(err, game.ErrUnknownGame):
 			writeError(w, r, http.StatusNotFound, "unknown_game")
 		case errors.Is(err, game.ErrUnknownCharacter):
 			writeError(w, r, http.StatusNotFound, "unknown_character")
-		case errors.Is(err, game.ErrOptionNotFound):
-			writeError(w, r, http.StatusBadRequest, "unknown_option")
 		default:
-			writeError(w, r, http.StatusInternalServerError, "internal")
+			// LLM/network/parse failure — the judge is a hard dependency here.
+			slog.ErrorContext(r.Context(), "game judge failed", "err", err)
+			writeError(w, r, http.StatusBadGateway, "llm_error")
 		}
 		return
 	}

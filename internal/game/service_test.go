@@ -29,7 +29,23 @@ func (f *fakeRepo) StatsFor(_ context.Context, _ db.DBTX, _, _ string) (PlayerSt
 	return PlayerStats{}, nil
 }
 
-func newSvc(repo Repository) *Service { return NewService(nil, repo) }
+// stubEval is a test double for the LLM judge, so service-level tests don't do I/O.
+type stubEval struct {
+	res           TurnResult
+	err           error
+	gotChoice     string
+	gotTranscript []Exchange
+	calls         int
+}
+
+func (s *stubEval) Judge(_ context.Context, _ Character, transcript []Exchange, choice string) (TurnResult, error) {
+	s.calls++
+	s.gotTranscript = transcript
+	s.gotChoice = choice
+	return s.res, s.err
+}
+
+func newSvc(repo Repository, eval Evaluator) *Service { return NewService(nil, repo, eval) }
 
 func defaultChar(t *testing.T) Character {
 	t.Helper()
@@ -53,36 +69,35 @@ func TestContentFor(t *testing.T) {
 		t.Fatalf("game = %+v; want key + characters + default", g)
 	}
 	ch := defaultChar(t)
-	if ch.Goal == "" || ch.Greeting == "" || len(ch.Options) == 0 || len(ch.Emotions) == 0 {
+	if ch.Goal == "" || ch.Greeting == "" || len(ch.Arts) == 0 || ch.MaxSteps <= 0 {
 		t.Fatalf("character %q underspecified: %+v", ch.Key, ch)
 	}
-	if ch.MaxSteps <= 0 || ch.Threshold <= 0 {
-		t.Fatalf("character %q needs MaxSteps>0 and Threshold>0: %+v", ch.Key, ch)
+	// Persona prompt material must be present (it drives the LLM judge).
+	if ch.Persona == "" || ch.Motivation == "" || ch.TalkStyle == "" {
+		t.Fatalf("character %q missing persona prompt fields: %+v", ch.Key, ch)
 	}
 	if _, err := ContentFor("nope"); !errors.Is(err, ErrUnknownGame) {
 		t.Fatalf("unknown game err = %v; want ErrUnknownGame", err)
 	}
 }
 
-func TestMockEvaluator(t *testing.T) {
-	ch := defaultChar(t)
-	ev := MockEvaluator{}
-	ctx := context.Background()
+func TestServiceJudgeRouting(t *testing.T) {
+	charKey := defaultChar(t).Key
 
-	// A single strong option (+2) is short of the threshold (3): not achieved.
-	if res, err := ev.Judge(ctx, ch, nil, "domofon"); err != nil || res.Achieved || res.Reply == "" {
-		t.Fatalf("domofon: res=%+v err=%v; want not-achieved with a reply", res, err)
+	// Unknown game / character short-circuit before the evaluator.
+	if _, err := newSvc(&fakeRepo{}, &stubEval{}).Judge(context.Background(), "nope", charKey, nil, ""); !errors.Is(err, ErrUnknownGame) {
+		t.Fatalf("unknown game err = %v; want ErrUnknownGame", err)
 	}
-	// domofon(+2) then lusy(+1) reaches the threshold: achieved + pleased.
-	if res, err := ev.Judge(ctx, ch, []string{"domofon"}, "lusy"); err != nil || !res.Achieved || res.Emotion != "pleased" {
-		t.Fatalf("domofon+lusy: res=%+v err=%v; want achieved + pleased", res, err)
+	if _, err := newSvc(&fakeRepo{}, &stubEval{}).Judge(context.Background(), GameSmalltalkKhimki, "nobody", nil, ""); !errors.Is(err, ErrUnknownCharacter) {
+		t.Fatalf("unknown character err = %v; want ErrUnknownCharacter", err)
 	}
-	// A rude option pushes conviction negative: annoyed, not achieved.
-	if res, err := ev.Judge(ctx, ch, nil, "diver"); err != nil || res.Achieved || res.Emotion != "annoyed" {
-		t.Fatalf("diver: res=%+v err=%v; want annoyed, not achieved", res, err)
-	}
-	if _, err := ev.Judge(ctx, ch, nil, "nope"); !errors.Is(err, ErrOptionNotFound) {
-		t.Fatalf("unknown option err = %v; want ErrOptionNotFound", err)
+
+	// A valid call is delegated to the evaluator with the transcript + choice.
+	ev := &stubEval{res: TurnResult{Reply: "ок", Art: "vanya_neutral", Achieved: true}}
+	tr := []Exchange{{Choice: "привет", Reply: "ну"}}
+	res, err := newSvc(&fakeRepo{}, ev).Judge(context.Background(), GameSmalltalkKhimki, charKey, tr, "домой")
+	if err != nil || !res.Achieved || ev.calls != 1 || ev.gotChoice != "домой" || len(ev.gotTranscript) != 1 {
+		t.Fatalf("delegate: res=%+v err=%v ev=%+v", res, err, ev)
 	}
 }
 
@@ -104,8 +119,7 @@ func TestSubmitRunValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{}
-			svc := newSvc(repo)
-			_, err := svc.SubmitRun(context.Background(), "acc-1", tt.gameKey, tt.charKey, true, tt.steps)
+			_, err := newSvc(repo, &stubEval{}).SubmitRun(context.Background(), "acc-1", tt.gameKey, tt.charKey, true, tt.steps)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err = %v; want %v", err, tt.wantErr)
 			}
@@ -125,14 +139,14 @@ func TestLeaderboardLimitClamped(t *testing.T) {
 	}
 	for _, tt := range tests {
 		repo := &fakeRepo{}
-		if _, err := newSvc(repo).Leaderboard(context.Background(), GameSmalltalkKhimki, tt.in); err != nil {
+		if _, err := newSvc(repo, &stubEval{}).Leaderboard(context.Background(), GameSmalltalkKhimki, tt.in); err != nil {
 			t.Fatalf("Leaderboard(%d): %v", tt.in, err)
 		}
 		if repo.gotLimit != tt.want {
 			t.Fatalf("limit in=%d -> repo got %d; want %d", tt.in, repo.gotLimit, tt.want)
 		}
 	}
-	if _, err := newSvc(&fakeRepo{}).Leaderboard(context.Background(), "nope", 5); !errors.Is(err, ErrUnknownGame) {
+	if _, err := newSvc(&fakeRepo{}, &stubEval{}).Leaderboard(context.Background(), "nope", 5); !errors.Is(err, ErrUnknownGame) {
 		t.Fatalf("unknown game err = %v; want ErrUnknownGame", err)
 	}
 }

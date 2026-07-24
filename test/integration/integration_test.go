@@ -6,10 +6,13 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -34,6 +37,9 @@ import (
 )
 
 var pool *pgxpool.Pool
+
+// llmBaseURL points at the fake OpenAI-compatible server started in TestMain.
+var llmBaseURL string
 
 func key(b byte) []byte {
 	k := make([]byte, 32)
@@ -78,11 +84,43 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// Fake OpenAI-compatible LLM for the game judge (deterministic).
+	llm := startFakeLLM()
+	llmBaseURL = llm.URL
+
 	code := m.Run()
 
+	llm.Close()
 	pool.Close()
 	_ = testcontainers.TerminateContainer(container)
 	os.Exit(code)
+}
+
+// startFakeLLM stands in for the OpenAI-compatible chat endpoint. It answers
+// deterministically: a choice containing "победа" convinces the character
+// (achieved, no more options); anything else keeps the dialogue going with two
+// options — enough to exercise the turn loop, leaderboard, and stats.
+func startFakeLLM() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.Unmarshal(body, &req)
+		last := ""
+		if n := len(req.Messages); n > 0 {
+			last = req.Messages[n-1].Content
+		}
+		content := `{"reply":"Хм, ну-ну","art":"vanya_neutral","achieved":false,"options":["дальше раз","дальше два"]}`
+		if strings.Contains(last, "победа") {
+			content = `{"reply":"Ну проходи, сосед","art":"hallway_pass","achieved":true,"options":[]}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":`+strconv.Quote(content)+`}}]}`)
+	}))
 }
 
 const vkRedirect = "https://psycho-space.ru/api/auth/vk/callback"
@@ -93,12 +131,19 @@ func newAccountService() *account.Service {
 	return account.NewService(pool, account.NewPostgresRepository(), enc, bi)
 }
 
-func buildApp(vkBaseURL string) http.Handler {
+func buildApp(vkBaseURL string) http.Handler { return buildAppCfg(vkBaseURL, llmBaseURL) }
+
+// buildAppCfg builds the app with an optional LLM endpoint. Pass llmURL="" to
+// leave the game judge unconfigured (so /api/game/attempt returns 503).
+func buildAppCfg(vkBaseURL, llmURL string) http.Handler {
 	sessions := session.NewManager(pool, key(3), time.Hour, false)
 	vkClient := vk.New(vkBaseURL, "app-1", "svc", vkRedirect)
 	cfg := config.Config{
 		Env: "dev",
 		VK:  config.VK{AppID: "app-1", ServiceToken: "svc", RedirectURI: vkRedirect, BaseURL: vkBaseURL},
+	}
+	if llmURL != "" {
+		cfg.LLM = config.LLM{BaseURL: llmURL, APIKey: "test", Model: "test-model"}
 	}
 	h := httpapi.NewServer(httpapi.Deps{
 		Config:   cfg,
@@ -108,7 +153,7 @@ func buildApp(vkBaseURL string) http.Handler {
 		Accounts: newAccountService(),
 		Sessions: sessions,
 		Wishlist: wishlist.NewService(pool, wishlist.NewPostgresRepository()),
-		Game:     game.NewService(pool, game.NewPostgresRepository()),
+		Game:     game.NewService(pool, game.NewPostgresRepository(), game.NewOpenAIEvaluator(cfg.LLM)),
 		Settings: settings.NewService(pool),
 	}).Handler()
 	return observability.WrapHandler(h, "http.server")

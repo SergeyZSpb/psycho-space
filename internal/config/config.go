@@ -64,18 +64,21 @@ func (v VK) Configured() bool {
 	return v.AppID != "" && v.ServiceToken != "" && v.RedirectURI != ""
 }
 
-// LLM holds the OpenAI-compatible chat API used to drive AI characters (Yandex
-// Cloud, DeepSeek). Optional: when unset the game falls back to the mock
-// evaluator, so the loop is fully playable before credentials exist.
+// LLM holds the OpenAI-compatible chat API used to drive AI game characters.
+// Start target: YandexGPT 5 Lite (Yandex Cloud Foundation Models, OpenAI-
+// compatible). BaseURL is the API root (e.g. https://llm.api.cloud.yandex.net/v1);
+// Model is the full model URI (e.g. gpt://<folder-id>/yandexgpt-5-lite), which is
+// account-specific, so it has no default. Optional: when unset, the game's
+// /attempt endpoint returns 503.
 type LLM struct {
 	BaseURL string `env:"PSYCHOSPACE_LLM_BASE_URL" envDefault:""`
 	APIKey  string `env:"PSYCHOSPACE_LLM_API_KEY" envDefault:""`
-	Model   string `env:"PSYCHOSPACE_LLM_MODEL" envDefault:"deepseek-4-pro"`
+	Model   string `env:"PSYCHOSPACE_LLM_MODEL" envDefault:""`
 }
 
-// Enabled reports whether a real LLM endpoint is configured. When false, the
-// game uses the mock evaluator.
-func (l LLM) Enabled() bool { return l.BaseURL != "" && l.APIKey != "" }
+// Enabled reports whether an LLM endpoint is configured (URL + key + model).
+// When false, the game's judge is unavailable.
+func (l LLM) Enabled() bool { return l.BaseURL != "" && l.APIKey != "" && l.Model != "" }
 
 // IsProd reports whether we are running in the production environment.
 func (c Config) IsProd() bool { return c.Env == "prod" }

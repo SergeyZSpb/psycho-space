@@ -14,33 +14,38 @@
 
       <!-- Intro -->
       <template v-if="phase === 'intro'">
-        <p class="text-body-1 mb-4">{{ config.intro }}</p>
+        <p class="text-body-1 mb-3">{{ config.intro }}</p>
+        <p class="text-caption text-medium-emphasis mb-4">
+          Все персонажи вымышлены; любые совпадения с реальными людьми случайны.
+        </p>
         <v-btn color="primary" size="large" block @click="start">Погнали домой</v-btn>
       </template>
 
-      <!-- Play (works portrait + landscape) -->
+      <!-- Play (portrait + landscape) -->
       <div v-else-if="phase === 'play'" class="stage">
-        <div class="portrait-pane" :style="{ background: bg }">
-          <div class="face">{{ face }}</div>
-          <div class="who">{{ character.name }}</div>
+        <div class="portrait-pane" :style="{ background: currentArt.gradient }">
+          <img v-if="currentArt.image" :src="currentArt.image" class="art-img" alt="" />
+          <div v-else class="face">{{ currentArt.emoji }}</div>
           <div class="steps">шаг {{ steps }} / {{ character.max_steps }}</div>
         </div>
 
         <div class="dialog-pane">
           <div class="goal text-medium-emphasis mb-2">🎯 {{ character.goal }}</div>
-          <v-alert variant="tonal" class="bubble mb-3" :text="lastReply" />
-          <div class="options">
+          <v-alert variant="tonal" class="bubble mb-3" :text="reply" />
+          <div v-if="busy" class="text-center py-4">
+            <v-progress-circular indeterminate size="28" color="primary" />
+          </div>
+          <div v-else class="options">
             <v-btn
-              v-for="opt in availableOptions"
-              :key="opt.id"
+              v-for="(opt, i) in options"
+              :key="i"
               class="mb-2 text-none option-btn"
               variant="outlined"
               size="large"
               block
-              :disabled="busy"
-              @click="choose(opt.id)"
+              @click="choose(opt)"
             >
-              {{ opt.label }}
+              {{ opt }}
             </v-btn>
           </div>
         </div>
@@ -48,18 +53,19 @@
 
       <!-- Ending -->
       <template v-else-if="phase === 'ending'">
-        <div class="portrait-pane ending mb-3" :style="{ background: bg }">
-          <div class="face">{{ face }}</div>
+        <div class="portrait-pane ending mb-3" :style="{ background: currentArt.gradient }">
+          <img v-if="currentArt.image" :src="currentArt.image" class="art-img" alt="" />
+          <div v-else class="face">{{ currentArt.emoji }}</div>
         </div>
         <v-alert
           :type="success ? 'success' : 'warning'"
           variant="tonal"
           class="mb-3"
-          :title="success ? 'Дядя Витя пропустил!' : 'Не в этот раз'"
+          :title="success ? 'Ты дома!' : 'Не в этот раз'"
           :text="
             success
-              ? 'Ты дома. Кот наблевал на шторы. Но ты дома.'
-              : 'Дядя Витя тебя не пропустил. Стоишь во дворе, курить бамбук.'
+              ? 'Дядя Ваня открылся и пропустил тебя. Дома кот наблевал на шторы. Но ты дома.'
+              : 'Дядя Ваня так тебя и не пропустил. Стоишь во дворе.'
           "
         />
         <p class="text-body-2 mb-4">
@@ -104,11 +110,17 @@
 import { computed, onMounted, ref } from 'vue';
 import { gameApi } from '../api/endpoints';
 import { useErrorStore } from '../stores/error';
-import { backgroundFor, emotionFace } from '../game/assets';
-import type { GameCharacter, GameConfig, GameLeaderboardEntry, GameStats } from '../api/types';
+import type {
+  GameArt,
+  GameCharacter,
+  GameConfig,
+  GameExchange,
+  GameLeaderboardEntry,
+  GameStats,
+} from '../api/types';
 
 const GAME = 'smalltalk_khimki';
-const START_EMOTION = 'suspicious';
+const FALLBACK_ART: GameArt = { key: '', emoji: '🧑', gradient: 'linear-gradient(160deg, #333, #111)' };
 
 const errorStore = useErrorStore();
 
@@ -119,11 +131,11 @@ const config = ref<GameConfig | null>(null);
 const stats = ref<GameStats | null>(null);
 const leaderboard = ref<GameLeaderboardEntry[]>([]);
 
-const history = ref<string[]>([]);
-const used = ref<string[]>([]);
+const transcript = ref<GameExchange[]>([]);
 const steps = ref(0);
-const emotion = ref(START_EMOTION);
-const lastReply = ref('');
+const currentArtKey = ref('');
+const reply = ref('');
+const options = ref<string[]>([]);
 const success = ref(false);
 const busy = ref(false);
 
@@ -132,11 +144,11 @@ const character = computed<GameCharacter | null>(() => {
   if (!c) return null;
   return c.characters.find((ch) => ch.key === c.default_character) ?? c.characters[0] ?? null;
 });
-const availableOptions = computed(() =>
-  (character.value?.options ?? []).filter((o) => !used.value.includes(o.id)),
+// Art catalog resolved from the backend config (adding arts needs no client change).
+const artMap = computed<Record<string, GameArt>>(() =>
+  Object.fromEntries((character.value?.arts ?? []).map((a) => [a.key, a])),
 );
-const bg = computed(() => backgroundFor(character.value?.background ?? ''));
-const face = computed(() => emotionFace(emotion.value));
+const currentArt = computed<GameArt>(() => artMap.value[currentArtKey.value] ?? FALLBACK_ART);
 const bestLabel = computed(() =>
   stats.value && stats.value.best_steps > 0 ? `${stats.value.best_steps} шаг.` : '—',
 );
@@ -157,30 +169,35 @@ onMounted(async () => {
   }
 });
 
-function start() {
-  history.value = [];
-  used.value = [];
+async function start() {
+  const ch = character.value;
+  if (!ch) return;
+  transcript.value = [];
   steps.value = 0;
-  emotion.value = START_EMOTION;
-  lastReply.value = character.value?.greeting ?? '';
+  currentArtKey.value = ch.arts[0]?.key ?? '';
+  reply.value = ch.greeting;
+  options.value = [];
   success.value = false;
   phase.value = 'play';
+  await turn(''); // opening turn — the judge greets + offers the first options
 }
 
-async function choose(optionId: string) {
+async function turn(choice: string) {
   const ch = character.value;
   if (busy.value || !ch) return;
   busy.value = true;
   try {
-    const res = await gameApi.attempt(GAME, ch.key, history.value, optionId);
-    history.value.push(optionId);
-    used.value.push(optionId);
-    steps.value += 1;
-    emotion.value = res.emotion;
-    lastReply.value = res.reply;
+    const res = await gameApi.attempt(GAME, ch.key, transcript.value, choice);
+    if (choice !== '') {
+      transcript.value.push({ choice, reply: res.reply });
+      steps.value += 1;
+    }
+    reply.value = res.reply;
+    if (res.art) currentArtKey.value = res.art;
+    options.value = res.options ?? [];
     if (res.achieved) {
       await finish(true);
-    } else if (steps.value >= ch.max_steps || availableOptions.value.length === 0) {
+    } else if (choice !== '' && (options.value.length === 0 || steps.value >= ch.max_steps)) {
       await finish(false);
     }
   } catch (err) {
@@ -188,6 +205,10 @@ async function choose(optionId: string) {
   } finally {
     busy.value = false;
   }
+}
+
+function choose(label: string) {
+  if (!busy.value) void turn(label);
 }
 
 async function finish(won: boolean) {
@@ -205,7 +226,6 @@ async function finish(won: boolean) {
 </script>
 
 <style scoped>
-/* Portrait (default): character banner on top, dialogue below. */
 .stage {
   display: flex;
   flex-direction: column;
@@ -215,23 +235,24 @@ async function finish(won: boolean) {
   position: relative;
   border-radius: 12px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 140px;
+  min-height: 150px;
   padding: 12px;
   color: rgba(255, 255, 255, 0.92);
+  overflow: hidden;
 }
 .portrait-pane.ending {
   min-height: 120px;
 }
 .face {
-  font-size: 72px;
+  font-size: 76px;
   line-height: 1;
 }
-.who {
-  margin-top: 6px;
-  font-weight: 600;
+.art-img {
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
 }
 .steps {
   position: absolute;

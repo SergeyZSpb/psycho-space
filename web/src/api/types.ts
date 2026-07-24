@@ -71,24 +71,29 @@ export interface LoginResult {
 }
 
 // --- Game (mini-games section) ----------------------------------------------
-// A character dialogue judged by an AI (mock now, LLM later). The SPA fetches
-// the config, presents answer options, and each turn asks the backend to judge
-// whether the goal is reached. Persona prompts + answer keys stay server-side.
+// A character dialogue judged by an LLM. The SPA fetches config (character +
+// art catalog), then each turn sends the transcript + the player's chosen line;
+// the backend replies in character, judges progress, picks an art, and returns
+// the next options. Persona prompts stay server-side; options + art are
+// LLM-generated. Assets resolve from the backend art catalog (no client update
+// to add arts).
 
-export interface GameOption {
-  id: string;
-  label: string;
+// GameArt is one showable asset with its render descriptor. `image` (a URL)
+// wins when present; otherwise render `emoji` over `gradient`.
+export interface GameArt {
+  key: string;
+  emoji: string;
+  gradient: string;
+  image?: string;
 }
 
 export interface GameCharacter {
   key: string;
   name: string;
   goal: string;
-  background: string; // background asset key
   greeting: string;
-  emotions: string[]; // emotion asset keys the judge may show
+  arts: GameArt[]; // asset catalog the judge chooses from
   max_steps: number; // dialogue-step budget
-  options: GameOption[];
 }
 
 export interface GameConfig {
@@ -99,11 +104,20 @@ export interface GameConfig {
   characters: GameCharacter[];
 }
 
-// Result of one dialogue turn, judged server-side.
+// One completed turn in the conversation, sent back as context each turn.
+export interface GameExchange {
+  choice: string;
+  reply: string;
+}
+
+// Result of one dialogue turn, judged by the LLM. `art` is a key into the
+// character's art catalog. `options` are the next answer choices (labels),
+// fewer each turn; empty ends the dialogue.
 export interface GameTurnResult {
   reply: string;
-  emotion: string; // asset key to show
-  achieved: boolean; // goal reached?
+  art: string;
+  achieved: boolean;
+  options: string[];
 }
 
 export interface GameRun {

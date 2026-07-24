@@ -4,14 +4,17 @@ package game
 // today (one source of truth, editable without touching the frontend); a later
 // authoring UI / DB can replace this without changing the wire shape.
 //
-// What is NOT sent to the client (json:"-"): the character's persona/motivation/
-// talk-style prompt (fed to the AI judge later), and per-option mock tuning
-// (Effect / Reply). Answers must never be shipped, and the LLM will generate
-// replies at runtime anyway.
+// The persona fields (Motivation/Persona/TalkStyle) are the AI judge's prompt
+// material and are NOT sent to the client (json:"-"). Answer options are NOT
+// authored here — the LLM generates them each turn (see llm.go / evaluator.go).
 //
-// Assets are named by key only. The frontend resolves a background key and an
-// emotion key (the AI picks the emotion each turn) to concrete art — static
-// placeholders now, real images / backend-served URLs later.
+// Arts is the asset catalog: every visual the judge may show, each carrying its
+// own render descriptor (placeholder emoji + gradient now, Image URL later). The
+// judge returns an art KEY each turn; the frontend resolves it against this
+// catalog, so adding/altering arts is a backend-only change — the client needs
+// no update. Arts cover the character's changing mood (angry → warming → open,
+// sometimes angrier) AND story/location arts with no character (a memory beat,
+// the passage into the entrance).
 
 // Game is a mini-game: a set of characters and which one is played by default.
 type Game struct {
@@ -22,32 +25,37 @@ type Game struct {
 	Characters       []Character `json:"characters"`
 }
 
+// Art is one showable asset with its render descriptor. Image (a URL) wins when
+// set; otherwise the frontend renders Emoji over Gradient.
+type Art struct {
+	Key      string `json:"key"`
+	Emoji    string `json:"emoji"`
+	Gradient string `json:"gradient"`
+	Image    string `json:"image,omitempty"`
+}
+
 // Character is one person to convince. Public fields are sent to the SPA;
-// Motivation/Persona/TalkStyle/Threshold stay server-side (persona prompt for
-// the AI judge; mock tuning).
+// Motivation/Persona/TalkStyle stay server-side (the AI judge's persona prompt).
 type Character struct {
-	Key        string   `json:"key"`
-	Name       string   `json:"name"`
-	Goal       string   `json:"goal"`       // what the player must convince them of
-	Background string   `json:"background"` // background-screen asset key
-	Greeting   string   `json:"greeting"`   // opening line
-	Emotions   []string `json:"emotions"`   // emotion asset keys the judge may choose from
-	MaxSteps   int      `json:"max_steps"`  // dialogue-step budget before failure
-	Options    []Option `json:"options"`    // answer options (the dialogue wheel)
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+	Goal     string `json:"goal"`      // what the player must convince them of
+	Greeting string `json:"greeting"`  // opening line shown before the first turn
+	Arts     []Art  `json:"arts"`      // asset catalog the judge chooses from
+	MaxSteps int    `json:"max_steps"` // dialogue-step budget before failure
 
 	Motivation string `json:"-"` // AI persona: what drives them
 	Persona    string `json:"-"` // AI persona: character
 	TalkStyle  string `json:"-"` // AI persona: how they speak
-	Threshold  int    `json:"-"` // mock: conviction needed to reach the goal
 }
 
-// Option is one answer the player can pick. Effect/Reply are mock-only and never
-// serialised (they would leak the answer; the LLM generates replies itself).
-type Option struct {
-	ID     string `json:"id"`
-	Label  string `json:"label"`
-	Effect int    `json:"-"` // mock: conviction delta
-	Reply  string `json:"-"` // mock: canned character line
+// artKeys is the list of allowed art keys (for the judge prompt + clamping).
+func (c Character) artKeys() []string {
+	keys := make([]string, len(c.Arts))
+	for i, a := range c.Arts {
+		keys[i] = a.Key
+	}
+	return keys
 }
 
 // ContentFor returns the game config for a key, or ErrUnknownGame.
@@ -67,47 +75,48 @@ func (g Game) findCharacter(key string) (Character, bool) {
 	return Character{}, false
 }
 
-func (c Character) findOption(id string) (Option, bool) {
-	for _, o := range c.Options {
-		if o.ID == id {
-			return o, true
-		}
-	}
-	return Option{}, false
-}
-
-// smalltalkKhimki is the default script. It ships one character for now (the
-// default), a single background, and the standard emotion set. The whole profile
-// is replaceable config — a richer profile + prompts land later.
+// smalltalkKhimki is the default script. One character for now (the default).
+// The dialogue is inherently multi-step: the LLM only marks success once the
+// player has actually seen past the addict-idiot mask to дядя Ваня's depth
+// (love of children, humanist values); it returns fewer options each turn and
+// picks the art (his changing mood, or a story/location art) as the arc moves.
+// The profile is replaceable config — richer prompts + real art land later.
 func smalltalkKhimki() Game {
-	dyadyaVitya := Character{
-		Key:        "dyadya_vitya",
-		Name:       "Сосед дядя Витя",
-		Goal:       "Убедить дядю Витю, что ты свой, и он пропустит тебя к подъезду.",
-		Background: "entrance",
-		Greeting:   "Ты кто такой? Я тебя тут не видел.",
-		Emotions:   []string{"suspicious", "annoyed", "neutral", "warming", "pleased"},
-		MaxSteps:   5,
-		Motivation: "Охраняет свой двор, не любит чужаков и хамство, уважает своих.",
-		Persona:    "Пожилой сосед-ворчун, подозрительный, но отходчивый к своим.",
-		TalkStyle:  "Коротко, ворчливо, с прищуром; на грубость заводится, на уважение теплеет.",
-		Threshold:  3,
-		Options: []Option{
-			{ID: "domofon", Label: "Напомнить, как в 2019 вместе чинили домофон", Effect: 2, Reply: "Хм… а точно, было дело."},
-			{ID: "lusy", Label: "Сказать, что живёшь в 42-й, у Люси", Effect: 1, Reply: "У Люси, говоришь… ну допустим."},
-			{ID: "zhkh", Label: "Поворчать вместе про тарифы ЖКХ", Effect: 1, Reply: "Во-о, тарифы совсем оборзели, да."},
-			{ID: "hundred", Label: "Предложить сотку на водяру", Effect: -1, Reply: "Ты меня купить решил?!"},
-			{ID: "diver", Label: "Обозвать водолазом", Effect: -2, Reply: "Совсем берега потерял?!"},
-			{ID: "push", Label: "Молча попытаться протиснуться", Effect: -1, Reply: "Куда?! А ну стой."},
+	dyadyaVanya := Character{
+		Key:  "dyadya_vanya",
+		Name: "Дядя Ваня",
+		Goal: "Пройти мимо дяди Вани в свой подъезд: разговорить его, разглядеть за " +
+			"маской поверхностного торчка глубокую личность (любовь к детям, гуманизм) — " +
+			"тогда он пропустит тебя домой.",
+		Greeting: "Куда прёшь?! Не пущу. Есть чё? И баба есть — потомство надо оставить...",
+		Arts: []Art{
+			{Key: "entrance_far_angry", Emoji: "🏢", Gradient: "linear-gradient(160deg, #2a2f3a, #14171d)"},
+			{Key: "vanya_angry", Emoji: "😡", Gradient: "linear-gradient(160deg, #5a2f2f, #2a1717)"},
+			{Key: "vanya_suspicious", Emoji: "🤨", Gradient: "linear-gradient(160deg, #4a3b2f, #241c16)"},
+			{Key: "vanya_neutral", Emoji: "😐", Gradient: "linear-gradient(160deg, #3a3f4b, #20242c)"},
+			{Key: "vanya_warming", Emoji: "🙂", Gradient: "linear-gradient(160deg, #2f4738, #1c2a22)"},
+			{Key: "vanya_deep", Emoji: "🥹", Gradient: "linear-gradient(160deg, #2d5a53, #173b36)"},
+			{Key: "memory_children", Emoji: "🧒", Gradient: "linear-gradient(160deg, #4a4368, #241f3a)"},
+			{Key: "hallway_pass", Emoji: "🚪", Gradient: "linear-gradient(160deg, #2d5a53, #0f2b27)"},
 		},
+		MaxSteps: 10,
+		Motivation: "Постоянно хочет ширнуться и найти женщину, чтобы оставить потомство. " +
+			"Изначально не хочет никого пропускать. В глубине — тоскует по смыслу, любви и детях.",
+		Persona: "Странный сосед у подъезда, на грани шизофрении. За маской поверхностного " +
+			"торчка-нарика прячется глубокая, ранимая личность: любит детей, исповедует " +
+			"гуманистические ценности.",
+		TalkStyle: "Сбивчиво, резко скачет между бредом и внезапно глубокими мыслями; сперва " +
+			"агрессивно и подозрительно, теплеет, когда в нём видят человека, а не идиота; " +
+			"на грубость и снисходительность заводится обратно.",
 	}
 	return Game{
 		GameKey: GameSmalltalkKhimki,
 		Title:   "Смолтолк в Химках",
-		Intro: "Ты почти дома, но у подъезда — сосед дядя Витя. Разговори его и убеди, " +
-			"что ты свой. Выбирай реплики: нахамишь — не пройдёшь, найдёшь подход — ты дома " +
-			"(а кот уже наблевал на шторы).",
-		DefaultCharacter: dyadyaVitya.Key,
-		Characters:       []Character{dyadyaVitya},
+		Intro: "Ты почти дома, но у подъезда — странный сосед, дядя Ваня. Сначала он видится " +
+			"поверхностным торчком, который никого не пускает. Разговори его, загляни глубже — " +
+			"и, может, он откроется и пропустит тебя домой (а кот уже наблевал на шторы). " +
+			"Реплик немного, и с каждой попыткой их меньше.",
+		DefaultCharacter: dyadyaVanya.Key,
+		Characters:       []Character{dyadyaVanya},
 	}
 }

@@ -20,25 +20,21 @@ type Service struct {
 	eval Evaluator
 }
 
-// NewService wires the game service with the mock evaluator.
-func NewService(q db.DBTX, repo Repository) *Service {
-	return &Service{q: q, repo: repo, eval: MockEvaluator{}}
-}
-
-// NewServiceWithEvaluator wires the service with an explicit evaluator (used to
-// inject the LLM judge once credentials exist).
-func NewServiceWithEvaluator(q db.DBTX, repo Repository, eval Evaluator) *Service {
+// NewService wires the game service with an evaluator (the LLM judge).
+func NewService(q db.DBTX, repo Repository, eval Evaluator) *Service {
 	return &Service{q: q, repo: repo, eval: eval}
 }
 
-// Content returns the game config (characters, options, assets). Server-side
-// fields (persona prompts, mock tuning) are hidden by json tags.
+// Content returns the game config (characters, assets). Server-side persona
+// fields are hidden by json tags; answer options are LLM-generated, not here.
 func (s *Service) Content(gameKey string) (Game, error) {
 	return ContentFor(gameKey)
 }
 
-// Judge evaluates one dialogue turn against a character.
-func (s *Service) Judge(ctx context.Context, gameKey, characterKey string, priorOptionIDs []string, optionID string) (TurnResult, error) {
+// Judge evaluates one dialogue turn against a character. transcript is the
+// conversation so far; choice is what the player just said ("" on the opening
+// turn).
+func (s *Service) Judge(ctx context.Context, gameKey, characterKey string, transcript []Exchange, choice string) (TurnResult, error) {
 	g, err := ContentFor(gameKey)
 	if err != nil {
 		return TurnResult{}, err
@@ -47,7 +43,7 @@ func (s *Service) Judge(ctx context.Context, gameKey, characterKey string, prior
 	if !ok {
 		return TurnResult{}, ErrUnknownCharacter
 	}
-	return s.eval.Judge(ctx, ch, priorOptionIDs, optionID)
+	return s.eval.Judge(ctx, ch, transcript, choice)
 }
 
 // SubmitRun validates and records a finished run.
