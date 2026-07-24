@@ -67,12 +67,20 @@ func (s *Server) handleGameAttempt(w http.ResponseWriter, r *http.Request) {
 		CharacterKey string          `json:"character_key"`
 		Transcript   []game.Exchange `json:"transcript"` // conversation so far
 		Choice       string          `json:"choice"`     // player's latest line ("" = opening turn)
+		// Anger is the tension carried over from the previous turn. A pointer so
+		// an omitted field starts the scale where the character starts, rather
+		// than at the calmest possible value.
+		Anger *int `json:"anger"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_request")
 		return
 	}
-	res, err := s.d.Game.Judge(r.Context(), req.GameKey, req.CharacterKey, req.Transcript, req.Choice)
+	anger := game.StartAnger
+	if req.Anger != nil {
+		anger = *req.Anger
+	}
+	res, err := s.d.Game.Judge(r.Context(), req.GameKey, req.CharacterKey, req.Transcript, req.Choice, anger)
 	if err != nil {
 		switch {
 		case errors.Is(err, game.ErrUnknownGame):

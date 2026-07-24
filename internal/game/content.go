@@ -17,11 +17,15 @@ package game
 // the passage into the entrance).
 
 // Game is a mini-game: a set of characters and which one is played by default.
+// MaxAnger/StartAnger describe the tension scale so the client renders and seeds
+// it from the backend instead of hardcoding the numbers.
 type Game struct {
 	GameKey          string      `json:"game_key"`
 	Title            string      `json:"title"`
 	Intro            string      `json:"intro"`
 	DefaultCharacter string      `json:"default_character"`
+	MaxAnger         int         `json:"max_anger"`
+	StartAnger       int         `json:"start_anger"`
 	Characters       []Character `json:"characters"`
 }
 
@@ -150,6 +154,8 @@ func smalltalkKhimki() Game {
 			"поверхностным алкашом, который никого не пускает. Разговори его, загляни глубже — " +
 			"и, может, он откроется и пропустит тебя домой (а кот уже наблевал на шторы).",
 		DefaultCharacter: dyadyaVanya.Key,
+		MaxAnger:         MaxAnger,
+		StartAnger:       StartAnger,
 		Characters:       []Character{dyadyaVanya},
 	}
 }

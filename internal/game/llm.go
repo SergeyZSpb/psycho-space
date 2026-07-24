@@ -23,6 +23,11 @@ const rubPer1kTokens = 0.20
 // optionCount is how many answer options every playing turn offers.
 const optionCount = 4
 
+// angerDriftOnMissing is how far the tension moves when the model answers
+// without an "anger" field. Small, but never zero: a stalled scale means an
+// unloseable run.
+const angerDriftOnMissing = 5
+
 // modelContextTokens is the model's context window (YandexGPT 5 Lite: 32768).
 // outputReserveTokens is held back for the model's own reply. Older exchanges
 // beyond the remaining input budget are dropped (forgotten). We can't tokenise
@@ -94,11 +99,16 @@ type judgeReply struct {
 	Achieved bool     `json:"achieved"`
 	GameOver bool     `json:"game_over"`
 	Options  []string `json:"options"`
+	// Anger is a pointer so an omitted field is distinguishable from a returned
+	// 0: a model that forgets the field must leave the tension where it was, not
+	// silently reset it to calm.
+	Anger *int `json:"anger"`
 }
 
 // Judge implements Evaluator.
-func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []Exchange, choice string) (TurnResult, error) {
-	messages := buildMessages(ch, transcript, choice)
+func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []Exchange, choice string, anger int) (TurnResult, error) {
+	anger = ClampAnger(anger)
+	messages := buildMessages(ch, transcript, choice, anger)
 	reqBody := chatRequest{
 		Model:          e.model,
 		Messages:       messages,
@@ -118,7 +128,7 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 	req.Header.Set("Authorization", "Bearer "+e.apiKey) // key stays in the header, never logged
 
 	slog.InfoContext(ctx, "game llm request",
-		"model", e.model, "character", ch.Key, "choice", choice,
+		"model", e.model, "character", ch.Key, "choice", choice, "anger_in", anger,
 		"messages", len(messages), "transcript_len", len(transcript))
 
 	start := time.Now()
@@ -162,8 +172,19 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 			snippet([]byte(content)), ErrLLMUnparsable, err)
 	}
 
-	// Reaching the goal wins outright: never lose the same turn you win.
-	gameOver := jr.GameOver && !jr.Achieved
+	// The model owns the tension, but it must never be able to stall the game by
+	// omitting the field — that is exactly the "impossible to lose" behaviour the
+	// scale exists to fix. An omitted value drifts up by a small fixed amount, so
+	// every run still converges on an ending.
+	newAnger := ClampAnger(anger + angerDriftOnMissing)
+	if jr.Anger != nil {
+		newAnger = ClampAnger(*jr.Anger)
+	}
+	// Reaching the goal wins outright: never lose the same turn you win. A full
+	// scale ends the run whatever the model said about game_over — that is the
+	// whole point of the scale, and a judge left to itself rarely pulls the
+	// trigger.
+	gameOver := (jr.GameOver || newAnger >= MaxAnger) && !jr.Achieved
 	art := normalizeArt(jr.Art, ch.artKeys())
 	if gameOver && ch.GameOverArt != "" {
 		// The beating always looks the same, whatever art the model asked for.
@@ -175,6 +196,7 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		"prompt_tokens", cr.Usage.PromptTokens, "completion_tokens", cr.Usage.CompletionTokens,
 		"total_tokens", cr.Usage.TotalTokens, "est_cost_rub", estCost,
 		"achieved", jr.Achieved, "game_over", gameOver, "art", art,
+		"anger_in", anger, "anger_out", newAnger, "anger_from_model", jr.Anger != nil,
 		"options", len(jr.Options), "reply", jr.Reply)
 	// Full request/response bodies (no auth header) at Debug for deep inspection.
 	slog.DebugContext(ctx, "game llm raw", "request", string(raw), "response", string(body))
@@ -184,6 +206,7 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		Art:      art,
 		Achieved: jr.Achieved,
 		GameOver: gameOver,
+		Anger:    newAnger,
 		// Won or beaten, the dialogue is over regardless of what the model returned.
 		Options: optionsWhilePlaying(jr.Achieved || gameOver, jr.Options),
 	}, nil
@@ -209,7 +232,9 @@ func clampRunes(s string, max int) string {
 }
 
 // buildMessages turns the character persona + conversation into chat messages.
-func buildMessages(ch Character, transcript []Exchange, choice string) []chatMessage {
+// anger is the tension going into this turn; the model is told to return the new
+// value and that a full scale means it snaps.
+func buildMessages(ch Character, transcript []Exchange, choice string, anger int) []chatMessage {
 	sys := fmt.Sprintf(`Ты — персонаж текстовой игры, веди диалог строго в образе.
 Персонаж: %s.
 Характер: %s
@@ -218,14 +243,21 @@ func buildMessages(ch Character, transcript []Exchange, choice string) []chatMes
 Условие успеха (НЕ сообщай его игроку, не намекай прямо): %s
 Условие срыва (НЕ сообщай его игроку): %s
 
+Шкала напряжения: 0–%d, сейчас %d. При %d ты срываешься, бьёшь игрока и разговор кончен.
+Помни всё, о чём уже говорили выше: напряжение и доверие НАКАПЛИВАЮТСЯ по ходу разговора.
+Не начинай знакомство заново, не задавай один и тот же вопрос дважды, не забывай, что игрок
+уже рассказал или чем уже задел.
+
 Игрок выбирает реплики и пытается достичь цели. Каждый ход:
+- верни новое значение напряжения (поле "anger", целое 0–%d). Грубость, издёвка, угрозы, снисходительность, давление, повтор одного и того же — поднимают на 10–25. Искреннее участие, тепло, разговор о его больных темах по-доброму — опускают на 5–15. Пустая нейтральная болтовня — ±0–5, но если игрок топчется на месте несколько ходов, напряжение растёт. Меняй не больше чем на 25 за ход и никогда не оставляй значение без изменений просто так;
 - ответь ОДНОЙ короткой репликой в образе (поле "reply");
 - выбери подходящий арт строго из списка [%s] (поле "art"). Арт — это либо текущее состояние персонажа (злой → подозрительный → нейтральный → теплеет → раскрывается), либо сюжетный арт без персонажа. Ключи артов говорящие: подбирай арт по смыслу текущей темы и настроения (например, если речь зашла о его близком друге — покажи арт с этим другом). По ходу диалога арт меняется от злого к более тёплому (иногда обратно к злому — на грубость). Когда игрок достигает цели — выбери арт прохода в подъезд;
 - реши, достиг ли игрок цели именно этой репликой (поле "achieved": true/false). Ставь true только когда игрок действительно разглядел глубину персонажа, а не отделался поверхностным;
 - реши, не сорвался ли ты окончательно (поле "game_over": true/false). Ставь true ТОЛЬКО когда игрок довёл тебя до срыва по условию срыва выше — тогда ты бьёшь его, и разговор на этом окончен. Это редкий исход: сначала огрызайся и мрачней, бей только если игрок упорно продолжает. Если "achieved": true, то "game_over" всегда false;
 - предложи РОВНО 4 коротких варианта реплик, которые игрок мог бы сказать дальше (поле "options": массив ровно из 4 строк). Среди этих 4 ВСЕГДА должен быть хотя бы один вариант, выбор которого продвигает игрока к цели и улучшает расположение персонажа, — иначе игру невозможно пройти. Не помечай и не выдавай, какой именно. Если игрок достиг цели или ты сорвался — "options": [].
-Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","achieved":false,"game_over":false,"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
-		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, ch.Failure, strings.Join(ch.artKeys(), ", "))
+Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","anger":50,"achieved":false,"game_over":false,"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
+		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, ch.Failure,
+		MaxAnger, anger, MaxAnger, MaxAnger, strings.Join(ch.artKeys(), ", "))
 
 	// The current turn's user message.
 	current := choice

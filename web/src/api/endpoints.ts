@@ -84,11 +84,18 @@ export const gameApi = {
   config: (game: string) => apiFetch<GameConfig>(`/api/game/config?game=${game}`),
 
   // Judge one dialogue turn via the LLM. `transcript` is the conversation so
-  // far; `choice` is the player's latest line ("" on the opening turn).
-  attempt: (game: string, character: string, transcript: GameExchange[], choice: string) =>
+  // far; `choice` is the player's latest line ("" on the opening turn); `anger`
+  // is the tension carried over from the previous turn.
+  attempt: (
+    game: string,
+    character: string,
+    transcript: GameExchange[],
+    choice: string,
+    anger: number,
+  ) =>
     apiFetch<GameTurnResult>('/api/game/attempt', {
       method: 'POST',
-      body: { game_key: game, character_key: character, transcript, choice },
+      body: { game_key: game, character_key: character, transcript, choice, anger },
     }),
 
   // Record a finished play-through (goal reached or step budget spent).

@@ -35,8 +35,9 @@ func (s *Service) Content(gameKey string) (Game, error) {
 
 // Judge evaluates one dialogue turn against a character. transcript is the
 // conversation so far; choice is what the player just said ("" on the opening
-// turn).
-func (s *Service) Judge(ctx context.Context, gameKey, characterKey string, transcript []Exchange, choice string) (TurnResult, error) {
+// turn); anger is the tension going into the turn (the client carries it between
+// turns, like the transcript).
+func (s *Service) Judge(ctx context.Context, gameKey, characterKey string, transcript []Exchange, choice string, anger int) (TurnResult, error) {
 	g, err := ContentFor(gameKey)
 	if err != nil {
 		return TurnResult{}, err
@@ -45,7 +46,7 @@ func (s *Service) Judge(ctx context.Context, gameKey, characterKey string, trans
 	if !ok {
 		return TurnResult{}, ErrUnknownCharacter
 	}
-	return s.eval.Judge(ctx, ch, transcript, choice)
+	return s.eval.Judge(ctx, ch, transcript, choice, anger)
 }
 
 // SubmitRun validates and records a finished run.

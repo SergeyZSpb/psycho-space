@@ -37,9 +37,20 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("unknown game config status %d; want 404", st)
 	}
 
+	// The config carries the tension scale so the client never hardcodes it.
+	if cfg["max_anger"].(float64) != 100 || cfg["start_anger"].(float64) <= 0 {
+		t.Fatalf("config should carry the tension scale: %v", cfg)
+	}
+
 	attempt := func(transcript []map[string]string, choice string) (int, map[string]any) {
 		return doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", map[string]any{
 			"game_key": "smalltalk_khimki", "character_key": charKey, "transcript": transcript, "choice": choice,
+		})
+	}
+	attemptAnger := func(choice string, anger int) (int, map[string]any) {
+		return doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", map[string]any{
+			"game_key": "smalltalk_khimki", "character_key": charKey,
+			"transcript": []any{}, "choice": choice, "anger": anger,
 		})
 	}
 
@@ -79,6 +90,25 @@ func TestGameFlow(t *testing.T) {
 	}
 	if opts, _ := rGO["options"].([]any); len(opts) != 0 {
 		t.Fatalf("game over should clear options: %v", rGO)
+	}
+
+	// The tension scale round-trips: we send it, the judge returns the new value.
+	st, rCalm := attemptAnger("теплеет", 60)
+	if st != http.StatusOK || rCalm["anger"].(float64) != 25 || rCalm["game_over"] != false {
+		t.Fatalf("calming turn: status %d res %v; want 200 anger 25", st, rCalm)
+	}
+
+	// A full scale ends the run on its own — the fake judge sets anger 100 and no
+	// game_over flag, and the backend must still lose the run and force the art.
+	st, rMax := attemptAnger("бесит", 90)
+	if st != http.StatusOK || rMax["game_over"] != true {
+		t.Fatalf("full scale: status %d res %v; want 200 game_over=true", st, rMax)
+	}
+	if rMax["anger"].(float64) != 100 || rMax["art"] != "vanya_game_over_hits_us" {
+		t.Fatalf("full scale res = %v; want anger 100 and the forced punch art", rMax)
+	}
+	if opts, _ := rMax["options"].([]any); len(opts) != 0 {
+		t.Fatalf("a lost run should clear options: %v", rMax)
 	}
 
 	// A content-filter refusal (fake LLM keys on "цензура"): HTTP 200 from the

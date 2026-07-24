@@ -123,6 +123,13 @@ func startFakeLLM() *httptest.Server {
 			// The art is deliberately wrong here — the backend must force the
 			// character's game-over art.
 			content = `{"reply":"Ну всё, доигрался","art":"vanya_neutral","achieved":false,"game_over":true,"options":["ещё"]}`
+		case strings.Contains(last, "бесит"):
+			// Tension hits the top with no game_over flag: the backend must end
+			// the run on the scale alone.
+			content = `{"reply":"Всё, хватит","art":"vanya_angry","anger":100,"achieved":false,"options":["ещё","и ещё"]}`
+		case strings.Contains(last, "теплеет"):
+			// A calming turn: the judge lowers the scale.
+			content = `{"reply":"Ну... ладно","art":"vanya_warming","anger":25,"achieved":false,"options":["a","b","c","d"]}`
 		case strings.Contains(last, "цензура"):
 			// Stands in for the provider's content filter: HTTP 200, but plain
 			// prose instead of the JSON we asked for.

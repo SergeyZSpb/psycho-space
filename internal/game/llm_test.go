@@ -57,7 +57,7 @@ func TestOpenAIEvaluatorJudge(t *testing.T) {
 	defer srv.Close()
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "deepseek-4-pro"})
-	res, err := ev.Judge(context.Background(), testChar(), []Exchange{{Choice: "привет", Reply: "ну"}}, "домой")
+	res, err := ev.Judge(context.Background(), testChar(), []Exchange{{Choice: "привет", Reply: "ну"}}, "домой", StartAnger)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestOpenAIEvaluatorArtClampAndOptions(t *testing.T) {
 	srv := llmServer(t, content, http.StatusOK, nil, nil)
 	defer srv.Close()
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), testChar(), nil, "")
+	res, err := ev.Judge(context.Background(), testChar(), nil, "", StartAnger)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -108,14 +108,14 @@ func TestOpenAIEvaluatorErrors(t *testing.T) {
 	bad := llmServer(t, "", http.StatusInternalServerError, nil, nil)
 	defer bad.Close()
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: bad.URL, APIKey: "k", Model: "m"})
-	if _, err := ev.Judge(context.Background(), testChar(), nil, "x"); err == nil {
+	if _, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger); err == nil {
 		t.Fatal("want error on http 500")
 	}
 	// 200 but content isn't valid JSON.
 	junk := llmServer(t, "not json", http.StatusOK, nil, nil)
 	defer junk.Close()
 	ev2 := NewOpenAIEvaluator(config.LLM{BaseURL: junk.URL, APIKey: "k", Model: "m"})
-	if _, err := ev2.Judge(context.Background(), testChar(), nil, "x"); err == nil {
+	if _, err := ev2.Judge(context.Background(), testChar(), nil, "x", StartAnger); err == nil {
 		t.Fatal("want error on non-JSON content")
 	}
 }
@@ -130,7 +130,7 @@ func TestOpenAIEvaluatorNonJSONIsUnparsable(t *testing.T) {
 	defer srv.Close()
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	_, err := ev.Judge(context.Background(), testChar(), nil, "x")
+	_, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger)
 	if !errors.Is(err, ErrLLMUnparsable) {
 		t.Fatalf("err = %v; want ErrLLMUnparsable", err)
 	}
@@ -146,7 +146,7 @@ func TestOpenAIEvaluatorHTTPErrorIsNotUnparsable(t *testing.T) {
 	defer srv.Close()
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	_, err := ev.Judge(context.Background(), testChar(), nil, "x")
+	_, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger)
 	if err == nil || errors.Is(err, ErrLLMUnparsable) {
 		t.Fatalf("err = %v; want a non-ErrLLMUnparsable error", err)
 	}
@@ -181,7 +181,7 @@ func TestOpenAIEvaluatorGameOver(t *testing.T) {
 	ch.GameOverArt = "vanya_game_over_hits_us"
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), ch, nil, "ты никчёмный")
+	res, err := ev.Judge(context.Background(), ch, nil, "ты никчёмный", StartAnger)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestOpenAIEvaluatorAchievedBeatsGameOver(t *testing.T) {
 	ch.GameOverArt = "vanya_angry"
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), ch, nil, "x")
+	res, err := ev.Judge(context.Background(), ch, nil, "x", StartAnger)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -215,6 +215,153 @@ func TestOpenAIEvaluatorAchievedBeatsGameOver(t *testing.T) {
 	}
 	if res.Art != "hallway_pass" {
 		t.Fatalf("art = %q; the win must keep its own art", res.Art)
+	}
+}
+
+// The tension scale is the balance mechanism: the judge moves it, and a full
+// scale ends the run even when the model itself never sets game_over.
+func TestOpenAIEvaluatorAnger(t *testing.T) {
+	ch := testChar()
+	ch.Arts = append(ch.Arts, Art{Key: "vanya_game_over_hits_us"})
+	ch.GameOverArt = "vanya_game_over_hits_us"
+
+	tests := []struct {
+		name         string
+		content      string
+		angerIn      int
+		wantAnger    int
+		wantGameOver bool
+	}{
+		{
+			name:      "model raises it",
+			content:   `{"reply":"Ты чё сказал?","art":"vanya_angry","anger":65,"achieved":false,"options":["a","b","c","d"]}`,
+			angerIn:   StartAnger,
+			wantAnger: 65,
+		},
+		{
+			// A model that forgets the field must not stall the scale — that would
+			// bring back the unloseable run the scale exists to fix. It drifts up.
+			name:      "omitted drifts up instead of stalling",
+			content:   `{"reply":"Ну?","art":"vanya_angry","achieved":false,"options":["a","b","c","d"]}`,
+			angerIn:   70,
+			wantAnger: 70 + angerDriftOnMissing,
+		},
+		{
+			// The drift is clamped too, and still ends the run at the top.
+			name:         "omitted at the top still ends the run",
+			content:      `{"reply":"Ну?","art":"vanya_angry","achieved":false,"options":["a"]}`,
+			angerIn:      MaxAnger - 1,
+			wantAnger:    MaxAnger,
+			wantGameOver: true,
+		},
+		{
+			name:      "clamped to the scale",
+			content:   `{"reply":"Ы","art":"vanya_angry","anger":-40,"achieved":false,"options":["a"]}`,
+			angerIn:   50,
+			wantAnger: 0,
+		},
+		{
+			// The whole point: max tension loses the run with no game_over flag.
+			name:         "full scale ends the run",
+			content:      `{"reply":"Всё, доигрался","art":"vanya_neutral","anger":100,"achieved":false,"options":["a","b"]}`,
+			angerIn:      90,
+			wantAnger:    MaxAnger,
+			wantGameOver: true,
+		},
+		{
+			name:         "over the top is clamped and still ends the run",
+			content:      `{"reply":"Всё","art":"vanya_neutral","anger":250,"achieved":false,"options":[]}`,
+			angerIn:      90,
+			wantAnger:    MaxAnger,
+			wantGameOver: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := llmServer(t, tt.content, http.StatusOK, nil, nil)
+			defer srv.Close()
+			ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+			res, err := ev.Judge(context.Background(), ch, nil, "x", tt.angerIn)
+			if err != nil {
+				t.Fatalf("Judge: %v", err)
+			}
+			if res.Anger != tt.wantAnger {
+				t.Errorf("anger = %d; want %d", res.Anger, tt.wantAnger)
+			}
+			if res.GameOver != tt.wantGameOver {
+				t.Errorf("game_over = %v; want %v", res.GameOver, tt.wantGameOver)
+			}
+			if tt.wantGameOver {
+				if res.Art != ch.GameOverArt {
+					t.Errorf("art = %q; want the forced %q", res.Art, ch.GameOverArt)
+				}
+				if len(res.Options) != 0 {
+					t.Errorf("a lost run should clear options, got %v", res.Options)
+				}
+			}
+		})
+	}
+}
+
+// Winning on the turn the scale fills is still a win.
+func TestOpenAIEvaluatorAchievedBeatsFullAnger(t *testing.T) {
+	content := `{"reply":"Ладно, заходи","art":"hallway_pass","anger":100,"achieved":true,"options":[]}`
+	srv := llmServer(t, content, http.StatusOK, nil, nil)
+	defer srv.Close()
+
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	res, err := ev.Judge(context.Background(), testChar(), nil, "x", 95)
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if !res.Achieved || res.GameOver {
+		t.Fatalf("res = %+v; want achieved and not game_over", res)
+	}
+}
+
+// The judge can only move the scale if it is told where the scale stands.
+func TestBuildMessagesCarriesAnger(t *testing.T) {
+	sys := buildMessages(testChar(), nil, "x", 73)[0].Content
+	if !strings.Contains(sys, "сейчас 73") {
+		t.Fatalf("system prompt should state the current tension; got:\n%s", sys)
+	}
+	if !strings.Contains(sys, `"anger"`) {
+		t.Fatal("system prompt should ask for the anger field back")
+	}
+	if !strings.Contains(sys, "НАКАПЛИВАЮТСЯ") {
+		t.Fatal("system prompt should tell the model the conversation accumulates")
+	}
+}
+
+// An out-of-range value from a tampering client is clamped before it reaches the
+// prompt, so it can neither disable the scale nor pre-lose the run.
+func TestJudgeClampsIncomingAnger(t *testing.T) {
+	var req chatRequest
+	content := `{"reply":"Ну?","art":"vanya_angry","achieved":false,"options":["a"]}`
+	srv := llmServer(t, content, http.StatusOK, nil, &req)
+	defer srv.Close()
+
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	res, err := ev.Judge(context.Background(), testChar(), nil, "x", -999)
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	// Clamped to 0 on the way in; this reply omits "anger", so it drifts from 0.
+	if res.Anger != angerDriftOnMissing {
+		t.Fatalf("anger = %d; want %d (clamped to 0 in, then drift)", res.Anger, angerDriftOnMissing)
+	}
+	if !strings.Contains(req.Messages[0].Content, "сейчас 0") {
+		t.Fatal("prompt should carry the clamped tension")
+	}
+}
+
+func TestClampAnger(t *testing.T) {
+	for _, tt := range []struct{ in, want int }{
+		{-1, 0}, {0, 0}, {50, 50}, {MaxAnger, MaxAnger}, {MaxAnger + 1, MaxAnger},
+	} {
+		if got := ClampAnger(tt.in); got != tt.want {
+			t.Errorf("ClampAnger(%d) = %d; want %d", tt.in, got, tt.want)
+		}
 	}
 }
 
@@ -251,7 +398,7 @@ func TestBuildMessagesDropsOldHistory(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		tr = append(tr, Exchange{Choice: big, Reply: big})
 	}
-	msgs := buildMessages(testChar(), tr, "финал")
+	msgs := buildMessages(testChar(), tr, "финал", StartAnger)
 	included := (len(msgs) - 2) / 2 // minus system + current user
 	if included >= 100 {
 		t.Fatalf("old history not dropped: included=%d of 100", included)

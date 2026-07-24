@@ -44,7 +44,23 @@
         </div>
 
         <div class="dialog-pane">
-          <div class="goal text-caption text-medium-emphasis mb-1">🎯 {{ character.goal }}</div>
+          <div class="goal text-caption text-medium-emphasis">🎯 {{ character.goal }}</div>
+          <!-- Tension scale: filled = дядя Ваня snaps and the run is lost. Kept to
+               one tiny caption row + a 5px bar so the art pane absorbs the height
+               and the play screen still never scrolls. -->
+          <div class="anger">
+            <div class="anger-cap d-flex align-center justify-space-between">
+              <span>😤 {{ angerLabel(anger, maxAnger) }}</span>
+              <span>{{ anger }}/{{ maxAnger }}</span>
+            </div>
+            <v-progress-linear
+              :model-value="anger"
+              :max="maxAnger"
+              :color="angerColor(anger, maxAnger)"
+              height="5"
+              rounded
+            />
+          </div>
           <v-alert
             v-if="rateLimited"
             type="warning"
@@ -159,6 +175,7 @@ import { gameApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import { useErrorStore } from '../stores/error';
 import { BOARDS, boardMeta } from '../lib/gameBoards';
+import { angerColor, angerLabel } from '../lib/anger';
 import type {
   GameArt,
   GameBoardKey,
@@ -189,6 +206,9 @@ const reply = ref('');
 const options = ref<string[]>([]);
 const success = ref(false);
 const gameOver = ref(false); // lost by being punched, not by running out of options
+// Tension, carried between turns like the transcript: we send it, the judge
+// returns the new value, and at max_anger the backend ends the run.
+const anger = ref(0);
 const busy = ref(false);
 const rateLimited = ref(false);
 
@@ -228,6 +248,7 @@ const endingText = computed(() => {
     : 'Дядя Ваня так тебя и не пропустил. Стоишь во дворе.';
 });
 
+const maxAnger = computed(() => config.value?.max_anger ?? 100);
 const currentBoard = computed(() => boardMeta(board.value));
 const boardEntries = computed(() => boards.value?.[board.value] ?? []);
 
@@ -259,6 +280,7 @@ function start() {
   options.value = [...ch.opening_options];
   success.value = false;
   gameOver.value = false;
+  anger.value = config.value?.start_anger ?? 0; // he opens hostile, not calm
   phase.value = 'play';
 }
 
@@ -268,11 +290,12 @@ async function turn(choice: string) {
   busy.value = true;
   rateLimited.value = false;
   try {
-    const res = await gameApi.attempt(GAME, ch.key, transcript.value, choice);
+    const res = await gameApi.attempt(GAME, ch.key, transcript.value, choice, anger.value);
     if (choice !== '') {
       transcript.value.push({ choice, reply: res.reply });
       steps.value += 1;
     }
+    anger.value = res.anger;
     reply.value = res.reply;
     if (res.art) currentArtKey.value = res.art;
     options.value = res.options ?? [];
@@ -419,6 +442,18 @@ async function finish(won: boolean) {
 }
 .goal {
   line-height: 1.2;
+}
+/* Tension row: one 12px caption line + a 5px bar ≈ 22px total. The art pane is
+   `flex: 1 1 auto; min-height: 0`, so this comes out of the picture rather than
+   out of the options — the play screen still never scrolls. */
+.anger {
+  margin: 3px 0 6px;
+}
+.anger-cap {
+  font-size: 0.65rem;
+  line-height: 1.2;
+  opacity: 0.7;
+  margin-bottom: 2px;
 }
 /* Four record-board tabs have to fit across a 360px phone: small type, minimal
    padding, and no per-tab minimum width. */

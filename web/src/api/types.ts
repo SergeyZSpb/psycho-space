@@ -101,6 +101,9 @@ export interface GameConfig {
   title: string;
   intro: string;
   default_character: string;
+  /** Tension scale, defined by the backend so the client never hardcodes it. */
+  max_anger: number;
+  start_anger: number;
   characters: GameCharacter[];
 }
 
@@ -119,6 +122,8 @@ export interface GameTurnResult {
   art: string;
   achieved: boolean;
   game_over: boolean;
+  /** Tension after this turn, 0..max_anger. At the max the run is lost. */
+  anger: number;
   options: string[];
 }
 

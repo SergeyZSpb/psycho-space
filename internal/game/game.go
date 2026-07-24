@@ -29,6 +29,29 @@ const (
 // maxSteps bounds a submitted step count (defence against garbage input).
 const maxSteps = 1000
 
+// The tension scale. It is the game's only cross-turn state besides the
+// transcript: the client sends the current value with each turn, the judge
+// returns the new one, and at MaxAnger the character snaps and the run is lost
+// automatically — so a player who keeps pushing always eventually loses, which
+// a judge left to its own devices was reluctant to enforce.
+//
+// StartAnger is deliberately well above zero: дядя Ваня opens hostile.
+const (
+	MaxAnger   = 100
+	StartAnger = 40
+)
+
+// ClampAnger bounds a tension value to the scale.
+func ClampAnger(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > MaxAnger {
+		return MaxAnger
+	}
+	return v
+}
+
 // Run is a recorded, finished play-through of one character dialogue.
 type Run struct {
 	ID           string

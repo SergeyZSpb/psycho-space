@@ -21,14 +21,16 @@ type TurnResult struct {
 	Art      string   `json:"art"`       // one of Character.Arts (mood or story/location art)
 	Achieved bool     `json:"achieved"`  // has the player convinced them (goal reached)?
 	GameOver bool     `json:"game_over"` // has the player pushed them too far (run lost)?
+	Anger    int      `json:"anger"`     // tension after this turn, 0..MaxAnger; at max the run is lost
 	Options  []string `json:"options"`   // answer options for the next turn (4 while playing)
 }
 
 // Evaluator judges one dialogue turn: given the character, the conversation so
-// far, and what the player just said (choice; empty on the opening turn), it
-// decides the character's reply, emotion, whether the goal is reached, and the
-// next answer options. The only implementation is the OpenAI-compatible LLM
-// judge (see llm.go); the game requires an LLM endpoint to be configured.
+// far, what the player just said (choice; empty on the opening turn), and the
+// tension going in, it decides the character's reply, emotion, the new tension,
+// whether the goal is reached, and the next answer options. The only
+// implementation is the OpenAI-compatible LLM judge (see llm.go); the game
+// requires an LLM endpoint to be configured.
 type Evaluator interface {
-	Judge(ctx context.Context, ch Character, transcript []Exchange, choice string) (TurnResult, error)
+	Judge(ctx context.Context, ch Character, transcript []Exchange, choice string, anger int) (TurnResult, error)
 }
