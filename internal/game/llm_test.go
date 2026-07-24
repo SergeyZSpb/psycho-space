@@ -169,6 +169,55 @@ func TestSnippetTruncatesOnRunes(t *testing.T) {
 	}
 }
 
+// Snapping ends the run: options are cleared and the art is forced to the
+// character's game-over art, whatever the model asked to show.
+func TestOpenAIEvaluatorGameOver(t *testing.T) {
+	content := `{"reply":"Да пошёл ты!","art":"vanya_neutral","achieved":false,"game_over":true,"options":["ещё","и ещё"]}`
+	srv := llmServer(t, content, http.StatusOK, nil, nil)
+	defer srv.Close()
+
+	ch := testChar()
+	ch.Arts = append(ch.Arts, Art{Key: "vanya_game_over_hits_us"})
+	ch.GameOverArt = "vanya_game_over_hits_us"
+
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	res, err := ev.Judge(context.Background(), ch, nil, "ты никчёмный")
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if !res.GameOver || res.Achieved {
+		t.Fatalf("res = %+v; want game_over without achieved", res)
+	}
+	if res.Art != "vanya_game_over_hits_us" {
+		t.Fatalf("art = %q; want the forced game-over art", res.Art)
+	}
+	if len(res.Options) != 0 {
+		t.Fatalf("game over should clear options, got %v", res.Options)
+	}
+}
+
+// Winning and snapping on the same turn is a contradiction — the win wins.
+func TestOpenAIEvaluatorAchievedBeatsGameOver(t *testing.T) {
+	content := `{"reply":"Заходи","art":"hallway_pass","achieved":true,"game_over":true,"options":[]}`
+	srv := llmServer(t, content, http.StatusOK, nil, nil)
+	defer srv.Close()
+
+	ch := testChar()
+	ch.GameOverArt = "vanya_angry"
+
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	res, err := ev.Judge(context.Background(), ch, nil, "x")
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if !res.Achieved || res.GameOver {
+		t.Fatalf("res = %+v; want achieved and not game_over", res)
+	}
+	if res.Art != "hallway_pass" {
+		t.Fatalf("art = %q; the win must keep its own art", res.Art)
+	}
+}
+
 func TestOptionsWhilePlaying(t *testing.T) {
 	if optionsWhilePlaying(true, []string{"a", "b"}) != nil {
 		t.Fatal("achieved should return no options")

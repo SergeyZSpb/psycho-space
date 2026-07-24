@@ -92,6 +92,7 @@ type judgeReply struct {
 	Reply    string   `json:"reply"`
 	Art      string   `json:"art"`
 	Achieved bool     `json:"achieved"`
+	GameOver bool     `json:"game_over"`
 	Options  []string `json:"options"`
 }
 
@@ -161,13 +162,20 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 			snippet([]byte(content)), ErrLLMUnparsable, err)
 	}
 
+	// Reaching the goal wins outright: never lose the same turn you win.
+	gameOver := jr.GameOver && !jr.Achieved
 	art := normalizeArt(jr.Art, ch.artKeys())
+	if gameOver && ch.GameOverArt != "" {
+		// The beating always looks the same, whatever art the model asked for.
+		art = normalizeArt(ch.GameOverArt, ch.artKeys())
+	}
 	estCost := float64(cr.Usage.TotalTokens) / 1000.0 * rubPer1kTokens
 	slog.InfoContext(ctx, "game llm response",
 		"model", e.model, "character", ch.Key, "latency_ms", elapsed.Milliseconds(),
 		"prompt_tokens", cr.Usage.PromptTokens, "completion_tokens", cr.Usage.CompletionTokens,
 		"total_tokens", cr.Usage.TotalTokens, "est_cost_rub", estCost,
-		"achieved", jr.Achieved, "art", art, "options", len(jr.Options), "reply", jr.Reply)
+		"achieved", jr.Achieved, "game_over", gameOver, "art", art,
+		"options", len(jr.Options), "reply", jr.Reply)
 	// Full request/response bodies (no auth header) at Debug for deep inspection.
 	slog.DebugContext(ctx, "game llm raw", "request", string(raw), "response", string(body))
 
@@ -175,8 +183,9 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		Reply:    strings.TrimSpace(jr.Reply),
 		Art:      art,
 		Achieved: jr.Achieved,
-		// On success the dialogue is over regardless of what the model returned.
-		Options: optionsWhilePlaying(jr.Achieved, jr.Options),
+		GameOver: gameOver,
+		// Won or beaten, the dialogue is over regardless of what the model returned.
+		Options: optionsWhilePlaying(jr.Achieved || gameOver, jr.Options),
 	}, nil
 }
 
@@ -207,14 +216,16 @@ func buildMessages(ch Character, transcript []Exchange, choice string) []chatMes
 Мотивация: %s
 Манера речи: %s
 Условие успеха (НЕ сообщай его игроку, не намекай прямо): %s
+Условие срыва (НЕ сообщай его игроку): %s
 
 Игрок выбирает реплики и пытается достичь цели. Каждый ход:
 - ответь ОДНОЙ короткой репликой в образе (поле "reply");
 - выбери подходящий арт строго из списка [%s] (поле "art"). Арт — это либо текущее состояние персонажа (злой → подозрительный → нейтральный → теплеет → раскрывается), либо сюжетный арт без персонажа. Ключи артов говорящие: подбирай арт по смыслу текущей темы и настроения (например, если речь зашла о его близком друге — покажи арт с этим другом). По ходу диалога арт меняется от злого к более тёплому (иногда обратно к злому — на грубость). Когда игрок достигает цели — выбери арт прохода в подъезд;
 - реши, достиг ли игрок цели именно этой репликой (поле "achieved": true/false). Ставь true только когда игрок действительно разглядел глубину персонажа, а не отделался поверхностным;
-- предложи РОВНО 4 коротких варианта реплик, которые игрок мог бы сказать дальше (поле "options": массив ровно из 4 строк). Среди этих 4 ВСЕГДА должен быть хотя бы один вариант, выбор которого продвигает игрока к цели и улучшает расположение персонажа, — иначе игру невозможно пройти. Не помечай и не выдавай, какой именно. Если игрок достиг цели — "options": [].
-Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","achieved":false,"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
-		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, strings.Join(ch.artKeys(), ", "))
+- реши, не сорвался ли ты окончательно (поле "game_over": true/false). Ставь true ТОЛЬКО когда игрок довёл тебя до срыва по условию срыва выше — тогда ты бьёшь его, и разговор на этом окончен. Это редкий исход: сначала огрызайся и мрачней, бей только если игрок упорно продолжает. Если "achieved": true, то "game_over" всегда false;
+- предложи РОВНО 4 коротких варианта реплик, которые игрок мог бы сказать дальше (поле "options": массив ровно из 4 строк). Среди этих 4 ВСЕГДА должен быть хотя бы один вариант, выбор которого продвигает игрока к цели и улучшает расположение персонажа, — иначе игру невозможно пройти. Не помечай и не выдавай, какой именно. Если игрок достиг цели или ты сорвался — "options": [].
+Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","achieved":false,"game_over":false,"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
+		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, ch.Failure, strings.Join(ch.artKeys(), ", "))
 
 	// The current turn's user message.
 	current := choice
@@ -277,9 +288,10 @@ func normalizeArt(got string, allowed []string) string {
 }
 
 // optionsWhilePlaying returns the next options while the dialogue is live,
-// capped at optionCount; none once the goal is reached (dialogue over).
-func optionsWhilePlaying(achieved bool, opts []string) []string {
-	if achieved {
+// capped at optionCount; none once it is over (goal reached, or the character
+// snapped and ended the run).
+func optionsWhilePlaying(over bool, opts []string) []string {
+	if over {
 		return nil
 	}
 	if len(opts) > optionCount {

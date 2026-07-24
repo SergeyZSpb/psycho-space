@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,10 +86,17 @@ func TestContentFor(t *testing.T) {
 	if len(ch.OpeningOptions) == 0 {
 		t.Fatalf("character %q has no static opening options", ch.Key)
 	}
-	// Judge prompt material must be present; the internal win condition is
-	// server-only (never the public Goal).
-	if ch.Objective == "" || ch.Persona == "" || ch.Motivation == "" || ch.TalkStyle == "" {
-		t.Fatalf("character %q missing judge prompt fields (Objective/Persona/Motivation/TalkStyle): %+v", ch.Key, ch)
+	// Judge prompt material must be present; the internal win/lose conditions
+	// are server-only (never the public Goal).
+	if ch.Objective == "" || ch.Failure == "" || ch.Persona == "" || ch.Motivation == "" || ch.TalkStyle == "" {
+		t.Fatalf("character %q missing judge prompt fields (Objective/Failure/Persona/Motivation/TalkStyle): %+v", ch.Key, ch)
+	}
+	// The game-over art must exist in the catalog, or a lost run shows nothing.
+	if ch.GameOverArt == "" {
+		t.Fatalf("character %q has no GameOverArt", ch.Key)
+	}
+	if !slices.Contains(ch.artKeys(), ch.GameOverArt) {
+		t.Fatalf("GameOverArt %q is not in the art catalog %v", ch.GameOverArt, ch.artKeys())
 	}
 	if _, err := ContentFor("nope"); !errors.Is(err, ErrUnknownGame) {
 		t.Fatalf("unknown game err = %v; want ErrUnknownGame", err)

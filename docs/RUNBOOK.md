@@ -74,7 +74,8 @@ It's an **LLM-judged** character dialogue: convince дядя Ваня (a strange
 >
 > The 422 path logs everything at Error in one line — `game llm reply not json` with `content`, `raw_response`, `finish_reason`, `parse_err`, token usage, latency, `choice`, `account_id`, `trace_id` (both bodies clamped to 2000 runes). Find one by trace id: `ssh psycho 'sudo grep <trace-id> /var/log/psycho-space/app.log' | jq .`
 
-- **Character profile is backend config**: `internal/game/content.go` — `Character` carries public bits (`name`, high-level `goal`, static `greeting` + `opening_options`, and the **`Arts` catalog**: each art's `emoji`/`gradient`/`image`) plus server-only judge material (`Objective` = the real win condition, kept off the client so it isn't spoiled; `Motivation`/`Persona`/`TalkStyle`). **Opening is static** — the greeting + first options render with no LLM call; the judge takes over from the player's first pick (the greeting is seeded into the model's context). Subsequent options are LLM-generated. Edit + restart `./dev.sh run`; the SPA fetches `GET /api/game/config`.
+- **Three endings.** `achieved` → he lets you in (`hallway_pass`). **`game_over`** → you pushed him too far, he throws a punch and the run is lost (`vanya_game_over_hits_us`, forced server-side; the SPA shows an `error` alert titled «Game over»). Neither → the dialogue simply ran out of options. `achieved` always wins over `game_over` on the same turn.
+- **Character profile is backend config**: `internal/game/content.go` — `Character` carries public bits (`name`, high-level `goal`, static `greeting` + `opening_options`, and the **`Arts` catalog**: each art's `emoji`/`gradient`/`image`) plus server-only judge material (`Objective` = the real win condition and `Failure` = what makes him snap, both kept off the client so they aren't spoiled; `GameOverArt`; `Motivation`/`Persona`/`TalkStyle`). **Opening is static** — the greeting + first options render with no LLM call; the judge takes over from the player's first pick (the greeting is seeded into the model's context). Subsequent options are LLM-generated. Edit + restart `./dev.sh run`; the SPA fetches `GET /api/game/config`.
 - **Assets resolve from the backend catalog** — `Character.Arts`. The judge returns an art *key*; the SPA renders the matching descriptor. Adding/altering arts is backend-only; no client change.
 - **Turns are judged by the LLM** in `internal/game/llm.go` (`openAIEvaluator`, OpenAI-compatible: Yandex Cloud / DeepSeek). `POST /api/game/attempt {game_key, character_key, transcript:[{choice,reply}], choice}` → `{reply, art, achieved, options[]}` (`choice:""` = opening turn). The full transcript is sent to the model, trimmed to a ~32k-token window (older exchanges forgotten — `maxContextTokens`).
 - **Config** (start target: **YandexGPT 5 Lite**): `PSYCHOSPACE_LLM_BASE_URL=https://llm.api.cloud.yandex.net/v1`, `PSYCHOSPACE_LLM_API_KEY=<key>`, `PSYCHOSPACE_LLM_MODEL=gpt://<folder-id>/yandexgpt-5-lite` (full model URI, folder-specific). Set all three to activate; creds arrive via GH secrets. Context window 32768 (`modelContextTokens`), ~2k reserved for output.
@@ -90,7 +91,7 @@ Each art in the catalog needs an image. **Placeholders (emoji + gradient) render
 - from the API: `curl -s -b <cookie> 'http://localhost:8080/api/game/config?game=smalltalk_khimki' | jq -r '.characters[].arts[].key'`
 - or read the `Arts: []Art{…}` block in `content.go`.
 
-Current game `smalltalk_khimki` — 9 arts (file name = `<key>.webp`):
+Current game `smalltalk_khimki` — 10 arts (file name = `<key>.webp`):
 
 | key | what |
 |-----|------|
@@ -102,9 +103,12 @@ Current game `smalltalk_khimki` — 9 arts (file name = `<key>.webp`):
 | `vanya_deep` | раскрывается глубина |
 | `vanya_sahur` | Ваня со своим другом Тунг Тунг Сахуром (ключевая тема — раскрыть, чтобы победить) |
 | `memory_children` | сюжетный арт-воспоминание, без персонажа |
-| `hallway_pass` | проход в подъезд, без дяди Вани (финал) |
+| `hallway_pass` | проход в подъезд, без дяди Вани (финал — победа) |
+| `vanya_game_over_hits_us` | Ваня сорвался и бьёт игрока (финал — проигрыш) |
 
 Two kinds: **character-mood** (`vanya_*`) — the same дядя Ваня, changing expression; **story/location** (`entrance_far_angry`, `memory_children`, `hallway_pass`) — scene, no character in focus.
+
+`vanya_game_over_hits_us` is not the judge's to pick: when it returns `game_over: true` the backend **forces** that art (`Character.GameOverArt`), so the beating always looks the same.
 
 **Size & format:**
 

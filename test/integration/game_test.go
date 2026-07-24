@@ -68,6 +68,19 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("achieved should clear options: %v", rB)
 	}
 
+	// Pushing too far (fake LLM keys on "хамство"): the character snaps, the run
+	// is over, and the backend forces the game-over art over the model's choice.
+	st, rGO := attempt(nil, "хамство")
+	if st != http.StatusOK || rGO["game_over"] != true || rGO["achieved"] != false {
+		t.Fatalf("game over turn: status %d res %v; want 200 game_over=true", st, rGO)
+	}
+	if rGO["art"] != "vanya_game_over_hits_us" {
+		t.Fatalf("game over art = %v; want the forced vanya_game_over_hits_us", rGO["art"])
+	}
+	if opts, _ := rGO["options"].([]any); len(opts) != 0 {
+		t.Fatalf("game over should clear options: %v", rGO)
+	}
+
 	// A content-filter refusal (fake LLM keys on "цензура"): HTTP 200 from the
 	// provider but prose instead of JSON. That is the dialogue's problem, not an
 	// outage — 422 with a stable code, so the SPA can tell the player to pick a

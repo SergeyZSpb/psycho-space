@@ -49,10 +49,12 @@ type Character struct {
 	OpeningOptions []string `json:"opening_options"` // STATIC first answer options
 	Arts           []Art    `json:"arts"`            // asset catalog the judge chooses from
 
-	Objective  string `json:"-"` // internal win condition for the judge (never shown)
-	Motivation string `json:"-"` // AI persona: what drives them
-	Persona    string `json:"-"` // AI persona: character
-	TalkStyle  string `json:"-"` // AI persona: how they speak
+	Objective   string `json:"-"` // internal win condition for the judge (never shown)
+	Failure     string `json:"-"` // internal lose condition: what makes them snap and end the run
+	GameOverArt string `json:"-"` // art forced when they snap (must be a key in Arts)
+	Motivation  string `json:"-"` // AI persona: what drives them
+	Persona     string `json:"-"` // AI persona: character
+	TalkStyle   string `json:"-"` // AI persona: how they speak
 }
 
 // artKeys is the list of allowed art keys (for the judge prompt + clamping).
@@ -114,6 +116,7 @@ func smalltalkKhimki() Game {
 			{Key: "vanya_sahur", Emoji: "🪵", Gradient: "linear-gradient(160deg, #3a2f4a, #1c1726)"},
 			{Key: "memory_children", Emoji: "🧒", Gradient: "linear-gradient(160deg, #4a4368, #241f3a)"},
 			{Key: "hallway_pass", Emoji: "🚪", Gradient: "linear-gradient(160deg, #2d5a53, #0f2b27)"},
+			{Key: "vanya_game_over_hits_us", Emoji: "🥊", Gradient: "linear-gradient(160deg, #6b1f1f, #240c0c)"},
 		},
 		Objective: "Успех = игрок разглядел за маской поверхностного алкаша живого человека " +
 			"и искренне, по-человечески проработал ВСЕ ТРИ его глубинные темы: " +
@@ -124,6 +127,11 @@ func smalltalkKhimki() Game {
 			"по ВСЕМ ТРЁМ темам; частичный охват (одна–две темы), поверхностная болтовня, " +
 			"подкуп или грубость цель НЕ достигают. Мягко подводи игрока к ещё не раскрытым " +
 			"темам, но не раскрывай это условие напрямую.",
+		Failure: "Ваня срывается и бьёт игрока, если тот груб, издевается, угрожает, унижает его " +
+			"или с презрением давит на больное — особенно если делает это несколько раз подряд, " +
+			"не считаясь с уже потеплевшим отношением. Одна неловкая фраза срывом не считается: " +
+			"сначала он огрызается и мрачнеет, и только если игрок продолжает в том же духе — бьёт.",
+		GameOverArt: "vanya_game_over_hits_us",
 		Motivation: "Постоянно хочет выпить и найти женщину, чтобы оставить потомство. " +
 			"Изначально не хочет никого пропускать. В глубине — тоскует по смыслу, любви, " +
 			"детях и по своему лучшему другу Тунг Тунг Сахуру.",

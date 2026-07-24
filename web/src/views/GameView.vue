@@ -93,15 +93,11 @@
           <div v-else class="face">{{ currentArt.emoji }}</div>
         </div>
         <v-alert
-          :type="success ? 'success' : 'warning'"
+          :type="success ? 'success' : gameOver ? 'error' : 'warning'"
           variant="tonal"
           class="mb-3"
-          :title="success ? 'Ты дома!' : 'Не в этот раз'"
-          :text="
-            success
-              ? 'Дядя Ваня открылся и пропустил тебя. Дома кот наблевал на шторы. Но ты дома.'
-              : 'Дядя Ваня так тебя и не пропустил. Стоишь во дворе.'
-          "
+          :title="endingTitle"
+          :text="endingText"
         />
         <p class="text-body-2 mb-4">
           Шагов: <strong>{{ steps }}</strong>
@@ -175,6 +171,7 @@ const currentArtKey = ref('');
 const reply = ref('');
 const options = ref<string[]>([]);
 const success = ref(false);
+const gameOver = ref(false); // lost by being punched, not by running out of options
 const busy = ref(false);
 const rateLimited = ref(false);
 
@@ -199,6 +196,20 @@ function artImg(a: GameArt): string {
 const bestLabel = computed(() =>
   stats.value && stats.value.best_steps > 0 ? `${stats.value.best_steps} шаг.` : '—',
 );
+
+// Three endings: convinced him, got punched, or simply never got in.
+const endingTitle = computed(() => {
+  if (success.value) return 'Ты дома!';
+  return gameOver.value ? 'Game over' : 'Не в этот раз';
+});
+const endingText = computed(() => {
+  if (success.value) {
+    return 'Дядя Ваня открылся и пропустил тебя. Дома кот наблевал на шторы. Но ты дома.';
+  }
+  return gameOver.value
+    ? 'Дядя Ваня сорвался и вмазал тебе. Сидишь на бордюре, домой так и не попал.'
+    : 'Дядя Ваня так тебя и не пропустил. Стоишь во дворе.';
+});
 
 async function refreshBoard() {
   const [lb, st] = await Promise.all([gameApi.leaderboard(GAME), gameApi.stats(GAME)]);
@@ -227,6 +238,7 @@ function start() {
   reply.value = ch.greeting;
   options.value = [...ch.opening_options];
   success.value = false;
+  gameOver.value = false;
   phase.value = 'play';
 }
 
@@ -246,6 +258,11 @@ async function turn(choice: string) {
     options.value = res.options ?? [];
     if (res.achieved) {
       await finish(true);
+    } else if (res.game_over) {
+      // Ваня сорвался и вмазал — run over, and the backend already forced the
+      // game-over art, so the ending screen shows the punch.
+      gameOver.value = true;
+      await finish(false);
     } else if (choice !== '' && options.value.length === 0) {
       await finish(false);
     }

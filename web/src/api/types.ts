@@ -112,11 +112,13 @@ export interface GameExchange {
 
 // Result of one dialogue turn, judged by the LLM. `art` is a key into the
 // character's art catalog. `options` are the next answer choices (labels) —
-// always 4 while playing; empty ends the dialogue.
+// always 4 while playing; empty ends the dialogue, either won (`achieved`) or
+// lost (`game_over` — the character snapped and threw a punch).
 export interface GameTurnResult {
   reply: string;
   art: string;
   achieved: boolean;
+  game_over: boolean;
   options: string[];
 }
 

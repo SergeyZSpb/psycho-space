@@ -118,6 +118,11 @@ func startFakeLLM() *httptest.Server {
 		switch {
 		case strings.Contains(last, "победа"):
 			content = `{"reply":"Ну проходи, сосед","art":"hallway_pass","achieved":true,"options":[]}`
+		case strings.Contains(last, "хамство"):
+			// The player pushed too far: the character snaps and the run is lost.
+			// The art is deliberately wrong here — the backend must force the
+			// character's game-over art.
+			content = `{"reply":"Ну всё, доигрался","art":"vanya_neutral","achieved":false,"game_over":true,"options":["ещё"]}`
 		case strings.Contains(last, "цензура"):
 			// Stands in for the provider's content filter: HTTP 200, but plain
 			// prose instead of the JSON we asked for.
