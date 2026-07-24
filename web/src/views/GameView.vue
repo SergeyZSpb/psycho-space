@@ -169,17 +169,18 @@ onMounted(async () => {
   }
 });
 
-async function start() {
+function start() {
   const ch = character.value;
   if (!ch) return;
+  // Static opening: the iconic greeting + the first options, no LLM call. The
+  // judge takes over from the player's first pick.
   transcript.value = [];
   steps.value = 0;
   currentArtKey.value = ch.arts[0]?.key ?? '';
   reply.value = ch.greeting;
-  options.value = [];
+  options.value = [...ch.opening_options];
   success.value = false;
   phase.value = 'play';
-  await turn(''); // opening turn — the judge greets + offers the first options
 }
 
 async function turn(choice: string) {

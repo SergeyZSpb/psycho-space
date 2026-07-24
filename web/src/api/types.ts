@@ -90,8 +90,9 @@ export interface GameArt {
 export interface GameCharacter {
   key: string;
   name: string;
-  goal: string;
-  greeting: string;
+  goal: string; // high-level, user-facing (no spoilers)
+  greeting: string; // static opening line
+  opening_options: string[]; // static first answer options
   arts: GameArt[]; // asset catalog the judge chooses from
   max_steps: number; // dialogue-step budget
 }

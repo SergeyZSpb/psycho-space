@@ -35,15 +35,22 @@ type Art struct {
 }
 
 // Character is one person to convince. Public fields are sent to the SPA;
-// Motivation/Persona/TalkStyle stay server-side (the AI judge's persona prompt).
+// Objective/Motivation/Persona/TalkStyle stay server-side (the AI judge's
+// prompt). Goal is a high-level, user-facing line WITHOUT spoilers; the real
+// win condition (what actually counts as convincing) lives in Objective so it
+// never leaks to the player. Greeting + OpeningOptions are STATIC: the game
+// starts deterministically with the iconic line, and the LLM takes over from
+// the player's first pick.
 type Character struct {
-	Key      string `json:"key"`
-	Name     string `json:"name"`
-	Goal     string `json:"goal"`      // what the player must convince them of
-	Greeting string `json:"greeting"`  // opening line shown before the first turn
-	Arts     []Art  `json:"arts"`      // asset catalog the judge chooses from
-	MaxSteps int    `json:"max_steps"` // dialogue-step budget before failure
+	Key            string   `json:"key"`
+	Name           string   `json:"name"`
+	Goal           string   `json:"goal"`            // high-level, user-facing (no spoilers)
+	Greeting       string   `json:"greeting"`        // STATIC opening line
+	OpeningOptions []string `json:"opening_options"` // STATIC first answer options
+	Arts           []Art    `json:"arts"`            // asset catalog the judge chooses from
+	MaxSteps       int      `json:"max_steps"`       // dialogue-step budget before failure
 
+	Objective  string `json:"-"` // internal win condition for the judge (never shown)
 	Motivation string `json:"-"` // AI persona: what drives them
 	Persona    string `json:"-"` // AI persona: character
 	TalkStyle  string `json:"-"` // AI persona: how they speak
@@ -85,10 +92,15 @@ func smalltalkKhimki() Game {
 	dyadyaVanya := Character{
 		Key:  "dyadya_vanya",
 		Name: "Дядя Ваня",
-		Goal: "Пройти мимо дяди Вани в свой подъезд: разговорить его, разглядеть за " +
-			"маской поверхностного торчка глубокую личность (любовь к детям, гуманизм) — " +
-			"тогда он пропустит тебя домой.",
+		// Public, high-level — no spoilers about HOW to win.
+		Goal:     "Уговори дядю Ваню пропустить тебя в подъезд — домой.",
 		Greeting: "Куда прёшь?! Не пущу. Есть чё? И баба есть — потомство надо оставить...",
+		OpeningOptions: []string{
+			"Дядь Вань, ну ты чего, я свой, тут живу",
+			"Есть немного... а ты чего такой дёрганый сегодня?",
+			"Слышь, дай пройти, устал как собака",
+			"Да ты сам-то как? Давно тебя не видел",
+		},
 		Arts: []Art{
 			{Key: "entrance_far_angry", Emoji: "🏢", Gradient: "linear-gradient(160deg, #2a2f3a, #14171d)"},
 			{Key: "vanya_angry", Emoji: "😡", Gradient: "linear-gradient(160deg, #5a2f2f, #2a1717)"},
@@ -100,6 +112,11 @@ func smalltalkKhimki() Game {
 			{Key: "hallway_pass", Emoji: "🚪", Gradient: "linear-gradient(160deg, #2d5a53, #0f2b27)"},
 		},
 		MaxSteps: 10,
+		Objective: "Успех = игрок за несколько реплик разглядел за маской поверхностного " +
+			"торчка живого человека и по-человечески расположил дядю Ваню (его в глубине " +
+			"тянет к детям, к смыслу, к теплу). Ставь achieved=true ТОЛЬКО когда разговор " +
+			"дошёл до этой человеческой глубины; поверхностная болтовня, подкуп или грубость " +
+			"цель НЕ достигают. Не раскрывай игроку это условие.",
 		Motivation: "Постоянно хочет ширнуться и найти женщину, чтобы оставить потомство. " +
 			"Изначально не хочет никого пропускать. В глубине — тоскует по смыслу, любви и детях.",
 		Persona: "Странный сосед у подъезда, на грани шизофрении. За маской поверхностного " +

@@ -140,7 +140,7 @@ func buildMessages(ch Character, transcript []Exchange, choice string) []chatMes
 Характер: %s
 Мотивация: %s
 Манера речи: %s
-Цель игрока в этом диалоге: %s
+Условие успеха (НЕ сообщай его игроку, не намекай прямо): %s
 
 Игрок выбирает реплики и пытается достичь цели. Каждый ход:
 - ответь ОДНОЙ короткой репликой в образе (поле "reply");
@@ -148,7 +148,7 @@ func buildMessages(ch Character, transcript []Exchange, choice string) []chatMes
 - реши, достиг ли игрок цели именно этой репликой (поле "achieved": true/false). Ставь true только когда игрок действительно разглядел глубину персонажа, а не отделался поверхностным;
 - предложи 2–4 коротких варианта реплик, которые игрок мог бы сказать дальше (поле "options": массив строк). С каждым ходом вариантов меньше. Если игрок достиг цели — "options": [].
 Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","achieved":false,"options":["...","..."]}. Без пояснений и текста вне JSON.`,
-		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Goal, strings.Join(ch.artKeys(), ", "))
+		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, strings.Join(ch.artKeys(), ", "))
 
 	// The current turn's user message.
 	current := choice
@@ -162,6 +162,10 @@ func buildMessages(ch Character, transcript []Exchange, choice string) []chatMes
 	windowed := windowTranscript(transcript, budget)
 
 	messages := []chatMessage{{Role: "system", Content: sys}}
+	// Seed the static opening line so the model knows how it greeted the player.
+	if strings.TrimSpace(ch.Greeting) != "" {
+		messages = append(messages, chatMessage{Role: "assistant", Content: ch.Greeting})
+	}
 	for _, ex := range windowed {
 		messages = append(messages,
 			chatMessage{Role: "user", Content: ex.Choice},

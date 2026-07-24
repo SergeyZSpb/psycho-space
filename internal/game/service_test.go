@@ -72,9 +72,14 @@ func TestContentFor(t *testing.T) {
 	if ch.Goal == "" || ch.Greeting == "" || len(ch.Arts) == 0 || ch.MaxSteps <= 0 {
 		t.Fatalf("character %q underspecified: %+v", ch.Key, ch)
 	}
-	// Persona prompt material must be present (it drives the LLM judge).
-	if ch.Persona == "" || ch.Motivation == "" || ch.TalkStyle == "" {
-		t.Fatalf("character %q missing persona prompt fields: %+v", ch.Key, ch)
+	// Static opening: greeting + first options, so the game starts without an LLM call.
+	if len(ch.OpeningOptions) == 0 {
+		t.Fatalf("character %q has no static opening options", ch.Key)
+	}
+	// Judge prompt material must be present; the internal win condition is
+	// server-only (never the public Goal).
+	if ch.Objective == "" || ch.Persona == "" || ch.Motivation == "" || ch.TalkStyle == "" {
+		t.Fatalf("character %q missing judge prompt fields (Objective/Persona/Motivation/TalkStyle): %+v", ch.Key, ch)
 	}
 	if _, err := ContentFor("nope"); !errors.Is(err, ErrUnknownGame) {
 		t.Fatalf("unknown game err = %v; want ErrUnknownGame", err)
