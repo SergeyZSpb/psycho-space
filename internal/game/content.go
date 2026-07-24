@@ -48,7 +48,6 @@ type Character struct {
 	Greeting       string   `json:"greeting"`        // STATIC opening line
 	OpeningOptions []string `json:"opening_options"` // STATIC first answer options
 	Arts           []Art    `json:"arts"`            // asset catalog the judge chooses from
-	MaxSteps       int      `json:"max_steps"`       // dialogue-step budget before failure
 
 	Objective  string `json:"-"` // internal win condition for the judge (never shown)
 	Motivation string `json:"-"` // AI persona: what drives them
@@ -111,7 +110,6 @@ func smalltalkKhimki() Game {
 			{Key: "memory_children", Emoji: "🧒", Gradient: "linear-gradient(160deg, #4a4368, #241f3a)"},
 			{Key: "hallway_pass", Emoji: "🚪", Gradient: "linear-gradient(160deg, #2d5a53, #0f2b27)"},
 		},
-		MaxSteps: 10,
 		Objective: "Успех = игрок за несколько реплик разглядел за маской поверхностного " +
 			"торчка живого человека и по-человечески расположил дядю Ваню (его в глубине " +
 			"тянет к детям, к смыслу, к теплу). Ставь achieved=true ТОЛЬКО когда разговор " +

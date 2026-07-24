@@ -22,7 +22,6 @@ func testChar() Character {
 		Motivation: "m",
 		Persona:    "p",
 		TalkStyle:  "t",
-		MaxSteps:   6,
 	}
 }
 

@@ -77,7 +77,7 @@ func TestContentFor(t *testing.T) {
 		t.Fatalf("game = %+v; want key + characters + default", g)
 	}
 	ch := defaultChar(t)
-	if ch.Goal == "" || ch.Greeting == "" || len(ch.Arts) == 0 || ch.MaxSteps <= 0 {
+	if ch.Goal == "" || ch.Greeting == "" || len(ch.Arts) == 0 {
 		t.Fatalf("character %q underspecified: %+v", ch.Key, ch)
 	}
 	// Static opening: greeting + first options, so the game starts without an LLM call.

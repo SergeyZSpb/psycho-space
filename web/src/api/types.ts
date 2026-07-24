@@ -94,7 +94,6 @@ export interface GameCharacter {
   greeting: string; // static opening line
   opening_options: string[]; // static first answer options
   arts: GameArt[]; // asset catalog the judge chooses from
-  max_steps: number; // dialogue-step budget
 }
 
 export interface GameConfig {

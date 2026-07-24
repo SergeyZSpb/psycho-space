@@ -1,5 +1,5 @@
 <template>
-  <v-container class="py-4" style="max-width: 900px">
+  <v-container :class="phase === 'play' ? 'pa-0 play-root' : 'py-4'" style="max-width: 900px">
     <div v-if="phase === 'loading'" class="text-center py-12">
       <v-progress-circular indeterminate color="primary" />
     </div>
@@ -42,19 +42,19 @@
             @error="failedArts.push(currentArt.key)"
           />
           <div v-else class="face">{{ currentArt.emoji }}</div>
-          <div class="steps">шаг {{ steps }} / {{ character.max_steps }}</div>
         </div>
 
         <div class="dialog-pane">
-          <div class="goal text-medium-emphasis mb-2">🎯 {{ character.goal }}</div>
+          <div class="goal text-caption text-medium-emphasis mb-1">🎯 {{ character.goal }}</div>
           <v-alert
             v-if="rateLimited"
             type="warning"
             variant="tonal"
-            class="mb-3"
-            text="Слишком много запросов с вашего IP — кошелёк Сергея плачет 😢 Подожди минутку и попробуй снова."
+            density="compact"
+            class="mb-2"
+            text="Слишком много запросов с вашего IP — кошелёк Сергея плачет 😢 Подожди минутку."
           />
-          <v-alert variant="tonal" class="bubble mb-3" :text="reply" />
+          <v-alert variant="tonal" density="compact" class="bubble mb-2" :text="reply" />
           <!-- Options keep their height while the judge thinks; the loader
                overlays them (no layout shift). -->
           <div class="actions">
@@ -62,9 +62,8 @@
               <v-btn
                 v-for="(opt, i) in options"
                 :key="i"
-                class="mb-2 text-none option-btn"
+                class="text-none option-btn"
                 variant="outlined"
-                size="large"
                 block
                 :disabled="busy"
                 @click="choose(opt)"
@@ -109,8 +108,8 @@
         <v-btn color="primary" size="large" block class="mb-6" @click="start">Ещё раз</v-btn>
       </template>
 
-      <!-- Leaderboard (hidden on the splash) -->
-      <template v-if="phase !== 'intro'">
+      <!-- Leaderboard (only on the end screen; the play screen stays scroll-free) -->
+      <template v-if="phase === 'ending'">
       <v-divider class="my-4" />
       <h2 class="text-subtitle-1 mb-2">Таблица позора</h2>
       <p v-if="!leaderboard.length" class="text-medium-emphasis">Пока никто не прошёл. Будь первым.</p>
@@ -245,7 +244,7 @@ async function turn(choice: string) {
     options.value = res.options ?? [];
     if (res.achieved) {
       await finish(true);
-    } else if (choice !== '' && (options.value.length === 0 || steps.value >= ch.max_steps)) {
+    } else if (choice !== '' && options.value.length === 0) {
       await finish(false);
     }
   } catch (err) {
@@ -319,10 +318,19 @@ async function finish(won: boolean) {
   max-width: 560px;
 }
 
+/* Play fills the viewport minus the app bar and never scrolls: the pic flexes
+   and shrinks so the 4 options always fit. */
+.play-root {
+  height: calc(100dvh - 56px);
+  overflow: hidden;
+}
 .stage {
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
+  padding: 8px 12px 12px;
+  overflow: hidden;
 }
 .portrait-pane {
   position: relative;
@@ -330,16 +338,21 @@ async function finish(won: boolean) {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 150px;
-  padding: 12px;
+  padding: 6px;
   color: rgba(255, 255, 255, 0.92);
   overflow: hidden;
 }
+/* In play, the pic takes the leftover space and shrinks so options always fit. */
+.stage > .portrait-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 .portrait-pane.ending {
   min-height: 120px;
+  padding: 12px;
 }
 .face {
-  font-size: 76px;
+  font-size: 64px;
   line-height: 1;
 }
 .art-img {
@@ -347,23 +360,36 @@ async function finish(won: boolean) {
   max-width: 100%;
   object-fit: contain;
 }
-.steps {
-  position: absolute;
-  top: 8px;
-  right: 12px;
-  font-size: 0.8rem;
-  opacity: 0.85;
-}
 .dialog-pane {
-  flex: 1;
+  flex: 0 0 auto;
   min-width: 0;
 }
+.goal {
+  line-height: 1.2;
+}
+/* Clamp the character's line so a long reply can't push the options off-screen. */
 .bubble :deep(.v-alert__content) {
   font-style: italic;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
+/* Compact, 2-line, smaller-text options that never overflow the button. */
 .option-btn {
-  min-height: 48px;
+  min-height: 44px;
+  height: auto;
+  margin-bottom: 6px;
+}
+.option-btn :deep(.v-btn__content) {
   white-space: normal;
+  font-size: 0.78rem;
+  line-height: 1.15;
+  text-align: center;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 /* Loader overlays the options so switching to "thinking" causes no reflow. */
 .actions {
@@ -380,22 +406,21 @@ async function finish(won: boolean) {
   align-items: center;
   justify-content: center;
 }
-/* Landscape on phones: character beside the dialogue so it fits without scroll. */
+/* Landscape phones: pic beside the dialogue; the dialogue side scrolls if needed. */
 @media (orientation: landscape) and (max-height: 600px) {
   .stage {
     flex-direction: row;
     align-items: stretch;
   }
-  .portrait-pane {
-    flex: 0 0 38%;
-    min-height: 0;
-  }
-  .face {
-    font-size: 56px;
+  .stage > .portrait-pane {
+    flex: 0 0 40%;
   }
   .dialog-pane {
+    flex: 1 1 auto;
     overflow-y: auto;
-    max-height: 78vh;
+  }
+  .face {
+    font-size: 44px;
   }
 }
 </style>

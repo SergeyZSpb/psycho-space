@@ -1,6 +1,20 @@
 /* Mobile ergonomics + overflow guards. Loaded after Vuetify styles so these win.
    This is real production responsive CSS — no test-only behaviour lives here. */
 
+/* App fills the *visible* viewport. 100dvh accounts for the mobile browser
+   toolbar, so we don't get a permanent scrollbar from 100vh being taller than
+   the screen; taller pages still grow past this and scroll normally. */
+.v-application,
+.v-application__wrap {
+  min-height: 100dvh;
+}
+
+/* Never allow a horizontal scrollbar. */
+html,
+body {
+  overflow-x: hidden;
+}
+
 /* Long unbroken strings (URLs, ААААА…, handles) must never force horizontal scroll. */
 .ps-wrap {
   overflow-wrap: anywhere;
