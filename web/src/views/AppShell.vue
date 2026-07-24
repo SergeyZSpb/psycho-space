@@ -3,16 +3,16 @@
     <v-navigation-drawer v-model="drawer" :permanent="mdAndUp" :temporary="!mdAndUp">
       <v-list nav density="comfortable">
         <v-list-item
-          :to="{ name: 'wishlist' }"
-          prepend-icon="mdi-lightbulb-on-outline"
-          title="Вишлист"
-          value="wishlist"
-        />
-        <v-list-item
           :to="{ name: 'game' }"
           prepend-icon="mdi-controller-classic-outline"
           title="Смолтолк в Химках"
           value="game"
+        />
+        <v-list-item
+          :to="{ name: 'wishlist' }"
+          prepend-icon="mdi-lightbulb-on-outline"
+          title="Вишлист"
+          value="wishlist"
         />
         <v-list-item
           v-if="auth.isAdmin"

@@ -35,7 +35,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/AppShell.vue'),
     meta: { requiresApproved: true },
     children: [
-      { path: '', redirect: { name: 'wishlist' } },
+      { path: '', redirect: { name: 'game' } },
       {
         path: 'wishlist',
         name: 'wishlist',
@@ -80,19 +80,19 @@ router.beforeEach(async (to) => {
     if (!auth.isApproved) return { name: 'pending' };
   }
   if (requiresAdmin && !auth.isAdmin) {
-    return { name: 'wishlist' };
+    return { name: 'game' };
   }
 
   // /pending — must have a session (pending users now have one). Approved users
   // don't belong here; a signed-out user has no handle to show.
   if (to.name === 'pending') {
     if (!auth.isAuthed) return { name: 'landing' };
-    if (auth.isApproved) return { name: 'wishlist' };
+    if (auth.isApproved) return { name: 'game' };
   }
 
   // Landing — route a signed-in user by status: approved -> app, else pending.
   if (to.name === 'landing' && auth.isAuthed) {
-    return auth.isApproved ? { name: 'wishlist' } : { name: 'pending' };
+    return auth.isApproved ? { name: 'game' } : { name: 'pending' };
   }
 
   return true;

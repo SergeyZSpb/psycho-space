@@ -62,7 +62,7 @@ export function useVkLogin() {
     // /me on the pending screen.
     auth.setAccount(result.account);
     if (result.account.status === 'approved') {
-      await router.push({ name: 'wishlist' });
+      await router.push({ name: 'game' });
     } else {
       await router.push({ name: 'pending' });
     }
