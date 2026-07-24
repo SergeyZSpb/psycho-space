@@ -379,7 +379,7 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 	slog.DebugContext(ctx, "game llm raw", "request", string(raw), "response", string(body))
 
 	return TurnResult{
-		Reply:      strings.TrimSpace(jr.Reply),
+		Reply:      normalizeVerse(jr.Reply),
 		Art:        art,
 		Achieved:   bool(jr.Achieved),
 		GameOver:   gameOver,
@@ -583,7 +583,7 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 
 Каждый ход возвращай:
 - "anger" (целое 0–%d) — новое напряжение. Грубость, издёвка, угрозы, снисходительность, давление, топтание на месте: +10–25. Искреннее участие и добрый разговор о больном: −5–15. Пустая болтовня: ±0–5. Не больше 25 за ход, без изменений не оставляй.
-- "reply" — ОДНА короткая реплика в образе. Имени игрока ты не знаешь: никаких [Имя] и <name>, обращайся безлично.
+- "reply" — твоя реплика в образе: РЭП, 2–4 рифмованных строки, каждая с новой строки (настоящий перевод строки внутри JSON-строки, не буквы). Строки КОРОТКИЕ, до ~45 символов — длинная строка на телефоне переносится и куплет расползается. Ругайся грубо, но без прямого мата. Имени игрока ты не знаешь: никаких [Имя] и <name>, обращайся безлично.
 - "art" — строго из списка [%s]. Это либо твоё состояние (злой → подозрительный → нейтральный → теплеет → раскрывается), либо сюжетный арт без тебя. Ключи говорящие: бери по смыслу текущей темы (зашла речь о друге — арт с другом). По ходу теплеет, на грубость — обратно к злому. Игрок достиг цели — арт прохода в подъезд.
 - "achieved" — true только если игрок этой репликой действительно разглядел твою глубину, а не отделался поверхностным.
 - "game_over" — true ТОЛЬКО при срыве по условию выше: сначала огрызайся и мрачней, бей лишь если игрок упорствует. Исход редкий. При "achieved":true всегда false.
@@ -759,6 +759,25 @@ func nonEmpty(in []string) []string {
 		}
 	}
 	return out
+}
+
+// normalizeVerse turns a rapped reply into real lines.
+//
+// Asked for line breaks, the model wrote the two characters backslash-n as TEXT —
+// it had been shown the escape sequence and typed it. Observed in a real turn:
+// «…тот не тыкает,\\nкто уважает…», which rendered on screen with a visible \\n and
+// wrapped into six lines instead of four. Converting them here is deterministic and
+// works whatever the model does next; the prompt no longer shows it the escape.
+func normalizeVerse(s string) string {
+	s = strings.NewReplacer(
+		`\r\n`, "\n", `\n`, "\n", `\r`, "\n", // the escape sequences, written as text
+		"\r\n", "\n", "\r", "\n", // and real carriage returns
+	).Replace(s)
+	// Collapse runs of blank lines: verse, not paragraphs.
+	for strings.Contains(s, "\n\n\n") {
+		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
+	}
+	return strings.TrimSpace(s)
 }
 
 // themeEngagement counts, per theme key, how many exchanges of the conversation

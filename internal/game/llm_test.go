@@ -570,6 +570,38 @@ func TestBuildMessagesNamesOpenThemes(t *testing.T) {
 
 // The four options are asked for by role, because asking for "four varied
 // options" produced four ways of saying "давай поговорим".
+// The reply instruction asks for verse with real line breaks — the SPA renders
+// them (white-space: pre-line), so a rap that arrives as one long line reads wrong.
+// The model, having been shown the escape sequence, wrote the two characters
+// backslash-n as text: «…тот не тыкает,\\nкто уважает…» rendered with a visible \\n
+// and wrapped to six lines instead of four. Normalise whatever arrives.
+func TestNormalizeVerse(t *testing.T) {
+	got := normalizeVerse(`Свой, говоришь?\nА кто свой — тот не тыкает,\nкто уважает.`)
+	if strings.Contains(got, `\n`) {
+		t.Fatalf("literal escape survived: %q", got)
+	}
+	if n := strings.Count(got, "\n"); n != 2 {
+		t.Fatalf("want 3 real lines, got %d newlines in %q", n, got)
+	}
+	// Real newlines pass through, blank-line runs collapse, edges trimmed.
+	if got := normalizeVerse("  раз\n\n\n\nдва  "); got != "раз\n\nдва" {
+		t.Fatalf("got %q", got)
+	}
+	if got := normalizeVerse("раз\r\nдва"); got != "раз\nдва" {
+		t.Fatalf("CRLF should normalise, got %q", got)
+	}
+}
+
+func TestBuildMessagesAsksForVerse(t *testing.T) {
+	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil, nil)
+	sys := msgs[0].Content
+	for _, want := range []string{"РЭП", "рифмованных строки", "каждая с новой строки"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("reply instruction should ask for verse; missing %q", want)
+		}
+	}
+}
+
 func TestBuildMessagesAsksForRoleSlots(t *testing.T) {
 	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil, nil)
 	sys := msgs[0].Content

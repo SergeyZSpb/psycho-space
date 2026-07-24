@@ -110,6 +110,27 @@ func TestContentFor(t *testing.T) {
 	}
 }
 
+// Дядя Ваня answers in rap, which means his lines are multi-line verse: the talk
+// style has to say so and the static greeting has to already be in that register,
+// or the very first thing the player sees contradicts everything after it.
+func TestCharacterRaps(t *testing.T) {
+	ch := defaultChar(t)
+	low := strings.ToLower(ch.TalkStyle)
+	if !strings.Contains(low, "рэп") {
+		t.Errorf("talk style should call for rap; got %q", ch.TalkStyle)
+	}
+	if !strings.Contains(low, "рифм") {
+		t.Errorf("talk style should call for rhyme; got %q", ch.TalkStyle)
+	}
+	// Rhyme must never win over substance — that was the risk of the change.
+	if !strings.Contains(low, "смысл важнее") {
+		t.Error("talk style should subordinate rhyme to meaning")
+	}
+	if n := strings.Count(ch.Greeting, "\n"); n < 2 {
+		t.Errorf("greeting should be verse (>=3 lines); got %d newlines in %q", n, ch.Greeting)
+	}
+}
+
 // The character's third deep theme is alcohol, not drugs: drug-flavoured prompt
 // material makes the provider's content filter answer in plain prose instead of
 // the model's JSON, which the player sees as a 502. Guard the whole text

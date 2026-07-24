@@ -483,12 +483,28 @@ async function finish(won: boolean) {
   letter-spacing: 0;
 }
 /* Clamp the character's line so a long reply can't push the options off-screen. */
+/* His reply is verse now, so line breaks are meaningful and must survive. It used
+   to be clamped to three lines with overflow hidden, which silently ATE the rest of
+   a longer answer — unreadable and unreachable. Now it keeps its line breaks and
+   scrolls inside its own box: the page itself still never scrolls, and the art pane
+   above gives up the space. */
 .bubble :deep(.v-alert__content) {
   font-style: italic;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  white-space: pre-line;
+  /* Cap by BOTH the font and the viewport: a fixed em height overflowed a 320x568
+     screen by 27px and clipped the options, which is worse than clipping the reply.
+     dvh makes the bubble give way first on short screens. */
+  max-height: min(8.5em, 15dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* A thin, visible scrollbar so there is a hint that more text is there. */
+.bubble :deep(.v-alert__content)::-webkit-scrollbar {
+  width: 4px;
+}
+.bubble :deep(.v-alert__content)::-webkit-scrollbar-thumb {
+  background: rgba(127, 127, 127, 0.5);
+  border-radius: 2px;
 }
 /* Compact, 2-line, smaller-text options that never overflow the button. */
 .option-btn {
