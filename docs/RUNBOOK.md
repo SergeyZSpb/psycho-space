@@ -70,6 +70,48 @@ It's an **LLM-judged** character dialogue: convince дядя Ваня (a strange
 - **Runs** (`{success, steps}`) are recorded via `POST /api/game/runs` and feed the leaderboard (`/runs/leaderboard` — successes + total steps per player) and stats (`/runs/me`).
 - Files: LLM judge `internal/game/llm.go`; content `content.go`; UI `web/src/views/GameView.vue` (turn loop, portrait + landscape, art from catalog); `gameApi` in `web/src/api/endpoints.ts`; migration `migrations/005_game_runs.sql`.
 
+### Game assets (generation & packaging)
+
+Each art in the catalog needs an image. **Placeholders (emoji + gradient) render until real images land** — adding images is backend-only, no client change.
+
+**Names — derive from the art catalog** (source of truth: `internal/game/content.go`, `Character.Arts`). The required filenames are exactly the art keys per game:
+
+- from the API: `curl -s -b <cookie> 'http://localhost:8080/api/game/config?game=smalltalk_khimki' | jq -r '.characters[].arts[].key'`
+- or read the `Arts: []Art{…}` block in `content.go`.
+
+Current game `smalltalk_khimki` — 8 arts (file name = `<key>.webp`):
+
+| key | what |
+|-----|------|
+| `entrance_far_angry` | подъезд издалека, злой дядя Ваня (establishing) |
+| `vanya_angry` | дядя Ваня — злой, крупно |
+| `vanya_suspicious` | подозрительный |
+| `vanya_neutral` | нейтральный |
+| `vanya_warming` | теплеет |
+| `vanya_deep` | раскрывается глубина |
+| `memory_children` | сюжетный арт-воспоминание, без персонажа |
+| `hallway_pass` | проход в подъезд, без дяди Вани (финал) |
+
+Two kinds: **character-mood** (`vanya_*`) — the same дядя Ваня, changing expression; **story/location** (`entrance_far_angry`, `memory_children`, `hallway_pass`) — scene, no character in focus.
+
+**Size & format:**
+
+- **1024×1024 px** square is the default (rendered `object-fit: contain`, so it never crops — letterboxes in wide/short panes). Location arts may be **1280×768** landscape if you prefer full-bleed scenes.
+- **WebP** (preferred) or PNG; keep each **≤ ~250 KB** — mobile downloads them on demand.
+- Keep the character consistent across a game's `*_*` arts; gritty tragicomic RU-двор tone.
+
+**Where they go — embedded in the binary for now:**
+
+- Source of truth: `internal/game/assets/<game_key>/<key>.webp` — e.g. `internal/game/assets/smalltalk_khimki/vanya_neutral.webp`.
+- Packaged into the Go binary via `go:embed`, served over HTTP; **mobile downloads each art on demand (first time it's shown) and caches it** — no external CDN for now.
+
+**Wiring (TODO — when the first images exist):**
+
+1. Add `internal/game/assets/<game_key>/` with the images; embed with a `//go:embed assets` FS in the game package.
+2. Add `GET /api/game/assets/{game}/{key}` serving the embedded file (long `Cache-Control`).
+3. Set `Art.Image` in `content.go` to `/api/game/assets/<game_key>/<key>` per art. The SPA already prefers `Image` over the emoji placeholder (`GameArt.image` in `types.ts`, `<img>` in `GameView.vue`).
+4. Keep this list in sync when arts are added/renamed in `content.go`.
+
 ### Tests
 
 ```bash
