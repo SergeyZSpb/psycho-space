@@ -5,7 +5,7 @@
     </div>
 
     <template v-else-if="config && character">
-      <div v-if="phase !== 'intro'" class="d-flex align-center justify-space-between mb-2">
+      <div v-if="phase === 'ending'" class="d-flex align-center justify-space-between mb-2">
         <h1 class="text-h5">{{ config.title }}</h1>
         <v-chip size="small" variant="tonal" color="primary">
           успехов: {{ stats?.successes ?? 0 }}
@@ -320,8 +320,10 @@ async function finish(won: boolean) {
 
 /* Play fills the viewport minus the app bar and never scrolls: the pic flexes
    and shrinks so the 4 options always fit. */
+/* Height = visible viewport minus the app bar, with a little extra headroom so
+   the mobile browser's top/bottom chrome never triggers a scrollbar. */
 .play-root {
-  height: calc(100dvh - 56px);
+  height: calc(100dvh - 72px);
   overflow: hidden;
 }
 .stage {
