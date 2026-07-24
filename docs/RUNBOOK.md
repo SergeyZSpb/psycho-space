@@ -79,7 +79,7 @@ Each art in the catalog needs an image. **Placeholders (emoji + gradient) render
 - from the API: `curl -s -b <cookie> 'http://localhost:8080/api/game/config?game=smalltalk_khimki' | jq -r '.characters[].arts[].key'`
 - or read the `Arts: []Art{…}` block in `content.go`.
 
-Current game `smalltalk_khimki` — 8 arts (file name = `<key>.webp`):
+Current game `smalltalk_khimki` — 9 arts (file name = `<key>.webp`):
 
 | key | what |
 |-----|------|
@@ -89,6 +89,7 @@ Current game `smalltalk_khimki` — 8 arts (file name = `<key>.webp`):
 | `vanya_neutral` | нейтральный |
 | `vanya_warming` | теплеет |
 | `vanya_deep` | раскрывается глубина |
+| `vanya_sahur` | Ваня со своим другом Тунг Тунг Сахуром (ключевая тема — раскрыть, чтобы победить) |
 | `memory_children` | сюжетный арт-воспоминание, без персонажа |
 | `hallway_pass` | проход в подъезд, без дяди Вани (финал) |
 
