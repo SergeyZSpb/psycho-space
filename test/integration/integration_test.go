@@ -137,12 +137,22 @@ func startFakeLLM() *httptest.Server {
 			// character's game-over art.
 			content = `{"reply":"Ну всё, доигрался","art":"vanya_neutral","achieved":false,"game_over":true,"options":["ещё"]}`
 		case strings.Contains(last, "бесит"):
-			// Tension hits the top with no game_over flag: the backend must end
-			// the run on the scale alone.
-			content = `{"reply":"Всё, хватит","art":"vanya_angry","anger":100,"achieved":false,"options":["ещё","и ещё"]}`
+			// Tension reaches the kill line with no game_over flag: the backend
+			// must end the run on the scale alone.
+			content = `{"reply":"Всё, хватит","art":"vanya_angry","anger":90,"achieved":false,"options":["ещё","и ещё"]}`
 		case strings.Contains(last, "теплеет"):
-			// A calming turn: the judge lowers the scale.
-			content = `{"reply":"Ну... ладно","art":"vanya_warming","anger":25,"achieved":false,"options":["a","b","c","d"]}`
+			// A calming turn: the judge lowers the scale and opens a theme.
+			content = `{"reply":"Ну... ладно","art":"vanya_warming","anger":25,"achieved":false,` +
+				`"themes_done":["alcohol"],"options":["a","b","c","d"]}`
+		case strings.Contains(last, "темы"):
+			// Reports whether the still-open themes reached the system prompt.
+			seen := "нет"
+			if strings.Contains(system, "sahur") && strings.Contains(system, "woman_children") &&
+				!strings.Contains(system, "alcohol — ") {
+				seen = "да"
+			}
+			content = `{"reply":"open_themes=` + seen + `","art":"vanya_angry","anger":50,` +
+				`"achieved":false,"options":["a","b","c","d"]}`
 		case strings.Contains(last, "кривой"):
 			// The shape YandexGPT actually produced in prod: options closed early,
 			// the rest parked under a "[" key, and a raw newline in the last key.

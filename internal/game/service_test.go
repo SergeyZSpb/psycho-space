@@ -49,14 +49,16 @@ type stubEval struct {
 	gotChoice     string
 	gotTranscript []Exchange
 	gotAnger      int
+	gotThemes     []string
 	calls         int
 }
 
-func (s *stubEval) Judge(_ context.Context, _ Character, transcript []Exchange, choice string, anger int) (TurnResult, error) {
+func (s *stubEval) Judge(_ context.Context, _ Character, transcript []Exchange, choice string, anger int, themesDone []string) (TurnResult, error) {
 	s.calls++
 	s.gotTranscript = transcript
 	s.gotChoice = choice
 	s.gotAnger = anger
+	s.gotThemes = themesDone
 	return s.res, s.err
 }
 
@@ -136,22 +138,26 @@ func TestServiceJudgeRouting(t *testing.T) {
 	charKey := defaultChar(t).Key
 
 	// Unknown game / character short-circuit before the evaluator.
-	if _, err := newSvc(&fakeRepo{}, &stubEval{}).Judge(context.Background(), "nope", charKey, nil, "", StartAnger); !errors.Is(err, ErrUnknownGame) {
+	if _, err := newSvc(&fakeRepo{}, &stubEval{}).Judge(context.Background(), "nope", charKey, nil, "", StartAnger, nil); !errors.Is(err, ErrUnknownGame) {
 		t.Fatalf("unknown game err = %v; want ErrUnknownGame", err)
 	}
-	if _, err := newSvc(&fakeRepo{}, &stubEval{}).Judge(context.Background(), GameSmalltalkKhimki, "nobody", nil, "", StartAnger); !errors.Is(err, ErrUnknownCharacter) {
+	if _, err := newSvc(&fakeRepo{}, &stubEval{}).Judge(context.Background(), GameSmalltalkKhimki, "nobody", nil, "", StartAnger, nil); !errors.Is(err, ErrUnknownCharacter) {
 		t.Fatalf("unknown character err = %v; want ErrUnknownCharacter", err)
 	}
 
 	// A valid call is delegated with the transcript, the choice and the tension.
 	ev := &stubEval{res: TurnResult{Reply: "ок", Art: "vanya_neutral", Achieved: true}}
 	tr := []Exchange{{Choice: "привет", Reply: "ну"}}
-	res, err := newSvc(&fakeRepo{}, ev).Judge(context.Background(), GameSmalltalkKhimki, charKey, tr, "домой", 75)
+	res, err := newSvc(&fakeRepo{}, ev).Judge(
+		context.Background(), GameSmalltalkKhimki, charKey, tr, "домой", 75, []string{"sahur"})
 	if err != nil || !res.Achieved || ev.calls != 1 || ev.gotChoice != "домой" || len(ev.gotTranscript) != 1 {
 		t.Fatalf("delegate: res=%+v err=%v ev=%+v", res, err, ev)
 	}
 	if ev.gotAnger != 75 {
 		t.Fatalf("evaluator got anger %d; want the caller's 75", ev.gotAnger)
+	}
+	if !reflect.DeepEqual(ev.gotThemes, []string{"sahur"}) {
+		t.Fatalf("evaluator got themes %v; want the caller's [sahur]", ev.gotThemes)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -93,23 +94,66 @@ type chatResponse struct {
 	} `json:"usage"`
 }
 
+// flexInt is an int that also accepts the quoted and decimal forms a small model
+// drifts into — 42, "42", 42.0. Measured in prod: a complete, perfectly usable
+// turn was thrown away as unparsable because the model wrote "anger": "35".
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(strings.TrimSpace(string(b)), `"`)
+	if s == "" || s == "null" {
+		return nil // treated as absent
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		*f = flexInt(n)
+		return nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return fmt.Errorf("game: %q is not a number", s)
+	}
+	*f = flexInt(v)
+	return nil
+}
+
+// flexBool likewise accepts true and "true" — the same class of slip as flexInt,
+// and losing a whole turn over the quotes is not worth it.
+type flexBool bool
+
+func (f *flexBool) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(strings.TrimSpace(string(b)), `"`)
+	switch strings.ToLower(s) {
+	case "true":
+		*f = true
+	case "false", "", "null":
+		*f = false
+	default:
+		return fmt.Errorf("game: %q is not a bool", s)
+	}
+	return nil
+}
+
 // judgeReply is the JSON we ask the model to emit as the message content.
 type judgeReply struct {
 	Reply    string   `json:"reply"`
 	Art      string   `json:"art"`
-	Achieved bool     `json:"achieved"`
-	GameOver bool     `json:"game_over"`
+	Achieved flexBool `json:"achieved"`
+	GameOver flexBool `json:"game_over"`
 	Options  []string `json:"options"`
 	// Anger is a pointer so an omitted field is distinguishable from a returned
 	// 0: a model that forgets the field must leave the tension where it was, not
-	// silently reset it to calm.
-	Anger *int `json:"anger"`
+	// silently reset it to calm. flexInt because it sometimes arrives quoted.
+	Anger *flexInt `json:"anger"`
+	// ThemesDone is likewise a pointer: an omitted field keeps the progress the
+	// player already earned instead of wiping it.
+	ThemesDone *[]string `json:"themes_done"`
 }
 
 // Judge implements Evaluator.
-func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []Exchange, choice string, anger int) (TurnResult, error) {
+func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []Exchange, choice string, anger int, themesDone []string) (TurnResult, error) {
 	anger = ClampAnger(anger)
-	messages, alreadyOffered := buildMessages(ch, transcript, choice, anger)
+	themesDone = clampThemes(ch, themesDone)
+	messages, alreadyOffered := buildMessages(ch, transcript, choice, anger, themesDone)
 	reqBody := chatRequest{
 		Model:          e.model,
 		Messages:       messages,
@@ -195,13 +239,19 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 	// every run still converges on an ending.
 	newAnger := ClampAnger(anger + angerDriftOnMissing)
 	if jr.Anger != nil {
-		newAnger = ClampAnger(*jr.Anger)
+		newAnger = ClampAnger(int(*jr.Anger))
 	}
-	// Reaching the goal wins outright: never lose the same turn you win. A full
-	// scale ends the run whatever the model said about game_over — that is the
-	// whole point of the scale, and a judge left to itself rarely pulls the
+	// Theme progress only ever grows: an opened subject cannot un-open, and a
+	// model that omits the field must not cost the player what they earned.
+	newThemes := themesDone
+	if jr.ThemesDone != nil {
+		newThemes = mergeThemes(ch, themesDone, *jr.ThemesDone)
+	}
+	// Reaching the goal wins outright: never lose the same turn you win. Hitting
+	// AngerLoseAt ends the run whatever the model said about game_over — that is
+	// the whole point of the scale, and a judge left to itself rarely pulls the
 	// trigger.
-	gameOver := (jr.GameOver || newAnger >= MaxAnger) && !jr.Achieved
+	gameOver := (bool(jr.GameOver) || newAnger >= AngerLoseAt) && !bool(jr.Achieved)
 	art := normalizeArt(jr.Art, ch.artKeys())
 	if gameOver && ch.GameOverArt != "" {
 		// The beating always looks the same, whatever art the model asked for.
@@ -212,26 +262,70 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		"model", e.model, "character", ch.Key, "latency_ms", elapsed.Milliseconds(),
 		"prompt_tokens", cr.Usage.PromptTokens, "completion_tokens", cr.Usage.CompletionTokens,
 		"total_tokens", cr.Usage.TotalTokens, "est_cost_rub", estCost,
-		"achieved", jr.Achieved, "game_over", gameOver, "art", art,
+		"achieved", bool(jr.Achieved), "game_over", gameOver, "art", art,
 		"anger_in", anger, "anger_out", newAnger, "anger_from_model", jr.Anger != nil,
 		"salvaged", salvaged, "options", len(jr.Options),
 		// The option TEXTS, not just the count: without them there is no way to
 		// see after the fact that all four choices said the same thing, or that
 		// none of them steered toward a theme the player still has to open.
 		"options_text", jr.Options, "already_offered", len(alreadyOffered),
+		"themes_done", newThemes, "themes_from_model", jr.ThemesDone != nil,
 		"reply", jr.Reply)
 	// Full request/response bodies (no auth header) at Debug for deep inspection.
 	slog.DebugContext(ctx, "game llm raw", "request", string(raw), "response", string(body))
 
 	return TurnResult{
-		Reply:    strings.TrimSpace(jr.Reply),
-		Art:      art,
-		Achieved: jr.Achieved,
-		GameOver: gameOver,
-		Anger:    newAnger,
+		Reply:      strings.TrimSpace(jr.Reply),
+		Art:        art,
+		Achieved:   bool(jr.Achieved),
+		GameOver:   gameOver,
+		Anger:      newAnger,
+		ThemesDone: newThemes,
 		// Won or beaten, the dialogue is over regardless of what the model returned.
-		Options: optionsWhilePlaying(jr.Achieved || gameOver, jr.Options),
+		Options: optionsWhilePlaying(bool(jr.Achieved) || gameOver, jr.Options),
 	}, nil
+}
+
+// clampThemes keeps only theme keys this character actually has, de-duplicated in
+// the character's own order. It is the trust boundary for a value the client
+// carries: junk or invented keys are dropped rather than reaching the prompt.
+func clampThemes(ch Character, got []string) []string {
+	if len(got) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(got))
+	for _, g := range got {
+		want[strings.TrimSpace(strings.ToLower(g))] = true
+	}
+	var out []string
+	for _, key := range ch.themeKeys() {
+		if want[strings.ToLower(key)] {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+// mergeThemes unions what was already open with what the judge just reported.
+// Progress is monotonic — a theme the player opened stays open even if a later
+// turn forgets to mention it.
+func mergeThemes(ch Character, was, now []string) []string {
+	return clampThemes(ch, append(append([]string{}, was...), now...))
+}
+
+// openThemes returns the character's themes that are still closed.
+func openThemes(ch Character, done []string) []Theme {
+	doneSet := make(map[string]bool, len(done))
+	for _, d := range done {
+		doneSet[d] = true
+	}
+	var out []Theme
+	for _, t := range ch.Themes {
+		if !doneSet[t.Key] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // judgeReplyKeys are the fields we ask the model for; anything else in the
@@ -355,7 +449,7 @@ func clampRunes(s string, max int) string {
 // value and that a full scale means it snaps. It also returns the already-offered
 // options it listed, so the caller can log how much repetition context the judge
 // actually had.
-func buildMessages(ch Character, transcript []Exchange, choice string, anger int) ([]chatMessage, []string) {
+func buildMessages(ch Character, transcript []Exchange, choice string, anger int, themesDone []string) ([]chatMessage, []string) {
 	sys := fmt.Sprintf(`Ты — персонаж текстовой игры, веди диалог строго в образе.
 Персонаж: %s.
 Характер: %s
@@ -364,7 +458,7 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 Условие успеха (НЕ сообщай его игроку, не намекай прямо): %s
 Условие срыва (НЕ сообщай его игроку): %s
 
-Шкала напряжения: 0–%d, сейчас %d. При %d ты срываешься, бьёшь игрока и разговор кончен.
+Шкала напряжения: 0–%d, сейчас %d. При %d и выше ты срываешься, бьёшь игрока и разговор кончен.
 Помни всё, о чём уже говорили выше: напряжение и доверие НАКАПЛИВАЮТСЯ по ходу разговора.
 Не начинай знакомство заново, не задавай один и тот же вопрос дважды, не забывай, что игрок
 уже рассказал или чем уже задел.
@@ -375,10 +469,17 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 - выбери подходящий арт строго из списка [%s] (поле "art"). Арт — это либо текущее состояние персонажа (злой → подозрительный → нейтральный → теплеет → раскрывается), либо сюжетный арт без персонажа. Ключи артов говорящие: подбирай арт по смыслу текущей темы и настроения (например, если речь зашла о его близком друге — покажи арт с этим другом). По ходу диалога арт меняется от злого к более тёплому (иногда обратно к злому — на грубость). Когда игрок достигает цели — выбери арт прохода в подъезд;
 - реши, достиг ли игрок цели именно этой репликой (поле "achieved": true/false). Ставь true только когда игрок действительно разглядел глубину персонажа, а не отделался поверхностным;
 - реши, не сорвался ли ты окончательно (поле "game_over": true/false). Ставь true ТОЛЬКО когда игрок довёл тебя до срыва по условию срыва выше — тогда ты бьёшь его, и разговор на этом окончен. Это редкий исход: сначала огрызайся и мрачней, бей только если игрок упорно продолжает. Если "achieved": true, то "game_over" всегда false;
-- предложи РОВНО 4 коротких варианта реплик, которые игрок мог бы сказать дальше (поле "options": массив ровно из 4 строк). Все 4 должны быть НОВЫМИ: не повторяй и не перефразируй варианты, которые уже предлагал раньше (список ниже, если он есть), и не давай четыре варианта об одном и том же — веди разговор дальше, а не по кругу. Среди этих 4 ВСЕГДА должен быть хотя бы один вариант, выбор которого продвигает игрока к цели и улучшает расположение персонажа, — иначе игру невозможно пройти. Не помечай и не выдавай, какой именно. Если игрок достиг цели или ты сорвался — "options": [].
-Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","anger":50,"achieved":false,"game_over":false,"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
+- отметь, какие из твоих глубинных тем игрок к этому моменту РЕАЛЬНО раскрыл — по-человечески, а не одним касанием (поле "themes_done": массив ключей). Ключи тем: %s. Перечисляй и уже раскрытые ранее, и новые; если ничего не раскрыто — [];
+- предложи РОВНО 4 коротких варианта реплик игрока (поле "options": массив ровно из 4 строк). У каждого своя РОЛЬ, строго в этом порядке:
+  1) вариант, который выводит разговор на одну из ещё НЕ раскрытых тем (список ниже) — без этого игру пройти нельзя;
+  2) тёплый, участливый вариант: попытка увидеть в тебе человека;
+  3) грубый или пренебрежительный вариант — он поднимает напряжение (игрок должен иметь возможность и проиграть);
+  4) нейтральный или неожиданный: сменить тему, спросить о чём-то своём.
+  Варианты обязаны отличаться СМЫСЛОМ, а не формулировкой: четыре разных способа сказать «давай поговорим» или «тебе нужна помощь» — это ошибка, так игрок ходит по кругу. Каждый вариант — конкретная реплика по существу, а не общая фраза. Не повторяй и не перефразируй то, что уже предлагал (список ниже). Не нумеруй варианты в тексте и не подписывай их роли. Если игрок достиг цели или ты сорвался — "options": [].
+Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","anger":50,"achieved":false,"game_over":false,"themes_done":[],"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
 		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, ch.Failure,
-		MaxAnger, anger, MaxAnger, MaxAnger, strings.Join(ch.artKeys(), ", "))
+		MaxAnger, anger, AngerLoseAt, MaxAnger, strings.Join(ch.artKeys(), ", "),
+		strings.Join(ch.themeKeys(), ", "))
 
 	// The current turn's user message.
 	current := choice
@@ -395,11 +496,35 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 	// Show the judge what it has already offered, so it stops recycling the same
 	// four lines. Only options from exchanges that survived the window are listed:
 	// an option is forgotten exactly when its turn is.
+	// Name the themes still closed, so the first option slot has somewhere to
+	// steer. Measured against the real model without this, the alcohol theme
+	// appeared in 1 of 40 offered options — the win was practically unreachable.
+	if open := openThemes(ch, themesDone); len(open) > 0 {
+		var lines []string
+		for _, t := range open {
+			lines = append(lines, t.Key+" — "+t.Label)
+		}
+		sys += "\n\nЕщё НЕ раскрытые темы (игрок про них толком не говорил). " +
+			"Первый из четырёх вариантов должен вести к одной из них — выбирай ту, " +
+			"что уместнее по текущему разговору:\n- " + strings.Join(lines, "\n- ")
+	} else if len(ch.Themes) > 0 {
+		sys += "\n\nВсе твои глубинные темы уже раскрыты. Если игрок держится по-человечески, " +
+			"пора теплеть и пропускать его домой."
+	}
+
 	already := recentlyOffered(ch, windowed)
 	if len(already) > 0 {
 		sys += "\n\nЭти варианты ответа ты игроку УЖЕ предлагал (свежие — сверху). " +
 			"Не предлагай их снова и не давай близкие перефразировки — придумывай новые, " +
 			"по текущей теме разговора:\n- " + strings.Join(already, "\n- ")
+	}
+
+	// His own recent lines, so he stops answering with the same formula. Measured
+	// without this: «Ты меня не знаешь…» four times and «С чего ты взял, что…»
+	// four times in a single eight-turn run.
+	if mine := recentReplies(windowed); len(mine) > 0 {
+		sys += "\n\nТвои недавние реплики. Не повторяй их зачины и формулировки, говори иначе:\n- " +
+			strings.Join(mine, "\n- ")
 	}
 
 	messages := []chatMessage{{Role: "system", Content: sys}}
@@ -450,6 +575,24 @@ func exchangeTokens(ex Exchange) int {
 // maxRecentlyOffered caps the "already offered" list, so a long dialogue cannot
 // grow it without bound even while every exchange still fits the window.
 const maxRecentlyOffered = 6 * optionCount
+
+// maxRecentReplies is how many of the character's own last lines are quoted back
+// to it as "don't phrase it like this again". Enough to break a formula, short
+// enough to stay cheap — the replies are already in the messages as its turns.
+const maxRecentReplies = 6
+
+// recentReplies returns the character's own most recent lines, newest first, from
+// the windowed transcript. Same forgetting rule as everything else: a reply that
+// left the window leaves this list too.
+func recentReplies(windowed []Exchange) []string {
+	var out []string
+	for i := len(windowed) - 1; i >= 0 && len(out) < maxRecentReplies; i-- {
+		if r := strings.TrimSpace(windowed[i].Reply); r != "" {
+			out = append(out, clampRunes(r, 120))
+		}
+	}
+	return out
+}
 
 // recentlyOffered lists the answer options already put in front of the player,
 // newest first and de-duplicated case-insensitively. The character's static

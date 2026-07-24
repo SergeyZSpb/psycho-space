@@ -101,8 +101,12 @@ export interface GameConfig {
   title: string;
   intro: string;
   default_character: string;
-  /** Tension scale, defined by the backend so the client never hardcodes it. */
+  /**
+   * Tension scale, defined by the backend so the client never hardcodes it.
+   * The bar fills to `anger_lose_at` — reaching the end of it is the punch.
+   */
   max_anger: number;
+  anger_lose_at: number;
   start_anger: number;
   characters: GameCharacter[];
 }
@@ -128,8 +132,14 @@ export interface GameTurnResult {
   art: string;
   achieved: boolean;
   game_over: boolean;
-  /** Tension after this turn, 0..max_anger. At the max the run is lost. */
+  /** Tension after this turn. At `anger_lose_at` the run is lost. */
   anger: number;
+  /**
+   * Which of the character's deep themes the judge counts as opened. Carried back
+   * next turn so it can steer toward what is still closed — deliberately NOT
+   * rendered: showing the checklist would play the game for the player.
+   */
+  themes_done: string[];
   options: string[];
 }
 

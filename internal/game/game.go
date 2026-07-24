@@ -29,17 +29,33 @@ const (
 // maxSteps bounds a submitted step count (defence against garbage input).
 const maxSteps = 1000
 
-// The tension scale. It is the game's only cross-turn state besides the
-// transcript: the client sends the current value with each turn, the judge
-// returns the new one, and at MaxAnger the character snaps and the run is lost
-// automatically — so a player who keeps pushing always eventually loses, which
-// a judge left to its own devices was reluctant to enforce.
+// The tension scale. It is cross-turn state the client carries: it sends the
+// current value with each turn, the judge returns the new one, and at
+// AngerLoseAt the character snaps and the run is lost automatically — so a
+// player who keeps pushing always eventually loses, which a judge left to its
+// own devices was reluctant to enforce.
 //
 // StartAnger is deliberately well above zero: дядя Ваня opens hostile.
+//
+// AngerLoseAt is below MaxAnger on purpose. Measured against the real model, the
+// scale crawled 85 → 90 → 95 → 95 and stalled: it would not cross its own
+// ceiling, so the run never ended. Ending it at 90 makes losing actually
+// reachable instead of theoretical.
 const (
-	MaxAnger   = 100
-	StartAnger = 40
+	MaxAnger    = 100
+	AngerLoseAt = 90
+	StartAnger  = 40
 )
+
+// Theme is one of the deep subjects the player has to genuinely open before the
+// character warms up. Server-only: the key is the judge's vocabulary for
+// reporting progress, the label tells it what the key means. Which themes are
+// still closed steers the option the judge offers next — the player is never
+// shown the list, or the game would play itself.
+type Theme struct {
+	Key   string
+	Label string
+}
 
 // ClampAnger bounds a tension value to the scale.
 func ClampAnger(v int) int {

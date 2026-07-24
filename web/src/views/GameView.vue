@@ -50,13 +50,13 @@
                and the play screen still never scrolls. -->
           <div class="anger">
             <div class="anger-cap d-flex align-center justify-space-between">
-              <span>😤 {{ angerLabel(anger, maxAnger) }}</span>
-              <span>{{ anger }}/{{ maxAnger }}</span>
+              <span>😤 {{ angerLabel(anger, angerBarMax) }}</span>
+              <span>{{ anger }}/{{ angerBarMax }}</span>
             </div>
             <v-progress-linear
               :model-value="anger"
-              :max="maxAnger"
-              :color="angerColor(anger, maxAnger)"
+              :max="angerBarMax"
+              :color="angerColor(anger, angerBarMax)"
               height="5"
               rounded
             />
@@ -210,6 +210,10 @@ const gameOver = ref(false); // lost by being punched, not by running out of opt
 // Tension, carried between turns like the transcript: we send it, the judge
 // returns the new value, and at max_anger the backend ends the run.
 const anger = ref(0);
+// Theme progress the judge reports, carried back next turn so it can steer toward
+// what is still closed. Deliberately NOT rendered anywhere: showing the player
+// which themes remain would play the game for them.
+const themesDone = ref<string[]>([]);
 const busy = ref(false);
 const rateLimited = ref(false);
 
@@ -249,7 +253,8 @@ const endingText = computed(() => {
     : 'Дядя Ваня так тебя и не пропустил. Стоишь во дворе.';
 });
 
-const maxAnger = computed(() => config.value?.max_anger ?? 100);
+// The bar fills at the point he actually swings, so a full bar means the punch.
+const angerBarMax = computed(() => config.value?.anger_lose_at ?? 90);
 const currentBoard = computed(() => boardMeta(board.value));
 const boardEntries = computed(() => boards.value?.[board.value] ?? []);
 
@@ -282,6 +287,7 @@ function start() {
   success.value = false;
   gameOver.value = false;
   anger.value = config.value?.start_anger ?? 0; // he opens hostile, not calm
+  themesDone.value = [];
   phase.value = 'play';
 }
 
@@ -291,7 +297,14 @@ async function turn(choice: string) {
   busy.value = true;
   rateLimited.value = false;
   try {
-    const res = await gameApi.attempt(GAME, ch.key, transcript.value, choice, anger.value);
+    const res = await gameApi.attempt(
+      GAME,
+      ch.key,
+      transcript.value,
+      choice,
+      anger.value,
+      themesDone.value,
+    );
     if (choice !== '') {
       // Record the options offered alongside the reply: the judge needs them next
       // turn to avoid proposing the same lines again.
@@ -299,6 +312,7 @@ async function turn(choice: string) {
       steps.value += 1;
     }
     anger.value = res.anger;
+    themesDone.value = res.themes_done ?? [];
     reply.value = res.reply;
     if (res.art) currentArtKey.value = res.art;
     options.value = res.options ?? [];

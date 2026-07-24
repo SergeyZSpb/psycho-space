@@ -17,14 +17,16 @@ package game
 // the passage into the entrance).
 
 // Game is a mini-game: a set of characters and which one is played by default.
-// MaxAnger/StartAnger describe the tension scale so the client renders and seeds
-// it from the backend instead of hardcoding the numbers.
+// The tension scale is published so the client renders and seeds it from the
+// backend instead of hardcoding the numbers. AngerLoseAt is what the bar fills
+// to — reaching the end of the bar is the punch.
 type Game struct {
 	GameKey          string      `json:"game_key"`
 	Title            string      `json:"title"`
 	Intro            string      `json:"intro"`
 	DefaultCharacter string      `json:"default_character"`
 	MaxAnger         int         `json:"max_anger"`
+	AngerLoseAt      int         `json:"anger_lose_at"`
 	StartAnger       int         `json:"start_anger"`
 	Characters       []Character `json:"characters"`
 }
@@ -53,12 +55,23 @@ type Character struct {
 	OpeningOptions []string `json:"opening_options"` // STATIC first answer options
 	Arts           []Art    `json:"arts"`            // asset catalog the judge chooses from
 
-	Objective   string `json:"-"` // internal win condition for the judge (never shown)
-	Failure     string `json:"-"` // internal lose condition: what makes them snap and end the run
-	GameOverArt string `json:"-"` // art forced when they snap (must be a key in Arts)
-	Motivation  string `json:"-"` // AI persona: what drives them
-	Persona     string `json:"-"` // AI persona: character
-	TalkStyle   string `json:"-"` // AI persona: how they speak
+	Objective   string  `json:"-"` // internal win condition for the judge (never shown)
+	Failure     string  `json:"-"` // internal lose condition: what makes them snap and end the run
+	GameOverArt string  `json:"-"` // art forced when they snap (must be a key in Arts)
+	Themes      []Theme `json:"-"` // deep subjects to open; drives option steering (never shown)
+	Motivation  string  `json:"-"` // AI persona: what drives them
+	Persona     string  `json:"-"` // AI persona: character
+	TalkStyle   string  `json:"-"` // AI persona: how they speak
+}
+
+// themeKeys returns the character's theme keys (for clamping what the judge
+// reports back).
+func (c Character) themeKeys() []string {
+	keys := make([]string, len(c.Themes))
+	for i, t := range c.Themes {
+		keys[i] = t.Key
+	}
+	return keys
 }
 
 // artKeys is the list of allowed art keys (for the judge prompt + clamping).
@@ -136,6 +149,13 @@ func smalltalkKhimki() Game {
 			"не считаясь с уже потеплевшим отношением. Одна неловкая фраза срывом не считается: " +
 			"сначала он огрызается и мрачнеет, и только если игрок продолжает в том же духе — бьёт.",
 		GameOverArt: "vanya_game_over_hits_us",
+		// The same three themes the Objective demands, as keys the judge can
+		// report progress against. Order matters only for readability.
+		Themes: []Theme{
+			{Key: "woman_children", Label: "тоска по женщине и детям, желание оставить потомство"},
+			{Key: "sahur", Label: "крепкая, почти братская дружба с Тунг Тунг Сахуром"},
+			{Key: "alcohol", Label: "его отношения с алкоголем: тяга выпить и мысли завязать"},
+		},
 		Motivation: "Постоянно хочет выпить и найти женщину, чтобы оставить потомство. " +
 			"Изначально не хочет никого пропускать. В глубине — тоскует по смыслу, любви, " +
 			"детях и по своему лучшему другу Тунг Тунг Сахуру.",
@@ -155,6 +175,7 @@ func smalltalkKhimki() Game {
 			"и, может, он откроется и пропустит тебя домой (а кот уже наблевал на шторы).",
 		DefaultCharacter: dyadyaVanya.Key,
 		MaxAnger:         MaxAnger,
+		AngerLoseAt:      AngerLoseAt,
 		StartAnger:       StartAnger,
 		Characters:       []Character{dyadyaVanya},
 	}

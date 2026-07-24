@@ -71,6 +71,10 @@ func (s *Server) handleGameAttempt(w http.ResponseWriter, r *http.Request) {
 		// an omitted field starts the scale where the character starts, rather
 		// than at the calmest possible value.
 		Anger *int `json:"anger"`
+		// ThemesDone is the theme progress carried over. Clamped to the
+		// character's own keys downstream; it only steers the next options and is
+		// never trusted as the win condition.
+		ThemesDone []string `json:"themes_done"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_request")
@@ -80,7 +84,7 @@ func (s *Server) handleGameAttempt(w http.ResponseWriter, r *http.Request) {
 	if req.Anger != nil {
 		anger = *req.Anger
 	}
-	res, err := s.d.Game.Judge(r.Context(), req.GameKey, req.CharacterKey, req.Transcript, req.Choice, anger)
+	res, err := s.d.Game.Judge(r.Context(), req.GameKey, req.CharacterKey, req.Transcript, req.Choice, anger, req.ThemesDone)
 	if err != nil {
 		switch {
 		case errors.Is(err, game.ErrUnknownGame):

@@ -59,7 +59,7 @@ func TestOpenAIEvaluatorJudge(t *testing.T) {
 	defer srv.Close()
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "deepseek-4-pro"})
-	res, err := ev.Judge(context.Background(), testChar(), []Exchange{{Choice: "привет", Reply: "ну"}}, "домой", StartAnger)
+	res, err := ev.Judge(context.Background(), testChar(), []Exchange{{Choice: "привет", Reply: "ну"}}, "домой", StartAnger, nil)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestOpenAIEvaluatorArtClampAndOptions(t *testing.T) {
 	srv := llmServer(t, content, http.StatusOK, nil, nil)
 	defer srv.Close()
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), testChar(), nil, "", StartAnger)
+	res, err := ev.Judge(context.Background(), testChar(), nil, "", StartAnger, nil)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -110,14 +110,14 @@ func TestOpenAIEvaluatorErrors(t *testing.T) {
 	bad := llmServer(t, "", http.StatusInternalServerError, nil, nil)
 	defer bad.Close()
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: bad.URL, APIKey: "k", Model: "m"})
-	if _, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger); err == nil {
+	if _, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger, nil); err == nil {
 		t.Fatal("want error on http 500")
 	}
 	// 200 but content isn't valid JSON.
 	junk := llmServer(t, "not json", http.StatusOK, nil, nil)
 	defer junk.Close()
 	ev2 := NewOpenAIEvaluator(config.LLM{BaseURL: junk.URL, APIKey: "k", Model: "m"})
-	if _, err := ev2.Judge(context.Background(), testChar(), nil, "x", StartAnger); err == nil {
+	if _, err := ev2.Judge(context.Background(), testChar(), nil, "x", StartAnger, nil); err == nil {
 		t.Fatal("want error on non-JSON content")
 	}
 }
@@ -132,7 +132,7 @@ func TestOpenAIEvaluatorNonJSONIsUnparsable(t *testing.T) {
 	defer srv.Close()
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	_, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger)
+	_, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger, nil)
 	if !errors.Is(err, ErrLLMUnparsable) {
 		t.Fatalf("err = %v; want ErrLLMUnparsable", err)
 	}
@@ -148,7 +148,7 @@ func TestOpenAIEvaluatorHTTPErrorIsNotUnparsable(t *testing.T) {
 	defer srv.Close()
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	_, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger)
+	_, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger, nil)
 	if err == nil || errors.Is(err, ErrLLMUnparsable) {
 		t.Fatalf("err = %v; want a non-ErrLLMUnparsable error", err)
 	}
@@ -183,7 +183,7 @@ func TestOpenAIEvaluatorGameOver(t *testing.T) {
 	ch.GameOverArt = "vanya_game_over_hits_us"
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), ch, nil, "ты никчёмный", StartAnger)
+	res, err := ev.Judge(context.Background(), ch, nil, "ты никчёмный", StartAnger, nil)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestOpenAIEvaluatorAchievedBeatsGameOver(t *testing.T) {
 	ch.GameOverArt = "vanya_angry"
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), ch, nil, "x", StartAnger)
+	res, err := ev.Judge(context.Background(), ch, nil, "x", StartAnger, nil)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -263,12 +263,21 @@ func TestOpenAIEvaluatorAnger(t *testing.T) {
 			wantAnger: 0,
 		},
 		{
-			// The whole point: max tension loses the run with no game_over flag.
-			name:         "full scale ends the run",
-			content:      `{"reply":"Всё, доигрался","art":"vanya_neutral","anger":100,"achieved":false,"options":["a","b"]}`,
-			angerIn:      90,
-			wantAnger:    MaxAnger,
+			// The whole point: crossing the kill line loses the run with no
+			// game_over flag from the model.
+			name:         "reaching the kill line ends the run",
+			content:      `{"reply":"Всё, доигрался","art":"vanya_neutral","anger":90,"achieved":false,"options":["a","b"]}`,
+			angerIn:      80,
+			wantAnger:    AngerLoseAt,
 			wantGameOver: true,
+		},
+		{
+			// Measured against the real model the scale crawled to 95 and sat
+			// there; below the line it must NOT end the run.
+			name:      "just under the line keeps the run alive",
+			content:   `{"reply":"Ну ты и наглый","art":"vanya_angry","anger":89,"achieved":false,"options":["a","b","c","d"]}`,
+			angerIn:   80,
+			wantAnger: 89,
 		},
 		{
 			name:         "over the top is clamped and still ends the run",
@@ -283,7 +292,7 @@ func TestOpenAIEvaluatorAnger(t *testing.T) {
 			srv := llmServer(t, tt.content, http.StatusOK, nil, nil)
 			defer srv.Close()
 			ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-			res, err := ev.Judge(context.Background(), ch, nil, "x", tt.angerIn)
+			res, err := ev.Judge(context.Background(), ch, nil, "x", tt.angerIn, nil)
 			if err != nil {
 				t.Fatalf("Judge: %v", err)
 			}
@@ -305,14 +314,14 @@ func TestOpenAIEvaluatorAnger(t *testing.T) {
 	}
 }
 
-// Winning on the turn the scale fills is still a win.
+// Winning on the turn the scale crosses the kill line is still a win.
 func TestOpenAIEvaluatorAchievedBeatsFullAnger(t *testing.T) {
 	content := `{"reply":"Ладно, заходи","art":"hallway_pass","anger":100,"achieved":true,"options":[]}`
 	srv := llmServer(t, content, http.StatusOK, nil, nil)
 	defer srv.Close()
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), testChar(), nil, "x", 95)
+	res, err := ev.Judge(context.Background(), testChar(), nil, "x", 95, nil)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -323,7 +332,7 @@ func TestOpenAIEvaluatorAchievedBeatsFullAnger(t *testing.T) {
 
 // The judge can only move the scale if it is told where the scale stands.
 func TestBuildMessagesCarriesAnger(t *testing.T) {
-	msgs, _ := buildMessages(testChar(), nil, "x", 73)
+	msgs, _ := buildMessages(testChar(), nil, "x", 73, nil)
 	sys := msgs[0].Content
 	if !strings.Contains(sys, "сейчас 73") {
 		t.Fatalf("system prompt should state the current tension; got:\n%s", sys)
@@ -345,7 +354,7 @@ func TestJudgeClampsIncomingAnger(t *testing.T) {
 	defer srv.Close()
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), testChar(), nil, "x", -999)
+	res, err := ev.Judge(context.Background(), testChar(), nil, "x", -999, nil)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -390,7 +399,7 @@ func TestSalvagesGarbledJSONFromProd(t *testing.T) {
 	srv := llmServer(t, content, http.StatusOK, nil, nil)
 	defer srv.Close()
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), testChar(), nil, "Давай я тебе помогу", 60)
+	res, err := ev.Judge(context.Background(), testChar(), nil, "Давай я тебе помогу", 60, nil)
 	if err != nil {
 		t.Fatalf("Judge should salvage this reply, got: %v", err)
 	}
@@ -490,6 +499,214 @@ func TestEscapeControlCharsInStrings(t *testing.T) {
 	}
 }
 
+// themedChar has the three-theme structure the real character has.
+func themedChar() Character {
+	ch := testChar()
+	ch.Arts = append(ch.Arts, Art{Key: "vanya_game_over_hits_us"})
+	ch.GameOverArt = "vanya_game_over_hits_us"
+	ch.Themes = []Theme{
+		{Key: "woman_children", Label: "тоска по женщине и детям"},
+		{Key: "sahur", Label: "дружба с Тунг Тунг Сахуром"},
+		{Key: "alcohol", Label: "отношения с алкоголем"},
+	}
+	return ch
+}
+
+// The judge is told which themes are still closed, so the first option slot has
+// somewhere to steer. Measured without this, alcohol showed up in 1 of 40 offered
+// options and the win was practically unreachable.
+func TestBuildMessagesNamesOpenThemes(t *testing.T) {
+	ch := themedChar()
+
+	msgs, _ := buildMessages(ch, nil, "x", StartAnger, []string{"sahur"})
+	sys := msgs[0].Content
+	if !strings.Contains(sys, "alcohol") || !strings.Contains(sys, "woman_children") {
+		t.Fatalf("still-closed themes should be listed; got:\n%s", sys)
+	}
+	if strings.Contains(sys, "sahur — ") {
+		t.Fatal("an already-opened theme must not be listed as still closed")
+	}
+	if !strings.Contains(sys, "Первый из четырёх вариантов") {
+		t.Fatal("prompt should require the first option to steer at an open theme")
+	}
+
+	// All three open: all three listed.
+	allOpen, _ := buildMessages(ch, nil, "x", StartAnger, nil)
+	for _, key := range []string{"woman_children", "sahur", "alcohol"} {
+		if !strings.Contains(allOpen[0].Content, key) {
+			t.Errorf("theme %q missing from the open list", key)
+		}
+	}
+
+	// Nothing left to open: the prompt switches to closing the dialogue out.
+	done, _ := buildMessages(ch, nil, "x", StartAnger, []string{"woman_children", "sahur", "alcohol"})
+	if !strings.Contains(done[0].Content, "Все твои глубинные темы уже раскрыты") {
+		t.Fatalf("with every theme open the prompt should push toward the ending; got:\n%s", done[0].Content)
+	}
+}
+
+// The four options are asked for by role, because asking for "four varied
+// options" produced four ways of saying "давай поговорим".
+func TestBuildMessagesAsksForRoleSlots(t *testing.T) {
+	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil)
+	sys := msgs[0].Content
+	for _, want := range []string{
+		"ещё НЕ раскрытых тем", // slot 1: opens a theme
+		"тёплый",               // slot 2
+		"грубый",               // slot 3: a real way to lose
+		"нейтральный",          // slot 4
+		"отличаться СМЫСЛОМ",
+	} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("prompt missing role-slot instruction %q", want)
+		}
+	}
+}
+
+// His own recent lines go back so he stops answering with the same formula
+// («Ты меня не знаешь…» appeared four times in one measured run).
+func TestBuildMessagesFeedsBackRecentReplies(t *testing.T) {
+	tr := []Exchange{
+		{Choice: "a", Reply: "Ты меня не знаешь, чего пристал?"},
+		{Choice: "b", Reply: "С чего ты взял, что мне интересно?"},
+	}
+	msgs, _ := buildMessages(themedChar(), tr, "дальше", StartAnger, nil)
+	sys := msgs[0].Content
+	if !strings.Contains(sys, "Твои недавние реплики") {
+		t.Fatal("prompt should quote his own recent lines back")
+	}
+	for _, r := range []string{"Ты меня не знаешь", "С чего ты взял"} {
+		if !strings.Contains(sys, r) {
+			t.Errorf("recent reply %q missing from the prompt", r)
+		}
+	}
+}
+
+func TestRecentReplies(t *testing.T) {
+	var tr []Exchange
+	for i := 0; i < maxRecentReplies+5; i++ {
+		tr = append(tr, Exchange{Reply: fmt.Sprintf("реплика-%d", i)})
+	}
+	got := recentReplies(tr)
+	if len(got) != maxRecentReplies {
+		t.Fatalf("len = %d; want the cap %d", len(got), maxRecentReplies)
+	}
+	if got[0] != fmt.Sprintf("реплика-%d", maxRecentReplies+4) {
+		t.Fatalf("first = %q; want the newest reply", got[0])
+	}
+	// Blank replies are skipped, and a long one is clamped.
+	got = recentReplies([]Exchange{{Reply: "  "}, {Reply: strings.Repeat("я", 300)}})
+	if len(got) != 1 || utf8.RuneCountInString(got[0]) > 121 {
+		t.Fatalf("got %d replies, first %d runes", len(got), utf8.RuneCountInString(got[0]))
+	}
+}
+
+// Theme progress is monotonic, clamped to the character's own keys, and survives
+// a model that forgets the field.
+func TestThemeProgress(t *testing.T) {
+	ch := themedChar()
+
+	if got := clampThemes(ch, []string{"sahur", "не-тема", "SAHUR"}); !reflect.DeepEqual(got, []string{"sahur"}) {
+		t.Fatalf("clampThemes = %v; want [sahur] (junk dropped, deduped)", got)
+	}
+	if got := clampThemes(ch, nil); got != nil {
+		t.Fatalf("clampThemes(nil) = %v; want nil", got)
+	}
+	// Merge is a union in the character's own order, so it is stable.
+	if got := mergeThemes(ch, []string{"alcohol"}, []string{"sahur", "alcohol"}); !reflect.DeepEqual(got, []string{"sahur", "alcohol"}) {
+		t.Fatalf("mergeThemes = %v; want [sahur alcohol] in character order", got)
+	}
+
+	// A reply that reports progress merges it in.
+	content := `{"reply":"Ну","art":"vanya_angry","anger":50,"achieved":false,` +
+		`"themes_done":["alcohol"],"options":["a","b","c","d"]}`
+	srv := llmServer(t, content, http.StatusOK, nil, nil)
+	defer srv.Close()
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	res, err := ev.Judge(context.Background(), ch, nil, "x", 40, []string{"sahur"})
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if !reflect.DeepEqual(res.ThemesDone, []string{"sahur", "alcohol"}) {
+		t.Fatalf("themes = %v; want the union [sahur alcohol]", res.ThemesDone)
+	}
+
+	// A reply that OMITS the field keeps what the player already earned.
+	bare := llmServer(t, `{"reply":"Ну","art":"vanya_angry","anger":50,"options":["a"]}`, http.StatusOK, nil, nil)
+	defer bare.Close()
+	ev2 := NewOpenAIEvaluator(config.LLM{BaseURL: bare.URL, APIKey: "k", Model: "m"})
+	res2, err := ev2.Judge(context.Background(), ch, nil, "x", 40, []string{"sahur"})
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if !reflect.DeepEqual(res2.ThemesDone, []string{"sahur"}) {
+		t.Fatalf("themes = %v; an omitted field must not wipe progress", res2.ThemesDone)
+	}
+}
+
+// The real payload that cost a turn in prod (trace e8a9583de2e9993a7016f511aaa27f3a):
+// flawless JSON except the tension arrived quoted, "anger": "35". A whole usable
+// turn must not be thrown away over the quotes.
+func TestQuotedNumbersAndBoolsAreAccepted(t *testing.T) {
+	const content = `{"reply": "Ну что ж, каждому своё, правда?", "art": "vanya_warming", ` +
+		`"anger": "35", "achieved": "false", "game_over": "false", "themes_done": ["sahur"], ` +
+		`"options": ["а", "б", "в", "г"]}`
+
+	srv := llmServer(t, content, http.StatusOK, nil, nil)
+	defer srv.Close()
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	res, err := ev.Judge(context.Background(), themedChar(), nil, "x", 40, nil)
+	if err != nil {
+		t.Fatalf("a quoted number should not cost the turn: %v", err)
+	}
+	if res.Anger != 35 {
+		t.Errorf(`anger = %d; want 35 parsed from "35"`, res.Anger)
+	}
+	if res.Achieved || res.GameOver {
+		t.Errorf(`res = %+v; want both flags false from "false"`, res)
+	}
+	if len(res.Options) != optionCount {
+		t.Errorf("options = %v; want %d", res.Options, optionCount)
+	}
+}
+
+func TestFlexIntAndFlexBool(t *testing.T) {
+	var n flexInt
+	for _, in := range []string{`42`, `"42"`, `42.0`, `"42.7"`} {
+		n = 0
+		if err := n.UnmarshalJSON([]byte(in)); err != nil {
+			t.Errorf("flexInt(%s): %v", in, err)
+		} else if n != 42 {
+			t.Errorf("flexInt(%s) = %d; want 42", in, n)
+		}
+	}
+	// Absent-ish values leave it at zero without erroring...
+	for _, in := range []string{`null`, `""`} {
+		n = 7
+		if err := n.UnmarshalJSON([]byte(in)); err != nil {
+			t.Errorf("flexInt(%s): %v", in, err)
+		}
+	}
+	// ...but real junk is still an error, so the salvage path can see it.
+	if err := n.UnmarshalJSON([]byte(`"очень злой"`)); err == nil {
+		t.Error("flexInt should reject non-numeric text")
+	}
+
+	var b flexBool
+	for in, want := range map[string]bool{`true`: true, `"true"`: true, `"TRUE"`: true,
+		`false`: false, `"false"`: false, `null`: false} {
+		b = false
+		if err := b.UnmarshalJSON([]byte(in)); err != nil {
+			t.Errorf("flexBool(%s): %v", in, err)
+		} else if bool(b) != want {
+			t.Errorf("flexBool(%s) = %v; want %v", in, bool(b), want)
+		}
+	}
+	if err := b.UnmarshalJSON([]byte(`"ага"`)); err == nil {
+		t.Error("flexBool should reject non-boolean text")
+	}
+}
+
 func TestOptionsWhilePlaying(t *testing.T) {
 	if optionsWhilePlaying(true, []string{"a", "b"}) != nil {
 		t.Fatal("achieved should return no options")
@@ -547,7 +764,7 @@ func TestRecentlyOfferedIsCapped(t *testing.T) {
 // their exchange is forgotten — the same window as the rest of the history.
 func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 	tr := []Exchange{{Choice: "привет", Reply: "ну", Options: []string{"уже предлагал это"}}}
-	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger)
+	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger, nil)
 	sys := msgs[0].Content
 	if !strings.Contains(sys, "уже предлагал это") {
 		t.Fatalf("system prompt should list already-offered options; got:\n%s", sys)
@@ -560,7 +777,7 @@ func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 	big := strings.Repeat("я", 200_000)
 	droppedMsgs, _ := buildMessages(testChar(), []Exchange{
 		{Choice: big, Reply: big, Options: []string{"забытый вариант"}},
-	}, "дальше", StartAnger)
+	}, "дальше", StartAnger, nil)
 	sysDropped := droppedMsgs[0].Content
 	if strings.Contains(sysDropped, "забытый вариант") {
 		t.Fatal("options of a forgotten exchange must not survive in the prompt")
@@ -572,7 +789,7 @@ func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 func TestBuildMessagesOmitsOfferedBlockWhenEmpty(t *testing.T) {
 	ch := testChar()
 	ch.OpeningOptions = nil
-	msgs, _ := buildMessages(ch, nil, "", StartAnger)
+	msgs, _ := buildMessages(ch, nil, "", StartAnger, nil)
 	sys := msgs[0].Content
 	if strings.Contains(sys, "УЖЕ предлагал") {
 		t.Fatalf("nothing offered yet, so the block should be absent; got:\n%s", sys)
@@ -618,7 +835,7 @@ func TestBuildMessagesDropsOldHistory(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		tr = append(tr, Exchange{Choice: big, Reply: big})
 	}
-	msgs, _ := buildMessages(testChar(), tr, "финал", StartAnger)
+	msgs, _ := buildMessages(testChar(), tr, "финал", StartAnger, nil)
 	included := (len(msgs) - 2) / 2 // minus system + current user
 	if included >= 100 {
 		t.Fatalf("old history not dropped: included=%d of 100", included)

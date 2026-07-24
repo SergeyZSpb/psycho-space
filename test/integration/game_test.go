@@ -38,7 +38,8 @@ func TestGameFlow(t *testing.T) {
 	}
 
 	// The config carries the tension scale so the client never hardcodes it.
-	if cfg["max_anger"].(float64) != 100 || cfg["start_anger"].(float64) <= 0 {
+	if cfg["max_anger"].(float64) != 100 || cfg["start_anger"].(float64) <= 0 ||
+		cfg["anger_lose_at"].(float64) != 90 {
 		t.Fatalf("config should carry the tension scale: %v", cfg)
 	}
 
@@ -92,11 +93,23 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("game over should clear options: %v", rGO)
 	}
 
+	// /attempt is rate-limited to 10/min per IP because every call costs money,
+	// and this test drives more turns than that. The remaining judge checks run
+	// against a second app instance, which has its own limiter — we are testing
+	// the judge here, not the limiter (that has its own test).
+	app2 := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app2.Close()
+	cli2 := loginAs(t, app2.URL, "3001", "user") // same account, fresh session
+	attempt2 := func(body map[string]any) (int, map[string]any) {
+		body["game_key"], body["character_key"] = "smalltalk_khimki", charKey
+		return doJSON(t, cli2, http.MethodPost, app2.URL+"/api/game/attempt", body)
+	}
+
 	// Options the judge already offered travel back in the transcript and reach the
 	// system prompt, so it can stop proposing the same lines. The fake judge
 	// reports what it saw.
-	st, rRep := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", map[string]any{
-		"game_key": "smalltalk_khimki", "character_key": charKey, "choice": "повторы",
+	st, rRep := attempt2(map[string]any{
+		"choice": "повторы",
 		"transcript": []map[string]any{
 			{"choice": "привет", "reply": "ну", "options": []string{"уже это предлагал"}},
 		},
@@ -105,20 +118,36 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("offered options should reach the prompt: status %d res %v", st, rRep)
 	}
 
-	// The tension scale round-trips: we send it, the judge returns the new value.
+	// The tension scale round-trips: we send it, the judge returns the new value,
+	// and theme progress comes back alongside it.
 	st, rCalm := attemptAnger("теплеет", 60)
 	if st != http.StatusOK || rCalm["anger"].(float64) != 25 || rCalm["game_over"] != false {
 		t.Fatalf("calming turn: status %d res %v; want 200 anger 25", st, rCalm)
 	}
-
-	// A full scale ends the run on its own — the fake judge sets anger 100 and no
-	// game_over flag, and the backend must still lose the run and force the art.
-	st, rMax := attemptAnger("бесит", 90)
-	if st != http.StatusOK || rMax["game_over"] != true {
-		t.Fatalf("full scale: status %d res %v; want 200 game_over=true", st, rMax)
+	if themes, _ := rCalm["themes_done"].([]any); len(themes) != 1 || themes[0] != "alcohol" {
+		t.Fatalf("themes_done = %v; want [alcohol]", rCalm["themes_done"])
 	}
-	if rMax["anger"].(float64) != 100 || rMax["art"] != "vanya_game_over_hits_us" {
-		t.Fatalf("full scale res = %v; want anger 100 and the forced punch art", rMax)
+
+	// Theme progress the client carries steers the prompt: what is already open is
+	// dropped from the still-closed list the judge is shown.
+	st, rTh := attempt2(map[string]any{
+		"choice": "темы", "transcript": []any{}, "anger": 50,
+		"themes_done": []string{"alcohol"},
+	})
+	if st != http.StatusOK || rTh["reply"] != "open_themes=да" {
+		t.Fatalf("open themes should reach the prompt: status %d res %v", st, rTh)
+	}
+
+	// Reaching the kill line ends the run on its own — the fake judge returns
+	// anger 90 with NO game_over flag, and the backend must still lose the run and
+	// force the punch art. This is the case the real model never triggered on its
+	// own: it crawled to 95 and sat there.
+	st, rMax := attempt2(map[string]any{"choice": "бесит", "transcript": []any{}, "anger": 80})
+	if st != http.StatusOK || rMax["game_over"] != true {
+		t.Fatalf("kill line: status %d res %v; want 200 game_over=true", st, rMax)
+	}
+	if rMax["anger"].(float64) != 90 || rMax["art"] != "vanya_game_over_hits_us" {
+		t.Fatalf("kill line res = %v; want anger 90 and the forced punch art", rMax)
 	}
 	if opts, _ := rMax["options"].([]any); len(opts) != 0 {
 		t.Fatalf("a lost run should clear options: %v", rMax)
@@ -127,7 +156,7 @@ func TestGameFlow(t *testing.T) {
 	// Garbled-but-recoverable JSON (fake LLM keys on "кривой") is salvaged: the
 	// turn goes through with all four options, instead of costing the player a
 	// move for the model's typo.
-	st, rFix := attemptAnger("кривой", 60)
+	st, rFix := attempt2(map[string]any{"choice": "кривой", "transcript": []any{}, "anger": 60})
 	if st != http.StatusOK {
 		t.Fatalf("garbled reply: status %d res %v; want 200 (salvaged)", st, rFix)
 	}
@@ -142,7 +171,7 @@ func TestGameFlow(t *testing.T) {
 	// provider but prose instead of JSON. That is the dialogue's problem, not an
 	// outage — 422 with a stable code, so the SPA can tell the player to pick a
 	// different line instead of showing a scary gateway error.
-	st, rC := attempt(nil, "цензура")
+	st, rC := attempt2(map[string]any{"choice": "цензура", "transcript": []any{}})
 	if st != http.StatusUnprocessableEntity {
 		t.Fatalf("filtered turn: status %d res %v; want 422", st, rC)
 	}
@@ -154,7 +183,7 @@ func TestGameFlow(t *testing.T) {
 	}
 
 	// Unknown character -> 404.
-	if st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt",
+	if st, _ := doJSON(t, cli2, http.MethodPost, app2.URL+"/api/game/attempt",
 		map[string]any{"game_key": "smalltalk_khimki", "character_key": "nobody", "transcript": []any{}, "choice": "x"}); st != http.StatusNotFound {
 		t.Fatalf("unknown character attempt status %d; want 404", st)
 	}
@@ -218,8 +247,8 @@ func TestGameFlow(t *testing.T) {
 	// With no LLM configured, the judge endpoint is unavailable (503).
 	appNoLLM := httptest.NewServer(buildAppCfg(vkSrv.URL, ""))
 	defer appNoLLM.Close()
-	cli2 := loginAs(t, appNoLLM.URL, "3002", "user")
-	if st, _ := doJSON(t, cli2, http.MethodPost, appNoLLM.URL+"/api/game/attempt",
+	cliNoLLM := loginAs(t, appNoLLM.URL, "3002", "user")
+	if st, _ := doJSON(t, cliNoLLM, http.MethodPost, appNoLLM.URL+"/api/game/attempt",
 		map[string]any{"game_key": "smalltalk_khimki", "character_key": charKey, "transcript": []any{}, "choice": "x"}); st != http.StatusServiceUnavailable {
 		t.Fatalf("no-LLM attempt status %d; want 503", st)
 	}

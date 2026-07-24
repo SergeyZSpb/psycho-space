@@ -85,17 +85,26 @@ export const gameApi = {
 
   // Judge one dialogue turn via the LLM. `transcript` is the conversation so
   // far; `choice` is the player's latest line ("" on the opening turn); `anger`
-  // is the tension carried over from the previous turn.
+  // is the tension carried over from the previous turn, and `themesDone` the
+  // theme progress (both are cross-turn state the client holds).
   attempt: (
     game: string,
     character: string,
     transcript: GameExchange[],
     choice: string,
     anger: number,
+    themesDone: string[],
   ) =>
     apiFetch<GameTurnResult>('/api/game/attempt', {
       method: 'POST',
-      body: { game_key: game, character_key: character, transcript, choice, anger },
+      body: {
+        game_key: game,
+        character_key: character,
+        transcript,
+        choice,
+        anger,
+        themes_done: themesDone,
+      },
     }),
 
   // Record a finished play-through (goal reached or step budget spent).
