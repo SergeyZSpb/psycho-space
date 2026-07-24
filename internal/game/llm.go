@@ -136,12 +136,17 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		return TurnResult{}, fmt.Errorf("game: decode llm response: %w", err)
 	}
 	if len(cr.Choices) == 0 {
-		return TurnResult{}, fmt.Errorf("game: llm returned no choices")
+		return TurnResult{}, fmt.Errorf("game: llm returned no choices: %s", snippet(body))
 	}
 
 	var jr judgeReply
-	if err := json.Unmarshal([]byte(cr.Choices[0].Message.Content), &jr); err != nil {
-		return TurnResult{}, fmt.Errorf("game: llm content not valid JSON: %w", err)
+	content := cr.Choices[0].Message.Content
+	if err := json.Unmarshal([]byte(content), &jr); err != nil {
+		// The usual cause is the provider's content filter answering in plain
+		// prose instead of the model (it ignores response_format), so carry the
+		// offending content into the error: it is the root cause, and it is only
+		// visible here (raw bodies are Debug-level, prod runs at Info).
+		return TurnResult{}, fmt.Errorf("game: llm content not valid JSON (%q): %w", snippet([]byte(content)), err)
 	}
 
 	art := normalizeArt(jr.Art, ch.artKeys())
@@ -163,14 +168,17 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 	}, nil
 }
 
-// snippet truncates a body for error messages / logs.
+// snippet truncates a body for error messages / logs. It cuts on runes, not
+// bytes, so a truncated Cyrillic reply stays readable instead of ending in a
+// mangled half-character.
 func snippet(b []byte) string {
-	const max = 300
+	const max = 300 // runes
 	s := strings.TrimSpace(string(b))
-	if len(s) > max {
-		return s[:max] + "…"
+	if utf8.RuneCountInString(s) <= max {
+		return s
 	}
-	return s
+	runes := []rune(s)
+	return string(runes[:max]) + "…"
 }
 
 // buildMessages turns the character persona + conversation into chat messages.

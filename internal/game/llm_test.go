@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 )
@@ -115,6 +116,38 @@ func TestOpenAIEvaluatorErrors(t *testing.T) {
 	ev2 := NewOpenAIEvaluator(config.LLM{BaseURL: junk.URL, APIKey: "k", Model: "m"})
 	if _, err := ev2.Judge(context.Background(), testChar(), nil, "x"); err == nil {
 		t.Fatal("want error on non-JSON content")
+	}
+}
+
+// A content-filter refusal arrives as HTTP 200 with plain prose instead of the
+// JSON we asked for. The error must carry that prose, because it is the only
+// record of the root cause at the Info level prod runs at.
+func TestOpenAIEvaluatorNonJSONErrorCarriesContent(t *testing.T) {
+	const refusal = "Не люблю менять тему разговора, но эта тема кажется мне спорной."
+	srv := llmServer(t, refusal, http.StatusOK, nil, nil)
+	defer srv.Close()
+
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	_, err := ev.Judge(context.Background(), testChar(), nil, "x")
+	if err == nil {
+		t.Fatal("want error on non-JSON content")
+	}
+	if !strings.Contains(err.Error(), refusal) {
+		t.Fatalf("error should quote the offending content; got %q", err)
+	}
+}
+
+func TestSnippetTruncatesOnRunes(t *testing.T) {
+	long := strings.Repeat("я", 400)
+	got := snippet([]byte(long))
+	if !utf8.ValidString(got) {
+		t.Fatalf("snippet produced invalid UTF-8: %q", got)
+	}
+	if n := utf8.RuneCountInString(got); n != 301 { // 300 runes + the ellipsis
+		t.Fatalf("rune count = %d; want 301", n)
+	}
+	if short := snippet([]byte("  привет  ")); short != "привет" {
+		t.Fatalf("short input should pass through trimmed, got %q", short)
 	}
 }
 

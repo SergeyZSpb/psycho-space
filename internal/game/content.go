@@ -83,17 +83,21 @@ func (g Game) findCharacter(key string) (Character, bool) {
 
 // smalltalkKhimki is the default script. One character for now (the default).
 // The dialogue is inherently multi-step: the LLM only marks success once the
-// player has actually seen past the addict-idiot mask to дядя Ваня's depth
+// player has actually seen past the drunk-idiot mask to дядя Ваня's depth
 // (love of children, humanist values); it always offers 4 answer options and
 // picks the art (his changing mood, or a story/location art) as the arc moves.
 // The profile is replaceable config — richer prompts + real art land later.
+//
+// The third deep theme is deliberately ALCOHOL, not drugs: the provider's
+// content filter answers drug-flavoured prompts with plain prose instead of the
+// model's JSON, which surfaced as 502s (see the non-JSON path in llm.go).
 func smalltalkKhimki() Game {
 	dyadyaVanya := Character{
 		Key:  "dyadya_vanya",
 		Name: "Дядя Ваня",
 		// Public, high-level — no spoilers about HOW to win.
 		Goal:     "Уговори дядю Ваню пропустить тебя в подъезд — домой.",
-		Greeting: "Куда прёшь?! Не пущу. Есть чё? И баба есть — потомство надо оставить...",
+		Greeting: "Куда прёшь?! Не пущу. Выпить есть? И баба нужна — потомство надо оставить...",
 		OpeningOptions: []string{
 			"Дядь Вань, ну ты чего, я свой, тут живу",
 			"Есть немного... а ты чего такой дёрганый сегодня?",
@@ -111,20 +115,20 @@ func smalltalkKhimki() Game {
 			{Key: "memory_children", Emoji: "🧒", Gradient: "linear-gradient(160deg, #4a4368, #241f3a)"},
 			{Key: "hallway_pass", Emoji: "🚪", Gradient: "linear-gradient(160deg, #2d5a53, #0f2b27)"},
 		},
-		Objective: "Успех = игрок разглядел за маской поверхностного торчка живого человека " +
+		Objective: "Успех = игрок разглядел за маской поверхностного алкаша живого человека " +
 			"и искренне, по-человечески проработал ВСЕ ТРИ его глубинные темы: " +
 			"(1) тоску по женщине и детям, желание оставить потомство; " +
 			"(2) крепкую, почти братскую дружбу с Тунг Тунг Сахуром; " +
-			"(3) его отношения с веществами (тягу ширнуться) — без осуждения, по-доброму. " +
+			"(3) его отношения с алкоголем (тягу выпить, желание завязать) — без осуждения, по-доброму. " +
 			"Ставь achieved=true ТОЛЬКО когда игрок содержательно затронул и расположил Ваню " +
 			"по ВСЕМ ТРЁМ темам; частичный охват (одна–две темы), поверхностная болтовня, " +
 			"подкуп или грубость цель НЕ достигают. Мягко подводи игрока к ещё не раскрытым " +
 			"темам, но не раскрывай это условие напрямую.",
-		Motivation: "Постоянно хочет ширнуться и найти женщину, чтобы оставить потомство. " +
+		Motivation: "Постоянно хочет выпить и найти женщину, чтобы оставить потомство. " +
 			"Изначально не хочет никого пропускать. В глубине — тоскует по смыслу, любви, " +
 			"детях и по своему лучшему другу Тунг Тунг Сахуру.",
 		Persona: "Странный сосед у подъезда, на грани шизофрении. За маской поверхностного " +
-			"торчка-нарика прячется глубокая, ранимая личность: любит детей, исповедует " +
+			"выпивохи-алкаша прячется глубокая, ранимая личность: любит детей, исповедует " +
 			"гуманистические ценности. Его самое дорогое — крепкая, почти братская дружба с " +
 			"Тунг Тунг Сахуром; о ней он говорит с теплотой, только если собеседник его расположил.",
 		TalkStyle: "Сбивчиво, резко скачет между бредом и внезапно глубокими мыслями; сперва " +
@@ -135,7 +139,7 @@ func smalltalkKhimki() Game {
 		GameKey: GameSmalltalkKhimki,
 		Title:   "Смолтолк в Химках",
 		Intro: "Ты почти дома, но у подъезда — странный сосед, дядя Ваня. Сначала он видится " +
-			"поверхностным торчком, который никого не пускает. Разговори его, загляни глубже — " +
+			"поверхностным алкашом, который никого не пускает. Разговори его, загляни глубже — " +
 			"и, может, он откроется и пропустит тебя домой (а кот уже наблевал на шторы).",
 		DefaultCharacter: dyadyaVanya.Key,
 		Characters:       []Character{dyadyaVanya},

@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
@@ -91,6 +92,30 @@ func TestContentFor(t *testing.T) {
 	}
 	if _, err := ContentFor("nope"); !errors.Is(err, ErrUnknownGame) {
 		t.Fatalf("unknown game err = %v; want ErrUnknownGame", err)
+	}
+}
+
+// The character's third deep theme is alcohol, not drugs: drug-flavoured prompt
+// material makes the provider's content filter answer in plain prose instead of
+// the model's JSON, which the player sees as a 502. Guard the whole text
+// surface we send to the model, not just the objective.
+func TestContentAvoidsDrugFlavouredPrompts(t *testing.T) {
+	g, err := ContentFor(GameSmalltalkKhimki)
+	if err != nil {
+		t.Fatalf("ContentFor: %v", err)
+	}
+	ch := defaultChar(t)
+	text := strings.ToLower(strings.Join(append([]string{
+		g.Intro, ch.Goal, ch.Greeting, ch.Objective, ch.Motivation, ch.Persona, ch.TalkStyle,
+	}, ch.OpeningOptions...), " "))
+
+	for _, banned := range []string{"ширн", "торчк", "нарик", "наркот", "вещест", "доза", "герыч"} {
+		if strings.Contains(text, banned) {
+			t.Errorf("prompt material contains drug-flavoured %q; the story is about alcohol", banned)
+		}
+	}
+	if !strings.Contains(text, "алког") && !strings.Contains(text, "выпи") {
+		t.Error("prompt material should carry the alcohol theme")
 	}
 }
 
