@@ -182,8 +182,13 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("filtered turn should carry a trace_id for the user to quote: %v", rC)
 	}
 
-	// Unknown character -> 404.
-	if st, _ := doJSON(t, cli2, http.MethodPost, app2.URL+"/api/game/attempt",
+	// Unknown character -> 404. On its own instance: /attempt allows 5 a minute
+	// per IP and both earlier instances are already at that limit, so this would
+	// otherwise be answered 429 by the limiter before reaching the handler.
+	app3 := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app3.Close()
+	cli3 := loginAs(t, app3.URL, "3001", "user")
+	if st, _ := doJSON(t, cli3, http.MethodPost, app3.URL+"/api/game/attempt",
 		map[string]any{"game_key": "smalltalk_khimki", "character_key": "nobody", "transcript": []any{}, "choice": "x"}); st != http.StatusNotFound {
 		t.Fatalf("unknown character attempt status %d; want 404", st)
 	}

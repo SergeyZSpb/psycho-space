@@ -105,8 +105,12 @@ func (s *Server) Handler() http.Handler {
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireAuth)
 				r.Get("/config", s.handleGameConfig)
-				// The judge calls the (paid) LLM, so cap it tightly per IP.
-				r.With(s.rateLimit(10, time.Minute)).Post("/attempt", s.handleGameAttempt)
+				// The judge calls the (paid) LLM, so cap it tightly per IP. Halved
+				// from 10 when the model moved to deepseek-v4-flash: a turn costs
+				// roughly twice as much there, so the same money per minute buys
+				// half the turns. A human plays a handful of turns a minute at
+				// most; this only bites someone hammering the endpoint.
+				r.With(s.rateLimit(5, time.Minute)).Post("/attempt", s.handleGameAttempt)
 				r.Post("/runs", s.handleGameSubmitRun)
 				r.Get("/runs/leaderboard", s.handleGameLeaderboard)
 				r.Get("/runs/me", s.handleGameStats)
