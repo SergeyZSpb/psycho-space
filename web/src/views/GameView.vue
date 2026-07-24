@@ -1,5 +1,8 @@
 <template>
-  <v-container :class="phase === 'play' ? 'pa-0 play-root' : 'py-4'" style="max-width: 900px">
+  <v-container
+    :class="phase === 'play' || phase === 'intro' ? 'pa-0 play-root' : 'py-4'"
+    style="max-width: 900px"
+  >
     <div v-if="phase === 'loading'" class="text-center py-12">
       <v-progress-circular indeterminate color="primary" />
     </div>
@@ -277,42 +280,55 @@ async function finish(won: boolean) {
 </script>
 
 <style scoped>
-/* Splash / start screen. */
+/* Splash / start screen — fills the play-root height with no scroll: the image
+   flexes/shrinks so the title, CTA and disclaimer always stay on screen. */
 .splash {
+  height: 100%;
   border-radius: 16px;
-  padding: 40px 20px;
-  min-height: 64vh;
+  padding: 20px 20px 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
-  gap: 14px;
+  gap: 12px;
+  overflow: hidden;
   color: rgba(255, 255, 255, 0.95);
 }
 .splash-emoji {
-  font-size: 92px;
+  flex: 0 0 auto;
+  font-size: 84px;
   line-height: 1;
 }
 .splash-img {
-  max-height: 240px;
+  flex: 1 1 auto;
+  min-height: 0;
   max-width: 100%;
   border-radius: 14px;
   object-fit: contain;
 }
 .splash-title {
+  flex: 0 0 auto;
   font-size: 2rem;
   font-weight: 800;
   letter-spacing: 0.5px;
 }
+.splash-badge {
+  flex: 0 0 auto;
+}
 .splash-intro {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
   max-width: 560px;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 .splash-cta {
+  flex: 0 0 auto;
   min-width: 220px;
 }
 .splash-disclaimer {
+  flex: 0 0 auto;
   font-size: 0.78rem;
   opacity: 0.72;
   max-width: 560px;
