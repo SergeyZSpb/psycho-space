@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -120,34 +121,51 @@ func TestOpenAIEvaluatorErrors(t *testing.T) {
 }
 
 // A content-filter refusal arrives as HTTP 200 with plain prose instead of the
-// JSON we asked for. The error must carry that prose, because it is the only
-// record of the root cause at the Info level prod runs at.
-func TestOpenAIEvaluatorNonJSONErrorCarriesContent(t *testing.T) {
+// JSON we asked for. It must come back as ErrLLMUnparsable (so the handler can
+// answer 4xx rather than 502) and carry that prose, because the error is the
+// only record of the root cause at the Info level prod runs at.
+func TestOpenAIEvaluatorNonJSONIsUnparsable(t *testing.T) {
 	const refusal = "Не люблю менять тему разговора, но эта тема кажется мне спорной."
 	srv := llmServer(t, refusal, http.StatusOK, nil, nil)
 	defer srv.Close()
 
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
 	_, err := ev.Judge(context.Background(), testChar(), nil, "x")
-	if err == nil {
-		t.Fatal("want error on non-JSON content")
+	if !errors.Is(err, ErrLLMUnparsable) {
+		t.Fatalf("err = %v; want ErrLLMUnparsable", err)
 	}
 	if !strings.Contains(err.Error(), refusal) {
 		t.Fatalf("error should quote the offending content; got %q", err)
 	}
 }
 
+// A transport/HTTP failure is a different animal: it stays a plain error so the
+// handler still answers 502.
+func TestOpenAIEvaluatorHTTPErrorIsNotUnparsable(t *testing.T) {
+	srv := llmServer(t, "", http.StatusInternalServerError, nil, nil)
+	defer srv.Close()
+
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	_, err := ev.Judge(context.Background(), testChar(), nil, "x")
+	if err == nil || errors.Is(err, ErrLLMUnparsable) {
+		t.Fatalf("err = %v; want a non-ErrLLMUnparsable error", err)
+	}
+}
+
 func TestSnippetTruncatesOnRunes(t *testing.T) {
-	long := strings.Repeat("я", 400)
+	long := strings.Repeat("я", snippetRunes+100)
 	got := snippet([]byte(long))
 	if !utf8.ValidString(got) {
 		t.Fatalf("snippet produced invalid UTF-8: %q", got)
 	}
-	if n := utf8.RuneCountInString(got); n != 301 { // 300 runes + the ellipsis
-		t.Fatalf("rune count = %d; want 301", n)
+	if n := utf8.RuneCountInString(got); n != snippetRunes+1 { // + the ellipsis
+		t.Fatalf("rune count = %d; want %d", n, snippetRunes+1)
 	}
 	if short := snippet([]byte("  привет  ")); short != "привет" {
 		t.Fatalf("short input should pass through trimmed, got %q", short)
+	}
+	if got := clampRunes("привет", 100); got != "привет" {
+		t.Fatalf("clampRunes should pass short strings through, got %q", got)
 	}
 }
 

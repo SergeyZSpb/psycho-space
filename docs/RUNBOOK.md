@@ -63,7 +63,16 @@ It prints a `psycho_session` cookie value. In the browser (DevTools → Applicat
 
 It's an **LLM-judged** character dialogue: convince дядя Ваня (a strange, on-edge drunk who won't let you pass) to let you into your own entrance. To win you must genuinely work through **all three** of his deep themes — longing for a woman/children, his friendship with Тунг Тунг Сахур, and his drinking — before he warms up and lets you through. Each turn the LLM replies in character, judges whether the goal is genuinely reached, picks an **art** to show (his changing mood, or a story/location art with no character — e.g. the passage into the entrance), and generates the **next answer options** (always 4 while playing). The game **requires an LLM** — no mock; unconfigured → `/attempt` returns 503.
 
-> **The third theme is alcohol on purpose — do not make it drugs.** It used to be substance use, and YandexGPT's content filter answered those turns with plain Russian prose instead of the JSON we ask for; the parse failed and the player got a 502 (`llm_error`). The tell in the log is a `game judge failed` / `llm content not valid JSON` line **~100 ms** after its `game llm request` (real generations take 1–2.5 s). `TestContentAvoidsDrugFlavouredPrompts` guards the prompt material against regressing.
+> **The third theme is alcohol on purpose — do not make it drugs.** It used to be substance use, and YandexGPT's content filter answered those turns with plain Russian prose instead of the JSON we ask for; the parse failed and the player got an error. The tell in the log is a **`game llm reply not json`** line **~100 ms** after its `game llm request` (real generations take 1–2.5 s). `TestContentAvoidsDrugFlavouredPrompts` guards the prompt material against regressing.
+>
+> **Two distinct judge failures — check the status code first:**
+>
+> | Symptom | Status / code | Meaning |
+> |---|---|---|
+> | Model answered, but not with usable JSON (filter refusal) | **422 `llm_unparsable`** | Not an outage. The same line fails again, so the SPA explains it in Russian and asks the player to pick a different option. |
+> | Transport error, non-200, or no choices at all | **502 `llm_error`** | The provider is down / misconfigured. |
+>
+> The 422 path logs everything at Error in one line — `game llm reply not json` with `content`, `raw_response`, `finish_reason`, `parse_err`, token usage, latency, `choice`, `account_id`, `trace_id` (both bodies clamped to 2000 runes). Find one by trace id: `ssh psycho 'sudo grep <trace-id> /var/log/psycho-space/app.log' | jq .`
 
 - **Character profile is backend config**: `internal/game/content.go` — `Character` carries public bits (`name`, high-level `goal`, static `greeting` + `opening_options`, and the **`Arts` catalog**: each art's `emoji`/`gradient`/`image`) plus server-only judge material (`Objective` = the real win condition, kept off the client so it isn't spoiled; `Motivation`/`Persona`/`TalkStyle`). **Opening is static** — the greeting + first options render with no LLM call; the judge takes over from the player's first pick (the greeting is seeded into the model's context). Subsequent options are LLM-generated. Edit + restart `./dev.sh run`; the SPA fetches `GET /api/game/config`.
 - **Assets resolve from the backend catalog** — `Character.Arts`. The judge returns an art *key*; the SPA renders the matching descriptor. Adding/altering arts is backend-only; no client change.

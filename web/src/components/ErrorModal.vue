@@ -7,7 +7,13 @@
       </v-card-title>
 
       <v-card-text>
-        <p class="mb-3">
+        <template v-if="errorStore.message">
+          <p class="mb-2">{{ errorStore.message }}</p>
+          <p class="mb-3 text-caption text-medium-emphasis">
+            {{ errorStore.code }}<span v-if="errorStore.status"> · статус {{ errorStore.status }}</span>
+          </p>
+        </template>
+        <p v-else class="mb-3">
           Что-то пошло не так. Код ошибки:
           <strong>{{ errorStore.code }}</strong>
           <span v-if="errorStore.status"> (статус {{ errorStore.status }})</span>.

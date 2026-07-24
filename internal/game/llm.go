@@ -77,7 +77,8 @@ type responseFormat struct {
 
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"` // logged when a reply is unusable
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -143,10 +144,21 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 	content := cr.Choices[0].Message.Content
 	if err := json.Unmarshal([]byte(content), &jr); err != nil {
 		// The usual cause is the provider's content filter answering in plain
-		// prose instead of the model (it ignores response_format), so carry the
-		// offending content into the error: it is the root cause, and it is only
-		// visible here (raw bodies are Debug-level, prod runs at Info).
-		return TurnResult{}, fmt.Errorf("game: llm content not valid JSON (%q): %w", snippet([]byte(content)), err)
+		// prose instead of the model (it ignores response_format). This is the
+		// only place the raw material exists, and prod runs at Info so the Debug
+		// line below never fires — log the whole picture here, and let the
+		// handler own only the HTTP mapping.
+		slog.ErrorContext(ctx, "game llm reply not json",
+			"model", e.model, "character", ch.Key, "choice", choice,
+			"transcript_len", len(transcript), "latency_ms", elapsed.Milliseconds(),
+			"finish_reason", cr.Choices[0].FinishReason,
+			"prompt_tokens", cr.Usage.PromptTokens, "completion_tokens", cr.Usage.CompletionTokens,
+			"total_tokens", cr.Usage.TotalTokens,
+			"parse_err", err.Error(),
+			"content", clampRunes(content, maxLoggedRunes),
+			"raw_response", clampRunes(string(body), maxLoggedRunes))
+		return TurnResult{}, fmt.Errorf("game: llm content not valid JSON (%q): %w: %w",
+			snippet([]byte(content)), ErrLLMUnparsable, err)
 	}
 
 	art := normalizeArt(jr.Art, ch.artKeys())
@@ -168,17 +180,23 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 	}, nil
 }
 
-// snippet truncates a body for error messages / logs. It cuts on runes, not
-// bytes, so a truncated Cyrillic reply stays readable instead of ending in a
-// mangled half-character.
-func snippet(b []byte) string {
-	const max = 300 // runes
-	s := strings.TrimSpace(string(b))
+// snippetRunes bounds a body quoted into an error message; maxLoggedRunes bounds
+// one written to the log, where there is room for the whole refusal.
+const (
+	snippetRunes   = 300
+	maxLoggedRunes = 2000
+)
+
+// snippet truncates a body for error messages.
+func snippet(b []byte) string { return clampRunes(strings.TrimSpace(string(b)), snippetRunes) }
+
+// clampRunes truncates s to max runes (not bytes), so a cut Cyrillic string
+// stays readable instead of ending in a mangled half-character.
+func clampRunes(s string, max int) string {
 	if utf8.RuneCountInString(s) <= max {
 		return s
 	}
-	runes := []rune(s)
-	return string(runes[:max]) + "…"
+	return string([]rune(s)[:max]) + "…"
 }
 
 // buildMessages turns the character persona + conversation into chat messages.

@@ -62,6 +62,13 @@ var (
 	ErrUnknownCharacter = errors.New("game: unknown character")
 	ErrStepsRange       = errors.New("game: steps out of range")
 	ErrAssetNotFound    = errors.New("game: asset not found")
+
+	// ErrLLMUnparsable means the model answered HTTP 200 but with something we
+	// cannot use as a turn — in practice its content filter replying in plain
+	// prose instead of the JSON we ask for. It is a property of the dialogue,
+	// not an outage: the same input fails again, so the player must say
+	// something else. Callers map it to 4xx, not 5xx.
+	ErrLLMUnparsable = errors.New("game: llm reply was not usable JSON")
 )
 
 // KnownGame reports whether key names a game we serve.

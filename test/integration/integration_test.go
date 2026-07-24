@@ -115,8 +115,13 @@ func startFakeLLM() *httptest.Server {
 			last = req.Messages[n-1].Content
 		}
 		content := `{"reply":"Хм, ну-ну","art":"vanya_neutral","achieved":false,"options":["дальше раз","дальше два"]}`
-		if strings.Contains(last, "победа") {
+		switch {
+		case strings.Contains(last, "победа"):
 			content = `{"reply":"Ну проходи, сосед","art":"hallway_pass","achieved":true,"options":[]}`
+		case strings.Contains(last, "цензура"):
+			// Stands in for the provider's content filter: HTTP 200, but plain
+			// prose instead of the JSON we asked for.
+			content = "Не люблю менять тему разговора, но эта тема кажется мне спорной."
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":`+strconv.Quote(content)+`}}]}`)

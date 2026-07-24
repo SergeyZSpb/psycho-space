@@ -2,6 +2,17 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { ApiError } from '../api/client';
 
+// Human-readable RU explanation for the error codes worth explaining. Anything
+// not listed falls back to the modal's generic wording.
+const FRIENDLY_MESSAGES: Record<string, string> = {
+  // The AI answered, but with something the game can't use — usually its own
+  // content filter refusing the topic. Nothing is broken and the turn is not
+  // lost: another line will work.
+  llm_unparsable:
+    'ИИ не смог обработать эту реплику — скорее всего, сработал его фильтр. ' +
+    'Попробуй выбрать другой вариант ответа, а этот код отправь Сергею, чтобы он проверил.',
+};
+
 // Drives the single global error modal mounted at the app root. Any unexpected
 // failure (network, 5xx, unexpected auth loss) is funnelled here so the user
 // always sees the trace id to send to the admin.
@@ -10,6 +21,7 @@ export const useErrorStore = defineStore('error', () => {
   const code = ref('');
   const status = ref(0);
   const traceId = ref('');
+  const message = ref(''); // friendly explanation; empty -> generic wording
 
   function report(err: unknown) {
     if (err instanceof ApiError) {
@@ -21,6 +33,7 @@ export const useErrorStore = defineStore('error', () => {
       status.value = 0;
       traceId.value = '';
     }
+    message.value = FRIENDLY_MESSAGES[code.value] ?? '';
     open.value = true;
   }
 
@@ -28,5 +41,5 @@ export const useErrorStore = defineStore('error', () => {
     open.value = false;
   }
 
-  return { open, code, status, traceId, report, close };
+  return { open, code, status, traceId, message, report, close };
 });

@@ -79,8 +79,15 @@ func (s *Server) handleGameAttempt(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusNotFound, "unknown_game")
 		case errors.Is(err, game.ErrUnknownCharacter):
 			writeError(w, r, http.StatusNotFound, "unknown_character")
+		case errors.Is(err, game.ErrLLMUnparsable):
+			// The model answered, but with something we can't turn into a move
+			// (usually its content filter replying in prose). Nothing is broken
+			// server-side and a retry of the same line fails the same way, so
+			// this is 422: the SPA asks the player to try a different line and
+			// shows the trace id. Already logged in full by the evaluator.
+			writeError(w, r, http.StatusUnprocessableEntity, "llm_unparsable")
 		default:
-			// LLM/network/parse failure — the judge is a hard dependency here.
+			// LLM/network failure — the judge is a hard dependency here.
 			slog.ErrorContext(r.Context(), "game judge failed", "err", err)
 			writeError(w, r, http.StatusBadGateway, "llm_error")
 		}

@@ -68,6 +68,21 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("achieved should clear options: %v", rB)
 	}
 
+	// A content-filter refusal (fake LLM keys on "цензура"): HTTP 200 from the
+	// provider but prose instead of JSON. That is the dialogue's problem, not an
+	// outage — 422 with a stable code, so the SPA can tell the player to pick a
+	// different line instead of showing a scary gateway error.
+	st, rC := attempt(nil, "цензура")
+	if st != http.StatusUnprocessableEntity {
+		t.Fatalf("filtered turn: status %d res %v; want 422", st, rC)
+	}
+	if rC["error"] != "llm_unparsable" {
+		t.Fatalf("filtered turn error = %v; want llm_unparsable", rC["error"])
+	}
+	if tr, _ := rC["trace_id"].(string); tr == "" {
+		t.Fatalf("filtered turn should carry a trace_id for the user to quote: %v", rC)
+	}
+
 	// Unknown character -> 404.
 	if st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt",
 		map[string]any{"game_key": "smalltalk_khimki", "character_key": "nobody", "transcript": []any{}, "choice": "x"}); st != http.StatusNotFound {
