@@ -14,12 +14,14 @@ type Exchange struct {
 	Choice  string   `json:"choice"`
 	Reply   string   `json:"reply"`
 	Options []string `json:"options,omitempty"`
-	// Anger is the tension after this turn. Snapshotting it into the exchange —
-	// rather than recomputing a summary each turn — lets the whole per-turn state
-	// travel inside the append-only history, which is sent once, instead of being
-	// re-derived and re-sent in full on every later turn. A pointer so an older
-	// client that omits it simply produces a footer without the tension.
-	Anger *int `json:"anger,omitempty"`
+	// Art, Anger and ThemesDone are the rest of what the judge returned that turn.
+	// The client sends them all back so the history can be replayed to the model as
+	// the JSON it actually produced — see judgeReplayJSON. Anything missing here
+	// would teach the model to omit that field too, which is why art and the theme
+	// set are carried and not just the tension.
+	Art        string   `json:"art,omitempty"`
+	Anger      *int     `json:"anger,omitempty"`
+	ThemesDone []string `json:"themes_done,omitempty"`
 }
 
 // TurnResult is the outcome of one dialogue turn, judged by the LLM and passed

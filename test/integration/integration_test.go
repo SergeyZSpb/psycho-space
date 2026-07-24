@@ -141,8 +141,8 @@ func startFakeLLM() *httptest.Server {
 			// Reports back whether the options the client sent in the transcript
 			// reached the system prompt, so the test can assert the plumbing.
 			seen := "нет"
-			if strings.Contains(all, "предлагал: уже это предлагал") &&
-				strings.Contains(system, "служебная пометка") {
+			if strings.Contains(all, `"уже это предлагал"`) &&
+				strings.Contains(system, "РОВНО в том формате") {
 				seen = "да"
 			}
 			content = `{"reply":"already_offered=` + seen + `","art":"vanya_neutral",` +

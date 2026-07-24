@@ -581,44 +581,75 @@ func TestBuildMessagesAsksForRoleSlots(t *testing.T) {
 // The character's own past lines ARE the assistant messages, so they are never
 // re-listed; the system prompt teaches the model to read the footers and not to
 // repeat itself, and that instruction is static (therefore cacheable).
-func TestSystemPromptExplainsHistoryFooters(t *testing.T) {
+func TestSystemPromptExplainsJSONHistory(t *testing.T) {
 	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil)
 	sys := msgs[0].Content
-	for _, want := range []string{"служебная пометка", "напряжение:", "предлагал:", "прежние зачины"} {
+	for _, want := range []string{"РОВНО в том формате", "прошлых \"options\"", "прежние зачины"} {
 		if !strings.Contains(sys, want) {
-			t.Errorf("system prompt should explain the history footers; missing %q", want)
+			t.Errorf("system prompt should explain how to read the history; missing %q", want)
 		}
 	}
 }
 
-// Each past turn carries its own tension and offered options, so the whole
-// per-turn state travels inside the append-only history instead of being
-// re-derived and re-sent every turn.
-func TestExchangeFooter(t *testing.T) {
+// A past turn is replayed as the JSON the judge returned for it, so the model
+// reads correctly-formatted examples of its own output. Prod trace
+// c771c3ed23c4fba6f2a0b439f3862a90: with prose-plus-footer history the model
+// imitated the FOOTER instead of answering in JSON, and the turn was lost.
+func TestJudgeReplayJSON(t *testing.T) {
 	a := 55
-	got := exchangeFooter(Exchange{Reply: "ну", Anger: &a, Options: []string{"раз", "два", "  ", ""}})
-	if got != "\n[напряжение: 55; предлагал: раз | два]" {
-		t.Fatalf("footer = %q", got)
+	got := judgeReplayJSON(Exchange{
+		Reply: "Ну чё", Art: "vanya_warming", Anger: &a,
+		Options: []string{"раз", "  ", "два"}, ThemesDone: []string{"sahur"},
+	})
+
+	// It must parse back as exactly the shape we demand of the model.
+	var jr judgeReply
+	if err := json.Unmarshal([]byte(got), &jr); err != nil {
+		t.Fatalf("replay is not valid judge JSON: %v\n%s", err, got)
 	}
-	// An older client that sends no tension still gets a usable footer...
-	if got := exchangeFooter(Exchange{Options: []string{"раз"}}); got != "\n[предлагал: раз]" {
-		t.Fatalf("footer without anger = %q", got)
+	if jr.Reply != "Ну чё" || jr.Art != "vanya_warming" {
+		t.Errorf("replay lost the reply/art: %s", got)
 	}
-	// ...and a turn with neither adds nothing at all, rather than empty brackets.
-	if got := exchangeFooter(Exchange{Reply: "ну"}); got != "" {
-		t.Fatalf("footer for a bare exchange = %q; want empty", got)
+	if jr.Anger == nil || int(*jr.Anger) != 55 {
+		t.Errorf("replay lost the tension: %s", got)
 	}
-	// A tampered value is clamped like everywhere else.
-	huge := 10_000
-	if got := exchangeFooter(Exchange{Anger: &huge}); !strings.Contains(got, "напряжение: 100") {
-		t.Fatalf("footer should clamp the snapshot, got %q", got)
+	if !reflect.DeepEqual(jr.Options, []string{"раз", "два"}) {
+		t.Errorf("replay options = %v; want blanks dropped", jr.Options)
+	}
+	// Every field the model must produce has to be present, or the example teaches
+	// it to omit that field too.
+	for _, field := range []string{`"reply"`, `"art"`, `"anger"`, `"achieved"`, `"game_over"`, `"themes_done"`, `"options"`} {
+		if !strings.Contains(got, field) {
+			t.Errorf("replay omits %s — an incomplete example teaches omission: %s", field, got)
+		}
+	}
+	// A past turn by definition did not end the run.
+	if jr.Achieved || jr.GameOver {
+		t.Errorf("a replayed past turn must not look finished: %s", got)
+	}
+	// And it must not carry the old footer syntax the model learned to copy.
+	if strings.Contains(got, "напряжение:") || strings.Contains(got, "предлагал:") {
+		t.Errorf("replay must not use the footer format: %s", got)
 	}
 }
 
-// The footer reaches the model attached to the reply it belongs to.
-func TestBuildMessagesAttachesFooterToHistory(t *testing.T) {
+// A turn from an older client, with only the prose, still replays as valid JSON.
+func TestJudgeReplayJSONMinimalExchange(t *testing.T) {
+	got := judgeReplayJSON(Exchange{Reply: "Ну чё"})
+	var jr judgeReply
+	if err := json.Unmarshal([]byte(got), &jr); err != nil {
+		t.Fatalf("replay is not valid judge JSON: %v\n%s", err, got)
+	}
+	if jr.Reply != "Ну чё" || len(jr.Options) != 0 {
+		t.Errorf("unexpected replay: %s", got)
+	}
+}
+
+// The history the model reads is JSON, and the system prompt says so.
+func TestBuildMessagesReplaysHistoryAsJSON(t *testing.T) {
 	a := 70
-	tr := []Exchange{{Choice: "привет", Reply: "ну чё", Anger: &a, Options: []string{"раз", "два"}}}
+	tr := []Exchange{{Choice: "привет", Reply: "ну чё", Art: "vanya_angry", Anger: &a,
+		Options: []string{"раз", "два"}}}
 	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger, nil)
 
 	var assistant string
@@ -627,11 +658,12 @@ func TestBuildMessagesAttachesFooterToHistory(t *testing.T) {
 			assistant = m.Content
 		}
 	}
-	if !strings.Contains(assistant, "ну чё") {
-		t.Fatal("the reply itself should still be there")
+	var jr judgeReply
+	if err := json.Unmarshal([]byte(assistant), &jr); err != nil {
+		t.Fatalf("history turn should be replayed as JSON, got %q", assistant)
 	}
-	if !strings.Contains(assistant, "напряжение: 70") || !strings.Contains(assistant, "предлагал: раз | два") {
-		t.Fatalf("assistant message should carry the footer; got %q", assistant)
+	if !strings.Contains(msgs[0].Content, "РОВНО в том формате") {
+		t.Error("system prompt should tell the model the history shows the required format")
 	}
 }
 
@@ -824,8 +856,8 @@ func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 	for _, m := range msgs[1 : len(msgs)-1] {
 		history += m.Content + "\n"
 	}
-	if !strings.Contains(history, "предлагал: уже предлагал это") {
-		t.Fatalf("offered options should be in the history footer; got:\n%s", history)
+	if !strings.Contains(history, `"уже предлагал это"`) {
+		t.Fatalf("offered options should be in the replayed history JSON; got:\n%s", history)
 	}
 	if strings.Contains(msgs[len(msgs)-1].Content, "уже предлагал это") {
 		t.Fatal("options must not be re-sent in the tail — that is the duplication we removed")

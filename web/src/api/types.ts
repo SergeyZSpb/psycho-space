@@ -123,7 +123,14 @@ export interface GameExchange {
    * exchange when the context window drops it.
    */
   options: string[];
+  /**
+   * The rest of what the judge returned that turn. All of it goes back so the
+   * backend can replay the turn to the model as the JSON it actually produced —
+   * an incomplete example would teach it to omit that field.
+   */
+  art: string;
   anger: number;
+  themes_done: string[];
 }
 
 // Result of one dialogue turn, judged by the LLM. `art` is a key into the

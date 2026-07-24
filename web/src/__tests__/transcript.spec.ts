@@ -1,24 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import { recordExchange } from '../lib/transcript';
+import type { GameTurnResult } from '../api/types';
+
+function turn(over: Partial<GameTurnResult> = {}): GameTurnResult {
+  return {
+    reply: 'ну чё',
+    art: 'vanya_angry',
+    achieved: false,
+    game_over: false,
+    anger: 55,
+    themes_done: ['sahur'],
+    options: ['a', 'b', 'c', 'd'],
+    ...over,
+  };
+}
 
 describe('transcript entries', () => {
-  it('records the offered options and the tension alongside the reply', () => {
-    const ex = recordExchange('привет', 'ну чё', ['a', 'b', 'c', 'd'], 55);
-    expect(ex).toEqual({
+  it('records the whole judged turn, not just the prose', () => {
+    // The backend replays these as JSON examples of the required output format, so
+    // every field the model must produce has to survive the round trip.
+    expect(recordExchange('привет', turn())).toEqual({
       choice: 'привет',
       reply: 'ну чё',
-      options: ['a', 'b', 'c', 'd'],
+      art: 'vanya_angry',
       anger: 55,
+      themes_done: ['sahur'],
+      options: ['a', 'b', 'c', 'd'],
     });
   });
 
-  it('normalises a missing options list to an empty array', () => {
-    // The judge returns no options on the final turn (won or lost), and the field
-    // must still be an array so the backend never sees a null.
-    expect(recordExchange('привет', 'заходи', undefined, 0).options).toEqual([]);
-    expect(recordExchange('привет', 'заходи', null, 0).options).toEqual([]);
-    expect(recordExchange('привет', 'заходи', [], 90).options).toEqual([]);
-    // The tension is still recorded on a final turn.
-    expect(recordExchange('привет', 'заходи', [], 90).anger).toBe(90);
+  it('normalises missing lists to empty arrays', () => {
+    // The judge returns no options on the final turn (won or lost), and the fields
+    // must still be arrays so the backend never sees a null.
+    const ex = recordExchange('привет', turn({
+      options: undefined as unknown as string[],
+      themes_done: undefined as unknown as string[],
+      art: undefined as unknown as string,
+      anger: 90,
+    }));
+    expect(ex.options).toEqual([]);
+    expect(ex.themes_done).toEqual([]);
+    expect(ex.art).toBe('');
+    expect(ex.anger).toBe(90);
   });
 });

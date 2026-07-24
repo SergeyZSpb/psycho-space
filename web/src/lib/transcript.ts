@@ -1,4 +1,4 @@
-import type { GameExchange } from '../api/types';
+import type { GameExchange, GameTurnResult } from '../api/types';
 
 // The transcript is the conversation the client carries between turns (the
 // backend is stateless per turn). Each entry records what the player said, how
@@ -7,16 +7,20 @@ import type { GameExchange } from '../api/types';
 // the player and stop recycling the same lines.
 
 /**
- * One completed turn, appended to the transcript the next request sends. The
- * offered options and the tension the turn ended at are recorded alongside the
- * lines, so the judge reads its own past state out of the history rather than
- * from a summary we rebuild and resend every turn.
+ * One completed turn, appended to the transcript the next request sends.
+ *
+ * The whole judged result is recorded, not just the prose: the backend replays
+ * each past turn to the model as the JSON it produced, so the conversation the
+ * model reads is a series of correctly-formatted examples of its own output. Drop
+ * a field here and the example teaches the model to drop it too.
  */
-export function recordExchange(
-  choice: string,
-  reply: string,
-  options: string[] | null | undefined,
-  anger: number,
-): GameExchange {
-  return { choice, reply, options: options ?? [], anger };
+export function recordExchange(choice: string, res: GameTurnResult): GameExchange {
+  return {
+    choice,
+    reply: res.reply,
+    options: res.options ?? [],
+    art: res.art ?? '',
+    anger: res.anger,
+    themes_done: res.themes_done ?? [],
+  };
 }

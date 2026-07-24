@@ -548,11 +548,11 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 Не начинай знакомство заново, не задавай один и тот же вопрос дважды, не забывай, что игрок
 уже рассказал или чем уже задел.
 
-В истории после каждой твоей реплики идёт служебная пометка вида
-[напряжение: 55; предлагал: вариант | вариант | вариант | вариант] — это твоё состояние
-на том ходу и варианты, которые ты тогда уже предлагал игроку. Пометки — не часть речи,
-игрок их не видит. Не предлагай снова ничего из перечисленного там и не давай близких
-перефразировок; не повторяй и свои прежние зачины и формулировки — говори каждый раз иначе.
+В истории твои прошлые ходы показаны РОВНО в том формате, в котором ты должен отвечать —
+одним JSON-объектом. Отвечай так же, никогда не выходи из этого формата и никогда не пиши
+ничего вне JSON. По этим объектам видно, что ты уже предлагал и в каком состоянии был:
+не предлагай снова ничего из прошлых "options" и не давай близких перефразировок,
+не повторяй свои прежние зачины и формулировки — говори каждый раз иначе.
 
 Игрок выбирает реплики и пытается достичь цели. Каждый ход:
 - верни новое значение напряжения (поле "anger", целое 0–%d). Грубость, издёвка, угрозы, снисходительность, давление, повтор одного и того же — поднимают на 10–25. Искреннее участие, тепло, разговор о его больных темах по-доброму — опускают на 5–15. Пустая нейтральная болтовня — ±0–5, но если игрок топчется на месте несколько ходов, напряжение растёт. Меняй не больше чем на 25 за ход и никогда не оставляй значение без изменений просто так;
@@ -598,7 +598,7 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 	for _, ex := range windowed {
 		messages = append(messages,
 			chatMessage{Role: "user", Content: ex.Choice},
-			chatMessage{Role: "assistant", Content: ex.Reply + exchangeFooter(ex)},
+			chatMessage{Role: "assistant", Content: judgeReplayJSON(ex)},
 		)
 	}
 
@@ -671,26 +671,44 @@ func exchangeTokens(ex Exchange) int {
 	return n
 }
 
-// exchangeFooter is the machine-readable note appended to a past reply: the
-// tension after that turn and the options that were offered. Folding these into
-// the history means they are sent ONCE, as part of an append-only prefix, instead
-// of being re-derived and re-sent in full on every subsequent turn — about 1300
-// tokens a turn saved, and the prefix stays cacheable.
-func exchangeFooter(ex Exchange) string {
-	var parts []string
+// judgeReplayJSON renders a past turn as the JSON object the judge returned for
+// it, so the conversation the model reads is a series of correctly-formatted
+// examples of its own output.
+//
+// This matters more than it looks. Showing past turns as bare prose — or as prose
+// plus a bracketed footer — hands the model N worked examples of the WRONG format,
+// and it copies them: measured in prod (trace c771c3ed23c4fba6f2a0b439f3862a90) a
+// reply came back as prose followed by "[напряжение: 30; предлагал: … | …]", an
+// exact imitation of the footer the history used to carry. Few-shot beats
+// instruction, so the examples have to be right.
+func judgeReplayJSON(ex Exchange) string {
+	anger := 0
 	if ex.Anger != nil {
-		parts = append(parts, fmt.Sprintf("напряжение: %d", ClampAnger(*ex.Anger)))
+		anger = ClampAnger(*ex.Anger)
 	}
-	if opts := nonEmpty(ex.Options); len(opts) > 0 {
-		parts = append(parts, "предлагал: "+strings.Join(opts, " | "))
+	opts := nonEmpty(ex.Options)
+	if opts == nil {
+		opts = []string{}
 	}
-	if len(parts) == 0 {
-		return ""
+	themes := ex.ThemesDone
+	if themes == nil {
+		themes = []string{}
 	}
-	return "\n[" + strings.Join(parts, "; ") + "]"
+	// A past turn never ended the run — the game continued past it.
+	b, err := json.Marshal(judgeReply{
+		Reply:      ex.Reply,
+		Art:        ex.Art,
+		Options:    opts,
+		Anger:      (*flexInt)(&anger),
+		ThemesDone: &themes,
+	})
+	if err != nil {
+		return ex.Reply // never seen; prose beats dropping the turn entirely
+	}
+	return string(b)
 }
 
-// nonEmpty drops blank entries, so a footer never shows an empty option.
+// nonEmpty drops blank entries, so a replayed turn never shows an empty option.
 func nonEmpty(in []string) []string {
 	var out []string
 	for _, s := range in {

@@ -111,7 +111,8 @@ func TestGameFlow(t *testing.T) {
 	st, rRep := attempt2(map[string]any{
 		"choice": "повторы",
 		"transcript": []map[string]any{
-			{"choice": "привет", "reply": "ну", "options": []string{"уже это предлагал"}},
+			{"choice": "привет", "reply": "ну", "art": "vanya_angry", "anger": 50,
+				"options": []string{"уже это предлагал"}, "themes_done": []string{}},
 		},
 	})
 	if st != http.StatusOK || rRep["reply"] != "already_offered=да" {
