@@ -26,7 +26,6 @@
         />
         <div v-else class="splash-emoji">{{ splashArt.emoji }}</div>
         <h1 class="splash-title">{{ config.title }}</h1>
-        <v-chip size="small" variant="tonal" class="splash-badge">успехов: {{ stats?.successes ?? 0 }}</v-chip>
         <p class="splash-intro">{{ config.intro }}</p>
         <v-btn color="primary" size="large" class="splash-cta" @click="start">Погнали домой</v-btn>
         <p class="splash-disclaimer">
@@ -285,16 +284,17 @@ async function finish(won: boolean) {
 .splash {
   height: 100%;
   border-radius: 16px;
-  padding: 20px 20px 24px;
+  padding: 12px 16px 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
-  gap: 12px;
+  gap: 8px;
   overflow: hidden;
   color: rgba(255, 255, 255, 0.95);
 }
+/* Only the image flexes/shrinks; text + CTA are fixed so nothing gets clipped. */
 .splash-emoji {
   flex: 0 0 auto;
   font-size: 84px;
@@ -309,19 +309,14 @@ async function finish(won: boolean) {
 }
 .splash-title {
   flex: 0 0 auto;
-  font-size: 2rem;
+  font-size: 1.6rem;
   font-weight: 800;
   letter-spacing: 0.5px;
 }
-.splash-badge {
-  flex: 0 0 auto;
-}
 .splash-intro {
-  flex: 0 1 auto;
-  min-height: 0;
-  overflow: hidden;
+  flex: 0 0 auto;
   max-width: 560px;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 .splash-cta {
   flex: 0 0 auto;
@@ -329,7 +324,7 @@ async function finish(won: boolean) {
 }
 .splash-disclaimer {
   flex: 0 0 auto;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   opacity: 0.72;
   max-width: 560px;
 }
