@@ -113,3 +113,28 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("no-LLM attempt status %d; want 503", st)
 	}
 }
+
+// TestGameAttemptRateLimit checks the per-IP 10/min cap on the (paid) judge call.
+func TestGameAttemptRateLimit(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	app := httptest.NewServer(buildApp(vkSrv.URL)) // fresh app -> fresh limiter
+	defer app.Close()
+	cli := loginAs(t, app.URL, "3003", "user")
+
+	body := map[string]any{
+		"game_key": "smalltalk_khimki", "character_key": "dyadya_vanya",
+		"transcript": []any{}, "choice": "привет",
+	}
+	got429 := false
+	for i := 0; i < 12; i++ { // limit is 10/min; the 11th+ should be blocked
+		st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", body)
+		if st == http.StatusTooManyRequests {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Fatal("expected a 429 within 12 rapid attempts (limit 10/min per IP)")
+	}
+}

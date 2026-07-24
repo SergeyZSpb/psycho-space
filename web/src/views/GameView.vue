@@ -34,6 +34,13 @@
 
         <div class="dialog-pane">
           <div class="goal text-medium-emphasis mb-2">🎯 {{ character.goal }}</div>
+          <v-alert
+            v-if="rateLimited"
+            type="warning"
+            variant="tonal"
+            class="mb-3"
+            text="Слишком много запросов с вашего IP — кошелёк Сергея плачет 😢 Подожди минутку и попробуй снова."
+          />
           <v-alert variant="tonal" class="bubble mb-3" :text="reply" />
           <!-- Options keep their height while the judge thinks; the loader
                overlays them (no layout shift). -->
@@ -119,6 +126,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { gameApi } from '../api/endpoints';
+import { ApiError } from '../api/client';
 import { useErrorStore } from '../stores/error';
 import type {
   GameArt,
@@ -148,6 +156,7 @@ const reply = ref('');
 const options = ref<string[]>([]);
 const success = ref(false);
 const busy = ref(false);
+const rateLimited = ref(false);
 
 const character = computed<GameCharacter | null>(() => {
   const c = config.value;
@@ -198,6 +207,7 @@ async function turn(choice: string) {
   const ch = character.value;
   if (busy.value || !ch) return;
   busy.value = true;
+  rateLimited.value = false;
   try {
     const res = await gameApi.attempt(GAME, ch.key, transcript.value, choice);
     if (choice !== '') {
@@ -213,7 +223,11 @@ async function turn(choice: string) {
       await finish(false);
     }
   } catch (err) {
-    errorStore.report(err);
+    if (err instanceof ApiError && err.status === 429) {
+      rateLimited.value = true; // too many judge calls from this IP
+    } else {
+      errorStore.report(err);
+    }
   } finally {
     busy.value = false;
   }

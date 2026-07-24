@@ -57,7 +57,7 @@ docs/RUNBOOK.md   debugging/ops (ssh, logs, db, nginx, cert, admin bootstrap)
 - `auth`: `GET vk/state`, `POST vk/callback`, `GET me`, `POST logout`.
 - `wishlist` (approved): `GET/POST items`, `DELETE items/{id}`, `POST/DELETE items/{id}/vote`, `GET/POST items/{id}/comments`, `DELETE comments/{id}`, `POST/DELETE comments/{id}/vote`.
 - `admin` (admin+): `GET accounts?status=`, `POST accounts/{id}/{approve,block}`; superadmin-only: `{promote,demote}`, `GET settings`, `PUT settings/open-registration`.
-- Rate limits: 30/min per IP on the VK login endpoints, 240/min blanket on `/api`.
+- Rate limits: 30/min per IP on the VK login endpoints, **10/min per IP on `game/attempt`** (the paid LLM call), 240/min blanket on `/api`.
 
 **Data model** (`migrations/`, forward-only): `accounts` (blind-index `vk_user_ref`, `*_enc` fields, role/status, consent), `sessions` (`token_hash` = keyed HMAC, `expires_at`), `wishlist_items`, `wishlist_votes`, `wishlist_comments`, `wishlist_comment_votes`, `app_settings`.
 

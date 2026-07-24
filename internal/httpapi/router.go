@@ -99,7 +99,8 @@ func (s *Server) Handler() http.Handler {
 		r.Route("/game", func(r chi.Router) {
 			r.Use(s.requireAuth)
 			r.Get("/config", s.handleGameConfig)
-			r.Post("/attempt", s.handleGameAttempt)
+			// The judge calls the (paid) LLM, so cap it tightly per IP.
+			r.With(s.rateLimit(10, time.Minute)).Post("/attempt", s.handleGameAttempt)
 			r.Post("/runs", s.handleGameSubmitRun)
 			r.Get("/runs/leaderboard", s.handleGameLeaderboard)
 			r.Get("/runs/me", s.handleGameStats)
