@@ -8,11 +8,8 @@
     </div>
 
     <template v-else-if="config && character">
-      <div v-if="phase === 'ending'" class="d-flex align-center justify-space-between mb-2">
+      <div v-if="phase === 'ending'" class="mb-2">
         <h1 class="text-h5">{{ config.title }}</h1>
-        <v-chip size="small" variant="tonal" color="primary">
-          успехов: {{ stats?.successes ?? 0 }}
-        </v-chip>
       </div>
 
       <!-- Splash / start screen -->
@@ -106,14 +103,29 @@
         <v-btn color="primary" size="large" block class="mb-6" @click="start">Ещё раз</v-btn>
       </template>
 
-      <!-- Leaderboard (only on the end screen; the play screen stays scroll-free) -->
+      <!-- Leaderboard (only on the end screen; the play screen stays scroll-free).
+           Four record boards, one per tab: longest/shortest win, longest/shortest loss. -->
       <template v-if="phase === 'ending'">
       <v-divider class="my-4" />
-      <h2 class="text-subtitle-1 mb-2">Таблица позора</h2>
-      <p v-if="!leaderboard.length" class="text-medium-emphasis">Пока никто не прошёл. Будь первым.</p>
+      <h2 class="text-subtitle-1 mb-1">Таблица позора</h2>
+
+      <v-tabs
+        v-model="board"
+        density="compact"
+        grow
+        show-arrows
+        class="mb-1 board-tabs"
+      >
+        <v-tab v-for="b in BOARDS" :key="b.key" :value="b.key" class="text-none px-1">
+          {{ b.tab }}
+        </v-tab>
+      </v-tabs>
+      <p class="text-caption text-medium-emphasis mb-2">{{ currentBoard.caption }}</p>
+
+      <p v-if="!boardEntries.length" class="text-medium-emphasis">{{ currentBoard.empty }}</p>
       <v-list v-else density="compact" class="bg-transparent">
         <v-list-item
-          v-for="(e, i) in leaderboard"
+          v-for="(e, i) in boardEntries"
           :key="i"
           :class="{ 'bg-surface-light rounded': e.mine }"
         >
@@ -128,7 +140,9 @@
             {{ e.player.display_name || 'аноним' }}
             <span v-if="e.mine" class="text-primary">(вы)</span>
           </v-list-item-title>
-          <v-list-item-subtitle>прошёл {{ e.successes }} · попыток {{ e.plays }}</v-list-item-subtitle>
+          <v-list-item-subtitle class="text-caption">
+            попыток {{ e.plays }} · 🏆 {{ e.wins }} · 💀 {{ e.losses }}
+          </v-list-item-subtitle>
           <template #append>
             <v-chip size="x-small" variant="tonal">{{ e.steps }} шаг.</v-chip>
           </template>
@@ -144,12 +158,14 @@ import { computed, onMounted, ref } from 'vue';
 import { gameApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import { useErrorStore } from '../stores/error';
+import { BOARDS, boardMeta } from '../lib/gameBoards';
 import type {
   GameArt,
+  GameBoardKey,
+  GameBoards,
   GameCharacter,
   GameConfig,
   GameExchange,
-  GameLeaderboardEntry,
   GameStats,
 } from '../api/types';
 
@@ -163,7 +179,8 @@ const phase = ref<Phase>('loading');
 
 const config = ref<GameConfig | null>(null);
 const stats = ref<GameStats | null>(null);
-const leaderboard = ref<GameLeaderboardEntry[]>([]);
+const boards = ref<GameBoards | null>(null);
+const board = ref<GameBoardKey>('longest_win'); // selected record board (tab)
 
 const transcript = ref<GameExchange[]>([]);
 const steps = ref(0);
@@ -211,9 +228,12 @@ const endingText = computed(() => {
     : 'Дядя Ваня так тебя и не пропустил. Стоишь во дворе.';
 });
 
+const currentBoard = computed(() => boardMeta(board.value));
+const boardEntries = computed(() => boards.value?.[board.value] ?? []);
+
 async function refreshBoard() {
   const [lb, st] = await Promise.all([gameApi.leaderboard(GAME), gameApi.stats(GAME)]);
-  leaderboard.value = lb.entries;
+  boards.value = lb.boards;
   stats.value = st;
 }
 
@@ -285,6 +305,9 @@ async function finish(won: boolean) {
   const ch = character.value;
   if (!ch) return;
   success.value = won;
+  // Open on a board this run could have landed on, so the player sees their own
+  // row rather than an empty win board after a loss.
+  board.value = won ? 'longest_win' : 'longest_loss';
   phase.value = 'ending';
   try {
     await gameApi.submitRun(GAME, ch.key, won, steps.value);
@@ -396,6 +419,16 @@ async function finish(won: boolean) {
 }
 .goal {
   line-height: 1.2;
+}
+/* Four record-board tabs have to fit across a 360px phone: small type, minimal
+   padding, and no per-tab minimum width. */
+.board-tabs {
+  --v-tabs-height: 34px;
+}
+.board-tabs :deep(.v-tab) {
+  min-width: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0;
 }
 /* Clamp the character's line so a long reply can't push the options off-screen. */
 .bubble :deep(.v-alert__content) {

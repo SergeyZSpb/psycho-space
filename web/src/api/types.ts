@@ -137,13 +137,23 @@ export interface GamePlayer {
   vk_url: string;
 }
 
-export interface GameLeaderboardEntry {
+// The leaderboard is four record boards, each ranking players by their best (or
+// worst) SINGLE run rather than by an aggregate. A player only appears on a
+// board they hold a record on — no wins yet means no place on either win board.
+export type GameBoardKey = 'longest_win' | 'shortest_win' | 'longest_loss' | 'shortest_loss';
+
+export interface GameRecordEntry {
   player: GamePlayer;
-  successes: number;
-  plays: number;
+  /** Steps of the single run that earned this place on this board. */
   steps: number;
+  /** The player's overall tally for the game, shown alongside the record. */
+  plays: number;
+  wins: number;
+  losses: number;
   mine: boolean;
 }
+
+export type GameBoards = Record<GameBoardKey, GameRecordEntry[]>;
 
 export interface GameStats {
   successes: number;

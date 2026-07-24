@@ -25,28 +25,35 @@ func (PostgresRepository) RecordRun(ctx context.Context, q db.DBTX, accountID, g
 	return run, err
 }
 
-func (PostgresRepository) Leaderboard(ctx context.Context, q db.DBTX, gameKey string, limit int) ([]LeaderboardEntry, error) {
+// Records returns one row per account holding its four extreme step counts. The
+// aggregates are NULL for a player with no win (or no loss) yet, so they scan
+// into pointers and the service leaves those accounts off that board. One query
+// feeds all four boards — the data is tiny, so ranking happens in Go.
+func (PostgresRepository) Records(ctx context.Context, q db.DBTX, gameKey string) ([]PlayerRecords, error) {
 	rows, err := q.Query(ctx, `
 		SELECT account_id::text,
-		       count(*) FILTER (WHERE success) AS successes,
-		       count(*)                        AS plays,
-		       COALESCE(sum(steps), 0)         AS steps
+		       count(*)                                  AS plays,
+		       count(*) FILTER (WHERE success)            AS wins,
+		       count(*) FILTER (WHERE NOT success)        AS losses,
+		       max(steps) FILTER (WHERE success)          AS longest_win,
+		       min(steps) FILTER (WHERE success)          AS shortest_win,
+		       max(steps) FILTER (WHERE NOT success)      AS longest_loss,
+		       min(steps) FILTER (WHERE NOT success)      AS shortest_loss
 		FROM game_runs
 		WHERE game_key = $1 AND deleted_at IS NULL
-		GROUP BY account_id
-		ORDER BY successes DESC, steps ASC
-		LIMIT $2`, gameKey, limit)
+		GROUP BY account_id`, gameKey)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []LeaderboardEntry
+	var out []PlayerRecords
 	for rows.Next() {
-		var e LeaderboardEntry
-		if err := rows.Scan(&e.AccountID, &e.Successes, &e.Plays, &e.Steps); err != nil {
+		var p PlayerRecords
+		if err := rows.Scan(&p.AccountID, &p.Plays, &p.Wins, &p.Losses,
+			&p.LongestWin, &p.ShortestWin, &p.LongestLoss, &p.ShortestLoss); err != nil {
 			return nil, err
 		}
-		out = append(out, e)
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

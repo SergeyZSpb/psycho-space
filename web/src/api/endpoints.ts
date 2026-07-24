@@ -7,9 +7,9 @@ import type {
   AdminAccount,
   AccountStatus,
   AdminSettings,
+  GameBoards,
   GameConfig,
   GameExchange,
-  GameLeaderboardEntry,
   GameRun,
   GameStats,
   GameTurnResult,
@@ -99,9 +99,7 @@ export const gameApi = {
     }),
 
   leaderboard: (game: string, limit = 20) =>
-    apiFetch<{ entries: GameLeaderboardEntry[] }>(
-      `/api/game/runs/leaderboard?game=${game}&limit=${limit}`,
-    ),
+    apiFetch<{ boards: GameBoards }>(`/api/game/runs/leaderboard?game=${game}&limit=${limit}`),
 
   stats: (game: string) => apiFetch<GameStats>(`/api/game/runs/me?game=${game}`),
 };

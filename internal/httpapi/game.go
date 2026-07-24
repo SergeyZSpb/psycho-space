@@ -133,13 +133,14 @@ func (s *Server) handleGameSubmitRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGameLeaderboard returns each account's aggregate for a game, enriched
-// with display info (decrypted once per account).
+// handleGameLeaderboard returns the four record boards for a game (longest and
+// shortest winning dialogue, longest and shortest losing one), each row enriched
+// with display info. Accounts are decrypted once and reused across boards.
 func (s *Server) handleGameLeaderboard(w http.ResponseWriter, r *http.Request) {
 	viewer, _ := accountFromContext(r.Context())
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 
-	entries, err := s.d.Game.Leaderboard(r.Context(), r.URL.Query().Get("game"), limit)
+	boards, err := s.d.Game.Leaderboard(r.Context(), r.URL.Query().Get("game"), limit)
 	if err != nil {
 		if errors.Is(err, game.ErrUnknownGame) {
 			writeError(w, r, http.StatusNotFound, "unknown_game")
@@ -150,28 +151,36 @@ func (s *Server) handleGameLeaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	players := map[string]*account.Account{}
-	for _, e := range entries {
-		if _, ok := players[e.AccountID]; !ok {
-			if a, err := s.d.Accounts.GetByID(r.Context(), e.AccountID); err == nil {
-				players[e.AccountID] = a
+	for _, entries := range boards {
+		for _, e := range entries {
+			if _, ok := players[e.AccountID]; !ok {
+				if a, err := s.d.Accounts.GetByID(r.Context(), e.AccountID); err == nil {
+					players[e.AccountID] = a
+				}
 			}
 		}
 	}
-	out := make([]map[string]any, 0, len(entries))
-	for _, e := range entries {
-		player := map[string]any{"display_name": "", "avatar_url": "", "vk_url": ""}
-		if a := players[e.AccountID]; a != nil {
-			player = map[string]any{"display_name": a.DisplayName(), "avatar_url": a.AvatarURL, "vk_url": a.VKURL()}
+
+	out := make(map[string]any, len(game.RecordBoards))
+	for _, board := range game.RecordBoards {
+		rows := make([]map[string]any, 0, len(boards[board]))
+		for _, e := range boards[board] {
+			player := map[string]any{"display_name": "", "avatar_url": "", "vk_url": ""}
+			if a := players[e.AccountID]; a != nil {
+				player = map[string]any{"display_name": a.DisplayName(), "avatar_url": a.AvatarURL, "vk_url": a.VKURL()}
+			}
+			rows = append(rows, map[string]any{
+				"player": player,
+				"steps":  e.Steps,
+				"plays":  e.Plays,
+				"wins":   e.Wins,
+				"losses": e.Losses,
+				"mine":   e.AccountID == viewer.ID,
+			})
 		}
-		out = append(out, map[string]any{
-			"player":    player,
-			"successes": e.Successes,
-			"plays":     e.Plays,
-			"steps":     e.Steps,
-			"mine":      e.AccountID == viewer.ID,
-		})
+		out[string(board)] = rows
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": out})
+	writeJSON(w, http.StatusOK, map[string]any{"boards": out})
 }
 
 // handleGameStats returns the current player's summary for a game.

@@ -2,6 +2,8 @@ package game
 
 import (
 	"context"
+	"slices"
+	"strings"
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 )
@@ -61,8 +63,10 @@ func (s *Service) SubmitRun(ctx context.Context, accountID, gameKey, characterKe
 	return s.repo.RecordRun(ctx, s.q, accountID, gameKey, characterKey, success, steps)
 }
 
-// Leaderboard returns the per-account aggregate for a game.
-func (s *Service) Leaderboard(ctx context.Context, gameKey string, limit int) ([]LeaderboardEntry, error) {
+// Leaderboard returns the four record boards for a game, each sorted and capped
+// at limit. A player appears on a board only if they hold a record of that kind:
+// no wins yet means no place on either win board.
+func (s *Service) Leaderboard(ctx context.Context, gameKey string, limit int) (Boards, error) {
 	if !KnownGame(gameKey) {
 		return nil, ErrUnknownGame
 	}
@@ -72,7 +76,57 @@ func (s *Service) Leaderboard(ctx context.Context, gameKey string, limit int) ([
 	if limit > maxLeaderboardLimit {
 		limit = maxLeaderboardLimit
 	}
-	return s.repo.Leaderboard(ctx, s.q, gameKey, limit)
+	records, err := s.repo.Records(ctx, s.q, gameKey)
+	if err != nil {
+		return nil, err
+	}
+	return buildBoards(records, limit), nil
+}
+
+// buildBoards turns per-account records into the four ranked boards. "Longest"
+// boards sort by steps descending, "shortest" ascending; ties break on account
+// id so the order is stable between calls.
+func buildBoards(records []PlayerRecords, limit int) Boards {
+	pick := map[RecordBoard]struct {
+		steps func(PlayerRecords) *int
+		desc  bool
+	}{
+		BoardLongestWin:   {func(p PlayerRecords) *int { return p.LongestWin }, true},
+		BoardShortestWin:  {func(p PlayerRecords) *int { return p.ShortestWin }, false},
+		BoardLongestLoss:  {func(p PlayerRecords) *int { return p.LongestLoss }, true},
+		BoardShortestLoss: {func(p PlayerRecords) *int { return p.ShortestLoss }, false},
+	}
+
+	boards := make(Boards, len(RecordBoards))
+	for _, board := range RecordBoards {
+		spec := pick[board]
+		entries := make([]RecordEntry, 0, len(records))
+		for _, p := range records {
+			if steps := spec.steps(p); steps != nil {
+				entries = append(entries, RecordEntry{
+					AccountID: p.AccountID,
+					Steps:     *steps,
+					Plays:     p.Plays,
+					Wins:      p.Wins,
+					Losses:    p.Losses,
+				})
+			}
+		}
+		slices.SortFunc(entries, func(a, b RecordEntry) int {
+			if a.Steps != b.Steps {
+				if spec.desc {
+					return b.Steps - a.Steps
+				}
+				return a.Steps - b.Steps
+			}
+			return strings.Compare(a.AccountID, b.AccountID)
+		})
+		if len(entries) > limit {
+			entries = entries[:limit]
+		}
+		boards[board] = entries
+	}
+	return boards
 }
 
 // Stats returns a single player's summary for a game.

@@ -102,37 +102,60 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("unknown character attempt status %d; want 404", st)
 	}
 
-	// Record a successful run (3 steps) and a failed run (6 steps).
-	if st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/runs",
-		map[string]any{"game_key": "smalltalk_khimki", "character_key": charKey, "success": true, "steps": 3}); st != http.StatusCreated {
-		t.Fatalf("submit success status %d", st)
-	}
-	if st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/runs",
-		map[string]any{"game_key": "smalltalk_khimki", "character_key": charKey, "success": false, "steps": 6}); st != http.StatusCreated {
-		t.Fatalf("submit fail status %d", st)
+	// Record four runs: wins of 3 and 14 steps, losses of 6 and 21.
+	for _, run := range []struct {
+		success bool
+		steps   int
+	}{{true, 3}, {true, 14}, {false, 6}, {false, 21}} {
+		if st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/runs",
+			map[string]any{"game_key": "smalltalk_khimki", "character_key": charKey,
+				"success": run.success, "steps": run.steps}); st != http.StatusCreated {
+			t.Fatalf("submit run %+v status %d", run, st)
+		}
 	}
 
-	// Leaderboard: one entry (me), 1 success, 2 plays, 9 total steps.
+	// The leaderboard is four record boards over SINGLE runs, each row carrying
+	// the record steps plus the player's tally.
 	st, lb := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/runs/leaderboard?game=smalltalk_khimki", nil)
 	if st != http.StatusOK {
 		t.Fatalf("leaderboard status %d", st)
 	}
-	entries, _ := lb["entries"].([]any)
-	if len(entries) != 1 {
-		t.Fatalf("want 1 leaderboard entry, got %d: %v", len(entries), lb)
+	boards, _ := lb["boards"].(map[string]any)
+	if boards == nil {
+		t.Fatalf("leaderboard should return boards: %v", lb)
 	}
-	first, _ := entries[0].(map[string]any)
-	if first["mine"] != true || first["successes"].(float64) != 1 || first["plays"].(float64) != 2 || first["steps"].(float64) != 9 {
-		t.Fatalf("leaderboard top = %v; want mine, successes 1, plays 2, steps 9", first)
+	wantTop := map[string]float64{
+		"longest_win":   14,
+		"shortest_win":  3,
+		"longest_loss":  21,
+		"shortest_loss": 6,
+	}
+	for board, wantSteps := range wantTop {
+		rows, _ := boards[board].([]any)
+		if len(rows) != 1 {
+			t.Fatalf("board %s: want 1 row, got %d: %v", board, len(rows), boards[board])
+		}
+		row, _ := rows[0].(map[string]any)
+		if row["steps"].(float64) != wantSteps {
+			t.Errorf("board %s steps = %v; want %v", board, row["steps"], wantSteps)
+		}
+		// Same tally on every board: 4 plays, 2 wins, 2 losses, and it's me.
+		if row["mine"] != true || row["plays"].(float64) != 4 ||
+			row["wins"].(float64) != 2 || row["losses"].(float64) != 2 {
+			t.Errorf("board %s row = %v; want mine, plays 4, wins 2, losses 2", board, row)
+		}
+	}
+	if len(boards) != 4 {
+		t.Fatalf("want 4 boards, got %d: %v", len(boards), boards)
 	}
 
-	// My stats: 1 success, 2 plays, best 3 steps.
+	// My stats: 2 successes, 4 plays, best (fewest steps in a win) 3.
 	st, me := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/runs/me?game=smalltalk_khimki", nil)
 	if st != http.StatusOK {
 		t.Fatalf("stats status %d", st)
 	}
-	if me["successes"].(float64) != 1 || me["plays"].(float64) != 2 || me["best_steps"].(float64) != 3 {
-		t.Fatalf("stats = %v; want successes 1 plays 2 best_steps 3", me)
+	if me["successes"].(float64) != 2 || me["plays"].(float64) != 4 || me["best_steps"].(float64) != 3 {
+		t.Fatalf("stats = %v; want successes 2 plays 4 best_steps 3", me)
 	}
 
 	// With no LLM configured, the judge endpoint is unavailable (503).

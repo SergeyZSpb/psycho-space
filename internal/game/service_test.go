@@ -3,6 +3,8 @@ package game
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -13,8 +15,9 @@ import (
 // fakeRepo records calls and returns canned data; it lets us unit-test the
 // service's validation/clamping without a database.
 type fakeRepo struct {
-	recordCalls int
-	gotLimit    int
+	recordCalls  int
+	recordsCalls int
+	records      []PlayerRecords
 }
 
 func (f *fakeRepo) RecordRun(_ context.Context, _ db.DBTX, accountID, gameKey, characterKey string, success bool, steps int) (Run, error) {
@@ -22,9 +25,9 @@ func (f *fakeRepo) RecordRun(_ context.Context, _ db.DBTX, accountID, gameKey, c
 	return Run{ID: "run-1", AccountID: accountID, GameKey: gameKey, CharacterKey: characterKey, Success: success, Steps: steps}, nil
 }
 
-func (f *fakeRepo) Leaderboard(_ context.Context, _ db.DBTX, _ string, limit int) ([]LeaderboardEntry, error) {
-	f.gotLimit = limit
-	return nil, nil
+func (f *fakeRepo) Records(_ context.Context, _ db.DBTX, _ string) ([]PlayerRecords, error) {
+	f.recordsCalls++
+	return f.records, nil
 }
 
 func (f *fakeRepo) StatsFor(_ context.Context, _ db.DBTX, _, _ string) (PlayerStats, error) {
@@ -176,7 +179,68 @@ func TestSubmitRunValidation(t *testing.T) {
 	}
 }
 
+func iptr(n int) *int { return &n }
+
+// The four boards rank a player's best/worst SINGLE run, and a player only
+// appears on boards they hold a record on.
+func TestBuildBoards(t *testing.T) {
+	records := []PlayerRecords{
+		{AccountID: "a", Plays: 5, Wins: 2, Losses: 3,
+			LongestWin: iptr(14), ShortestWin: iptr(3), LongestLoss: iptr(21), ShortestLoss: iptr(2)},
+		{AccountID: "b", Plays: 1, Wins: 1, // never lost
+			LongestWin: iptr(9), ShortestWin: iptr(9)},
+		{AccountID: "c", Plays: 2, Losses: 2, // never won
+			LongestLoss: iptr(30), ShortestLoss: iptr(1)},
+		{AccountID: "d", Plays: 1, Wins: 1, // ties with b
+			LongestWin: iptr(9), ShortestWin: iptr(9)},
+	}
+	boards := buildBoards(records, 10)
+
+	// Every row carries the record steps AND the player's overall tally.
+	a := func(steps int) RecordEntry { return RecordEntry{"a", steps, 5, 2, 3} }
+	b := RecordEntry{"b", 9, 1, 1, 0}
+	d := RecordEntry{"d", 9, 1, 1, 0}
+	c := func(steps int) RecordEntry { return RecordEntry{"c", steps, 2, 0, 2} }
+	want := map[RecordBoard][]RecordEntry{
+		// Longest boards descend; b and d tie on 9 and break on account id.
+		BoardLongestWin:   {a(14), b, d},
+		BoardShortestWin:  {a(3), b, d},
+		BoardLongestLoss:  {c(30), a(21)},
+		BoardShortestLoss: {c(1), a(2)},
+	}
+	for board, wantEntries := range want {
+		got := boards[board]
+		if !reflect.DeepEqual(got, wantEntries) {
+			t.Errorf("board %s = %+v; want %+v", board, got, wantEntries)
+		}
+	}
+	if len(boards) != len(RecordBoards) {
+		t.Fatalf("got %d boards; want %d", len(boards), len(RecordBoards))
+	}
+}
+
+// A player with no runs at all holds no records and appears nowhere.
+func TestBuildBoardsSkipsPlayersWithoutRecords(t *testing.T) {
+	boards := buildBoards([]PlayerRecords{{AccountID: "ghost"}}, 10)
+	for _, board := range RecordBoards {
+		if len(boards[board]) != 0 {
+			t.Errorf("board %s should be empty, got %+v", board, boards[board])
+		}
+	}
+}
+
 func TestLeaderboardLimitClamped(t *testing.T) {
+	// More record holders than any cap, so the limit is what bounds each board.
+	var records []PlayerRecords
+	for i := 0; i < maxLeaderboardLimit+60; i++ {
+		steps := i + 1
+		records = append(records, PlayerRecords{
+			AccountID:   fmt.Sprintf("acc-%04d", i),
+			LongestWin:  &steps,
+			ShortestWin: &steps,
+			LongestLoss: &steps, ShortestLoss: &steps,
+		})
+	}
 	tests := []struct{ in, want int }{
 		{0, defaultLeaderboardLimit},
 		{-5, defaultLeaderboardLimit},
@@ -184,12 +248,18 @@ func TestLeaderboardLimitClamped(t *testing.T) {
 		{maxLeaderboardLimit + 50, maxLeaderboardLimit},
 	}
 	for _, tt := range tests {
-		repo := &fakeRepo{}
-		if _, err := newSvc(repo, &stubEval{}).Leaderboard(context.Background(), GameSmalltalkKhimki, tt.in); err != nil {
+		repo := &fakeRepo{records: records}
+		boards, err := newSvc(repo, &stubEval{}).Leaderboard(context.Background(), GameSmalltalkKhimki, tt.in)
+		if err != nil {
 			t.Fatalf("Leaderboard(%d): %v", tt.in, err)
 		}
-		if repo.gotLimit != tt.want {
-			t.Fatalf("limit in=%d -> repo got %d; want %d", tt.in, repo.gotLimit, tt.want)
+		if repo.recordsCalls != 1 {
+			t.Fatalf("limit in=%d: repo called %d times; want 1 query for all boards", tt.in, repo.recordsCalls)
+		}
+		for _, board := range RecordBoards {
+			if len(boards[board]) != tt.want {
+				t.Fatalf("limit in=%d board %s len %d; want %d", tt.in, board, len(boards[board]), tt.want)
+			}
 		}
 	}
 	if _, err := newSvc(&fakeRepo{}, &stubEval{}).Leaderboard(context.Background(), "nope", 5); !errors.Is(err, ErrUnknownGame) {

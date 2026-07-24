@@ -40,14 +40,49 @@ type Run struct {
 	CreatedAt    time.Time
 }
 
-// LeaderboardEntry is one account's aggregate for a game: how many successes,
-// how many plays, and total dialogue steps.
-type LeaderboardEntry struct {
-	AccountID string
-	Successes int
-	Plays     int
-	Steps     int
+// RecordBoard names one of the leaderboard's four record rankings. Each ranks
+// players by their best (or worst) SINGLE run, not by an aggregate.
+type RecordBoard string
+
+// The four boards: longest/shortest dialogue that ended in a win, and the same
+// two for a loss.
+const (
+	BoardLongestWin   RecordBoard = "longest_win"
+	BoardShortestWin  RecordBoard = "shortest_win"
+	BoardLongestLoss  RecordBoard = "longest_loss"
+	BoardShortestLoss RecordBoard = "shortest_loss"
+)
+
+// RecordBoards lists every board, in display order.
+var RecordBoards = []RecordBoard{BoardLongestWin, BoardShortestWin, BoardLongestLoss, BoardShortestLoss}
+
+// PlayerRecords is one account's extreme single runs for a game, plus its
+// win/loss tally. A nil record field means the player has no run of that kind
+// yet (no wins, or no losses), and the account is left off that board.
+type PlayerRecords struct {
+	AccountID    string
+	Plays        int
+	Wins         int
+	Losses       int
+	LongestWin   *int
+	ShortestWin  *int
+	LongestLoss  *int
+	ShortestLoss *int
 }
+
+// RecordEntry is one row of a record board: the step count that earned the place,
+// plus the player's overall tally shown alongside it.
+type RecordEntry struct {
+	AccountID string
+	Steps     int
+	Plays     int
+	Wins      int
+	Losses    int
+}
+
+// Boards is the whole leaderboard — every board keyed by name, each already
+// sorted and capped.
+type Boards map[RecordBoard][]RecordEntry
 
 // PlayerStats is a single player's summary for a game.
 type PlayerStats struct {
