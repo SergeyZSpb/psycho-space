@@ -323,7 +323,8 @@ func TestOpenAIEvaluatorAchievedBeatsFullAnger(t *testing.T) {
 
 // The judge can only move the scale if it is told where the scale stands.
 func TestBuildMessagesCarriesAnger(t *testing.T) {
-	sys := buildMessages(testChar(), nil, "x", 73)[0].Content
+	msgs, _ := buildMessages(testChar(), nil, "x", 73)
+	sys := msgs[0].Content
 	if !strings.Contains(sys, "сейчас 73") {
 		t.Fatalf("system prompt should state the current tension; got:\n%s", sys)
 	}
@@ -546,7 +547,8 @@ func TestRecentlyOfferedIsCapped(t *testing.T) {
 // their exchange is forgotten — the same window as the rest of the history.
 func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 	tr := []Exchange{{Choice: "привет", Reply: "ну", Options: []string{"уже предлагал это"}}}
-	sys := buildMessages(testChar(), tr, "дальше", StartAnger)[0].Content
+	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger)
+	sys := msgs[0].Content
 	if !strings.Contains(sys, "уже предлагал это") {
 		t.Fatalf("system prompt should list already-offered options; got:\n%s", sys)
 	}
@@ -556,9 +558,10 @@ func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 
 	// A transcript far past the window: the old exchange and its options are gone.
 	big := strings.Repeat("я", 200_000)
-	sysDropped := buildMessages(testChar(), []Exchange{
+	droppedMsgs, _ := buildMessages(testChar(), []Exchange{
 		{Choice: big, Reply: big, Options: []string{"забытый вариант"}},
-	}, "дальше", StartAnger)[0].Content
+	}, "дальше", StartAnger)
+	sysDropped := droppedMsgs[0].Content
 	if strings.Contains(sysDropped, "забытый вариант") {
 		t.Fatal("options of a forgotten exchange must not survive in the prompt")
 	}
@@ -569,7 +572,8 @@ func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 func TestBuildMessagesOmitsOfferedBlockWhenEmpty(t *testing.T) {
 	ch := testChar()
 	ch.OpeningOptions = nil
-	sys := buildMessages(ch, nil, "", StartAnger)[0].Content
+	msgs, _ := buildMessages(ch, nil, "", StartAnger)
+	sys := msgs[0].Content
 	if strings.Contains(sys, "УЖЕ предлагал") {
 		t.Fatalf("nothing offered yet, so the block should be absent; got:\n%s", sys)
 	}
@@ -614,7 +618,7 @@ func TestBuildMessagesDropsOldHistory(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		tr = append(tr, Exchange{Choice: big, Reply: big})
 	}
-	msgs := buildMessages(testChar(), tr, "финал", StartAnger)
+	msgs, _ := buildMessages(testChar(), tr, "финал", StartAnger)
 	included := (len(msgs) - 2) / 2 // minus system + current user
 	if included >= 100 {
 		t.Fatalf("old history not dropped: included=%d of 100", included)

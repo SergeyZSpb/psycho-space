@@ -109,7 +109,7 @@ type judgeReply struct {
 // Judge implements Evaluator.
 func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []Exchange, choice string, anger int) (TurnResult, error) {
 	anger = ClampAnger(anger)
-	messages := buildMessages(ch, transcript, choice, anger)
+	messages, alreadyOffered := buildMessages(ch, transcript, choice, anger)
 	reqBody := chatRequest{
 		Model:          e.model,
 		Messages:       messages,
@@ -214,7 +214,12 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		"total_tokens", cr.Usage.TotalTokens, "est_cost_rub", estCost,
 		"achieved", jr.Achieved, "game_over", gameOver, "art", art,
 		"anger_in", anger, "anger_out", newAnger, "anger_from_model", jr.Anger != nil,
-		"salvaged", salvaged, "options", len(jr.Options), "reply", jr.Reply)
+		"salvaged", salvaged, "options", len(jr.Options),
+		// The option TEXTS, not just the count: without them there is no way to
+		// see after the fact that all four choices said the same thing, or that
+		// none of them steered toward a theme the player still has to open.
+		"options_text", jr.Options, "already_offered", len(alreadyOffered),
+		"reply", jr.Reply)
 	// Full request/response bodies (no auth header) at Debug for deep inspection.
 	slog.DebugContext(ctx, "game llm raw", "request", string(raw), "response", string(body))
 
@@ -347,8 +352,10 @@ func clampRunes(s string, max int) string {
 
 // buildMessages turns the character persona + conversation into chat messages.
 // anger is the tension going into this turn; the model is told to return the new
-// value and that a full scale means it snaps.
-func buildMessages(ch Character, transcript []Exchange, choice string, anger int) []chatMessage {
+// value and that a full scale means it snaps. It also returns the already-offered
+// options it listed, so the caller can log how much repetition context the judge
+// actually had.
+func buildMessages(ch Character, transcript []Exchange, choice string, anger int) ([]chatMessage, []string) {
 	sys := fmt.Sprintf(`Ты — персонаж текстовой игры, веди диалог строго в образе.
 Персонаж: %s.
 Характер: %s
@@ -388,7 +395,8 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 	// Show the judge what it has already offered, so it stops recycling the same
 	// four lines. Only options from exchanges that survived the window are listed:
 	// an option is forgotten exactly when its turn is.
-	if already := recentlyOffered(ch, windowed); len(already) > 0 {
+	already := recentlyOffered(ch, windowed)
+	if len(already) > 0 {
 		sys += "\n\nЭти варианты ответа ты игроку УЖЕ предлагал (свежие — сверху). " +
 			"Не предлагай их снова и не давай близкие перефразировки — придумывай новые, " +
 			"по текущей теме разговора:\n- " + strings.Join(already, "\n- ")
@@ -406,7 +414,7 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 		)
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: current})
-	return messages
+	return messages, already
 }
 
 // windowTranscript returns the newest exchanges whose combined estimated tokens
