@@ -595,7 +595,7 @@ func TestNormalizeVerse(t *testing.T) {
 func TestBuildMessagesAsksForVerse(t *testing.T) {
 	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil, nil)
 	sys := msgs[0].Content
-	for _, want := range []string{"РЭП", "рифмованных строки", "каждая с новой строки"} {
+	for _, want := range []string{"РЭП", "рифмованных строк", "каждая с новой строки"} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("reply instruction should ask for verse; missing %q", want)
 		}

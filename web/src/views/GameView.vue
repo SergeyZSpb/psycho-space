@@ -69,7 +69,21 @@
             class="mb-2"
             text="Слишком много запросов с вашего IP — кошелёк Сергея плачет 😢 Подожди минутку."
           />
-          <v-alert variant="tonal" density="compact" class="bubble mb-2" :text="reply" />
+          <v-alert variant="tonal" density="compact" class="bubble mb-2">
+            <!-- A verse too tall for the box ROLLS like post-credits instead of
+                 being clipped: the text is rendered twice and the reel shifts by
+                 exactly half its height, so the loop is seamless. -->
+            <div ref="verseBox" class="verse-viewport">
+              <div
+                class="verse-reel"
+                :class="{ rolling: verseRolls }"
+                :style="verseRolls ? { animationDuration: verseSeconds + 's' } : undefined"
+              >
+                <div ref="verseFirst" class="verse">{{ reply }}</div>
+                <div v-if="verseRolls" class="verse" aria-hidden="true">{{ reply }}</div>
+              </div>
+            </div>
+          </v-alert>
           <!-- Options keep their height while the judge thinks; the loader
                overlays them (no layout shift). -->
           <div class="actions">
@@ -170,13 +184,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { gameApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import { useErrorStore } from '../stores/error';
 import { BOARDS, boardMeta } from '../lib/gameBoards';
 import { angerColor, angerLabel } from '../lib/anger';
 import { recordExchange } from '../lib/transcript';
+import { creditsDuration, shouldRoll } from '../lib/credits';
 import type {
   GameArt,
   GameBoardKey,
@@ -215,6 +230,25 @@ const anger = ref(0);
 // which themes remain would play the game for them.
 const themesDone = ref<string[]>([]);
 const busy = ref(false);
+// Rolling state for a verse that outgrows its box (see lib/credits.ts).
+const verseBox = ref<HTMLElement | null>(null);
+const verseFirst = ref<HTMLElement | null>(null);
+const verseRolls = ref(false);
+const verseSeconds = ref(0);
+
+// Re-measure whenever he says something new: stop any roll, let the layout settle,
+// then start one only if the verse genuinely overflows.
+watch(reply, async () => {
+  verseRolls.value = false;
+  await nextTick();
+  const box = verseBox.value;
+  const first = verseFirst.value;
+  if (!box || !first) return;
+  if (shouldRoll(first.scrollHeight, box.clientHeight)) {
+    verseSeconds.value = creditsDuration(first.scrollHeight);
+    verseRolls.value = true;
+  }
+});
 const rateLimited = ref(false);
 
 const character = computed<GameCharacter | null>(() => {
@@ -489,22 +523,44 @@ async function finish(won: boolean) {
    scrolls inside its own box: the page itself still never scrolls, and the art pane
    above gives up the space. */
 .bubble :deep(.v-alert__content) {
-  font-style: italic;
-  white-space: pre-line;
-  /* Cap by BOTH the font and the viewport: a fixed em height overflowed a 320x568
-     screen by 27px and clipped the options, which is worse than clipping the reply.
-     dvh makes the bubble give way first on short screens. */
+  overflow: hidden;
+}
+/* The window the verse rolls through. Capped by BOTH font size and viewport: a
+   fixed em height overflowed 320x568 by 27px and pushed the options off-screen,
+   which is worse than a cramped verse. */
+.verse-viewport {
   max-height: min(8.5em, 15dvh);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
 }
-/* A thin, visible scrollbar so there is a hint that more text is there. */
-.bubble :deep(.v-alert__content)::-webkit-scrollbar {
-  width: 4px;
+.verse {
+  font-style: italic;
+  white-space: pre-line; /* he raps: line breaks are the verse */
+  padding-bottom: 0.7em; /* gap between the loop's two copies */
 }
-.bubble :deep(.v-alert__content)::-webkit-scrollbar-thumb {
-  background: rgba(127, 127, 127, 0.5);
-  border-radius: 2px;
+/* Two copies, shifted by exactly half the reel: the second lands where the first
+   started, so the loop has no visible seam. */
+.verse-reel.rolling {
+  animation-name: verse-credits;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+@keyframes verse-credits {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-50%);
+  }
+}
+/* Motion-sensitive users get a scrollable box instead of a moving one. */
+@media (prefers-reduced-motion: reduce) {
+  .verse-reel.rolling {
+    animation: none;
+  }
+  .verse-viewport {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }
 /* Compact, 2-line, smaller-text options that never overflow the button. */
 .option-btn {
