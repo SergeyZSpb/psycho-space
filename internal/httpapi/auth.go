@@ -9,6 +9,7 @@ import (
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
+	"github.com/SergeyZSpb/psycho-space/internal/logging"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 )
 
@@ -133,6 +134,7 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
+	logging.SetAccountID(ctx, acc.ID) // correlate the rest of this login's logs
 	clearCookie(w, vkStateCookie, s.d.Config.CookieSecure())
 
 	// Always issue a session — even for pending/blocked — so the client can poll
@@ -181,6 +183,7 @@ func (s *Server) currentAccount(r *http.Request) (*account.Account, bool) {
 	if err != nil {
 		return nil, false
 	}
+	logging.SetAccountID(r.Context(), acc.ID) // stamp all subsequent logs for this request
 	return acc, true
 }
 

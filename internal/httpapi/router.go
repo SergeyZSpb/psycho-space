@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
+	r.Use(accountLogContext)
 	r.Use(traceHeader)
 	r.Use(requestLogger)
 	r.Use(bodyLimit(1 << 20)) // 1 MiB request cap

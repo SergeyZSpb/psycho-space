@@ -5,9 +5,19 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/SergeyZSpb/psycho-space/internal/logging"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
 	"github.com/go-chi/chi/v5/middleware"
 )
+
+// accountLogContext installs a per-request account-id holder so every log line
+// carries account_id (filled by currentAccount once the session resolves,
+// "anonymous" until then). Must run before requestLogger.
+func accountLogContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(logging.WithAccountHolder(r.Context())))
+	})
+}
 
 // traceHeader echoes the request's trace id back to the client so it is visible
 // in the browser/network tab and can be surfaced in error modals.
