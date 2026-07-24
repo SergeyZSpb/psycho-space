@@ -61,6 +61,7 @@ var (
 	ErrUnknownGame      = errors.New("game: unknown game key")
 	ErrUnknownCharacter = errors.New("game: unknown character")
 	ErrStepsRange       = errors.New("game: steps out of range")
+	ErrAssetNotFound    = errors.New("game: asset not found")
 )
 
 // KnownGame reports whether key names a game we serve.

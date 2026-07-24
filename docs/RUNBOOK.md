@@ -100,17 +100,30 @@ Two kinds: **character-mood** (`vanya_*`) — the same дядя Ваня, changi
 - **WebP** (preferred) or PNG; keep each **≤ ~250 KB** — mobile downloads them on demand.
 - Keep the character consistent across a game's `*_*` arts; gritty tragicomic RU-двор tone.
 
-**Where they go — embedded in the binary for now:**
+**Where they live — Postgres blob store (NOT the repo/binary):**
 
-- Source of truth: `internal/game/assets/<game_key>/<key>.webp` — e.g. `internal/game/assets/smalltalk_khimki/vanya_neutral.webp`.
-- Packaged into the Go binary via `go:embed`, served over HTTP; **mobile downloads each art on demand (first time it's shown) and caches it** — no external CDN for now.
+- Table `game_assets` (`game_key`, `art_key`, `content_type`, `bytes`), migration `006_game_assets.sql`. Kept out of git so the art doesn't bloat the repo/binary.
+- Served by `GET /api/game/assets/{game}/{key}` — **public**, `Cache-Control: max-age=86400`; the client downloads each art on demand and caches it. No CDN.
+- `GET /api/game/config` advertises an image URL **only for arts that have an uploaded blob**; arts without one keep the emoji placeholder, so partial uploads degrade gracefully. `Art.Image` in `content.go` stays empty — the config handler fills it per uploaded key.
 
-**Wiring (TODO — when the first images exist):**
+**Upload (owner-only, over SSH for now — an admin UI may come later):**
 
-1. Add `internal/game/assets/<game_key>/` with the images; embed with a `//go:embed assets` FS in the game package.
-2. Add `GET /api/game/assets/{game}/{key}` serving the embedded file (long `Cache-Control`).
-3. Set `Art.Image` in `content.go` to `/api/game/assets/<game_key>/<key>` per art. The SPA already prefers `Image` over the emoji placeholder (`GameArt.image` in `types.ts`, `<img>` in `GameView.vue`).
-4. Keep this list in sync when arts are added/renamed in `content.go`.
+`deploy/upload-game-assets.py` converts each image in a dir to WebP and prints
+`INSERT … ON CONFLICT` SQL to stdout; pipe it to a psql. Requires Pillow
+(`pip install pillow`).
+
+```bash
+# prod (hardened SSH alias `psycho`):
+python3 deploy/upload-game-assets.py ~/Desktop/vanya_assets \
+  | ssh psycho "sudo -u postgres psql psychospace"
+
+# local dev DB:
+python3 deploy/upload-game-assets.py ~/Desktop/vanya_assets \
+  | psql "postgres://psychospace:psychospace@localhost:5432/psychospace"
+```
+
+- Art key = filename without extension; it **must** match a key in `content.go`. Re-running upserts. Remove one with `DELETE FROM game_assets WHERE game_key='…' AND art_key='…'`.
+- After upload, reload the game — the config now serves the real images (`<img>` in `GameView.vue`; falls back to the emoji if a load fails).
 
 ### Tests
 

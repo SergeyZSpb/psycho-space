@@ -82,3 +82,21 @@ func (s *Service) Stats(ctx context.Context, gameKey, accountID string) (PlayerS
 	}
 	return s.repo.StatsFor(ctx, s.q, gameKey, accountID)
 }
+
+// Asset returns an art image's bytes + content type (from the DB blob store).
+func (s *Service) Asset(ctx context.Context, gameKey, artKey string) ([]byte, string, error) {
+	return s.repo.AssetBytes(ctx, s.q, gameKey, artKey)
+}
+
+// AssetKeys returns the set of art keys that have an uploaded image for a game.
+func (s *Service) AssetKeys(ctx context.Context, gameKey string) (map[string]bool, error) {
+	keys, err := s.repo.AssetKeys(ctx, s.q, gameKey)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		set[k] = true
+	}
+	return set, nil
+}

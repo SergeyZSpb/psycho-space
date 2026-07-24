@@ -29,6 +29,14 @@ func (f *fakeRepo) StatsFor(_ context.Context, _ db.DBTX, _, _ string) (PlayerSt
 	return PlayerStats{}, nil
 }
 
+func (f *fakeRepo) AssetBytes(_ context.Context, _ db.DBTX, _, _ string) ([]byte, string, error) {
+	return nil, "", ErrAssetNotFound
+}
+
+func (f *fakeRepo) AssetKeys(_ context.Context, _ db.DBTX, _ string) ([]string, error) {
+	return nil, nil
+}
+
 // stubEval is a test double for the LLM judge, so service-level tests don't do I/O.
 type stubEval struct {
 	res           TurnResult

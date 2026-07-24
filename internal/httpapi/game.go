@@ -9,6 +9,7 @@ import (
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/game"
+	"github.com/go-chi/chi/v5"
 )
 
 // handleGameConfig serves a game's config (characters, options, assets). Persona
@@ -23,7 +24,35 @@ func (s *Server) handleGameConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
+	// Point arts at their uploaded image (if any); arts without an image keep an
+	// empty Image and the client renders the emoji placeholder.
+	present, err := s.d.Game.AssetKeys(r.Context(), g.GameKey)
+	if err != nil {
+		slog.WarnContext(r.Context(), "game asset keys lookup failed", "err", err)
+		present = nil
+	}
+	for ci := range g.Characters {
+		for ai := range g.Characters[ci].Arts {
+			if k := g.Characters[ci].Arts[ai].Key; present[k] {
+				g.Characters[ci].Arts[ai].Image = "/api/game/assets/" + g.GameKey + "/" + k
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, g)
+}
+
+// handleGameAsset serves an art image from the DB blob store. Public (art isn't
+// sensitive) and cacheable; the client downloads on demand.
+func (s *Server) handleGameAsset(w http.ResponseWriter, r *http.Request) {
+	b, ct, err := s.d.Game.Asset(r.Context(), chi.URLParam(r, "game"), chi.URLParam(r, "key"))
+	if err != nil {
+		writeError(w, r, http.StatusNotFound, "asset_not_found")
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b)
 }
 
 // handleGameAttempt judges one dialogue turn via the LLM. Requires a configured

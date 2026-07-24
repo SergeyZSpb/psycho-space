@@ -97,13 +97,20 @@ func (s *Server) Handler() http.Handler {
 		// Game — approved users only. Dialog content is backend config; runs
 		// (outcomes) feed the leaderboard.
 		r.Route("/game", func(r chi.Router) {
-			r.Use(s.requireAuth)
-			r.Get("/config", s.handleGameConfig)
-			// The judge calls the (paid) LLM, so cap it tightly per IP.
-			r.With(s.rateLimit(10, time.Minute)).Post("/attempt", s.handleGameAttempt)
-			r.Post("/runs", s.handleGameSubmitRun)
-			r.Get("/runs/leaderboard", s.handleGameLeaderboard)
-			r.Get("/runs/me", s.handleGameStats)
+			// Art images are public (not sensitive) and cacheable — the client
+			// downloads them on demand.
+			r.Get("/assets/{game}/{key}", s.handleGameAsset)
+
+			// Everything else is approved-only.
+			r.Group(func(r chi.Router) {
+				r.Use(s.requireAuth)
+				r.Get("/config", s.handleGameConfig)
+				// The judge calls the (paid) LLM, so cap it tightly per IP.
+				r.With(s.rateLimit(10, time.Minute)).Post("/attempt", s.handleGameAttempt)
+				r.Post("/runs", s.handleGameSubmitRun)
+				r.Get("/runs/leaderboard", s.handleGameLeaderboard)
+				r.Get("/runs/me", s.handleGameStats)
+			})
 		})
 
 		// Admin — approve/block for admins; promote + settings for superadmin only.

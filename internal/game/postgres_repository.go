@@ -2,8 +2,10 @@ package game
 
 import (
 	"context"
+	"errors"
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
+	"github.com/jackc/pgx/v5"
 )
 
 // PostgresRepository is the pgx-backed Repository.
@@ -45,6 +47,36 @@ func (PostgresRepository) Leaderboard(ctx context.Context, q db.DBTX, gameKey st
 			return nil, err
 		}
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (PostgresRepository) AssetBytes(ctx context.Context, q db.DBTX, gameKey, artKey string) ([]byte, string, error) {
+	var b []byte
+	var ct string
+	err := q.QueryRow(ctx,
+		`SELECT bytes, content_type FROM game_assets WHERE game_key = $1 AND art_key = $2`,
+		gameKey, artKey,
+	).Scan(&b, &ct)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", ErrAssetNotFound
+	}
+	return b, ct, err
+}
+
+func (PostgresRepository) AssetKeys(ctx context.Context, q db.DBTX, gameKey string) ([]string, error) {
+	rows, err := q.Query(ctx, `SELECT art_key FROM game_assets WHERE game_key = $1`, gameKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
 	}
 	return out, rows.Err()
 }

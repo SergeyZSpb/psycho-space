@@ -16,4 +16,8 @@ type Repository interface {
 	Leaderboard(ctx context.Context, q db.DBTX, gameKey string, limit int) ([]LeaderboardEntry, error)
 	// StatsFor returns a single player's summary for a game.
 	StatsFor(ctx context.Context, q db.DBTX, gameKey, accountID string) (PlayerStats, error)
+	// AssetBytes returns an art image's bytes + content type, or ErrAssetNotFound.
+	AssetBytes(ctx context.Context, q db.DBTX, gameKey, artKey string) ([]byte, string, error)
+	// AssetKeys returns the art keys that have an uploaded image for a game.
+	AssetKeys(ctx context.Context, q db.DBTX, gameKey string) ([]string, error)
 }

@@ -3,6 +3,9 @@
 package integration
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -111,6 +114,65 @@ func TestGameFlow(t *testing.T) {
 	if st, _ := doJSON(t, cli2, http.MethodPost, appNoLLM.URL+"/api/game/attempt",
 		map[string]any{"game_key": "smalltalk_khimki", "character_key": charKey, "transcript": []any{}, "choice": "x"}); st != http.StatusServiceUnavailable {
 		t.Fatalf("no-LLM attempt status %d; want 503", st)
+	}
+}
+
+// TestGameAssets covers the DB blob store: an uploaded art is served publicly
+// and advertised in the config; missing arts 404 and keep no image URL.
+func TestGameAssets(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	app := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app.Close()
+
+	// Upload an image directly, as the owner would over SSH.
+	blob := []byte("\x00fake-webp\x01\x02")
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO game_assets (game_key, art_key, content_type, bytes) VALUES ($1,$2,$3,$4)
+		 ON CONFLICT (game_key, art_key) DO UPDATE SET bytes = EXCLUDED.bytes`,
+		"smalltalk_khimki", "vanya_neutral", "image/webp", blob); err != nil {
+		t.Fatalf("insert asset: %v", err)
+	}
+
+	// Public fetch (no auth), correct type + bytes.
+	resp, err := http.Get(app.URL + "/api/game/assets/smalltalk_khimki/vanya_neutral")
+	if err != nil {
+		t.Fatalf("get asset: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/webp" {
+		t.Fatalf("asset status %d type %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if got, _ := io.ReadAll(resp.Body); !bytes.Equal(got, blob) {
+		t.Fatalf("asset bytes mismatch")
+	}
+
+	// Unknown art -> 404.
+	r, err := http.Get(app.URL + "/api/game/assets/smalltalk_khimki/nope")
+	if err != nil {
+		t.Fatalf("get unknown asset: %v", err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown asset status %d; want 404", r.StatusCode)
+	}
+
+	// Config advertises an image URL only for the uploaded art.
+	cli := loginAs(t, app.URL, "3004", "user")
+	_, cfg := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/config?game=smalltalk_khimki", nil)
+	arts := cfg["characters"].([]any)[0].(map[string]any)["arts"].([]any)
+	img := map[string]string{}
+	for _, a := range arts {
+		m := a.(map[string]any)
+		k, _ := m["key"].(string)
+		v, _ := m["image"].(string)
+		img[k] = v
+	}
+	if img["vanya_neutral"] == "" {
+		t.Fatalf("vanya_neutral should carry an image URL: %v", img)
+	}
+	if img["vanya_angry"] != "" {
+		t.Fatalf("vanya_angry has no upload, image should be empty, got %q", img["vanya_angry"])
 	}
 }
 

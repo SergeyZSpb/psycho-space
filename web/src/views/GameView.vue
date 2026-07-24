@@ -14,7 +14,14 @@
 
       <!-- Splash / start screen -->
       <div v-if="phase === 'intro'" class="splash" :style="{ background: splashArt.gradient }">
-        <div class="splash-emoji">{{ splashArt.emoji }}</div>
+        <img
+          v-if="artImg(splashArt)"
+          :src="artImg(splashArt)"
+          class="splash-img"
+          alt=""
+          @error="failedArts.push(splashArt.key)"
+        />
+        <div v-else class="splash-emoji">{{ splashArt.emoji }}</div>
         <h1 class="splash-title">{{ config.title }}</h1>
         <v-chip size="small" variant="tonal" class="splash-badge">успехов: {{ stats?.successes ?? 0 }}</v-chip>
         <p class="splash-intro">{{ config.intro }}</p>
@@ -27,7 +34,13 @@
       <!-- Play (portrait + landscape) -->
       <div v-else-if="phase === 'play'" class="stage">
         <div class="portrait-pane" :style="{ background: currentArt.gradient }">
-          <img v-if="currentArt.image" :src="currentArt.image" class="art-img" alt="" />
+          <img
+            v-if="artImg(currentArt)"
+            :src="artImg(currentArt)"
+            class="art-img"
+            alt=""
+            @error="failedArts.push(currentArt.key)"
+          />
           <div v-else class="face">{{ currentArt.emoji }}</div>
           <div class="steps">шаг {{ steps }} / {{ character.max_steps }}</div>
         </div>
@@ -69,7 +82,13 @@
       <!-- Ending -->
       <template v-else-if="phase === 'ending'">
         <div class="portrait-pane ending mb-3" :style="{ background: currentArt.gradient }">
-          <img v-if="currentArt.image" :src="currentArt.image" class="art-img" alt="" />
+          <img
+            v-if="artImg(currentArt)"
+            :src="artImg(currentArt)"
+            class="art-img"
+            alt=""
+            @error="failedArts.push(currentArt.key)"
+          />
           <div v-else class="face">{{ currentArt.emoji }}</div>
         </div>
         <v-alert
@@ -169,6 +188,13 @@ const artMap = computed<Record<string, GameArt>>(() =>
 );
 const currentArt = computed<GameArt>(() => artMap.value[currentArtKey.value] ?? FALLBACK_ART);
 const splashArt = computed<GameArt>(() => character.value?.arts[0] ?? FALLBACK_ART);
+
+// Art image URL if the backend provided one and it hasn't failed to load;
+// otherwise "" so we fall back to the emoji placeholder.
+const failedArts = ref<string[]>([]);
+function artImg(a: GameArt): string {
+  return a.image && !failedArts.value.includes(a.key) ? a.image : '';
+}
 const bestLabel = computed(() =>
   stats.value && stats.value.best_steps > 0 ? `${stats.value.best_steps} шаг.` : '—',
 );
@@ -268,6 +294,12 @@ async function finish(won: boolean) {
 .splash-emoji {
   font-size: 92px;
   line-height: 1;
+}
+.splash-img {
+  max-height: 240px;
+  max-width: 100%;
+  border-radius: 14px;
+  object-fit: contain;
 }
 .splash-title {
   font-size: 2rem;
