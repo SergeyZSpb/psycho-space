@@ -80,8 +80,19 @@ func TestOpenAIEvaluatorJudge(t *testing.T) {
 	if len(req.Messages) != 4 || req.Messages[0].Role != "system" {
 		t.Fatalf("messages = %+v", req.Messages)
 	}
-	if req.Messages[3].Content != "домой" {
-		t.Fatalf("last message = %q; want the current choice", req.Messages[3].Content)
+	// The last message carries the player's line, the volatile state and the
+	// restated JSON contract — a roleplay-strong model otherwise answers in
+	// character and ignores the format.
+	last := req.Messages[len(req.Messages)-1].Content
+	if !strings.Contains(last, "Реплика игрока: домой") {
+		t.Fatalf("last message = %q; want it to carry the current choice", last)
+	}
+	if !strings.Contains(last, "ТОЛЬКО одним JSON") {
+		t.Fatal("last message should restate the JSON-only contract")
+	}
+	// Nothing volatile may sit in the system message: it is the cached prefix.
+	if strings.Contains(req.Messages[0].Content, "Текущее напряжение") {
+		t.Fatal("the tension value must not be in the system prompt (it would break the prefix cache)")
 	}
 	if !strings.Contains(req.Messages[0].Content, "Дядя Ваня") {
 		t.Fatal("system prompt should carry the persona (character name)")
@@ -330,12 +341,16 @@ func TestOpenAIEvaluatorAchievedBeatsFullAnger(t *testing.T) {
 	}
 }
 
-// The judge can only move the scale if it is told where the scale stands.
+// The judge can only move the scale if it is told where the scale stands — and
+// that value belongs in the volatile tail, never in the cached system prefix.
 func TestBuildMessagesCarriesAnger(t *testing.T) {
 	msgs, _ := buildMessages(testChar(), nil, "x", 73, nil)
-	sys := msgs[0].Content
-	if !strings.Contains(sys, "сейчас 73") {
-		t.Fatalf("system prompt should state the current tension; got:\n%s", sys)
+	sys, tail := msgs[0].Content, msgs[len(msgs)-1].Content
+	if !strings.Contains(tail, "Текущее напряжение: 73") {
+		t.Fatalf("tail should state the current tension; got:\n%s", tail)
+	}
+	if strings.Contains(sys, "73") {
+		t.Fatal("the tension value must not appear in the cached system prompt")
 	}
 	if !strings.Contains(sys, `"anger"`) {
 		t.Fatal("system prompt should ask for the anger field back")
@@ -362,8 +377,8 @@ func TestJudgeClampsIncomingAnger(t *testing.T) {
 	if res.Anger != angerDriftOnMissing {
 		t.Fatalf("anger = %d; want %d (clamped to 0 in, then drift)", res.Anger, angerDriftOnMissing)
 	}
-	if !strings.Contains(req.Messages[0].Content, "сейчас 0") {
-		t.Fatal("prompt should carry the clamped tension")
+	if !strings.Contains(req.Messages[len(req.Messages)-1].Content, "Текущее напряжение: 0") {
+		t.Fatal("prompt tail should carry the clamped tension")
 	}
 }
 
@@ -519,29 +534,29 @@ func TestBuildMessagesNamesOpenThemes(t *testing.T) {
 	ch := themedChar()
 
 	msgs, _ := buildMessages(ch, nil, "x", StartAnger, []string{"sahur"})
-	sys := msgs[0].Content
-	if !strings.Contains(sys, "alcohol") || !strings.Contains(sys, "woman_children") {
-		t.Fatalf("still-closed themes should be listed; got:\n%s", sys)
+	tail := msgs[len(msgs)-1].Content
+	if !strings.Contains(tail, "alcohol") || !strings.Contains(tail, "woman_children") {
+		t.Fatalf("still-closed themes should be listed in the tail; got:\n%s", tail)
 	}
-	if strings.Contains(sys, "sahur — ") {
+	if strings.Contains(tail, "sahur — ") {
 		t.Fatal("an already-opened theme must not be listed as still closed")
 	}
-	if !strings.Contains(sys, "Первый из четырёх вариантов") {
-		t.Fatal("prompt should require the first option to steer at an open theme")
+	if !strings.Contains(tail, "Первый из четырёх вариантов") {
+		t.Fatal("tail should require the first option to steer at an open theme")
 	}
 
 	// All three open: all three listed.
 	allOpen, _ := buildMessages(ch, nil, "x", StartAnger, nil)
 	for _, key := range []string{"woman_children", "sahur", "alcohol"} {
-		if !strings.Contains(allOpen[0].Content, key) {
+		if !strings.Contains(allOpen[len(allOpen)-1].Content, key) {
 			t.Errorf("theme %q missing from the open list", key)
 		}
 	}
 
 	// Nothing left to open: the prompt switches to closing the dialogue out.
 	done, _ := buildMessages(ch, nil, "x", StartAnger, []string{"woman_children", "sahur", "alcohol"})
-	if !strings.Contains(done[0].Content, "Все твои глубинные темы уже раскрыты") {
-		t.Fatalf("with every theme open the prompt should push toward the ending; got:\n%s", done[0].Content)
+	if !strings.Contains(done[len(done)-1].Content, "Все твои глубинные темы уже раскрыты") {
+		t.Fatalf("with every theme open the prompt should push toward the ending")
 	}
 }
 
@@ -563,22 +578,60 @@ func TestBuildMessagesAsksForRoleSlots(t *testing.T) {
 	}
 }
 
-// His own recent lines go back so he stops answering with the same formula
-// («Ты меня не знаешь…» appeared four times in one measured run).
-func TestBuildMessagesFeedsBackRecentReplies(t *testing.T) {
-	tr := []Exchange{
-		{Choice: "a", Reply: "Ты меня не знаешь, чего пристал?"},
-		{Choice: "b", Reply: "С чего ты взял, что мне интересно?"},
-	}
-	msgs, _ := buildMessages(themedChar(), tr, "дальше", StartAnger, nil)
+// The character's own past lines ARE the assistant messages, so they are never
+// re-listed; the system prompt teaches the model to read the footers and not to
+// repeat itself, and that instruction is static (therefore cacheable).
+func TestSystemPromptExplainsHistoryFooters(t *testing.T) {
+	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil)
 	sys := msgs[0].Content
-	if !strings.Contains(sys, "Твои недавние реплики") {
-		t.Fatal("prompt should quote his own recent lines back")
-	}
-	for _, r := range []string{"Ты меня не знаешь", "С чего ты взял"} {
-		if !strings.Contains(sys, r) {
-			t.Errorf("recent reply %q missing from the prompt", r)
+	for _, want := range []string{"служебная пометка", "напряжение:", "предлагал:", "прежние зачины"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("system prompt should explain the history footers; missing %q", want)
 		}
+	}
+}
+
+// Each past turn carries its own tension and offered options, so the whole
+// per-turn state travels inside the append-only history instead of being
+// re-derived and re-sent every turn.
+func TestExchangeFooter(t *testing.T) {
+	a := 55
+	got := exchangeFooter(Exchange{Reply: "ну", Anger: &a, Options: []string{"раз", "два", "  ", ""}})
+	if got != "\n[напряжение: 55; предлагал: раз | два]" {
+		t.Fatalf("footer = %q", got)
+	}
+	// An older client that sends no tension still gets a usable footer...
+	if got := exchangeFooter(Exchange{Options: []string{"раз"}}); got != "\n[предлагал: раз]" {
+		t.Fatalf("footer without anger = %q", got)
+	}
+	// ...and a turn with neither adds nothing at all, rather than empty brackets.
+	if got := exchangeFooter(Exchange{Reply: "ну"}); got != "" {
+		t.Fatalf("footer for a bare exchange = %q; want empty", got)
+	}
+	// A tampered value is clamped like everywhere else.
+	huge := 10_000
+	if got := exchangeFooter(Exchange{Anger: &huge}); !strings.Contains(got, "напряжение: 100") {
+		t.Fatalf("footer should clamp the snapshot, got %q", got)
+	}
+}
+
+// The footer reaches the model attached to the reply it belongs to.
+func TestBuildMessagesAttachesFooterToHistory(t *testing.T) {
+	a := 70
+	tr := []Exchange{{Choice: "привет", Reply: "ну чё", Anger: &a, Options: []string{"раз", "два"}}}
+	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger, nil)
+
+	var assistant string
+	for _, m := range msgs {
+		if m.Role == "assistant" && strings.Contains(m.Content, "ну чё") {
+			assistant = m.Content
+		}
+	}
+	if !strings.Contains(assistant, "ну чё") {
+		t.Fatal("the reply itself should still be there")
+	}
+	if !strings.Contains(assistant, "напряжение: 70") || !strings.Contains(assistant, "предлагал: раз | два") {
+		t.Fatalf("assistant message should carry the footer; got %q", assistant)
 	}
 }
 
@@ -765,20 +818,26 @@ func TestRecentlyOfferedIsCapped(t *testing.T) {
 func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 	tr := []Exchange{{Choice: "привет", Reply: "ну", Options: []string{"уже предлагал это"}}}
 	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger, nil)
-	sys := msgs[0].Content
-	if !strings.Contains(sys, "уже предлагал это") {
-		t.Fatalf("system prompt should list already-offered options; got:\n%s", sys)
+	// The options ride along inside the history — appended once to the reply they
+	// were offered with — rather than being re-listed in the tail every turn.
+	var history string
+	for _, m := range msgs[1 : len(msgs)-1] {
+		history += m.Content + "\n"
 	}
-	if !strings.Contains(sys, "УЖЕ предлагал") {
-		t.Fatal("system prompt should tell the model not to repeat them")
+	if !strings.Contains(history, "предлагал: уже предлагал это") {
+		t.Fatalf("offered options should be in the history footer; got:\n%s", history)
+	}
+	if strings.Contains(msgs[len(msgs)-1].Content, "уже предлагал это") {
+		t.Fatal("options must not be re-sent in the tail — that is the duplication we removed")
 	}
 
 	// A transcript far past the window: the old exchange and its options are gone.
-	big := strings.Repeat("я", 200_000)
+	// Sized from the constant so this keeps testing the window if the budget moves.
+	big := strings.Repeat("я", historyTokens*2)
 	droppedMsgs, _ := buildMessages(testChar(), []Exchange{
 		{Choice: big, Reply: big, Options: []string{"забытый вариант"}},
 	}, "дальше", StartAnger, nil)
-	sysDropped := droppedMsgs[0].Content
+	sysDropped := droppedMsgs[len(droppedMsgs)-1].Content
 	if strings.Contains(sysDropped, "забытый вариант") {
 		t.Fatal("options of a forgotten exchange must not survive in the prompt")
 	}
@@ -790,7 +849,7 @@ func TestBuildMessagesOmitsOfferedBlockWhenEmpty(t *testing.T) {
 	ch := testChar()
 	ch.OpeningOptions = nil
 	msgs, _ := buildMessages(ch, nil, "", StartAnger, nil)
-	sys := msgs[0].Content
+	sys := msgs[len(msgs)-1].Content
 	if strings.Contains(sys, "УЖЕ предлагал") {
 		t.Fatalf("nothing offered yet, so the block should be absent; got:\n%s", sys)
 	}
@@ -830,7 +889,10 @@ func TestWindowTranscript(t *testing.T) {
 }
 
 func TestBuildMessagesDropsOldHistory(t *testing.T) {
-	big := strings.Repeat("я", 6000) // ~3000 est tokens per field
+	// Each exchange costs about a third of the budget, so a few fit and the rest
+	// are dropped. Sized from the constant so a budget change can't turn this into
+	// a test of nothing.
+	big := strings.Repeat("я", historyTokens/6)
 	var tr []Exchange
 	for i := 0; i < 100; i++ {
 		tr = append(tr, Exchange{Choice: big, Reply: big})
@@ -842,5 +904,43 @@ func TestBuildMessagesDropsOldHistory(t *testing.T) {
 	}
 	if included == 0 {
 		t.Fatal("everything dropped; expected some recent history to fit")
+	}
+}
+
+// The history window is capped by turn count as well as by tokens, so a long game
+// of short turns cannot grow the prompt without bound either.
+func TestHistoryCappedByExchangeCount(t *testing.T) {
+	var tr []Exchange
+	for i := 0; i < historyExchanges*4; i++ {
+		tr = append(tr, Exchange{Choice: "коротко", Reply: "тоже коротко"})
+	}
+	msgs, _ := buildMessages(testChar(), tr, "финал", StartAnger, nil)
+	included := (len(msgs) - 2) / 2
+	if included != historyExchanges {
+		t.Fatalf("included %d exchanges; want the cap %d", included, historyExchanges)
+	}
+	// And the tokens those short turns cost are nowhere near the token budget, so
+	// it really is the count that bound it.
+	var used int
+	for _, ex := range tr[len(tr)-historyExchanges:] {
+		used += exchangeTokens(ex)
+	}
+	if used >= historyTokens {
+		t.Fatalf("this case should be count-bound, not token-bound (used %d of %d)", used, historyTokens)
+	}
+}
+
+// The completion is capped too: a runaway generation must not cost many times a
+// normal turn.
+func TestRequestCapsCompletionTokens(t *testing.T) {
+	var req chatRequest
+	srv := llmServer(t, `{"reply":"ну","art":"vanya_angry","options":["a"]}`, http.StatusOK, nil, &req)
+	defer srv.Close()
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	if _, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger, nil); err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if req.MaxTokens != maxCompletionTokens {
+		t.Fatalf("max_tokens = %d; want %d", req.MaxTokens, maxCompletionTokens)
 	}
 }

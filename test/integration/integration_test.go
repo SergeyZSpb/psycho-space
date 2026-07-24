@@ -110,13 +110,30 @@ func startFakeLLM() *httptest.Server {
 			} `json:"messages"`
 		}
 		_ = json.Unmarshal(body, &req)
+		// The final message carries the volatile state AND the player's line. Match
+		// on the player's line alone — the state block mentions words like "темы"
+		// that would otherwise trip every keyword below.
 		last := ""
 		if n := len(req.Messages); n > 0 {
-			last = req.Messages[n-1].Content
+			tail := req.Messages[n-1].Content
+			if i := strings.Index(tail, "Реплика игрока: "); i >= 0 {
+				last = tail[i+len("Реплика игрока: "):]
+				if j := strings.Index(last, "\n"); j >= 0 {
+					last = last[:j]
+				}
+			} else {
+				last = tail
+			}
 		}
 		system := ""
 		if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
 			system = req.Messages[0].Content
+		}
+		// The whole conversation as the model sees it: per-turn state now travels
+		// inside the history footers, not in a re-sent summary.
+		all := ""
+		for _, m := range req.Messages {
+			all += m.Content + "\n"
 		}
 		content := `{"reply":"Хм, ну-ну","art":"vanya_neutral","achieved":false,"options":["дальше раз","дальше два"]}`
 		switch {
@@ -124,7 +141,8 @@ func startFakeLLM() *httptest.Server {
 			// Reports back whether the options the client sent in the transcript
 			// reached the system prompt, so the test can assert the plumbing.
 			seen := "нет"
-			if strings.Contains(system, "уже это предлагал") && strings.Contains(system, "УЖЕ предлагал") {
+			if strings.Contains(all, "предлагал: уже это предлагал") &&
+				strings.Contains(system, "служебная пометка") {
 				seen = "да"
 			}
 			content = `{"reply":"already_offered=` + seen + `","art":"vanya_neutral",` +
@@ -147,8 +165,8 @@ func startFakeLLM() *httptest.Server {
 		case strings.Contains(last, "темы"):
 			// Reports whether the still-open themes reached the system prompt.
 			seen := "нет"
-			if strings.Contains(system, "sahur") && strings.Contains(system, "woman_children") &&
-				!strings.Contains(system, "alcohol — ") {
+			if strings.Contains(all, "sahur") && strings.Contains(all, "woman_children") &&
+				!strings.Contains(all, "alcohol — ") {
 				seen = "да"
 			}
 			content = `{"reply":"open_themes=` + seen + `","art":"vanya_angry","anger":50,` +

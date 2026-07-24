@@ -308,7 +308,7 @@ async function turn(choice: string) {
     if (choice !== '') {
       // Record the options offered alongside the reply: the judge needs them next
       // turn to avoid proposing the same lines again.
-      transcript.value.push(recordExchange(choice, res.reply, res.options));
+      transcript.value.push(recordExchange(choice, res.reply, res.options, res.anger));
       steps.value += 1;
     }
     anger.value = res.anger;

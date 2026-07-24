@@ -14,6 +14,12 @@ type Exchange struct {
 	Choice  string   `json:"choice"`
 	Reply   string   `json:"reply"`
 	Options []string `json:"options,omitempty"`
+	// Anger is the tension after this turn. Snapshotting it into the exchange —
+	// rather than recomputing a summary each turn — lets the whole per-turn state
+	// travel inside the append-only history, which is sent once, instead of being
+	// re-derived and re-sent in full on every later turn. A pointer so an older
+	// client that omits it simply produces a footer without the tension.
+	Anger *int `json:"anger,omitempty"`
 }
 
 // TurnResult is the outcome of one dialogue turn, judged by the LLM and passed

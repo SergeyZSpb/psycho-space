@@ -17,10 +17,34 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 )
 
-// rubPer1kTokens is an approximate YandexGPT 5 Lite price per 1000 tokens, used
-// only to log a running cost estimate. Update from current Yandex Cloud pricing;
-// token counts logged alongside it are exact (from the API's usage field).
-const rubPer1kTokens = 0.20
+// modelPrice is a model's rouble price per 1000 tokens. Input and output are
+// priced separately — on deepseek-v4-flash output costs well over six times
+// input, so a single blended rate would misreport every turn.
+type modelPrice struct{ in, out float64 }
+
+// modelPrices is keyed by a substring of the model URI (the URI carries a folder
+// id, so it can't be matched whole). Prices from the Yandex AI Studio pricing
+// page. The cached-input rate (0.075) is not modelled: the API reports how many
+// input tokens were cached, but not the split we were billed at, so the estimate
+// is an UPPER bound — real spend is lower whenever the prefix cache hits.
+//
+// A model that is not listed logs NO cost estimate rather than a wrong one: a
+// stale price silently attributed to a different model is worse than none.
+var modelPrices = map[string]modelPrice{
+	"yandexgpt-5-lite":  {in: 0.20, out: 0.20},
+	"deepseek-v4-flash": {in: 0.30, out: 0.50},
+}
+
+// costEstimate returns the estimated rouble cost of a call and whether we have
+// prices for that model at all.
+func costEstimate(model string, promptTokens, completionTokens int) (float64, bool) {
+	for name, p := range modelPrices {
+		if strings.Contains(model, name) {
+			return float64(promptTokens)/1000*p.in + float64(completionTokens)/1000*p.out, true
+		}
+	}
+	return 0, false
+}
 
 // optionCount is how many answer options every playing turn offers.
 const optionCount = 4
@@ -30,19 +54,55 @@ const optionCount = 4
 // unloseable run.
 const angerDriftOnMissing = 5
 
-// modelContextTokens is the model's context window (YandexGPT 5 Lite: 32768).
+// modelContextTokens is the context window of the model we run on
+// (deepseek-v4-flash: 1048576, measured against the live endpoint — an oversized
+// request answers "This model's maximum context length is 1048576 tokens").
 // outputReserveTokens is held back for the model's own reply. Older exchanges
-// beyond the remaining input budget are dropped (forgotten). We can't tokenise
-// exactly without the model's tokenizer, so estTokens is a deliberately
-// conservative estimate (over-counts, so we trim early rather than overflow).
+// beyond the remaining input budget are dropped (forgotten).
+//
+// The model's window is a safety bound, not the budget we actually use — see
+// historyTokens below.
 const (
-	modelContextTokens  = 32768
+	modelContextTokens  = 1048576
 	outputReserveTokens = 2048
 )
 
-// estTokens roughly estimates tokens for a string. ~2 chars/token is
-// conservative for mixed Cyrillic/Latin, biasing toward trimming.
-func estTokens(s string) int { return utf8.RuneCountInString(s)/2 + 1 }
+// historyTokens and historyExchanges cap how much conversation we resend, far
+// below what the model would accept.
+//
+// The whole prompt is re-sent on every single turn, so an uncapped history makes
+// each turn more expensive than the last — quadratic in the length of the game —
+// and buys very little: the game's actual progress is carried as explicit state
+// (the tension scale and the opened themes), and repetition is handled by the
+// already-offered and recent-replies lists. Old small talk only adds flavour.
+//
+// Sized from measured turns rather than from what the model would tolerate: one
+// exchange (a choice, a reply and four offered options) is roughly 400–500 tokens
+// of Cyrillic, so twelve turns is ~6000. That covers a whole playthrough — the
+// longest observed run reached the ending in seven turns — and then holds flat:
+// turn 30 costs what turn 12 costs instead of several times as much.
+//
+// Twelve rather than the ~114 exchanges the old 32k budget effectively allowed,
+// but not fewer, because history is genuinely useful here even though progress
+// itself is explicit state (tension + opened themes) and repetition is handled by
+// the already-offered and recent-replies lists.
+const (
+	historyTokens    = 6000
+	historyExchanges = 12
+)
+
+// maxCompletionTokens caps the model's own answer. A reply plus four options is
+// ~450 tokens on deepseek-v4-flash; this leaves generous headroom while stopping
+// a runaway generation from costing many times a normal turn.
+const maxCompletionTokens = 900
+
+// estTokens estimates tokens for a string, deliberately erring high so we trim
+// early rather than overflow. One token per rune: measured against
+// deepseek-v4-flash, 1200000 Cyrillic characters tokenise to 1200004 tokens —
+// i.e. Russian text is ~1 token per character, not the 2 characters per token an
+// English-shaped estimate would assume. Latin runs compress far below this, so
+// counting runes over-counts them, which is the safe direction.
+func estTokens(s string) int { return utf8.RuneCountInString(s) + 1 }
 
 // openAIEvaluator is the LLM judge. It talks to any OpenAI-compatible chat
 // completions endpoint (start target: YandexGPT 5 Lite on Yandex Cloud) and
@@ -75,6 +135,7 @@ type chatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []chatMessage   `json:"messages"`
 	Temperature    float64         `json:"temperature"`
+	MaxTokens      int             `json:"max_tokens,omitempty"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
 
@@ -91,6 +152,11 @@ type chatResponse struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+		// Cached input is billed at a fraction of the normal rate. Measured as 0
+		// on this endpoint today, so it is logged to notice if that ever changes.
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -158,6 +224,7 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		Model:          e.model,
 		Messages:       messages,
 		Temperature:    0.7,
+		MaxTokens:      maxCompletionTokens,
 		ResponseFormat: &responseFormat{Type: "json_object"},
 	}
 	raw, err := json.Marshal(reqBody)
@@ -257,11 +324,17 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		// The beating always looks the same, whatever art the model asked for.
 		art = normalizeArt(ch.GameOverArt, ch.artKeys())
 	}
-	estCost := float64(cr.Usage.TotalTokens) / 1000.0 * rubPer1kTokens
-	slog.InfoContext(ctx, "game llm response",
+	logArgs := []any{
 		"model", e.model, "character", ch.Key, "latency_ms", elapsed.Milliseconds(),
 		"prompt_tokens", cr.Usage.PromptTokens, "completion_tokens", cr.Usage.CompletionTokens,
-		"total_tokens", cr.Usage.TotalTokens, "est_cost_rub", estCost,
+		"total_tokens", cr.Usage.TotalTokens,
+		"cached_tokens", cr.Usage.PromptTokensDetails.CachedTokens,
+	}
+	// Only claim a cost when we actually know this model's price.
+	if cost, known := costEstimate(e.model, cr.Usage.PromptTokens, cr.Usage.CompletionTokens); known {
+		logArgs = append(logArgs, "est_cost_rub", cost)
+	}
+	slog.InfoContext(ctx, "game llm response", append(logArgs,
 		"achieved", bool(jr.Achieved), "game_over", gameOver, "art", art,
 		"anger_in", anger, "anger_out", newAnger, "anger_from_model", jr.Anger != nil,
 		"salvaged", salvaged, "options", len(jr.Options),
@@ -270,7 +343,7 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		// none of them steered toward a theme the player still has to open.
 		"options_text", jr.Options, "already_offered", len(alreadyOffered),
 		"themes_done", newThemes, "themes_from_model", jr.ThemesDone != nil,
-		"reply", jr.Reply)
+		"reply", jr.Reply)...)
 	// Full request/response bodies (no auth header) at Debug for deep inspection.
 	slog.DebugContext(ctx, "game llm raw", "request", string(raw), "response", string(body))
 
@@ -444,11 +517,22 @@ func clampRunes(s string, max int) string {
 	return string([]rune(s)[:max]) + "…"
 }
 
-// buildMessages turns the character persona + conversation into chat messages.
-// anger is the tension going into this turn; the model is told to return the new
-// value and that a full scale means it snaps. It also returns the already-offered
-// options it listed, so the caller can log how much repetition context the judge
-// actually had.
+// buildMessages turns the character persona + conversation into chat messages,
+// and returns the already-offered options it listed so the caller can log how
+// much repetition context the judge actually had.
+//
+// The layout is deliberate and is what makes the call cheap: everything STATIC
+// (persona, instructions) goes in the system message, then the transcript, and
+// every VOLATILE value (the current tension, which themes are still closed, what
+// has already been offered, the character's recent lines, the player's line) goes
+// in a single message at the END.
+//
+// The provider bills a matching prompt PREFIX at the cached rate — measured on
+// deepseek-v4-flash: a call whose prefix was unchanged and whose tail differed
+// reported 2560 of 2800 input tokens as cached, 91%, at a quarter of the price.
+// The first volatile byte invalidates the cache for everything after it, so with
+// the tension value sitting near the top of the system prompt (as it did) nothing
+// downstream of it could ever be cached — including the whole transcript.
 func buildMessages(ch Character, transcript []Exchange, choice string, anger int, themesDone []string) ([]chatMessage, []string) {
 	sys := fmt.Sprintf(`Ты — персонаж текстовой игры, веди диалог строго в образе.
 Персонаж: %s.
@@ -458,10 +542,17 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 Условие успеха (НЕ сообщай его игроку, не намекай прямо): %s
 Условие срыва (НЕ сообщай его игроку): %s
 
-Шкала напряжения: 0–%d, сейчас %d. При %d и выше ты срываешься, бьёшь игрока и разговор кончен.
+Шкала напряжения: 0–%d. При %d и выше ты срываешься, бьёшь игрока и разговор кончен.
+Текущее значение придёт в последнем сообщении.
 Помни всё, о чём уже говорили выше: напряжение и доверие НАКАПЛИВАЮТСЯ по ходу разговора.
 Не начинай знакомство заново, не задавай один и тот же вопрос дважды, не забывай, что игрок
 уже рассказал или чем уже задел.
+
+В истории после каждой твоей реплики идёт служебная пометка вида
+[напряжение: 55; предлагал: вариант | вариант | вариант | вариант] — это твоё состояние
+на том ходу и варианты, которые ты тогда уже предлагал игроку. Пометки — не часть речи,
+игрок их не видит. Не предлагай снова ничего из перечисленного там и не давай близких
+перефразировок; не повторяй и свои прежние зачины и формулировки — говори каждый раз иначе.
 
 Игрок выбирает реплики и пытается достичь цели. Каждый ход:
 - верни новое значение напряжения (поле "anger", целое 0–%d). Грубость, издёвка, угрозы, снисходительность, давление, повтор одного и того же — поднимают на 10–25. Искреннее участие, тепло, разговор о его больных темах по-доброму — опускают на 5–15. Пустая нейтральная болтовня — ±0–5, но если игрок топчется на месте несколько ходов, напряжение растёт. Меняй не больше чем на 25 за ход и никогда не оставляй значение без изменений просто так;
@@ -471,14 +562,14 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 - реши, не сорвался ли ты окончательно (поле "game_over": true/false). Ставь true ТОЛЬКО когда игрок довёл тебя до срыва по условию срыва выше — тогда ты бьёшь его, и разговор на этом окончен. Это редкий исход: сначала огрызайся и мрачней, бей только если игрок упорно продолжает. Если "achieved": true, то "game_over" всегда false;
 - отметь, какие из твоих глубинных тем игрок к этому моменту РЕАЛЬНО раскрыл — по-человечески, а не одним касанием (поле "themes_done": массив ключей). Ключи тем: %s. Перечисляй и уже раскрытые ранее, и новые; если ничего не раскрыто — [];
 - предложи РОВНО 4 коротких варианта реплик игрока (поле "options": массив ровно из 4 строк). У каждого своя РОЛЬ, строго в этом порядке:
-  1) вариант, который выводит разговор на одну из ещё НЕ раскрытых тем (список ниже) — без этого игру пройти нельзя;
+  1) вариант, который выводит разговор на одну из ещё НЕ раскрытых тем (их список — в последнем сообщении) — без этого игру пройти нельзя;
   2) тёплый, участливый вариант: попытка увидеть в тебе человека;
   3) грубый или пренебрежительный вариант — он поднимает напряжение (игрок должен иметь возможность и проиграть);
   4) нейтральный или неожиданный: сменить тему, спросить о чём-то своём.
-  Варианты обязаны отличаться СМЫСЛОМ, а не формулировкой: четыре разных способа сказать «давай поговорим» или «тебе нужна помощь» — это ошибка, так игрок ходит по кругу. Каждый вариант — конкретная реплика по существу, а не общая фраза. Не повторяй и не перефразируй то, что уже предлагал (список ниже). Не нумеруй варианты в тексте и не подписывай их роли. Если игрок достиг цели или ты сорвался — "options": [].
+  Варианты обязаны отличаться СМЫСЛОМ, а не формулировкой: четыре разных способа сказать «давай поговорим» или «тебе нужна помощь» — это ошибка, так игрок ходит по кругу. Каждый вариант — конкретная реплика по существу, а не общая фраза. Не повторяй и не перефразируй то, что уже предлагал (список — в последнем сообщении). Не нумеруй варианты в тексте и не подписывай их роли. Если игрок достиг цели или ты сорвался — "options": [].
 Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","anger":50,"achieved":false,"game_over":false,"themes_done":[],"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
 		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, ch.Failure,
-		MaxAnger, anger, AngerLoseAt, MaxAnger, strings.Join(ch.artKeys(), ", "),
+		MaxAnger, AngerLoseAt, MaxAnger, strings.Join(ch.artKeys(), ", "),
 		strings.Join(ch.themeKeys(), ", "))
 
 	// The current turn's user message.
@@ -490,42 +581,14 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 	// Keep the most recent exchanges that fit the context budget alongside the
 	// system prompt and the current message; drop older ones (forgotten). Each
 	// exchange is costed with its offered options, since those are replayed below.
-	budget := modelContextTokens - outputReserveTokens - estTokens(sys) - estTokens(current)
+	// Our own history budget is what normally binds; the model's window only
+	// matters if the system prompt itself ever grows enormous.
+	budget := min(historyTokens, modelContextTokens-outputReserveTokens-estTokens(sys)-estTokens(current))
 	windowed := windowTranscript(transcript, budget)
 
-	// Show the judge what it has already offered, so it stops recycling the same
-	// four lines. Only options from exchanges that survived the window are listed:
-	// an option is forgotten exactly when its turn is.
-	// Name the themes still closed, so the first option slot has somewhere to
-	// steer. Measured against the real model without this, the alcohol theme
-	// appeared in 1 of 40 offered options — the win was practically unreachable.
-	if open := openThemes(ch, themesDone); len(open) > 0 {
-		var lines []string
-		for _, t := range open {
-			lines = append(lines, t.Key+" — "+t.Label)
-		}
-		sys += "\n\nЕщё НЕ раскрытые темы (игрок про них толком не говорил). " +
-			"Первый из четырёх вариантов должен вести к одной из них — выбирай ту, " +
-			"что уместнее по текущему разговору:\n- " + strings.Join(lines, "\n- ")
-	} else if len(ch.Themes) > 0 {
-		sys += "\n\nВсе твои глубинные темы уже раскрыты. Если игрок держится по-человечески, " +
-			"пора теплеть и пропускать его домой."
-	}
-
+	// Kept for the log only: how many distinct options the judge can see in the
+	// history it was handed. It is no longer re-sent as a list — see exchangeFooter.
 	already := recentlyOffered(ch, windowed)
-	if len(already) > 0 {
-		sys += "\n\nЭти варианты ответа ты игроку УЖЕ предлагал (свежие — сверху). " +
-			"Не предлагай их снова и не давай близкие перефразировки — придумывай новые, " +
-			"по текущей теме разговора:\n- " + strings.Join(already, "\n- ")
-	}
-
-	// His own recent lines, so he stops answering with the same formula. Measured
-	// without this: «Ты меня не знаешь…» four times and «С чего ты взял, что…»
-	// four times in a single eight-turn run.
-	if mine := recentReplies(windowed); len(mine) > 0 {
-		sys += "\n\nТвои недавние реплики. Не повторяй их зачины и формулировки, говори иначе:\n- " +
-			strings.Join(mine, "\n- ")
-	}
 
 	messages := []chatMessage{{Role: "system", Content: sys}}
 	// Seed the static opening line so the model knows how it greeted the player.
@@ -535,15 +598,48 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 	for _, ex := range windowed {
 		messages = append(messages,
 			chatMessage{Role: "user", Content: ex.Choice},
-			chatMessage{Role: "assistant", Content: ex.Reply},
+			chatMessage{Role: "assistant", Content: ex.Reply + exchangeFooter(ex)},
 		)
 	}
-	messages = append(messages, chatMessage{Role: "user", Content: current})
+
+	// Everything that changes per turn, in one message after the stable prefix.
+	var tail strings.Builder
+	fmt.Fprintf(&tail, "Текущее напряжение: %d (из %d; при %d ты срываешься).\n", anger, MaxAnger, AngerLoseAt)
+
+	// Name the themes still closed, so the first option slot has somewhere to
+	// steer. Measured without this, the alcohol theme appeared in 1 of 40 offered
+	// options and the win was practically unreachable.
+	if open := openThemes(ch, themesDone); len(open) > 0 {
+		var lines []string
+		for _, t := range open {
+			lines = append(lines, t.Key+" — "+t.Label)
+		}
+		tail.WriteString("\nЕщё НЕ раскрытые темы (игрок про них толком не говорил). " +
+			"Первый из четырёх вариантов должен вести к одной из них — выбирай ту, " +
+			"что уместнее по текущему разговору:\n- " + strings.Join(lines, "\n- ") + "\n")
+	} else if len(ch.Themes) > 0 {
+		tail.WriteString("\nВсе твои глубинные темы уже раскрыты. Если игрок держится по-человечески, " +
+			"пора теплеть и пропускать его домой.\n")
+	}
+
+	tail.WriteString("\nРеплика игрока: " + current)
+	// The JSON contract is restated last, right where the model will act. A
+	// roleplay-strong model reads a long persona brief followed by the player's
+	// line and answers in character — measured on deepseek-v4-flash:
+	// «(взгляд теплеет, голос становится мягче) Детей? Ох, мечта...» with no JSON
+	// at all, finish_reason "stop", response_format ignored.
+	tail.WriteString("\n\n[Ответ ТОЛЬКО одним JSON-объектом по схеме выше: " +
+		`{"reply","art","anger","achieved","game_over","themes_done","options"}. ` +
+		"Никаких ремарок в скобках, никакого текста до или после JSON. " +
+		"Всё, что персонаж говорит, идёт внутрь поля \"reply\".]")
+
+	messages = append(messages, chatMessage{Role: "user", Content: tail.String()})
 	return messages, already
 }
 
-// windowTranscript returns the newest exchanges whose combined estimated tokens
-// fit within budget, in chronological order. Older exchanges are dropped.
+// windowTranscript returns the newest exchanges that fit both the token budget
+// and historyExchanges, in chronological order. Older exchanges are dropped
+// (forgotten) — deliberately, whatever the model's window would allow.
 func windowTranscript(transcript []Exchange, budget int) []Exchange {
 	if budget <= 0 {
 		return nil
@@ -551,6 +647,9 @@ func windowTranscript(transcript []Exchange, budget int) []Exchange {
 	used := 0
 	start := len(transcript)
 	for i := len(transcript) - 1; i >= 0; i-- {
+		if len(transcript)-i > historyExchanges {
+			break
+		}
 		cost := exchangeTokens(transcript[i])
 		if used+cost > budget {
 			break
@@ -570,6 +669,36 @@ func exchangeTokens(ex Exchange) int {
 		n += estTokens(o)
 	}
 	return n
+}
+
+// exchangeFooter is the machine-readable note appended to a past reply: the
+// tension after that turn and the options that were offered. Folding these into
+// the history means they are sent ONCE, as part of an append-only prefix, instead
+// of being re-derived and re-sent in full on every subsequent turn — about 1300
+// tokens a turn saved, and the prefix stays cacheable.
+func exchangeFooter(ex Exchange) string {
+	var parts []string
+	if ex.Anger != nil {
+		parts = append(parts, fmt.Sprintf("напряжение: %d", ClampAnger(*ex.Anger)))
+	}
+	if opts := nonEmpty(ex.Options); len(opts) > 0 {
+		parts = append(parts, "предлагал: "+strings.Join(opts, " | "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n[" + strings.Join(parts, "; ") + "]"
+}
+
+// nonEmpty drops blank entries, so a footer never shows an empty option.
+func nonEmpty(in []string) []string {
+	var out []string
+	for _, s := range in {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	return out
 }
 
 // maxRecentlyOffered caps the "already offered" list, so a long dialogue cannot

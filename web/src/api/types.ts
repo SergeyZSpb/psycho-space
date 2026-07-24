@@ -116,11 +116,14 @@ export interface GameExchange {
   choice: string;
   reply: string;
   /**
-   * The options the judge offered after this reply. Sent back so it can see what
-   * it has already proposed and stop repeating itself; forgotten together with
-   * the rest of the exchange when the context window drops it.
+   * The options the judge offered after this reply, and the tension it left the
+   * turn at. Both are sent back so the judge sees its own past state inside the
+   * history — once, as part of an append-only prefix — instead of us re-deriving
+   * and re-sending a summary every turn. Forgotten together with the rest of the
+   * exchange when the context window drops it.
    */
   options: string[];
+  anger: number;
 }
 
 // Result of one dialogue turn, judged by the LLM. `art` is a key into the
