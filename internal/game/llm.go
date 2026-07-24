@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +14,14 @@ import (
 
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 )
+
+// rubPer1kTokens is an approximate YandexGPT 5 Lite price per 1000 tokens, used
+// only to log a running cost estimate. Update from current Yandex Cloud pricing;
+// token counts logged alongside it are exact (from the API's usage field).
+const rubPer1kTokens = 0.20
+
+// optionCount is how many answer options every playing turn offers.
+const optionCount = 4
 
 // modelContextTokens is the model's context window (YandexGPT 5 Lite: 32768).
 // outputReserveTokens is held back for the model's own reply. Older exchanges
@@ -70,6 +79,11 @@ type chatResponse struct {
 	Choices []struct {
 		Message chatMessage `json:"message"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 // judgeReply is the JSON we ask the model to emit as the message content.
@@ -99,16 +113,22 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		return TurnResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	req.Header.Set("Authorization", "Bearer "+e.apiKey) // key stays in the header, never logged
 
+	slog.InfoContext(ctx, "game llm request",
+		"model", e.model, "character", ch.Key, "choice", choice,
+		"messages", len(messages), "transcript_len", len(transcript))
+
+	start := time.Now()
 	resp, err := e.http.Do(req)
 	if err != nil {
 		return TurnResult{}, fmt.Errorf("game: llm request: %w", err)
 	}
 	defer resp.Body.Close()
+	elapsed := time.Since(start)
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return TurnResult{}, fmt.Errorf("game: llm http %d", resp.StatusCode)
+		return TurnResult{}, fmt.Errorf("game: llm http %d: %s", resp.StatusCode, snippet(body))
 	}
 
 	var cr chatResponse
@@ -124,13 +144,33 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		return TurnResult{}, fmt.Errorf("game: llm content not valid JSON: %w", err)
 	}
 
+	art := normalizeArt(jr.Art, ch.artKeys())
+	estCost := float64(cr.Usage.TotalTokens) / 1000.0 * rubPer1kTokens
+	slog.InfoContext(ctx, "game llm response",
+		"model", e.model, "character", ch.Key, "latency_ms", elapsed.Milliseconds(),
+		"prompt_tokens", cr.Usage.PromptTokens, "completion_tokens", cr.Usage.CompletionTokens,
+		"total_tokens", cr.Usage.TotalTokens, "est_cost_rub", estCost,
+		"achieved", jr.Achieved, "art", art, "options", len(jr.Options), "reply", jr.Reply)
+	// Full request/response bodies (no auth header) at Debug for deep inspection.
+	slog.DebugContext(ctx, "game llm raw", "request", string(raw), "response", string(body))
+
 	return TurnResult{
 		Reply:    strings.TrimSpace(jr.Reply),
-		Art:      normalizeArt(jr.Art, ch.artKeys()),
+		Art:      art,
 		Achieved: jr.Achieved,
 		// On success the dialogue is over regardless of what the model returned.
-		Options: optionsIfPlaying(jr.Achieved, jr.Options),
+		Options: optionsWhilePlaying(jr.Achieved, jr.Options),
 	}, nil
+}
+
+// snippet truncates a body for error messages / logs.
+func snippet(b []byte) string {
+	const max = 300
+	s := strings.TrimSpace(string(b))
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 
 // buildMessages turns the character persona + conversation into chat messages.
@@ -146,8 +186,8 @@ func buildMessages(ch Character, transcript []Exchange, choice string) []chatMes
 - ответь ОДНОЙ короткой репликой в образе (поле "reply");
 - выбери подходящий арт строго из списка [%s] (поле "art"). Арт — это либо текущее состояние персонажа (злой → подозрительный → нейтральный → теплеет → раскрывается), либо сюжетный арт-локация без персонажа. По ходу диалога арт меняется от злого к более тёплому (иногда обратно к злому — на грубость). Когда игрок достигает цели — выбери арт прохода в подъезд;
 - реши, достиг ли игрок цели именно этой репликой (поле "achieved": true/false). Ставь true только когда игрок действительно разглядел глубину персонажа, а не отделался поверхностным;
-- предложи 2–4 коротких варианта реплик, которые игрок мог бы сказать дальше (поле "options": массив строк). С каждым ходом вариантов меньше. Если игрок достиг цели — "options": [].
-Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","achieved":false,"options":["...","..."]}. Без пояснений и текста вне JSON.`,
+- предложи РОВНО 4 коротких варианта реплик, которые игрок мог бы сказать дальше (поле "options": массив ровно из 4 строк). Если игрок достиг цели — "options": [].
+Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","achieved":false,"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
 		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, strings.Join(ch.artKeys(), ", "))
 
 	// The current turn's user message.
@@ -210,10 +250,14 @@ func normalizeArt(got string, allowed []string) string {
 	return ""
 }
 
-// optionsIfPlaying returns no options once the goal is reached (dialogue over).
-func optionsIfPlaying(achieved bool, opts []string) []string {
+// optionsWhilePlaying returns the next options while the dialogue is live,
+// capped at optionCount; none once the goal is reached (dialogue over).
+func optionsWhilePlaying(achieved bool, opts []string) []string {
 	if achieved {
 		return nil
+	}
+	if len(opts) > optionCount {
+		return opts[:optionCount]
 	}
 	return opts
 }

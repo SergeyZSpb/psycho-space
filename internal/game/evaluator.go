@@ -14,13 +14,13 @@ type Exchange struct {
 // straight to the client.
 //
 // Options are the answer choices for the NEXT turn — generated fresh by the LLM
-// each turn (fewer as the conversation goes); empty ends the dialogue (either
-// the goal was reached, or there is nothing left to say).
+// each turn (always 4 while playing); empty ends the dialogue (the goal was
+// reached).
 type TurnResult struct {
 	Reply    string   `json:"reply"`    // the character's line back
 	Art      string   `json:"art"`      // one of Character.Arts (mood or story/location art)
 	Achieved bool     `json:"achieved"` // has the player convinced them (goal reached)?
-	Options  []string `json:"options"`  // answer options for the next turn (fewer each time)
+	Options  []string `json:"options"`  // answer options for the next turn (4 while playing)
 }
 
 // Evaluator judges one dialogue turn: given the character, the conversation so

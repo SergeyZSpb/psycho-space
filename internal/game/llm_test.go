@@ -119,6 +119,18 @@ func TestOpenAIEvaluatorErrors(t *testing.T) {
 	}
 }
 
+func TestOptionsWhilePlaying(t *testing.T) {
+	if optionsWhilePlaying(true, []string{"a", "b"}) != nil {
+		t.Fatal("achieved should return no options")
+	}
+	if got := optionsWhilePlaying(false, []string{"1", "2", "3", "4", "5"}); len(got) != optionCount {
+		t.Fatalf("more than 4 should cap to %d, got %d", optionCount, len(got))
+	}
+	if got := optionsWhilePlaying(false, []string{"1", "2", "3"}); len(got) != 3 {
+		t.Fatalf("3 options should pass through, got %d", len(got))
+	}
+}
+
 func TestWindowTranscript(t *testing.T) {
 	tr := []Exchange{{"a1", "b1"}, {"a2", "b2"}, {"a3", "b3"}}
 	if got := windowTranscript(tr, 0); len(got) != 0 {

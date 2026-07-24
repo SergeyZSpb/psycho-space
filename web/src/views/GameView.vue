@@ -5,21 +5,24 @@
     </div>
 
     <template v-else-if="config && character">
-      <div class="d-flex align-center justify-space-between mb-2">
+      <div v-if="phase !== 'intro'" class="d-flex align-center justify-space-between mb-2">
         <h1 class="text-h5">{{ config.title }}</h1>
         <v-chip size="small" variant="tonal" color="primary">
           успехов: {{ stats?.successes ?? 0 }}
         </v-chip>
       </div>
 
-      <!-- Intro -->
-      <template v-if="phase === 'intro'">
-        <p class="text-body-1 mb-3">{{ config.intro }}</p>
-        <p class="text-caption text-medium-emphasis mb-4">
+      <!-- Splash / start screen -->
+      <div v-if="phase === 'intro'" class="splash" :style="{ background: splashArt.gradient }">
+        <div class="splash-emoji">{{ splashArt.emoji }}</div>
+        <h1 class="splash-title">{{ config.title }}</h1>
+        <v-chip size="small" variant="tonal" class="splash-badge">успехов: {{ stats?.successes ?? 0 }}</v-chip>
+        <p class="splash-intro">{{ config.intro }}</p>
+        <v-btn color="primary" size="large" class="splash-cta" @click="start">Погнали домой</v-btn>
+        <p class="splash-disclaimer">
           Все персонажи вымышлены; любые совпадения с реальными людьми случайны.
         </p>
-        <v-btn color="primary" size="large" block @click="start">Погнали домой</v-btn>
-      </template>
+      </div>
 
       <!-- Play (portrait + landscape) -->
       <div v-else-if="phase === 'play'" class="stage">
@@ -75,7 +78,8 @@
         <v-btn color="primary" size="large" block class="mb-6" @click="start">Ещё раз</v-btn>
       </template>
 
-      <!-- Leaderboard -->
+      <!-- Leaderboard (hidden on the splash) -->
+      <template v-if="phase !== 'intro'">
       <v-divider class="my-4" />
       <h2 class="text-subtitle-1 mb-2">Таблица позора</h2>
       <p v-if="!leaderboard.length" class="text-medium-emphasis">Пока никто не прошёл. Будь первым.</p>
@@ -102,6 +106,7 @@
           </template>
         </v-list-item>
       </v-list>
+      </template>
     </template>
   </v-container>
 </template>
@@ -149,6 +154,7 @@ const artMap = computed<Record<string, GameArt>>(() =>
   Object.fromEntries((character.value?.arts ?? []).map((a) => [a.key, a])),
 );
 const currentArt = computed<GameArt>(() => artMap.value[currentArtKey.value] ?? FALLBACK_ART);
+const splashArt = computed<GameArt>(() => character.value?.arts[0] ?? FALLBACK_ART);
 const bestLabel = computed(() =>
   stats.value && stats.value.best_steps > 0 ? `${stats.value.best_steps} шаг.` : '—',
 );
@@ -227,6 +233,41 @@ async function finish(won: boolean) {
 </script>
 
 <style scoped>
+/* Splash / start screen. */
+.splash {
+  border-radius: 16px;
+  padding: 40px 20px;
+  min-height: 64vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 14px;
+  color: rgba(255, 255, 255, 0.95);
+}
+.splash-emoji {
+  font-size: 92px;
+  line-height: 1;
+}
+.splash-title {
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+.splash-intro {
+  max-width: 560px;
+  line-height: 1.6;
+}
+.splash-cta {
+  min-width: 220px;
+}
+.splash-disclaimer {
+  font-size: 0.78rem;
+  opacity: 0.72;
+  max-width: 560px;
+}
+
 .stage {
   display: flex;
   flex-direction: column;

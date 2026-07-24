@@ -85,7 +85,7 @@ func (g Game) findCharacter(key string) (Character, bool) {
 // smalltalkKhimki is the default script. One character for now (the default).
 // The dialogue is inherently multi-step: the LLM only marks success once the
 // player has actually seen past the addict-idiot mask to дядя Ваня's depth
-// (love of children, humanist values); it returns fewer options each turn and
+// (love of children, humanist values); it always offers 4 answer options and
 // picks the art (his changing mood, or a story/location art) as the arc moves.
 // The profile is replaceable config — richer prompts + real art land later.
 func smalltalkKhimki() Game {
@@ -131,8 +131,7 @@ func smalltalkKhimki() Game {
 		Title:   "Смолтолк в Химках",
 		Intro: "Ты почти дома, но у подъезда — странный сосед, дядя Ваня. Сначала он видится " +
 			"поверхностным торчком, который никого не пускает. Разговори его, загляни глубже — " +
-			"и, может, он откроется и пропустит тебя домой (а кот уже наблевал на шторы). " +
-			"Реплик немного, и с каждой попыткой их меньше.",
+			"и, может, он откроется и пропустит тебя домой (а кот уже наблевал на шторы).",
 		DefaultCharacter: dyadyaVanya.Key,
 		Characters:       []Character{dyadyaVanya},
 	}

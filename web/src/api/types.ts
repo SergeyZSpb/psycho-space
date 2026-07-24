@@ -112,8 +112,8 @@ export interface GameExchange {
 }
 
 // Result of one dialogue turn, judged by the LLM. `art` is a key into the
-// character's art catalog. `options` are the next answer choices (labels),
-// fewer each turn; empty ends the dialogue.
+// character's art catalog. `options` are the next answer choices (labels) —
+// always 4 while playing; empty ends the dialogue.
 export interface GameTurnResult {
   reply: string;
   art: string;
