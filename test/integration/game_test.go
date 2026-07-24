@@ -48,12 +48,6 @@ func TestGameFlow(t *testing.T) {
 			"game_key": "smalltalk_khimki", "character_key": charKey, "transcript": transcript, "choice": choice,
 		})
 	}
-	attemptAnger := func(choice string, anger int) (int, map[string]any) {
-		return doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", map[string]any{
-			"game_key": "smalltalk_khimki", "character_key": charKey,
-			"transcript": []any{}, "choice": choice, "anger": anger,
-		})
-	}
 
 	// Opening turn (empty choice): not achieved, judge offers options.
 	st, r0 := attempt(nil, "")
@@ -121,7 +115,16 @@ func TestGameFlow(t *testing.T) {
 
 	// The tension scale round-trips: we send it, the judge returns the new value,
 	// and theme progress comes back alongside it.
-	st, rCalm := attemptAnger("теплеет", 60)
+	// The transcript engages the alcohol theme twice, which is what the backend now
+	// requires before it believes the judge's claim that the theme is open — an
+	// unsupported claim is dropped (the judge marked a theme on turn one in prod).
+	st, rCalm := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", map[string]any{
+		"game_key": "smalltalk_khimki", "character_key": charKey, "choice": "теплеет", "anger": 60,
+		"transcript": []map[string]any{
+			{"choice": "может, пора завязать пить?", "reply": "не могу без бутылки", "anger": 60},
+			{"choice": "тяжело бросать?", "reply": "тянет каждый вечер выпить", "anger": 60},
+		},
+	})
 	if st != http.StatusOK || rCalm["anger"].(float64) != 25 || rCalm["game_over"] != false {
 		t.Fatalf("calming turn: status %d res %v; want 200 anger 25", st, rCalm)
 	}

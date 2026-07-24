@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -344,7 +345,7 @@ func TestOpenAIEvaluatorAchievedBeatsFullAnger(t *testing.T) {
 // The judge can only move the scale if it is told where the scale stands — and
 // that value belongs in the volatile tail, never in the cached system prefix.
 func TestBuildMessagesCarriesAnger(t *testing.T) {
-	msgs, _ := buildMessages(testChar(), nil, "x", 73, nil)
+	msgs, _ := buildMessages(testChar(), nil, "x", 73, nil, nil)
 	sys, tail := msgs[0].Content, msgs[len(msgs)-1].Content
 	if !strings.Contains(tail, "Текущее напряжение: 73") {
 		t.Fatalf("tail should state the current tension; got:\n%s", tail)
@@ -519,10 +520,15 @@ func themedChar() Character {
 	ch := testChar()
 	ch.Arts = append(ch.Arts, Art{Key: "vanya_game_over_hits_us"})
 	ch.GameOverArt = "vanya_game_over_hits_us"
+	// Keywords included: engagement is measured from them, and several behaviours
+	// (auto-opening, claim confirmation, slot targeting) key off it.
 	ch.Themes = []Theme{
-		{Key: "woman_children", Label: "тоска по женщине и детям"},
-		{Key: "sahur", Label: "дружба с Тунг Тунг Сахуром"},
-		{Key: "alcohol", Label: "отношения с алкоголем"},
+		{Key: "woman_children", Label: "тоска по женщине и детям",
+			Keywords: []string{"баб", "жен", "дет"}},
+		{Key: "sahur", Label: "дружба с Тунг Тунг Сахуром",
+			Keywords: []string{"сахур", "друг"}},
+		{Key: "alcohol", Label: "отношения с алкоголем",
+			Keywords: []string{"пить", "выпи", "завяз", "бутыл"}},
 	}
 	return ch
 }
@@ -533,7 +539,7 @@ func themedChar() Character {
 func TestBuildMessagesNamesOpenThemes(t *testing.T) {
 	ch := themedChar()
 
-	msgs, _ := buildMessages(ch, nil, "x", StartAnger, []string{"sahur"})
+	msgs, _ := buildMessages(ch, nil, "x", StartAnger, []string{"sahur"}, nil)
 	tail := msgs[len(msgs)-1].Content
 	if !strings.Contains(tail, "alcohol") || !strings.Contains(tail, "woman_children") {
 		t.Fatalf("still-closed themes should be listed in the tail; got:\n%s", tail)
@@ -541,12 +547,14 @@ func TestBuildMessagesNamesOpenThemes(t *testing.T) {
 	if strings.Contains(tail, "sahur — ") {
 		t.Fatal("an already-opened theme must not be listed as still closed")
 	}
-	if !strings.Contains(tail, "Первый из четырёх вариантов") {
-		t.Fatal("tail should require the first option to steer at an open theme")
+	// The tail names WHICH open theme the first slot should aim at, chosen as the
+	// least-engaged one so a subject already being discussed is not pushed again.
+	if !strings.Contains(tail, "Тема для первого варианта:") {
+		t.Fatalf("tail should name the theme for the first option; got:\n%s", tail)
 	}
 
 	// All three open: all three listed.
-	allOpen, _ := buildMessages(ch, nil, "x", StartAnger, nil)
+	allOpen, _ := buildMessages(ch, nil, "x", StartAnger, nil, nil)
 	for _, key := range []string{"woman_children", "sahur", "alcohol"} {
 		if !strings.Contains(allOpen[len(allOpen)-1].Content, key) {
 			t.Errorf("theme %q missing from the open list", key)
@@ -554,7 +562,7 @@ func TestBuildMessagesNamesOpenThemes(t *testing.T) {
 	}
 
 	// Nothing left to open: the prompt switches to closing the dialogue out.
-	done, _ := buildMessages(ch, nil, "x", StartAnger, []string{"woman_children", "sahur", "alcohol"})
+	done, _ := buildMessages(ch, nil, "x", StartAnger, []string{"woman_children", "sahur", "alcohol"}, nil)
 	if !strings.Contains(done[len(done)-1].Content, "Все твои глубинные темы уже раскрыты") {
 		t.Fatalf("with every theme open the prompt should push toward the ending")
 	}
@@ -563,14 +571,15 @@ func TestBuildMessagesNamesOpenThemes(t *testing.T) {
 // The four options are asked for by role, because asking for "four varied
 // options" produced four ways of saying "давай поговорим".
 func TestBuildMessagesAsksForRoleSlots(t *testing.T) {
-	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil)
+	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil, nil)
 	sys := msgs[0].Content
 	for _, want := range []string{
-		"ещё НЕ раскрытых тем", // slot 1: opens a theme
-		"тёплый",               // slot 2
-		"грубый",               // slot 3: a real way to lose
-		"нейтральный",          // slot 4
-		"отличаться СМЫСЛОМ",
+		"тема для первого варианта", // slot 1: aims at a named open theme
+		"тёплый",      // slot 2: current topic, warm
+		"грубый",      // slot 3: a real way to lose
+		"ДРУГУЮ тему", // slot 4: must leave the current subject
+		"НЕ БОЛЬШЕ ДВУХ вариантов об одной теме",
+		"минимум ТРИ разные темы",
 	} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("prompt missing role-slot instruction %q", want)
@@ -582,7 +591,7 @@ func TestBuildMessagesAsksForRoleSlots(t *testing.T) {
 // re-listed; the system prompt teaches the model to read the footers and not to
 // repeat itself, and that instruction is static (therefore cacheable).
 func TestSystemPromptExplainsJSONHistory(t *testing.T) {
-	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil)
+	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil, nil)
 	sys := msgs[0].Content
 	for _, want := range []string{"РОВНО в том формате", "прошлых \"options\"", "прежние зачины"} {
 		if !strings.Contains(sys, want) {
@@ -650,7 +659,7 @@ func TestBuildMessagesReplaysHistoryAsJSON(t *testing.T) {
 	a := 70
 	tr := []Exchange{{Choice: "привет", Reply: "ну чё", Art: "vanya_angry", Anger: &a,
 		Options: []string{"раз", "два"}}}
-	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger, nil)
+	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger, nil, nil)
 
 	var assistant string
 	for _, m := range msgs {
@@ -702,18 +711,33 @@ func TestThemeProgress(t *testing.T) {
 		t.Fatalf("mergeThemes = %v; want [sahur alcohol] in character order", got)
 	}
 
-	// A reply that reports progress merges it in.
+	// A claim the conversation supports is merged in. The transcript below engages
+	// alcohol twice, which meets themeConfirmTurns.
 	content := `{"reply":"Ну","art":"vanya_angry","anger":50,"achieved":false,` +
 		`"themes_done":["alcohol"],"options":["a","b","c","d"]}`
 	srv := llmServer(t, content, http.StatusOK, nil, nil)
 	defer srv.Close()
 	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	res, err := ev.Judge(context.Background(), ch, nil, "x", 40, []string{"sahur"})
+	drinking := []Exchange{
+		{Choice: "А ты пробовал бросить пить?", Reply: "Тянет каждый вечер"},
+		{Choice: "Тяжело завязать?", Reply: "Куда без бутылки"},
+	}
+	res, err := ev.Judge(context.Background(), ch, drinking, "x", 40, []string{"sahur"})
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
 	if !reflect.DeepEqual(res.ThemesDone, []string{"sahur", "alcohol"}) {
 		t.Fatalf("themes = %v; want the union [sahur alcohol]", res.ThemesDone)
+	}
+
+	// A claim with NOTHING behind it is rejected: the judge marked `sahur` open on
+	// turn one in prod, before the friendship had been mentioned at all.
+	res, err = ev.Judge(context.Background(), ch, nil, "x", 40, nil)
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if len(res.ThemesDone) != 0 {
+		t.Fatalf("themes = %v; an unsupported claim must be rejected", res.ThemesDone)
 	}
 
 	// A reply that OMITS the field keeps what the player already earned.
@@ -792,6 +816,148 @@ func TestFlexIntAndFlexBool(t *testing.T) {
 	}
 }
 
+// --- the theme-steering loop, measured in prod and fixed ---------------------
+//
+// Prod session, 29 turns: the moment two of three themes were marked, the first
+// option slot was forced at the only remaining one every turn, the whole
+// conversation became that subject, the judge never marked it, and 15 of 20 option
+// sets had all four choices on the same topic. These guard each link in that chain.
+
+func TestThemeEngagementCountsWholeRun(t *testing.T) {
+	ch := themedChar()
+	tr := []Exchange{
+		{Choice: "А ты пробовал бросить пить?", Reply: "Тянет"},
+		{Choice: "Расскажи про друга", Reply: "Сахур мне как брат"},
+		{Choice: "Погода сегодня", Reply: "Ну да"},
+	}
+	eng := themeEngagement(ch, tr, "а дети у тебя есть?")
+	if eng["alcohol"] != 1 {
+		t.Errorf("alcohol engagement = %d; want 1", eng["alcohol"])
+	}
+	if eng["sahur"] != 1 {
+		t.Errorf("sahur engagement = %d; want 1", eng["sahur"])
+	}
+	// The current line counts too — steering must react to it on this very turn.
+	if eng["woman_children"] != 1 {
+		t.Errorf("woman_children engagement = %d; want 1 from the current choice", eng["woman_children"])
+	}
+}
+
+// A theme discussed to death is opened by the server even if the judge never says
+// so. This is the fix for the unwinnable run.
+func TestAutoMarkThemesBreaksTheLoop(t *testing.T) {
+	ch := themedChar()
+	var tr []Exchange
+	for i := 0; i < themeAutoDoneTurns; i++ {
+		tr = append(tr, Exchange{Choice: "может, пора завязать?", Reply: "не могу без бутылки"})
+	}
+	eng := themeEngagement(ch, tr, "")
+	got := autoMarkThemes(ch, nil, eng)
+	if !slices.Contains(got, "alcohol") {
+		t.Fatalf("themes = %v; alcohol should be opened after %d engaged turns", got, themeAutoDoneTurns)
+	}
+	// One turn short of the threshold, it is left alone.
+	if got := autoMarkThemes(ch, nil, map[string]int{"alcohol": themeAutoDoneTurns - 1}); len(got) != 0 {
+		t.Fatalf("themes = %v; want none below the threshold", got)
+	}
+}
+
+func TestConfirmThemesRejectsUnsupportedClaims(t *testing.T) {
+	ch := themedChar()
+	eng := map[string]int{"alcohol": themeConfirmTurns, "sahur": 0}
+
+	// Supported claim accepted, unsupported one dropped.
+	got := confirmThemes(ch, nil, []string{"alcohol", "sahur"}, eng)
+	if !reflect.DeepEqual(got, []string{"alcohol"}) {
+		t.Fatalf("got %v; want only the supported [alcohol]", got)
+	}
+	// Already-open themes are never taken away — progress is monotonic.
+	got = confirmThemes(ch, []string{"sahur"}, []string{"sahur"}, eng)
+	if !slices.Contains(got, "sahur") {
+		t.Fatalf("got %v; an already-open theme must stay open", got)
+	}
+}
+
+// The first slot aims at the LEAST discussed open theme, and stops aiming at all
+// once every remaining theme is already in play.
+func TestSteerThemePicksLeastEngaged(t *testing.T) {
+	ch := themedChar()
+
+	got, ok := steerTheme(ch, nil, map[string]int{"woman_children": 3, "sahur": 1, "alcohol": 0})
+	if !ok || got.Key != "alcohol" {
+		t.Fatalf("steer = %+v ok=%v; want the least-engaged alcohol", got, ok)
+	}
+	// Only one theme left and it is already the subject: stop pushing it. This is
+	// exactly the state that produced 15/20 single-topic option sets in prod.
+	if _, ok := steerTheme(ch, []string{"woman_children", "sahur"}, map[string]int{"alcohol": 9}); ok {
+		t.Fatal("a saturated last theme must NOT be steered at again")
+	}
+	// Nothing open at all.
+	if _, ok := steerTheme(ch, []string{"woman_children", "sahur", "alcohol"}, nil); ok {
+		t.Fatal("no open themes should mean no steer target")
+	}
+}
+
+func TestCurrentTopic(t *testing.T) {
+	ch := themedChar()
+	if got, ok := currentTopic(ch, nil, "а ты пить пробовал бросить?"); !ok || got.Key != "alcohol" {
+		t.Fatalf("topic = %+v ok=%v; want alcohol from the current line", got, ok)
+	}
+	// Falls back to the last exchange when the current line is neutral.
+	tr := []Exchange{{Choice: "x", Reply: "Сахур мне как брат"}}
+	if got, ok := currentTopic(ch, tr, "ага"); !ok || got.Key != "sahur" {
+		t.Fatalf("topic = %+v ok=%v; want sahur from the last reply", got, ok)
+	}
+	if _, ok := currentTopic(ch, nil, "какая погода"); ok {
+		t.Error("a neutral line should name no topic")
+	}
+}
+
+// The tail tells the model what the conversation is on, so slot 4 can leave it,
+// and stops naming a steer target once the last theme is saturated.
+func TestTailNamesTopicAndReleasesSteer(t *testing.T) {
+	ch := themedChar()
+	var tr []Exchange
+	for i := 0; i < themeConfirmTurns; i++ {
+		tr = append(tr, Exchange{Choice: "давай завязывай пить", Reply: "не могу"})
+	}
+	eng := themeEngagement(ch, tr, "")
+	msgs, _ := buildMessages(ch, tr, "и что дальше?", StartAnger, []string{"woman_children", "sahur"}, eng)
+	tail := msgs[len(msgs)-1].Content
+
+	if !strings.Contains(tail, "не навязывай ничего") {
+		t.Errorf("a saturated last theme should release the first slot; got:\n%s", tail)
+	}
+	if !strings.Contains(tail, "Сейчас разговор о: alcohol") {
+		t.Errorf("tail should name the current topic so slot 4 can avoid it; got:\n%s", tail)
+	}
+	if !strings.Contains(tail, "отметь тему раскрытой") {
+		t.Errorf("a long-discussed open theme should be flagged to the judge; got:\n%s", tail)
+	}
+}
+
+// A reply cut off at max_tokens is a truncation, not bad formatting. Measured on
+// deepseek-v4-flash once the four role slots made answers longer: exactly 900
+// completion tokens, finish_reason "length", unparsable, whole turn wasted.
+func TestTruncatedReplyReportsTruncation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":`+
+			strconv.Quote(`{"reply":"Ну чё, слышь, я тут стою и`)+
+			`},"finish_reason":"length"}],"usage":{"completion_tokens":1500}}`)
+	}))
+	defer srv.Close()
+
+	ev := NewOpenAIEvaluator(config.LLM{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	_, err := ev.Judge(context.Background(), testChar(), nil, "x", StartAnger, nil)
+	if !errors.Is(err, ErrLLMUnparsable) {
+		t.Fatalf("err = %v; want ErrLLMUnparsable", err)
+	}
+	if !strings.Contains(err.Error(), "truncated") || !strings.Contains(err.Error(), "finish_reason=length") {
+		t.Fatalf("error should name the truncation, got: %v", err)
+	}
+}
+
 func TestOptionsWhilePlaying(t *testing.T) {
 	if optionsWhilePlaying(true, []string{"a", "b"}) != nil {
 		t.Fatal("achieved should return no options")
@@ -849,7 +1015,7 @@ func TestRecentlyOfferedIsCapped(t *testing.T) {
 // their exchange is forgotten — the same window as the rest of the history.
 func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 	tr := []Exchange{{Choice: "привет", Reply: "ну", Options: []string{"уже предлагал это"}}}
-	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger, nil)
+	msgs, _ := buildMessages(testChar(), tr, "дальше", StartAnger, nil, nil)
 	// The options ride along inside the history — appended once to the reply they
 	// were offered with — rather than being re-listed in the tail every turn.
 	var history string
@@ -868,7 +1034,7 @@ func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 	big := strings.Repeat("я", historyTokens*2)
 	droppedMsgs, _ := buildMessages(testChar(), []Exchange{
 		{Choice: big, Reply: big, Options: []string{"забытый вариант"}},
-	}, "дальше", StartAnger, nil)
+	}, "дальше", StartAnger, nil, nil)
 	sysDropped := droppedMsgs[len(droppedMsgs)-1].Content
 	if strings.Contains(sysDropped, "забытый вариант") {
 		t.Fatal("options of a forgotten exchange must not survive in the prompt")
@@ -880,7 +1046,7 @@ func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
 func TestBuildMessagesOmitsOfferedBlockWhenEmpty(t *testing.T) {
 	ch := testChar()
 	ch.OpeningOptions = nil
-	msgs, _ := buildMessages(ch, nil, "", StartAnger, nil)
+	msgs, _ := buildMessages(ch, nil, "", StartAnger, nil, nil)
 	sys := msgs[len(msgs)-1].Content
 	if strings.Contains(sys, "УЖЕ предлагал") {
 		t.Fatalf("nothing offered yet, so the block should be absent; got:\n%s", sys)
@@ -929,7 +1095,7 @@ func TestBuildMessagesDropsOldHistory(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		tr = append(tr, Exchange{Choice: big, Reply: big})
 	}
-	msgs, _ := buildMessages(testChar(), tr, "финал", StartAnger, nil)
+	msgs, _ := buildMessages(testChar(), tr, "финал", StartAnger, nil, nil)
 	included := (len(msgs) - 2) / 2 // minus system + current user
 	if included >= 100 {
 		t.Fatalf("old history not dropped: included=%d of 100", included)
@@ -946,7 +1112,7 @@ func TestHistoryCappedByExchangeCount(t *testing.T) {
 	for i := 0; i < historyExchanges*4; i++ {
 		tr = append(tr, Exchange{Choice: "коротко", Reply: "тоже коротко"})
 	}
-	msgs, _ := buildMessages(testChar(), tr, "финал", StartAnger, nil)
+	msgs, _ := buildMessages(testChar(), tr, "финал", StartAnger, nil, nil)
 	included := (len(msgs) - 2) / 2
 	if included != historyExchanges {
 		t.Fatalf("included %d exchanges; want the cap %d", included, historyExchanges)

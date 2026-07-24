@@ -91,10 +91,15 @@ const (
 	historyExchanges = 12
 )
 
-// maxCompletionTokens caps the model's own answer. A reply plus four options is
-// ~450 tokens on deepseek-v4-flash; this leaves generous headroom while stopping
-// a runaway generation from costing many times a normal turn.
-const maxCompletionTokens = 900
+// maxCompletionTokens caps the model's own answer, to stop a runaway generation
+// costing many times a normal turn.
+//
+// 1500, not the 900 it started at: with four role-differentiated options the model
+// writes considerably more than the ~450 tokens a bare reply-plus-options took, and
+// 900 truncated it mid-JSON — `finish_reason: length`, unparsable, the whole turn
+// wasted. A cap that truncates is more expensive than one that lets the answer
+// finish, since a truncated turn is billed in full and delivers nothing.
+const maxCompletionTokens = 1500
 
 // estTokens estimates tokens for a string, deliberately erring high so we trim
 // early rather than overflow. One token per rune: measured against
@@ -219,7 +224,12 @@ type judgeReply struct {
 func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []Exchange, choice string, anger int, themesDone []string) (TurnResult, error) {
 	anger = ClampAnger(anger)
 	themesDone = clampThemes(ch, themesDone)
-	messages, alreadyOffered := buildMessages(ch, transcript, choice, anger, themesDone)
+	// What the conversation has actually engaged, over the whole run. Drives three
+	// things: opening a theme the judge refuses to open, verifying what it claims,
+	// and choosing which theme the first option steers at.
+	eng := themeEngagement(ch, transcript, choice)
+	themesDone = autoMarkThemes(ch, themesDone, eng)
+	messages, alreadyOffered := buildMessages(ch, transcript, choice, anger, themesDone, eng)
 	reqBody := chatRequest{
 		Model:          e.model,
 		Messages:       messages,
@@ -296,6 +306,14 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 			"parse_err", err.Error(),
 			"content", clampRunes(content, maxLoggedRunes),
 			"raw_response", clampRunes(string(body), maxLoggedRunes))
+		if cr.Choices[0].FinishReason == "length" {
+			// Truncated, not malformed: the answer ran into max_tokens. Say so, or
+			// the next reader sees "unexpected end of JSON input" and hunts a
+			// formatting bug that isn't there.
+			return TurnResult{}, fmt.Errorf(
+				"game: llm reply truncated at max_tokens=%d (finish_reason=length, %d completion tokens): %w",
+				maxCompletionTokens, cr.Usage.CompletionTokens, ErrLLMUnparsable)
+		}
 		return TurnResult{}, fmt.Errorf("game: llm content not valid JSON (%q): %w: %w",
 			snippet([]byte(content)), ErrLLMUnparsable, err)
 	}
@@ -312,7 +330,7 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 	// model that omits the field must not cost the player what they earned.
 	newThemes := themesDone
 	if jr.ThemesDone != nil {
-		newThemes = mergeThemes(ch, themesDone, *jr.ThemesDone)
+		newThemes = confirmThemes(ch, themesDone, *jr.ThemesDone, eng)
 	}
 	// Reaching the goal wins outright: never lose the same turn you win. Hitting
 	// AngerLoseAt ends the run whatever the model said about game_over — that is
@@ -343,6 +361,7 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 		// none of them steered toward a theme the player still has to open.
 		"options_text", jr.Options, "already_offered", len(alreadyOffered),
 		"themes_done", newThemes, "themes_from_model", jr.ThemesDone != nil,
+		"theme_engagement", eng,
 		"reply", jr.Reply)...)
 	// Full request/response bodies (no auth header) at Debug for deep inspection.
 	slog.DebugContext(ctx, "game llm raw", "request", string(raw), "response", string(body))
@@ -533,7 +552,7 @@ func clampRunes(s string, max int) string {
 // The first volatile byte invalidates the cache for everything after it, so with
 // the tension value sitting near the top of the system prompt (as it did) nothing
 // downstream of it could ever be cached — including the whole transcript.
-func buildMessages(ch Character, transcript []Exchange, choice string, anger int, themesDone []string) ([]chatMessage, []string) {
+func buildMessages(ch Character, transcript []Exchange, choice string, anger int, themesDone []string, eng map[string]int) ([]chatMessage, []string) {
 	sys := fmt.Sprintf(`Ты — персонаж текстовой игры, веди диалог строго в образе.
 Персонаж: %s.
 Характер: %s
@@ -561,12 +580,12 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 - реши, достиг ли игрок цели именно этой репликой (поле "achieved": true/false). Ставь true только когда игрок действительно разглядел глубину персонажа, а не отделался поверхностным;
 - реши, не сорвался ли ты окончательно (поле "game_over": true/false). Ставь true ТОЛЬКО когда игрок довёл тебя до срыва по условию срыва выше — тогда ты бьёшь его, и разговор на этом окончен. Это редкий исход: сначала огрызайся и мрачней, бей только если игрок упорно продолжает. Если "achieved": true, то "game_over" всегда false;
 - отметь, какие из твоих глубинных тем игрок к этому моменту РЕАЛЬНО раскрыл — по-человечески, а не одним касанием (поле "themes_done": массив ключей). Ключи тем: %s. Перечисляй и уже раскрытые ранее, и новые; если ничего не раскрыто — [];
-- предложи РОВНО 4 коротких варианта реплик игрока (поле "options": массив ровно из 4 строк). У каждого своя РОЛЬ, строго в этом порядке:
-  1) вариант, который выводит разговор на одну из ещё НЕ раскрытых тем (их список — в последнем сообщении) — без этого игру пройти нельзя;
-  2) тёплый, участливый вариант: попытка увидеть в тебе человека;
-  3) грубый или пренебрежительный вариант — он поднимает напряжение (игрок должен иметь возможность и проиграть);
-  4) нейтральный или неожиданный: сменить тему, спросить о чём-то своём.
-  Варианты обязаны отличаться СМЫСЛОМ, а не формулировкой: четыре разных способа сказать «давай поговорим» или «тебе нужна помощь» — это ошибка, так игрок ходит по кругу. Каждый вариант — конкретная реплика по существу, а не общая фраза. Не повторяй и не перефразируй то, что уже предлагал (список — в последнем сообщении). Не нумеруй варианты в тексте и не подписывай их роли. Если игрок достиг цели или ты сорвался — "options": [].
+- предложи РОВНО 4 коротких варианта реплик игрока (поле "options": массив ровно из 4 строк). У каждого своя РОЛЬ и своя ТЕМА, строго в этом порядке:
+  1) вариант, который выводит разговор на тему, названную в последнем сообщении как «тема для первого варианта». Если там сказано её не навязывать — сделай первый вариант просто продвигающим разговор вперёд, по любой уместной теме;
+  2) тёплый, участливый вариант по ТЕКУЩЕЙ теме разговора — попытка увидеть в тебе человека;
+  3) грубый или пренебрежительный вариант; он поднимает напряжение и МОЖЕТ уходить от текущей темы;
+  4) вариант на ДРУГУЮ тему — не на ту, о которой разговор идёт сейчас (она названа в последнем сообщении). Сменить тему, спросить о чём-то своём, вспомнить прошлое.
+  ЖЁСТКОЕ правило разнообразия: НЕ БОЛЬШЕ ДВУХ вариантов об одной теме, и среди четырёх должно быть минимум ТРИ разные темы. Четыре реплики про одно и то же — грубая ошибка: игрок ходит по кругу и бросает игру. Отличаться варианты обязаны СМЫСЛОМ, а не формулировкой — четыре способа сказать «давай поговорим» это та же ошибка. Каждый вариант — конкретная реплика по существу. Не повторяй и не перефразируй то, что уже предлагал. Не нумеруй варианты в тексте и не подписывай их роли. Если игрок достиг цели или ты сорвался — "options": [].
 Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","anger":50,"achieved":false,"game_over":false,"themes_done":[],"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
 		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, ch.Failure,
 		MaxAnger, AngerLoseAt, MaxAnger, strings.Join(ch.artKeys(), ", "),
@@ -606,20 +625,35 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 	var tail strings.Builder
 	fmt.Fprintf(&tail, "Текущее напряжение: %d (из %d; при %d ты срываешься).\n", anger, MaxAnger, AngerLoseAt)
 
-	// Name the themes still closed, so the first option slot has somewhere to
-	// steer. Measured without this, the alcohol theme appeared in 1 of 40 offered
-	// options and the win was practically unreachable.
+	// Which themes remain, which one the first slot should aim at, and what the
+	// conversation is on right now so the fourth slot can go elsewhere. Aiming at the
+	// LEAST-engaged open theme — and dropping the requirement once they are all in
+	// play — is what stops the slot hammering a single subject for a whole run.
 	if open := openThemes(ch, themesDone); len(open) > 0 {
 		var lines []string
 		for _, t := range open {
-			lines = append(lines, t.Key+" — "+t.Label)
+			line := t.Key + " — " + t.Label
+			if n := eng[t.Key]; n >= themeConfirmTurns {
+				line += fmt.Sprintf(" (об этом говорите уже %d ход(ов) — если игрок был искренен, отметь тему раскрытой в \"themes_done\")", n)
+			}
+			lines = append(lines, line)
 		}
-		tail.WriteString("\nЕщё НЕ раскрытые темы (игрок про них толком не говорил). " +
-			"Первый из четырёх вариантов должен вести к одной из них — выбирай ту, " +
-			"что уместнее по текущему разговору:\n- " + strings.Join(lines, "\n- ") + "\n")
+		tail.WriteString("\nЕщё НЕ раскрытые темы (игрок про них толком не говорил):\n- " +
+			strings.Join(lines, "\n- ") + "\n")
+
+		if steer, ok := steerTheme(ch, themesDone, eng); ok {
+			tail.WriteString("Тема для первого варианта: " + steer.Key + " — " + steer.Label + "\n")
+		} else {
+			tail.WriteString("Тема для первого варианта: не навязывай ничего — все оставшиеся темы " +
+				"и так уже в разговоре. Веди беседу дальше и дай игроку новые повороты.\n")
+		}
 	} else if len(ch.Themes) > 0 {
 		tail.WriteString("\nВсе твои глубинные темы уже раскрыты. Если игрок держится по-человечески, " +
 			"пора теплеть и пропускать его домой.\n")
+	}
+
+	if topic, ok := currentTopic(ch, transcript, choice); ok {
+		tail.WriteString("Сейчас разговор о: " + topic.Key + ". ЧЕТВЁРТЫЙ вариант должен быть НЕ об этом.\n")
 	}
 
 	tail.WriteString("\nРеплика игрока: " + current)
@@ -717,6 +751,102 @@ func nonEmpty(in []string) []string {
 		}
 	}
 	return out
+}
+
+// themeEngagement counts, per theme key, how many exchanges of the conversation
+// actually engaged that theme — the player's line and the character's answer both
+// count. Measured over the WHOLE transcript, not the context window: what the
+// player has genuinely discussed is a fact about the run and must not be forgotten
+// because those turns fell out of the prompt.
+func themeEngagement(ch Character, transcript []Exchange, choice string) map[string]int {
+	eng := make(map[string]int, len(ch.Themes))
+	for _, t := range ch.Themes {
+		for _, ex := range transcript {
+			if t.matches(ex.Choice) || t.matches(ex.Reply) {
+				eng[t.Key]++
+			}
+		}
+		if t.matches(choice) {
+			eng[t.Key]++
+		}
+	}
+	return eng
+}
+
+// autoMarkThemes opens any theme the conversation has engaged at least
+// themeAutoDoneTurns times, whatever the judge claims. Without it the steering
+// loop never releases: measured in prod, twenty turns of drinking talk and
+// `alcohol` still reported closed, so the first option slot kept pushing it and
+// every option set collapsed onto that one subject.
+//
+// It only ever RELEASES steering; the win stays the judge's call on the dialogue,
+// so a player spamming keywords cannot award themselves the ending.
+func autoMarkThemes(ch Character, done []string, eng map[string]int) []string {
+	var add []string
+	for _, t := range ch.Themes {
+		if eng[t.Key] >= themeAutoDoneTurns {
+			add = append(add, t.Key)
+		}
+	}
+	if len(add) == 0 {
+		return done
+	}
+	return mergeThemes(ch, done, add)
+}
+
+// confirmThemes keeps only the themes the conversation actually supports. The
+// judge marked `sahur` open on turn one in prod, before the friendship had been
+// discussed at all; a fresh claim now needs themeConfirmTurns of engagement behind
+// it. Themes already open stay open — progress is monotonic.
+func confirmThemes(ch Character, alreadyDone, claimed []string, eng map[string]int) []string {
+	open := make(map[string]bool, len(alreadyDone))
+	for _, d := range alreadyDone {
+		open[d] = true
+	}
+	var keep []string
+	for _, c := range clampThemes(ch, claimed) {
+		if open[c] || eng[c] >= themeConfirmTurns {
+			keep = append(keep, c)
+		}
+	}
+	return mergeThemes(ch, alreadyDone, keep)
+}
+
+// steerTheme picks which still-closed theme the first option should open: the one
+// the conversation has engaged LEAST, so a subject already being talked to death is
+// not pushed again. Reports false when every remaining theme is already in play,
+// which is the signal to stop forcing the slot at all.
+func steerTheme(ch Character, done []string, eng map[string]int) (Theme, bool) {
+	open := openThemes(ch, done)
+	if len(open) == 0 {
+		return Theme{}, false
+	}
+	best := open[0]
+	for _, t := range open[1:] {
+		if eng[t.Key] < eng[best.Key] {
+			best = t
+		}
+	}
+	if eng[best.Key] >= themeConfirmTurns {
+		return Theme{}, false // already the subject; pushing it again IS the loop
+	}
+	return best, true
+}
+
+// currentTopic names what the conversation is about right now, from the player's
+// line and the last exchange. The fourth option is told to avoid it, so at least
+// one choice always moves somewhere else.
+func currentTopic(ch Character, transcript []Exchange, choice string) (Theme, bool) {
+	recent := choice
+	if n := len(transcript); n > 0 {
+		recent += " " + transcript[n-1].Reply + " " + transcript[n-1].Choice
+	}
+	for _, t := range ch.Themes {
+		if t.matches(recent) {
+			return t, true
+		}
+	}
+	return Theme{}, false
 }
 
 // maxRecentlyOffered caps the "already offered" list, so a long dialogue cannot

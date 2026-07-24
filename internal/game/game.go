@@ -17,6 +17,7 @@ package game
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -52,10 +53,42 @@ const (
 // reporting progress, the label tells it what the key means. Which themes are
 // still closed steers the option the judge offers next — the player is never
 // shown the list, or the game would play itself.
+//
+// Keywords are a deliberately crude substring vocabulary used to measure how much
+// a conversation has actually engaged with the theme. It exists because the judge
+// cannot be trusted with this on its own: measured in prod it marked `sahur` open
+// on turn one, then talked about drinking for twenty turns without ever marking
+// `alcohol`. Engagement is a check on both mistakes — see themeEngagement.
 type Theme struct {
-	Key   string
-	Label string
+	Key      string
+	Label    string
+	Keywords []string
 }
+
+// matches reports whether text engages the theme. Case-insensitive substrings, so
+// stems catch inflections: Russian declines everything.
+func (t Theme) matches(text string) bool {
+	low := strings.ToLower(text)
+	for _, k := range t.Keywords {
+		if strings.Contains(low, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// How much engagement a theme needs before the judge's claim that it is open is
+// believed, and after how much the server stops waiting and marks it open itself.
+//
+// Both exist to break a loop measured in prod: the first option slot always
+// steered at a still-closed theme, so once two of three were marked the slot
+// pushed the last one every single turn, the whole conversation became that one
+// subject, the judge never marked it — and 15 of 20 option sets ended up with all
+// four choices on the same topic, with the run unwinnable.
+const (
+	themeConfirmTurns  = 2
+	themeAutoDoneTurns = 4
+)
 
 // ClampAnger bounds a tension value to the scale.
 func ClampAnger(v int) int {
