@@ -578,8 +578,8 @@ func TestBuildMessagesAsksForRoleSlots(t *testing.T) {
 		"тёплый",      // slot 2: current topic, warm
 		"грубый",      // slot 3: a real way to lose
 		"ДРУГУЮ тему", // slot 4: must leave the current subject
-		"НЕ БОЛЬШЕ ДВУХ вариантов об одной теме",
-		"минимум ТРИ разные темы",
+		"ДВУХ вариантов об одной теме",
+		"ТРИ разные темы",
 	} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("prompt missing role-slot instruction %q", want)
@@ -593,7 +593,7 @@ func TestBuildMessagesAsksForRoleSlots(t *testing.T) {
 func TestSystemPromptExplainsJSONHistory(t *testing.T) {
 	msgs, _ := buildMessages(themedChar(), nil, "x", StartAnger, nil, nil)
 	sys := msgs[0].Content
-	for _, want := range []string{"РОВНО в том формате", "прошлых \"options\"", "прежние зачины"} {
+	for _, want := range []string{"РОВНО в том формате", `прошлые "options"`, "прежние зачины"} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("system prompt should explain how to read the history; missing %q", want)
 		}
@@ -1140,5 +1140,10 @@ func TestRequestCapsCompletionTokens(t *testing.T) {
 	}
 	if req.MaxTokens != maxCompletionTokens {
 		t.Fatalf("max_tokens = %d; want %d", req.MaxTokens, maxCompletionTokens)
+	}
+	// Reasoning is off: deepseek-v4-flash bills chain-of-thought as output (the
+	// dearest rate) and twice spent the whole budget on it, returning empty content.
+	if req.ReasoningEffort != reasoningEffort {
+		t.Fatalf("reasoning_effort = %q; want %q", req.ReasoningEffort, reasoningEffort)
 	}
 }
