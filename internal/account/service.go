@@ -30,6 +30,8 @@ type LoginInput struct {
 	FirstName      string
 	LastName       string
 	Avatar         string
+	Sex            string
+	Birthday       string
 	ConsentVersion string
 	AutoApprove    bool
 }
@@ -52,6 +54,14 @@ func (s *Service) UpsertOnLogin(ctx context.Context, in LoginInput) (*Account, e
 	if err != nil {
 		return nil, err
 	}
+	sexEnc, err := s.encOptional(in.Sex)
+	if err != nil {
+		return nil, err
+	}
+	bdEnc, err := s.encOptional(in.Birthday)
+	if err != nil {
+		return nil, err
+	}
 
 	defaultStatus := StatusPending
 	if in.AutoApprove {
@@ -63,6 +73,8 @@ func (s *Service) UpsertOnLogin(ctx context.Context, in LoginInput) (*Account, e
 		FirstNameEnc:   fnEnc,
 		LastNameEnc:    lnEnc,
 		AvatarEnc:      avEnc,
+		SexEnc:         sexEnc,
+		BirthdayEnc:    bdEnc,
 		ConsentVersion: in.ConsentVersion,
 		DefaultStatus:  defaultStatus,
 	})
@@ -149,6 +161,14 @@ func (s *Service) toAccount(r encRow) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
+	sex, err := s.decOptional(r.SexEnc)
+	if err != nil {
+		return nil, err
+	}
+	bd, err := s.decOptional(r.BirthdayEnc)
+	if err != nil {
+		return nil, err
+	}
 	handle := hex.EncodeToString(r.Ref)
 	if len(handle) > 8 {
 		handle = handle[:8]
@@ -161,6 +181,8 @@ func (s *Service) toAccount(r encRow) (*Account, error) {
 		FirstName: fn,
 		LastName:  ln,
 		AvatarURL: av,
+		Sex:       sex,
+		Birthday:  bd,
 		Handle:    handle,
 		CreatedAt: r.CreatedAt,
 	}, nil

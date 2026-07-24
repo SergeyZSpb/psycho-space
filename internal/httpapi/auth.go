@@ -123,6 +123,8 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 		FirstName:      info.FirstName,
 		LastName:       info.LastName,
 		Avatar:         info.Avatar,
+		Sex:            info.Sex,
+		Birthday:       info.Birthday,
 		ConsentVersion: req.ConsentVersion,
 		AutoApprove:    autoApprove,
 	})

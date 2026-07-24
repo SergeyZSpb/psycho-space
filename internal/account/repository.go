@@ -15,6 +15,8 @@ type encRow struct {
 	FirstNameEnc []byte
 	LastNameEnc  []byte
 	AvatarEnc    []byte
+	SexEnc       []byte
+	BirthdayEnc  []byte
 	Role         string
 	Status       string
 	CreatedAt    time.Time
@@ -29,6 +31,8 @@ type UpsertParams struct {
 	FirstNameEnc   []byte
 	LastNameEnc    []byte
 	AvatarEnc      []byte
+	SexEnc         []byte
+	BirthdayEnc    []byte
 	ConsentVersion string
 	DefaultStatus  string
 }

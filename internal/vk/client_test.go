@@ -31,7 +31,8 @@ func TestExchangeCodeAndUserInfo(t *testing.T) {
 				t.Errorf("access_token = %q", r.Form.Get("access_token"))
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"user":{"user_id":"777","first_name":"Иван","last_name":"Петров","avatar":"https://vk/av.jpg"}}`))
+			// sex arrives as a JSON number; flexID normalizes it to a string.
+			_, _ = w.Write([]byte(`{"user":{"user_id":"777","first_name":"Иван","last_name":"Петров","avatar":"https://vk/av.jpg","sex":2,"birthday":"15.5.1990"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -55,6 +56,9 @@ func TestExchangeCodeAndUserInfo(t *testing.T) {
 	if info.UserID != "777" || info.FirstName != "Иван" || info.LastName != "Петров" || info.Avatar == "" {
 		t.Fatalf("info = %+v", info)
 	}
+	if info.Sex != "2" || info.Birthday != "15.5.1990" {
+		t.Fatalf("sex/birthday = %q / %q; want \"2\" / \"15.5.1990\"", info.Sex, info.Birthday)
+	}
 	if !gotExchange || !gotUserInfo {
 		t.Fatalf("endpoints not hit: exchange=%v userinfo=%v", gotExchange, gotUserInfo)
 	}
@@ -75,7 +79,8 @@ func TestExchangeCodeError(t *testing.T) {
 func TestUserInfoFlatShape(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"user_id":42,"first_name":"A","last_name":"B","avatar":"x"}`))
+		// Flat (no "user" wrapper) and a null sex: flexID maps null → "".
+		_, _ = w.Write([]byte(`{"user_id":42,"first_name":"A","last_name":"B","avatar":"x","sex":null}`))
 	}))
 	defer srv.Close()
 	c := New(srv.URL, "app", "svc", "uri")
@@ -85,5 +90,8 @@ func TestUserInfoFlatShape(t *testing.T) {
 	}
 	if info.UserID != "42" {
 		t.Fatalf("flat user_id = %q", info.UserID)
+	}
+	if info.Sex != "" || info.Birthday != "" {
+		t.Fatalf("absent sex/birthday = %q / %q; want empty", info.Sex, info.Birthday)
 	}
 }

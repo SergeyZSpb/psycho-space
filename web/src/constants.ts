@@ -4,7 +4,8 @@
 export const VK_APP_ID = 54691267;
 
 // Consent version recorded on login (152-ФЗ). Bump when the consent text changes.
-export const CONSENT_VERSION = 'v1';
+// v2: disclose the full vkid.personal_info set (added пол + дата рождения).
+export const CONSENT_VERSION = 'v2';
 
 // Brand accent (teal). Kept in sync with the Vuetify dark-theme primary color.
 export const BRAND_ACCENT = '#2dd4bf';

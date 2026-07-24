@@ -134,7 +134,8 @@ func fakeVK(userID, first, last string) *httptest.Server {
 		case "/oauth2/auth":
 			fmt.Fprintf(w, `{"access_token":"AT","refresh_token":"RT","id_token":"IDT","expires_in":3600,"user_id":%s}`, userID)
 		case "/oauth2/user_info":
-			fmt.Fprintf(w, `{"user":{"user_id":"%s","first_name":%q,"last_name":%q,"avatar":"https://vk/av.jpg"}}`, userID, first, last)
+			// sex + birthday are part of VK's base right and arrive on every login.
+			fmt.Fprintf(w, `{"user":{"user_id":"%s","first_name":%q,"last_name":%q,"avatar":"https://vk/av.jpg","sex":2,"birthday":"15.5.1990"}}`, userID, first, last)
 		default:
 			http.NotFound(w, r)
 		}

@@ -32,6 +32,8 @@ type Account struct {
 	FirstName string
 	LastName  string
 	AvatarURL string
+	Sex       string // VK's raw code: "1" female, "2" male, "" unspecified
+	Birthday  string // VK's "DD.MM.YYYY" string, or "" if VK omitted it
 	Handle    string // first 8 hex of the blind index — the code shown on the pending screen
 	CreatedAt time.Time
 }

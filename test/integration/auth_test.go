@@ -114,15 +114,27 @@ func TestVKLoginFlow(t *testing.T) {
 		t.Fatalf("vk_url = %v", acc["vk_url"])
 	}
 
-	// Personal data is encrypted at rest — the plaintext name must not appear.
-	var enc []byte
+	// The full vkid.personal_info set is stored: sex + birthday decrypt back.
+	stored, err := svc.GetByID(context.Background(), accountIDByUID(t, "777"))
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if stored.Sex != "2" || stored.Birthday != "15.5.1990" {
+		t.Fatalf("sex/birthday = %q / %q; want \"2\" / \"15.5.1990\"", stored.Sex, stored.Birthday)
+	}
+
+	// Personal data is encrypted at rest — the plaintext name / birth year must not appear.
+	var enc, bdEnc []byte
 	if err := pool.QueryRow(context.Background(),
-		`SELECT first_name_enc FROM accounts WHERE encode(vk_user_ref,'hex') LIKE $1`, handle+"%",
-	).Scan(&enc); err != nil {
+		`SELECT first_name_enc, birthday_enc FROM accounts WHERE encode(vk_user_ref,'hex') LIKE $1`, handle+"%",
+	).Scan(&enc, &bdEnc); err != nil {
 		t.Fatalf("read enc: %v", err)
 	}
 	if bytes.Contains(enc, []byte("Иван")) {
 		t.Fatal("plaintext name found in first_name_enc — not encrypted!")
+	}
+	if bytes.Contains(bdEnc, []byte("1990")) {
+		t.Fatal("plaintext birth year found in birthday_enc — not encrypted!")
 	}
 
 	// Logout revokes the session.

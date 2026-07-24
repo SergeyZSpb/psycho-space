@@ -48,19 +48,29 @@ type Tokens struct {
 	UserID       string // VK numeric user id (as string)
 }
 
-// UserInfo is the subset of the VK profile we use.
+// UserInfo is the subset of the VK profile we use. Sex and Birthday are part of
+// VK's base right (vkid.personal_info) and arrive on every login; we store them
+// encrypted alongside the rest. Sex is VK's raw code ("1" female, "2" male,
+// "" unspecified); Birthday is VK's "DD.MM.YYYY" string. Either may be empty.
 type UserInfo struct {
 	UserID    string
 	FirstName string
 	LastName  string
 	Avatar    string
+	Sex       string
+	Birthday  string
 }
 
-// flexID unmarshals a JSON value that may be either a number or a string.
+// flexID unmarshals a JSON value that may be either a number or a string, and
+// maps JSON null to the empty string.
 type flexID string
 
 func (f *flexID) UnmarshalJSON(b []byte) error {
-	*f = flexID(strings.Trim(string(b), `"`))
+	s := strings.Trim(string(b), `"`)
+	if s == "null" {
+		s = ""
+	}
+	*f = flexID(s)
 	return nil
 }
 
@@ -127,6 +137,8 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 		FirstName string `json:"first_name"`
 		LastName  string `json:"last_name"`
 		Avatar    string `json:"avatar"`
+		Sex       flexID `json:"sex"` // VK sends a number; flexID normalizes to a string
+		Birthday  string `json:"birthday"`
 	}
 	var r struct {
 		User *fields `json:"user"`
@@ -144,6 +156,8 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 		FirstName: f.FirstName,
 		LastName:  f.LastName,
 		Avatar:    f.Avatar,
+		Sex:       string(f.Sex),
+		Birthday:  f.Birthday,
 	}, nil
 }
 

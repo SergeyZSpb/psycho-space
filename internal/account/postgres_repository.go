@@ -14,11 +14,11 @@ type PostgresRepository struct{}
 // NewPostgresRepository builds the repository.
 func NewPostgresRepository() *PostgresRepository { return &PostgresRepository{} }
 
-const selectCols = `id::text, vk_user_ref, vk_user_id_enc, first_name_enc, last_name_enc, avatar_url_enc, role, status, created_at`
+const selectCols = `id::text, vk_user_ref, vk_user_id_enc, first_name_enc, last_name_enc, avatar_url_enc, sex_enc, birthday_enc, role, status, created_at`
 
 func scanRow(row pgx.Row) (encRow, error) {
 	var r encRow
-	err := row.Scan(&r.ID, &r.Ref, &r.VKUserIDEnc, &r.FirstNameEnc, &r.LastNameEnc, &r.AvatarEnc, &r.Role, &r.Status, &r.CreatedAt)
+	err := row.Scan(&r.ID, &r.Ref, &r.VKUserIDEnc, &r.FirstNameEnc, &r.LastNameEnc, &r.AvatarEnc, &r.SexEnc, &r.BirthdayEnc, &r.Role, &r.Status, &r.CreatedAt)
 	return r, err
 }
 
@@ -26,19 +26,21 @@ func (PostgresRepository) Upsert(ctx context.Context, q db.DBTX, p UpsertParams)
 	return scanRow(q.QueryRow(ctx, `
 		INSERT INTO accounts
 			(vk_user_ref, vk_user_id_enc, first_name_enc, last_name_enc, avatar_url_enc,
-			 status, last_login_at, consent_at, consent_version)
-		VALUES ($1, $2, $3, $4, $5, $7, now(), now(), $6)
+			 sex_enc, birthday_enc, status, last_login_at, consent_at, consent_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $9, now(), now(), $8)
 		ON CONFLICT (vk_user_ref) DO UPDATE SET
 			vk_user_id_enc  = EXCLUDED.vk_user_id_enc,
 			first_name_enc  = EXCLUDED.first_name_enc,
 			last_name_enc   = EXCLUDED.last_name_enc,
 			avatar_url_enc  = EXCLUDED.avatar_url_enc,
+			sex_enc         = EXCLUDED.sex_enc,
+			birthday_enc    = EXCLUDED.birthday_enc,
 			last_login_at   = now(),
 			updated_at      = now(),
 			consent_at      = now(),
 			consent_version = EXCLUDED.consent_version
 		RETURNING `+selectCols,
-		p.Ref, p.VKUserIDEnc, p.FirstNameEnc, p.LastNameEnc, p.AvatarEnc, p.ConsentVersion, p.DefaultStatus))
+		p.Ref, p.VKUserIDEnc, p.FirstNameEnc, p.LastNameEnc, p.AvatarEnc, p.SexEnc, p.BirthdayEnc, p.ConsentVersion, p.DefaultStatus))
 }
 
 func (PostgresRepository) GetByID(ctx context.Context, q db.DBTX, id string) (encRow, error) {
