@@ -35,21 +35,26 @@
         <div class="dialog-pane">
           <div class="goal text-medium-emphasis mb-2">🎯 {{ character.goal }}</div>
           <v-alert variant="tonal" class="bubble mb-3" :text="reply" />
-          <div v-if="busy" class="text-center py-4">
-            <v-progress-circular indeterminate size="28" color="primary" />
-          </div>
-          <div v-else class="options">
-            <v-btn
-              v-for="(opt, i) in options"
-              :key="i"
-              class="mb-2 text-none option-btn"
-              variant="outlined"
-              size="large"
-              block
-              @click="choose(opt)"
-            >
-              {{ opt }}
-            </v-btn>
+          <!-- Options keep their height while the judge thinks; the loader
+               overlays them (no layout shift). -->
+          <div class="actions">
+            <div class="options" :class="{ 'options--busy': busy }">
+              <v-btn
+                v-for="(opt, i) in options"
+                :key="i"
+                class="mb-2 text-none option-btn"
+                variant="outlined"
+                size="large"
+                block
+                :disabled="busy"
+                @click="choose(opt)"
+              >
+                {{ opt }}
+              </v-btn>
+            </div>
+            <div v-if="busy" class="loader-overlay">
+              <v-progress-circular indeterminate :size="60" :width="6" color="primary" />
+            </div>
           </div>
         </div>
       </div>
@@ -313,6 +318,21 @@ async function finish(won: boolean) {
 .option-btn {
   min-height: 48px;
   white-space: normal;
+}
+/* Loader overlays the options so switching to "thinking" causes no reflow. */
+.actions {
+  position: relative;
+}
+.options--busy {
+  opacity: 0.18;
+  pointer-events: none;
+}
+.loader-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 /* Landscape on phones: character beside the dialogue so it fits without scroll. */
 @media (orientation: landscape) and (max-height: 600px) {
