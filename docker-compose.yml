@@ -1,0 +1,30 @@
+# Local Postgres for development. Credentials match .env.example so
+# `./dev.sh run` and `./dev.sh seed` connect out of the box.
+#
+#   ./dev.sh db-up          # start (detached); or: docker compose up -d db
+#   ./dev.sh db-down        # stop  (keeps data)
+#   docker compose down -v  # stop AND wipe the data volume
+#
+# The app itself is NOT a compose service on purpose — run it with `./dev.sh run`
+# so Go rebuilds are instant, and the Vite dev server (`cd web && npm run dev`)
+# proxies /api to it.
+services:
+  db:
+    image: postgres:16
+    container_name: psycho-pg
+    environment:
+      POSTGRES_USER: psychospace
+      POSTGRES_PASSWORD: psychospace
+      POSTGRES_DB: psychospace
+    ports:
+      - "5432:5432"
+    volumes:
+      - psycho-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U psychospace -d psychospace"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  psycho-pgdata:

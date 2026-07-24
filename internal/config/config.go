@@ -28,6 +28,8 @@ type Config struct {
 
 	VK VK
 
+	LLM LLM
+
 	// Base64-encoded 32-byte keys (required, no defaults).
 	EncKeyB64     string `env:"PSYCHOSPACE_ENC_KEY,required"`
 	HMACKeyB64    string `env:"PSYCHOSPACE_HMAC_KEY,required"`
@@ -61,6 +63,19 @@ type VK struct {
 func (v VK) Configured() bool {
 	return v.AppID != "" && v.ServiceToken != "" && v.RedirectURI != ""
 }
+
+// LLM holds the OpenAI-compatible chat API used to drive AI characters (Yandex
+// Cloud, DeepSeek). Optional: when unset the game falls back to the mock
+// evaluator, so the loop is fully playable before credentials exist.
+type LLM struct {
+	BaseURL string `env:"PSYCHOSPACE_LLM_BASE_URL" envDefault:""`
+	APIKey  string `env:"PSYCHOSPACE_LLM_API_KEY" envDefault:""`
+	Model   string `env:"PSYCHOSPACE_LLM_MODEL" envDefault:"deepseek-4-pro"`
+}
+
+// Enabled reports whether a real LLM endpoint is configured. When false, the
+// game uses the mock evaluator.
+func (l LLM) Enabled() bool { return l.BaseURL != "" && l.APIKey != "" }
 
 // IsProd reports whether we are running in the production environment.
 func (c Config) IsProd() bool { return c.Env == "prod" }

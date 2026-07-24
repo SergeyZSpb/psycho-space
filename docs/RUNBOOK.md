@@ -9,6 +9,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **host/port:** intentionally NOT recorded here — this repo is public. The real host and hardened SSH port live only in the GitHub `prod` environment secrets (`DEPLOY_SSH_HOST`, `DEPLOY_SSH_PORT`) and in the operator's local `~/.ssh/config` (+ the local living doc `~/Desktop/psycho-space.md`). Use the `psycho` ssh alias below.
 - **app:** systemd unit `psycho-space` under user `psychospace`; binary `/opt/psycho-space/psycho-space`; env `/etc/psycho-space/app.env`; logs `/var/log/psycho-space/app.log`.
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
+- **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: content in `internal/game/content.go`, server-side eval in `evaluator.go` (LLM-ready seam).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
 - **constraints:** never commit the host/IP/port or any secret; never paste real personal data into shared places. The app log is PII-free by design; the DB and nginx access log are not — treat their contents as confidential.
 
@@ -26,6 +27,57 @@ Host psycho
 ```
 
 The dev/admin access below is for observability/debugging; production changes go through CI.
+
+## Local development (game / backend)
+
+Full local loop: Postgres in Docker, the Go server, and the Vite dev server with hot reload.
+
+```bash
+# one-time
+mise install
+cp .env.example .env         # then fill the 3 keys: openssl rand -base64 32
+
+# every session
+./dev.sh db-up               # local Postgres via docker compose (data persists in a volume)
+./dev.sh run                 # Go server on :8080 (API + embedded SPA; auto-migrates on boot)
+# second terminal — hot-reloading frontend:
+cd web && mise exec -- npm run dev   # Vite on :5173, proxies /api + /healthz to :8080
+```
+
+Open <http://localhost:5173>.
+
+### Get into the gated app without VK
+
+VK ID is IP-allowlisted to prod and its redirect URI is the prod domain, so the real login can't run locally. Seed an approved account + session instead:
+
+```bash
+./dev.sh seed                          # superadmin "Локальный Разработчик"
+./dev.sh seed -role user -name Гость   # a plain approved user
+```
+
+It prints a `psycho_session` cookie value. In the browser (DevTools → Application → Cookies) add `psycho_session=<value>` for the origin you use (`http://localhost:5173`) and reload — you land in `/app`. Or hit the API directly: `curl -b 'psycho_session=<value>' http://localhost:8080/api/auth/me`.
+
+`dev-seed` reuses the real `crypto`/`account`/`session` packages (so hashing + encryption match prod exactly), refuses to run unless `PSYCHOSPACE_ENV=dev`, and is never built into the server binary or deployed.
+
+### Working on the game («Смолтолк в Химках»)
+
+It's an AI-judged character dialogue: convince a character (default: сосед дядя Витя) by choosing answer options turn by turn. Each turn the judge decides whether the goal is reached and picks the character's emotion.
+
+- **Character profiles are backend config**, not baked into the SPA: `internal/game/content.go` — `Character` carries the public bits (`name`, `goal`, `greeting`, `options`, `emotions`, `max_steps`) plus server-only persona (`Motivation`/`Persona`/`TalkStyle`) and mock tuning (`Option.Effect`/`Reply`, `Threshold`). Edit it, restart `./dev.sh run`; the SPA fetches `GET /api/game/config`.
+- **Turns are judged server-side** in `internal/game/evaluator.go`. `POST /api/game/attempt {game_key, character_key, history, option_id}` → `{reply, emotion, achieved}`. Today `MockEvaluator` sums per-option `Effect` against the character's `Threshold`; answers/persona are never sent to the client.
+- **LLM characters (later):** implement an `Evaluator` that sends the persona + goal + conversation to the OpenAI-compatible endpoint (`config.LLM`: `PSYCHOSPACE_LLM_BASE_URL/_API_KEY/_MODEL`, model `deepseek-4-pro`) and returns `{reply, emotion, achieved}`; return it from `game.NewEvaluator` when `llmEnabled`. The client contract does not change. Mock is used until creds are provisioned (via GH secrets).
+- **Assets** are static frontend placeholders in `web/src/game/assets.ts`: a background gradient per `Character.background`, an emoji face per emotion the judge returns. Swap for real art without touching `GameView.vue`.
+- **Runs** (`{success, steps}`) are recorded via `POST /api/game/runs` and feed the leaderboard (`/runs/leaderboard` — successes + total steps per player) and your stats (`/runs/me`).
+- Files: UI `web/src/views/GameView.vue` (turn loop, portrait + landscape); API client `web/src/api/endpoints.ts` (`gameApi`); migration `migrations/005_game_runs.sql`.
+
+### Tests
+
+```bash
+./dev.sh test          # Go unit (incl. internal/game)
+./dev.sh integration   # testcontainers (incl. test/integration/game_test.go)
+./dev.sh web           # frontend type-check + vitest
+./dev.sh pre-commit    # everything (the git hook runs this)
+```
 
 ## Service
 

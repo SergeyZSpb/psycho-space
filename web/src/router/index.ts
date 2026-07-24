@@ -42,6 +42,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/WishlistView.vue'),
       },
       {
+        path: 'game',
+        name: 'game',
+        component: () => import('../views/GameView.vue'),
+      },
+      {
         path: 'admin',
         name: 'admin',
         component: () => import('../views/AdminView.vue'),

@@ -7,6 +7,11 @@ import type {
   AdminAccount,
   AccountStatus,
   AdminSettings,
+  GameConfig,
+  GameLeaderboardEntry,
+  GameRun,
+  GameStats,
+  GameTurnResult,
   LoginResult,
   WishlistComment,
   WishlistItem,
@@ -70,6 +75,34 @@ export const wishlistApi = {
 
   unvoteComment: (commentId: string) =>
     apiFetch<void>(`/api/wishlist/comments/${commentId}/vote`, { method: 'DELETE' }),
+};
+
+export const gameApi = {
+  // Backend-served game config (characters, options, assets). No persona prompts
+  // or answer keys — those stay server-side.
+  config: (game: string) => apiFetch<GameConfig>(`/api/game/config?game=${game}`),
+
+  // Judge one dialogue turn server-side. `history` is the ids of options already
+  // chosen. Contract is stable when the judge becomes LLM-driven.
+  attempt: (game: string, character: string, history: string[], optionId: string) =>
+    apiFetch<GameTurnResult>('/api/game/attempt', {
+      method: 'POST',
+      body: { game_key: game, character_key: character, history, option_id: optionId },
+    }),
+
+  // Record a finished play-through (goal reached or step budget spent).
+  submitRun: (game: string, character: string, success: boolean, steps: number) =>
+    apiFetch<GameRun>('/api/game/runs', {
+      method: 'POST',
+      body: { game_key: game, character_key: character, success, steps },
+    }),
+
+  leaderboard: (game: string, limit = 20) =>
+    apiFetch<{ entries: GameLeaderboardEntry[] }>(
+      `/api/game/runs/leaderboard?game=${game}&limit=${limit}`,
+    ),
+
+  stats: (game: string) => apiFetch<GameStats>(`/api/game/runs/me?game=${game}`),
 };
 
 export const adminApi = {

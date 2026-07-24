@@ -17,6 +17,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
 	"github.com/SergeyZSpb/psycho-space/internal/db"
+	"github.com/SergeyZSpb/psycho-space/internal/game"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/logging"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
@@ -70,6 +71,11 @@ func main() {
 	accounts := account.NewService(pool, account.NewPostgresRepository(), enc, bi)
 	sessions := session.NewManager(pool, cfg.SessionKey, cfg.SessionTTL, cfg.CookieSecure())
 	wishlistSvc := wishlist.NewService(pool, wishlist.NewPostgresRepository())
+	// Game AI judge: mock until LLM credentials are provisioned; the evaluator is
+	// the single swap point (see game.NewEvaluator).
+	gameEval := game.NewEvaluator(cfg.LLM.Enabled(), cfg.LLM.Model)
+	slog.Info("game evaluator", "llm_configured", cfg.LLM.Enabled(), "model", cfg.LLM.Model)
+	gameSvc := game.NewServiceWithEvaluator(pool, game.NewPostgresRepository(), gameEval)
 	settingsSvc := settings.NewService(pool)
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
 
@@ -91,6 +97,7 @@ func main() {
 		Accounts:   accounts,
 		Sessions:   sessions,
 		Wishlist:   wishlistSvc,
+		Game:       gameSvc,
 		Settings:   settingsSvc,
 		VKVerifier: vkVerifier,
 	})

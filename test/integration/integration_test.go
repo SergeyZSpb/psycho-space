@@ -19,6 +19,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
 	"github.com/SergeyZSpb/psycho-space/internal/db"
+	"github.com/SergeyZSpb/psycho-space/internal/game"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
@@ -107,6 +108,7 @@ func buildApp(vkBaseURL string) http.Handler {
 		Accounts: newAccountService(),
 		Sessions: sessions,
 		Wishlist: wishlist.NewService(pool, wishlist.NewPostgresRepository()),
+		Game:     game.NewService(pool, game.NewPostgresRepository()),
 		Settings: settings.NewService(pool),
 	}).Handler()
 	return observability.WrapHandler(h, "http.server")

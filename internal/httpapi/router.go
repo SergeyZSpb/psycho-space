@@ -8,6 +8,7 @@ import (
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/config"
+	"github.com/SergeyZSpb/psycho-space/internal/game"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/settings"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
@@ -28,6 +29,7 @@ type Deps struct {
 	Accounts   *account.Service
 	Sessions   *session.Manager
 	Wishlist   *wishlist.Service
+	Game       *game.Service
 	Settings   *settings.Service
 	VKVerifier *vk.IDTokenVerifier // nil = id_token verification disabled
 }
@@ -89,6 +91,17 @@ func (s *Server) Handler() http.Handler {
 			r.Delete("/comments/{id}", s.handleDeleteComment)
 			r.Post("/comments/{id}/vote", s.handleCommentVote)
 			r.Delete("/comments/{id}/vote", s.handleCommentUnvote)
+		})
+
+		// Game — approved users only. Dialog content is backend config; runs
+		// (outcomes) feed the leaderboard.
+		r.Route("/game", func(r chi.Router) {
+			r.Use(s.requireAuth)
+			r.Get("/config", s.handleGameConfig)
+			r.Post("/attempt", s.handleGameAttempt)
+			r.Post("/runs", s.handleGameSubmitRun)
+			r.Get("/runs/leaderboard", s.handleGameLeaderboard)
+			r.Get("/runs/me", s.handleGameStats)
 		})
 
 		// Admin — approve/block for admins; promote + settings for superadmin only.

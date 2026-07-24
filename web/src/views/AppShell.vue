@@ -9,6 +9,12 @@
           value="wishlist"
         />
         <v-list-item
+          :to="{ name: 'game' }"
+          prepend-icon="mdi-controller-classic-outline"
+          title="Смолтолк в Химках"
+          value="game"
+        />
+        <v-list-item
           v-if="auth.isAdmin"
           :to="{ name: 'admin' }"
           prepend-icon="mdi-shield-account-outline"

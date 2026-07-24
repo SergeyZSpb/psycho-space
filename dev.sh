@@ -81,6 +81,24 @@ target_run() {
   go_ run ./cmd/psycho-space
 }
 
+# Seed a local approved account + session and print the cookie, so the gated
+# /app/* area opens locally without the real VK login. Dev only. Extra args pass
+# through (e.g. -role user -name Гость).
+target_seed() {
+  [ -f .env ] && { echo "== sourcing .env =="; set -a; . ./.env; set +a; }
+  go_ run ./cmd/dev-seed "$@"
+}
+
+target_db_up() {
+  echo "== docker compose up -d db =="
+  docker compose up -d db
+}
+
+target_db_down() {
+  echo "== docker compose down (data volume kept) =="
+  docker compose down
+}
+
 target_pre_commit() {
   target_build
   target_lint
@@ -97,6 +115,9 @@ case "${1:-help}" in
   integration) target_integration ;;
   web)         target_web ;;
   run)         target_run ;;
+  seed)        shift; target_seed "$@" ;;
+  db-up)       target_db_up ;;
+  db-down)     target_db_down ;;
   pre-commit)  target_pre_commit ;;
   help|*)
     cat <<'EOF'
@@ -107,6 +128,9 @@ psycho-space dev.sh targets:
   integration  testcontainers integration tests (when test/integration exists)
   web          frontend type-check + unit tests (when web/ exists)
   run          run the server locally (sources ./.env if present)
+  seed         seed a local approved account + session, print the cookie (dev; args pass through)
+  db-up        start the local Postgres (docker compose up -d db)
+  db-down      stop the local Postgres (keeps the data volume)
   pre-commit   build + lint + test + web + integration (the git hook runs this)
 EOF
     ;;

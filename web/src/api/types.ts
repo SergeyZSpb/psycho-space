@@ -69,3 +69,68 @@ export interface LoginResult {
   status: AccountStatus;
   account: Account;
 }
+
+// --- Game (mini-games section) ----------------------------------------------
+// A character dialogue judged by an AI (mock now, LLM later). The SPA fetches
+// the config, presents answer options, and each turn asks the backend to judge
+// whether the goal is reached. Persona prompts + answer keys stay server-side.
+
+export interface GameOption {
+  id: string;
+  label: string;
+}
+
+export interface GameCharacter {
+  key: string;
+  name: string;
+  goal: string;
+  background: string; // background asset key
+  greeting: string;
+  emotions: string[]; // emotion asset keys the judge may show
+  max_steps: number; // dialogue-step budget
+  options: GameOption[];
+}
+
+export interface GameConfig {
+  game_key: string;
+  title: string;
+  intro: string;
+  default_character: string;
+  characters: GameCharacter[];
+}
+
+// Result of one dialogue turn, judged server-side.
+export interface GameTurnResult {
+  reply: string;
+  emotion: string; // asset key to show
+  achieved: boolean; // goal reached?
+}
+
+export interface GameRun {
+  id: string;
+  game_key: string;
+  character_key: string;
+  success: boolean;
+  steps: number;
+  created_at: string;
+}
+
+export interface GamePlayer {
+  display_name: string;
+  avatar_url: string;
+  vk_url: string;
+}
+
+export interface GameLeaderboardEntry {
+  player: GamePlayer;
+  successes: number;
+  plays: number;
+  steps: number;
+  mine: boolean;
+}
+
+export interface GameStats {
+  successes: number;
+  plays: number;
+  best_steps: number;
+}
