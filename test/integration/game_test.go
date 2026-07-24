@@ -92,6 +92,19 @@ func TestGameFlow(t *testing.T) {
 		t.Fatalf("game over should clear options: %v", rGO)
 	}
 
+	// Options the judge already offered travel back in the transcript and reach the
+	// system prompt, so it can stop proposing the same lines. The fake judge
+	// reports what it saw.
+	st, rRep := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", map[string]any{
+		"game_key": "smalltalk_khimki", "character_key": charKey, "choice": "повторы",
+		"transcript": []map[string]any{
+			{"choice": "привет", "reply": "ну", "options": []string{"уже это предлагал"}},
+		},
+	})
+	if st != http.StatusOK || rRep["reply"] != "already_offered=да" {
+		t.Fatalf("offered options should reach the prompt: status %d res %v", st, rRep)
+	}
+
 	// The tension scale round-trips: we send it, the judge returns the new value.
 	st, rCalm := attemptAnger("теплеет", 60)
 	if st != http.StatusOK || rCalm["anger"].(float64) != 25 || rCalm["game_over"] != false {

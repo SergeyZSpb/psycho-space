@@ -176,6 +176,7 @@ import { ApiError } from '../api/client';
 import { useErrorStore } from '../stores/error';
 import { BOARDS, boardMeta } from '../lib/gameBoards';
 import { angerColor, angerLabel } from '../lib/anger';
+import { recordExchange } from '../lib/transcript';
 import type {
   GameArt,
   GameBoardKey,
@@ -292,7 +293,9 @@ async function turn(choice: string) {
   try {
     const res = await gameApi.attempt(GAME, ch.key, transcript.value, choice, anger.value);
     if (choice !== '') {
-      transcript.value.push({ choice, reply: res.reply });
+      // Record the options offered alongside the reply: the judge needs them next
+      // turn to avoid proposing the same lines again.
+      transcript.value.push(recordExchange(choice, res.reply, res.options));
       steps.value += 1;
     }
     anger.value = res.anger;

@@ -368,7 +368,7 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 - выбери подходящий арт строго из списка [%s] (поле "art"). Арт — это либо текущее состояние персонажа (злой → подозрительный → нейтральный → теплеет → раскрывается), либо сюжетный арт без персонажа. Ключи артов говорящие: подбирай арт по смыслу текущей темы и настроения (например, если речь зашла о его близком друге — покажи арт с этим другом). По ходу диалога арт меняется от злого к более тёплому (иногда обратно к злому — на грубость). Когда игрок достигает цели — выбери арт прохода в подъезд;
 - реши, достиг ли игрок цели именно этой репликой (поле "achieved": true/false). Ставь true только когда игрок действительно разглядел глубину персонажа, а не отделался поверхностным;
 - реши, не сорвался ли ты окончательно (поле "game_over": true/false). Ставь true ТОЛЬКО когда игрок довёл тебя до срыва по условию срыва выше — тогда ты бьёшь его, и разговор на этом окончен. Это редкий исход: сначала огрызайся и мрачней, бей только если игрок упорно продолжает. Если "achieved": true, то "game_over" всегда false;
-- предложи РОВНО 4 коротких варианта реплик, которые игрок мог бы сказать дальше (поле "options": массив ровно из 4 строк). Среди этих 4 ВСЕГДА должен быть хотя бы один вариант, выбор которого продвигает игрока к цели и улучшает расположение персонажа, — иначе игру невозможно пройти. Не помечай и не выдавай, какой именно. Если игрок достиг цели или ты сорвался — "options": [].
+- предложи РОВНО 4 коротких варианта реплик, которые игрок мог бы сказать дальше (поле "options": массив ровно из 4 строк). Все 4 должны быть НОВЫМИ: не повторяй и не перефразируй варианты, которые уже предлагал раньше (список ниже, если он есть), и не давай четыре варианта об одном и том же — веди разговор дальше, а не по кругу. Среди этих 4 ВСЕГДА должен быть хотя бы один вариант, выбор которого продвигает игрока к цели и улучшает расположение персонажа, — иначе игру невозможно пройти. Не помечай и не выдавай, какой именно. Если игрок достиг цели или ты сорвался — "options": [].
 Отвечай ТОЛЬКО валидным JSON вида {"reply":"...","art":"...","anger":50,"achieved":false,"game_over":false,"options":["...","...","...","..."]}. Без пояснений и текста вне JSON.`,
 		ch.Name, ch.Persona, ch.Motivation, ch.TalkStyle, ch.Objective, ch.Failure,
 		MaxAnger, anger, MaxAnger, MaxAnger, strings.Join(ch.artKeys(), ", "))
@@ -380,9 +380,19 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 	}
 
 	// Keep the most recent exchanges that fit the context budget alongside the
-	// system prompt and the current message; drop older ones (forgotten).
+	// system prompt and the current message; drop older ones (forgotten). Each
+	// exchange is costed with its offered options, since those are replayed below.
 	budget := modelContextTokens - outputReserveTokens - estTokens(sys) - estTokens(current)
 	windowed := windowTranscript(transcript, budget)
+
+	// Show the judge what it has already offered, so it stops recycling the same
+	// four lines. Only options from exchanges that survived the window are listed:
+	// an option is forgotten exactly when its turn is.
+	if already := recentlyOffered(ch, windowed); len(already) > 0 {
+		sys += "\n\nЭти варианты ответа ты игроку УЖЕ предлагал (свежие — сверху). " +
+			"Не предлагай их снова и не давай близкие перефразировки — придумывай новые, " +
+			"по текущей теме разговора:\n- " + strings.Join(already, "\n- ")
+	}
 
 	messages := []chatMessage{{Role: "system", Content: sys}}
 	// Seed the static opening line so the model knows how it greeted the player.
@@ -408,7 +418,7 @@ func windowTranscript(transcript []Exchange, budget int) []Exchange {
 	used := 0
 	start := len(transcript)
 	for i := len(transcript) - 1; i >= 0; i-- {
-		cost := estTokens(transcript[i].Choice) + estTokens(transcript[i].Reply)
+		cost := exchangeTokens(transcript[i])
 		if used+cost > budget {
 			break
 		}
@@ -416,6 +426,57 @@ func windowTranscript(transcript []Exchange, budget int) []Exchange {
 		start = i
 	}
 	return transcript[start:]
+}
+
+// exchangeTokens estimates what one exchange costs in context: the player's line,
+// the character's reply, and the options offered afterwards (replayed in the
+// system prompt, so they are part of the exchange's price).
+func exchangeTokens(ex Exchange) int {
+	n := estTokens(ex.Choice) + estTokens(ex.Reply)
+	for _, o := range ex.Options {
+		n += estTokens(o)
+	}
+	return n
+}
+
+// maxRecentlyOffered caps the "already offered" list, so a long dialogue cannot
+// grow it without bound even while every exchange still fits the window.
+const maxRecentlyOffered = 6 * optionCount
+
+// recentlyOffered lists the answer options already put in front of the player,
+// newest first and de-duplicated case-insensitively. The character's static
+// opening options are always included: they were shown, they never grow, and
+// re-offering them on turn six is exactly the repetition to avoid.
+func recentlyOffered(ch Character, windowed []Exchange) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(opt string) bool {
+		opt = strings.TrimSpace(opt)
+		key := strings.ToLower(opt)
+		if opt == "" || seen[key] {
+			return true
+		}
+		if len(out) >= maxRecentlyOffered {
+			return false
+		}
+		seen[key] = true
+		out = append(out, opt)
+		return true
+	}
+
+	for i := len(windowed) - 1; i >= 0; i-- {
+		for _, opt := range windowed[i].Options {
+			if !add(opt) {
+				return out
+			}
+		}
+	}
+	for _, opt := range ch.OpeningOptions {
+		if !add(opt) {
+			return out
+		}
+	}
+	return out
 }
 
 // normalizeArt clamps the model's chosen art to the character's allowed set,

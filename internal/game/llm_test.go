@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -499,8 +501,100 @@ func TestOptionsWhilePlaying(t *testing.T) {
 	}
 }
 
+// The judge can only stop repeating options if it is shown what it already
+// offered — newest first, de-duplicated, and including the static opening set.
+func TestRecentlyOffered(t *testing.T) {
+	ch := testChar()
+	ch.OpeningOptions = []string{"первый статичный", "второй статичный"}
+	windowed := []Exchange{
+		{Choice: "a", Reply: "r", Options: []string{"старый вариант", "общий"}},
+		{Choice: "b", Reply: "r", Options: []string{"свежий вариант", "  ОБЩИЙ  ", ""}},
+	}
+
+	got := recentlyOffered(ch, windowed)
+	want := []string{
+		// Newest exchange first...
+		"свежий вариант", "ОБЩИЙ",
+		// ...then older ones ("общий" already seen, case-insensitively)...
+		"старый вариант",
+		// ...then the static opening options.
+		"первый статичный", "второй статичный",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("recentlyOffered =\n %q\nwant\n %q", got, want)
+	}
+}
+
+func TestRecentlyOfferedIsCapped(t *testing.T) {
+	var windowed []Exchange
+	for i := 0; i < 50; i++ {
+		windowed = append(windowed, Exchange{
+			Options: []string{fmt.Sprintf("вариант-%d-a", i), fmt.Sprintf("вариант-%d-b", i)},
+		})
+	}
+	got := recentlyOffered(testChar(), windowed)
+	if len(got) != maxRecentlyOffered {
+		t.Fatalf("len = %d; want the cap %d", len(got), maxRecentlyOffered)
+	}
+	// The cap keeps the newest, which are the ones worth not repeating.
+	if got[0] != "вариант-49-a" {
+		t.Fatalf("first = %q; want the newest option", got[0])
+	}
+}
+
+// The offered options must reach the prompt, and must fall out of it exactly when
+// their exchange is forgotten — the same window as the rest of the history.
+func TestBuildMessagesCarriesOfferedOptions(t *testing.T) {
+	tr := []Exchange{{Choice: "привет", Reply: "ну", Options: []string{"уже предлагал это"}}}
+	sys := buildMessages(testChar(), tr, "дальше", StartAnger)[0].Content
+	if !strings.Contains(sys, "уже предлагал это") {
+		t.Fatalf("system prompt should list already-offered options; got:\n%s", sys)
+	}
+	if !strings.Contains(sys, "УЖЕ предлагал") {
+		t.Fatal("system prompt should tell the model not to repeat them")
+	}
+
+	// A transcript far past the window: the old exchange and its options are gone.
+	big := strings.Repeat("я", 200_000)
+	sysDropped := buildMessages(testChar(), []Exchange{
+		{Choice: big, Reply: big, Options: []string{"забытый вариант"}},
+	}, "дальше", StartAnger)[0].Content
+	if strings.Contains(sysDropped, "забытый вариант") {
+		t.Fatal("options of a forgotten exchange must not survive in the prompt")
+	}
+}
+
+// With no history there is nothing to avoid repeating except the static opening
+// options — and the block is skipped entirely when even those are absent.
+func TestBuildMessagesOmitsOfferedBlockWhenEmpty(t *testing.T) {
+	ch := testChar()
+	ch.OpeningOptions = nil
+	sys := buildMessages(ch, nil, "", StartAnger)[0].Content
+	if strings.Contains(sys, "УЖЕ предлагал") {
+		t.Fatalf("nothing offered yet, so the block should be absent; got:\n%s", sys)
+	}
+}
+
+// Options are part of what an exchange costs, or the window would under-count
+// and the prompt could overflow.
+func TestExchangeTokensCountsOptions(t *testing.T) {
+	bare := Exchange{Choice: "a", Reply: "b"}
+	withOpts := Exchange{Choice: "a", Reply: "b", Options: []string{"один", "два"}}
+	if exchangeTokens(withOpts) <= exchangeTokens(bare) {
+		t.Fatalf("options should add cost: %d vs %d", exchangeTokens(withOpts), exchangeTokens(bare))
+	}
+	want := estTokens("a") + estTokens("b") + estTokens("один") + estTokens("два")
+	if got := exchangeTokens(withOpts); got != want {
+		t.Fatalf("exchangeTokens = %d; want %d", got, want)
+	}
+}
+
 func TestWindowTranscript(t *testing.T) {
-	tr := []Exchange{{"a1", "b1"}, {"a2", "b2"}, {"a3", "b3"}}
+	tr := []Exchange{
+		{Choice: "a1", Reply: "b1"},
+		{Choice: "a2", Reply: "b2"},
+		{Choice: "a3", Reply: "b3"},
+	}
 	if got := windowTranscript(tr, 0); len(got) != 0 {
 		t.Fatalf("zero budget should drop all, got %d", len(got))
 	}

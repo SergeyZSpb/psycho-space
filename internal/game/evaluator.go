@@ -2,12 +2,18 @@ package game
 
 import "context"
 
-// Exchange is one completed dialogue turn: what the player chose to say and how
-// the character replied. The client accumulates these and sends them back each
-// turn as the conversation so far (the backend is stateless per turn).
+// Exchange is one completed dialogue turn: what the player chose to say, how the
+// character replied, and which answer options the judge offered afterwards. The
+// client accumulates these and sends them back each turn as the conversation so
+// far (the backend is stateless per turn).
+//
+// Options are carried so the judge can see what it has already put in front of
+// the player and stop offering the same four lines every turn. They are dropped
+// from the context by the same window as the rest of the exchange.
 type Exchange struct {
-	Choice string `json:"choice"`
-	Reply  string `json:"reply"`
+	Choice  string   `json:"choice"`
+	Reply   string   `json:"reply"`
+	Options []string `json:"options,omitempty"`
 }
 
 // TurnResult is the outcome of one dialogue turn, judged by the LLM and passed

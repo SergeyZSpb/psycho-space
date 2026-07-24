@@ -114,8 +114,21 @@ func startFakeLLM() *httptest.Server {
 		if n := len(req.Messages); n > 0 {
 			last = req.Messages[n-1].Content
 		}
+		system := ""
+		if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
+			system = req.Messages[0].Content
+		}
 		content := `{"reply":"Хм, ну-ну","art":"vanya_neutral","achieved":false,"options":["дальше раз","дальше два"]}`
 		switch {
+		case strings.Contains(last, "повторы"):
+			// Reports back whether the options the client sent in the transcript
+			// reached the system prompt, so the test can assert the plumbing.
+			seen := "нет"
+			if strings.Contains(system, "уже это предлагал") && strings.Contains(system, "УЖЕ предлагал") {
+				seen = "да"
+			}
+			content = `{"reply":"already_offered=` + seen + `","art":"vanya_neutral",` +
+				`"anger":50,"achieved":false,"options":["a","b","c","d"]}`
 		case strings.Contains(last, "победа"):
 			content = `{"reply":"Ну проходи, сосед","art":"hallway_pass","achieved":true,"options":[]}`
 		case strings.Contains(last, "хамство"):
