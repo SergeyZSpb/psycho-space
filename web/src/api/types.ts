@@ -191,3 +191,103 @@ export interface GameKhimkiStats {
   plays: number;
   best_steps: number;
 }
+
+// ---------------------------------------------------------------------------
+// «Ванягоччи» — the pet.
+//
+// Mirrored from internal/gamevanyagotchi/{content,pet}.go. Everything the screen
+// draws or labels comes from the config below, so nothing about a stat, an
+// action, a skin or a location is spelled out in the SPA: adding one is a
+// backend change and this file does not move.
+// ---------------------------------------------------------------------------
+
+/** One thing about a pet that changes with time on its own. */
+export interface VanyagotchiStat {
+  key: string;
+  label: string;
+  emoji: string;
+  min: number;
+  max: number;
+  start: number;
+  /**
+   * Signed: positive drains towards `min`, negative fills towards `max`, zero is
+   * a lifetime counter. The client uses it only to keep the bar moving between
+   * fetches — that interpolation is display, never truth.
+   */
+  decay_per_hour: number;
+  /** Which end of the scale is the happy one. */
+  good_high: boolean;
+  /** Where the stat starts reading as trouble: below when `good_high`, above otherwise. */
+  warn_at: number;
+  /** Reaching `min` kills him. */
+  fatal: boolean;
+}
+
+/** A verb that moves one stat by a fixed amount. */
+export interface VanyagotchiAction {
+  key: string;
+  label: string;
+  emoji: string;
+  stat_key: string;
+  delta: number;
+  /** Shown for a moment after it lands. */
+  done: string;
+  /** Allowed on, and undoes, a death. */
+  revives_fatal: boolean;
+}
+
+/** One look for a pet. `image` (a URL) wins when set; otherwise emoji over gradient. */
+export interface VanyagotchiSkin {
+  key: string;
+  label: string;
+  emoji: string;
+  gradient: string;
+  image?: string;
+}
+
+export interface VanyagotchiLocation {
+  key: string;
+  label: string;
+  /** Where a pet stands on arriving, in the plane's normalised 0..1 coordinates. */
+  entry: { x: number; y: number };
+}
+
+export interface VanyagotchiConfig {
+  game_key: string;
+  title: string;
+  stats: VanyagotchiStat[];
+  actions: VanyagotchiAction[];
+  skins: VanyagotchiSkin[];
+  locations: VanyagotchiLocation[];
+  default_skin: string;
+  default_location: string;
+}
+
+export interface VanyagotchiPet {
+  id: string;
+  name: string | null;
+  skin_key: string;
+  location_key: string;
+  /** The moment hp reached zero. `null` means alive. */
+  died_at: string | null;
+  created_at: string;
+}
+
+/** A stat decayed to the instant of the read, with the pair it was decayed from. */
+export interface VanyagotchiStatValue {
+  key: string;
+  value: number;
+  as_of: string;
+}
+
+export interface VanyagotchiState {
+  pet: VanyagotchiPet;
+  stats: VanyagotchiStatValue[];
+  alive: boolean;
+  /**
+   * The clock everything above was computed against. The bar interpolation
+   * measures elapsed time from HERE rather than from the device's own clock, so
+   * a phone that is minutes out does not draw a wrong value.
+   */
+  server_now: string;
+}

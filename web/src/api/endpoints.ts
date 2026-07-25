@@ -14,6 +14,8 @@ import type {
   GameKhimkiStats,
   GameKhimkiTurnResult,
   LoginResult,
+  VanyagotchiConfig,
+  VanyagotchiState,
   WishlistComment,
   WishlistItem,
   WishlistSort,
@@ -118,6 +120,29 @@ export const gameKhimkiApi = {
     apiFetch<{ boards: GameKhimkiBoards }>(`/api/game-khimki/runs/leaderboard?game=${game}&limit=${limit}`),
 
   stats: (game: string) => apiFetch<GameKhimkiStats>(`/api/game-khimki/runs/me?game=${game}`),
+};
+
+// «Ванягоччи». A separate object from the game above and deliberately so: games
+// share no client code either, so deleting one is deleting its own block.
+export const gameVanyagotchiApi = {
+  // The content catalogue — stats and their rates, the actions, the skins, the
+  // locations. Everything the screen labels or draws comes from here, so a new
+  // stat or a retitled action needs no frontend deploy.
+  config: () => apiFetch<VanyagotchiConfig>('/api/game-vanyagotchi/config'),
+
+  // The caller's pet, with every stat decayed to this instant. Creates the pet
+  // on first sight and records a death the first time one is observed, which is
+  // why a plain GET is allowed to change things.
+  state: () => apiFetch<VanyagotchiState>('/api/game-vanyagotchi/state'),
+
+  // Apply one catalogue action. The verb goes in the path and the body is empty:
+  // the client says "heal", never "set hp to 80", so there is no number in the
+  // request to forge. The answer is the server's own recomputed state, which is
+  // also what corrects any drift in the bar the screen has been interpolating.
+  act: (action: string) =>
+    apiFetch<VanyagotchiState>(`/api/game-vanyagotchi/actions/${encodeURIComponent(action)}`, {
+      method: 'POST',
+    }),
 };
 
 export const adminApi = {

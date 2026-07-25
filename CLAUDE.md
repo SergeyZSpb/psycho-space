@@ -29,12 +29,16 @@ internal/
   db/        pgxpool, DBTX interface, embedded-SQL migrator
   logging/   slog JSON → stdout (+ rotated file when LOG_DIR set)
   observability/  OpenTelemetry tracing (generated always, export opt-in)
-  httpapi/   chi router, middleware, auth/wishlist/gamekhimki/admin handlers
+  httpapi/   chi router, middleware, auth/wishlist/game/admin handlers
+  realtime/  WebSocket hub + per-connection pumps, game-agnostic (no game may be named here)
+  gameassets/  the shared art blob store — infrastructure, serves every game
   session/   server-side opaque sessions
   account/   accounts: upsert-by-blind-index, allowlist status + role tier
   vk/        VK ID client (ExchangeCode + UserInfo) + optional id_token verifier
   wishlist/  items, comments, votes (upvote toggle on both)
   gamekhimki/  «Смолтолк в Химках» — LLM-judged dialogue: content/persona, judge, runs, art blobs
+  gamevanyagotchi/  «Ванягоччи» — the shared plane (in memory) + the pet (Postgres):
+                    content.go the catalogue, decay.go the lazy time arithmetic
   settings/  app_settings key/value (open registration)
   web/       go:embed of the built SPA (dir gitignored except .gitkeep)
 migrations/  NNN_*.sql, embedded, auto-applied, immutable once shipped

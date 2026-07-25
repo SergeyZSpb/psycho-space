@@ -5,11 +5,11 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** psycho-space at two altitudes in one file — the structural view (§1–7: logical containers, runtime flows, package layout, data model, deployment) and the numbered decision records that say *why* it has that shape (§8, append-only). `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
-- **status:** current as of «Ванягоччи» I5 — **Phase 1 complete** (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped, carries a `bye` frame, and now has three game seams — inbound `Handler`, `Hub.Members`, and `Hub.PublishTo` for a unicast reply (ADR-033, ADR-037) — plus a 30 s revalidation sweep, so a socket can no longer outlive its own session. Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (`internal/gamevanyagotchi/` — realtime, **no LLM on any path**; `/app/game-vanyagotchi` renders the shared plane, sends taps back, and **survives a deploy** — it reconnects with jittered backoff, treats a revoked session as terminal, and shows one entity per **account** under a per-process pseudonym (ADR-037). It still has **no table, no pet and no durable state**). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — ADR-027…034 and ADR-037 were appended the same day, and four records were withdrawn the same day for failing the log's architecture bar, so the numbering has permanent gaps.
+- **status:** current as of «Ванягоччи» **I6 — the first Phase 2 slice** (2026-07-25): the game now has a **pet**. `migrations/008_game_vanyagotchi.sql` adds `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (the last one written by no code yet — its shape landed with the others because migrations are immutable); `internal/gamevanyagotchi/content.go` is the content catalogue and `decay.go` the pure time arithmetic; `GET /api/game-vanyagotchi/config` and `/state` and `POST /actions/{action}` are live. Stats decay lazily from `(value, as_of)` with nothing ticking, and a death is materialised once at the derived instant (**ADR-038**, **ADR-039**). Also in this slice: a position now survives a page reload (`PositionGrace` — absence is not departure). Previously current as of I5, **Phase 1 complete**. One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped, carries a `bye` frame, and now has three game seams — inbound `Handler`, `Hub.Members`, and `Hub.PublishTo` for a unicast reply (ADR-033, ADR-037) — plus a 30 s revalidation sweep, so a socket can no longer outlive its own session. Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (`internal/gamevanyagotchi/` — realtime, **no LLM on any path**; `/app/game-vanyagotchi` renders the shared plane, sends taps back, and **survives a deploy** — it reconnects with jittered backoff, treats a revoked session as terminal, and shows one entity per **account** under a per-process pseudonym (ADR-037). It now also has a **pet** — three tables, a content catalogue, lazily-decaying stats and a recorded death — so it is the first thing in this game that outlives the process). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — ADR-027…034 and ADR-037 were appended the same day, and four records were withdrawn the same day for failing the log's architecture bar, so the numbering has permanent gaps. **ADR-038 and ADR-039 arrived with the pet** and are the two that govern how anything time-varying and anything content-shaped is built from here on.
 - **rename complete (2026-07-25):** game 1 moved off generic `game` naming onto the `Game<Name>` convention (ADR-030) — package `internal/game/` → `internal/gamekhimki/` (types inside keep plain names, so `gamekhimki.Service`), table `game_runs` → `game_khimki_runs` via `migrations/007_game_khimki_rename.sql` (**`game_assets` deliberately NOT renamed** — the blob store is shared infrastructure, ADR-031), routes `/api/game/*` → `/api/game-khimki/*`, SPA `GameView.vue` → `GameKhimkiView.vue` and `/app/game` → `/app/game-khimki` with a permanent redirect. `game_key` **values** are untouched (`smalltalk_khimki`) — data, not names, and the art blobs are keyed on them. **The one-deploy-cycle `/api/game/*` alias has served its cycle and is deleted**; `TestGameKhimkiLegacyPathAliasIsGone` pins its absence, and nothing may be written against that prefix again. The `/app/game` → `/app/game-khimki` SPA redirect is permanent and stays. Sections 1–7 below describe the post-rename state.
 - **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only).
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `grep -n '^#### ADR-' docs/ARCHITECTURE.md` lists every decision record.
-- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. **The bar is architecture:** a decision that shapes deployment, data, a component boundary, or the cost of a whole class of change. A tuning constant, a UI behaviour or a test-harness fix does **not** get a record however subtle its reasoning — that goes in a comment beside the code. Four records were withdrawn on 2026-07-25 for failing this bar, so **the numbering has gaps and a number is never reused**; existing references therefore never shift. Numbers are identifiers, not an ordering and not a sequence: take the next global one, wherever the group. Highest record when this was written: **ADR-037** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id or a dead anchor, and deliberately permits gaps.
+- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. **The bar is architecture:** a decision that shapes deployment, data, a component boundary, or the cost of a whole class of change. A tuning constant, a UI behaviour or a test-harness fix does **not** get a record however subtle its reasoning — that goes in a comment beside the code. Four records were withdrawn on 2026-07-25 for failing this bar, so **the numbering has gaps and a number is never reused**; existing references therefore never shift. Numbers are identifiers, not an ordering and not a sequence: take the next global one, wherever the group. Highest record when this was written: **ADR-039** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id or a dead anchor, and deliberately permits gaps.
 - **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP — §1–7 describe all of it, §8 records the decisions behind it.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff is appended to §8 as a **new** record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
 - **related:** `../CLAUDE.md` (rules), `RUNBOOK.md` (operations — and the owner of the measurements and operational economics, notably the game's per-turn cost, which is re-measured rather than superseded), the owner's local living doc (roadmap, TODO, private operational detail). `docs/DESIGN.md` was merged into §8 here on 2026-07-25 and deleted; `git log -- docs/DESIGN.md` still resolves its history.
@@ -132,7 +132,39 @@ sequenceDiagram
 
 The prompt order is load-bearing, and so is the shape of the history: static system prompt → each past turn replayed as the JSON the judge returned → one volatile message last. See [§8 → ADR-013](#adr-013--the-prompt-is-laid-out-for-prefix-caching-and-history-is-replayed-as-json) for why. Measurements and per-turn costs: `RUNBOOK.md` → *Working on the game*.
 
-### 2.4 Realtime connection lifetime
+### 2.4 Reading the pet in «Ванягоччи» (a GET that writes, and why)
+
+**This flow is specific to «Ванягоччи»** and is the shape every time-varying thing in the system takes ([§8 → ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked)). Nothing runs on a timer: the pet is created, its stats are seeded, they are decayed, and a death is recorded — all by the request that happened to look.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant A as psycho-space
+    participant P as PostgreSQL
+
+    B->>A: GET /api/game-vanyagotchi/state (session cookie)
+    A->>P: INSERT pet ... ON CONFLICT DO NOTHING
+    Note over A,P: bare ON CONFLICT — the arbiter is a PARTIAL unique index<br/>(one living pet per account), so two tabs racing produce one pet
+    A->>P: SELECT the pet
+    A->>P: SELECT its (value, as_of) stat rows
+    A->>A: seed any catalogue stat with no row yet — this is what makes<br/>"a new stat is a catalogue entry" true for pets that already exist
+    A->>A: value = clamp(value − rate × hoursSince(as_of)) for each stat
+    alt a fatal stat is at its floor and died_at is NULL
+        A->>A: deadAt = as_of + (value − min) / rate — the derived instant,<br/>never "now"
+        A->>P: UPDATE ... SET died_at = deadAt WHERE died_at IS NULL
+        Note over A,P: idempotent — a concurrent reader that loses this race<br/>computed the identical instant, so it reports it without re-reading
+    end
+    A-->>B: {pet, stats[], alive, server_now}
+    B->>A: POST /api/game-vanyagotchi/actions/heal (empty body)
+    Note over B,A: the client sends a VERB, never a value — nothing to forge
+    A->>P: UPSERT the stat at (clamped value, now) — and clear died_at if revived
+    A-->>B: the server's recomputed state
+```
+
+`server_now` is in every response so the SPA can keep the bar creeping between fetches against the **server's** clock rather than the phone's. That interpolation is display only: the client never sends a value back, and every action is answered with the state the server computed, so a screen that has drifted is corrected the moment the player does anything.
+
+### 2.5 Realtime connection lifetime
 
 ```mermaid
 sequenceDiagram
@@ -167,7 +199,7 @@ sequenceDiagram
 
 The reason arrives as a **frame**, not as a WebSocket close code — a browser sees `1006` for every disconnect and reads the reason from the last `bye` frame instead. Codes: `1001` planned restart (reconnect promptly), `1013` evicted or over a cap (back off), `4001` session revoked (terminal — stop). See [ADR-018 · *The close reason travels as a frame*](#adr-018--the-close-reason-travels-as-a-frame-not-as-a-close-code) for why, and [ADR-019 · *The read pump must not observe shutdown*](#adr-019--the-read-pump-must-not-observe-shutdown) for the library trap that makes the ordering load-bearing.
 
-### 2.5 Deploy
+### 2.6 Deploy
 
 ```mermaid
 sequenceDiagram
@@ -214,7 +246,7 @@ flowchart LR
         VKP["vk (client + id_token verifier)"]
         subgraph games["games — self-contained, share nothing with each other"]
             GAME["gamekhimki<br/>«Смолтолк в Химках»"]
-            VANYA["gamevanyagotchi<br/>«Ванягоччи» — shared plane"]
+            VANYA["gamevanyagotchi<br/>«Ванягоччи» — shared plane + the pet"]
         end
     end
 
@@ -222,8 +254,8 @@ flowchart LR
     MIG["migrations<br/>NNN_*.sql, embedded"]
 
     MAIN --> CFG & DB & LOG & OBS & HTTP & WEB & MIG & RT & VANYA
-    HTTP --> ACC & SESS & WISH & GAME & SET & VKP & RT
-    ACC & SESS & WISH & GAME & SET --> DB
+    HTTP --> ACC & SESS & WISH & GAME & VANYA & SET & VKP & RT
+    ACC & SESS & WISH & GAME & VANYA & SET --> DB
     ACC & SESS --> CRY
     VANYA -- "publishes through / reads from" --> RT
     SEED -.reuses.-> ACC & SESS & CRY & DB
@@ -233,7 +265,9 @@ flowchart LR
 
 **Games are the exception to the usual instinct to factor things out.** Each game is a self-contained module: its own package, its own `game_<name>_*` tables, its own routes and views, its own leaderboard code — and **no game imports another, even where the code would be identical.** A game may depend on platform packages (`realtime`, `session`, `account`, `crypto`, `db`, and the `httpapi` plumbing); none of those may know a game exists, which is why the socket is addressed as the game-agnostic `/api/realtime?room=…` and game-specific message types live in the game's own package. The test for the boundary: deleting a game must mean deleting its package, its migration, its routes and its views — and nothing else. See [§8 → ADR-028](#adr-028--games-are-self-contained-modules) for why, and `CLAUDE.md` → *Games are self-contained modules* for the same rule stated as a working rule.
 
-**And each game's name is spelled out at every layer**, which is what makes that boundary test executable rather than a judgement call: package `internal/game<name>/`, tables `game_<name>_*`, routes `/api/game-<name>/*`, view `Game<Name>View.vue` at `/app/game-<name>` — so `git grep -il game<name>` enumerates the whole module. «Смолтолк в Химках» is `gamekhimki`; «Ванягоччи» will be `gamevanyagotchi`. Platform packages stay unprefixed on purpose, because the missing prefix is the signal that they are game-agnostic. See [§8 → ADR-030](#adr-030--game-modules-are-named-gamename).
+**And each game's name is spelled out at every layer**, which is what makes that boundary test executable rather than a judgement call: package `internal/game<name>/`, tables `game_<name>_*`, routes `/api/game-<name>/*`, view `Game<Name>View.vue` at `/app/game-<name>` — so `git grep -il game<name>` enumerates the whole module. «Смолтолк в Химках» is `gamekhimki`; «Ванягоччи» is `gamevanyagotchi`. Platform packages stay unprefixed on purpose, because the missing prefix is the signal that they are game-agnostic. See [§8 → ADR-030](#adr-030--game-modules-are-named-gamename).
+
+**`gamevanyagotchi` is one package holding two things with deliberately different lifetimes**, and the split is worth knowing before reading it. The **plane** — who is standing where — lives in memory, is published through the hub five times a second, and is meaningless after a restart. The **pet** — the stats, the death — is in Postgres and outlives every deploy. They share a `Service` because they are one game and the plane will draw what the database knows, but they share no state: nothing on the socket path touches the pool, and nothing on the pet path touches the position map. Beyond `repository.go` / `postgres_repository.go` / `service.go` / `errors.go` the package adds `content.go` (the content catalogue, served to the SPA) and `decay.go` (the pure time arithmetic) — see [§8 → ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked) and [ADR-039](#adr-039--game-content-is-a-go-catalogue-and-the-schema-stores-only-its-keys).
 
 ## 4. Data model
 
@@ -247,6 +281,9 @@ erDiagram
     accounts ||--o{ wishlist_comments : "authors"
     accounts ||--o{ wishlist_comment_votes : "casts"
     accounts ||--o{ game_khimki_runs : "plays"
+    accounts ||--|| game_vanyagotchi_pets : "keeps"
+    accounts ||--o{ game_vanyagotchi_world_objects : "leaves behind"
+    game_vanyagotchi_pets ||--o{ game_vanyagotchi_pet_stats : "has"
     wishlist_items ||--o{ wishlist_votes : "receives"
     wishlist_items ||--o{ wishlist_comments : "has"
     wishlist_comments ||--o{ wishlist_comment_votes : "receives"
@@ -301,6 +338,36 @@ erDiagram
         boolean success
         integer steps
     }
+    game_vanyagotchi_pets {
+        uuid id PK
+        uuid account_id FK "one living pet per account (partial UK)"
+        text name "set in a dialog, NULL until then"
+        text skin_key "catalogue key"
+        text location_key "catalogue key"
+        timestamptz died_at "materialised once, at the derived instant"
+        float x "last standing place, NULL until written"
+        float y
+        timestamptz last_seen_at
+    }
+    game_vanyagotchi_pet_stats {
+        uuid pet_id PK
+        text stat_key PK "catalogue key"
+        float value "with as_of, the whole decay engine"
+        timestamptz as_of
+    }
+    game_vanyagotchi_world_objects {
+        uuid id PK
+        text kind "catalogue key: relief | key | beer_crate"
+        text location_key
+        float x "normalised 0..1"
+        float y
+        boolean singleton "participates in one-active-per-kind"
+        uuid owner_account_id FK "NULL when the world spawned it"
+        uuid claimed_by FK "SingleWinner discipline"
+        integer remaining "Stock discipline"
+        timestamptz exhausted_at
+        timestamptz expires_at "filtered lazily on read, never swept"
+    }
     game_assets {
         text game_key PK
         text art_key PK
@@ -315,6 +382,8 @@ erDiagram
 
 `game_assets` and `app_settings` stand apart — neither references an account. The art bytes live in Postgres, not in git and not in the binary. See [§8 → ADR-026](#adr-026--game-art-lives-in-postgres-not-in-git-or-the-binary) for why (that record predates the rename and names the table `game_assets`; [ADR-030](#adr-030--game-modules-are-named-gamename) is the amendment).
 
+The three `game_vanyagotchi_*` tables are **«Ванягоччи»**, and they are shaped by two decisions worth knowing before changing them. **Every `*_key` column is `text` whose meaning lives in the Go catalogue, never a Postgres enum** — an enum makes each new stat, skin, location or object kind an `ALTER TYPE`, i.e. a permanent migration, which is exactly the cost the catalogue exists to remove ([§8 → ADR-039](#adr-039--game-content-is-a-go-catalogue-and-the-schema-stores-only-its-keys)). And **stats are tall while world objects are wide, on purpose**: stats are a homogeneous collection of `(value, as_of)` pairs that one decay expression covers, whereas world objects are heterogeneous rows carrying contended invariants — `claimed_by`, `remaining`, `exhausted_at` — that have to be indexable and `CHECK`-able. There is no JSONB in either. `game_vanyagotchi_world_objects` is written by no code yet; its shape landed with the other two because migrations are immutable, and the one-active-per-kind invariant is a partial unique index that an integration test pins today.
+
 `game_khimki_runs` and `game_assets` belong to **«Смолтолк в Химках»**, and now say so — they were `game_runs` and `game_assets` until `migrations/007_game_khimki_rename.sql`. A second game gets its own `game_<name>_*` tables rather than rows in these — see [§8 → ADR-028](#adr-028--games-are-self-contained-modules) and [ADR-030](#adr-030--game-modules-are-named-gamename). Their `game_key` **values** did not move with the tables: the column still reads `smalltalk_khimki`, because it is data rather than a name and the art blobs are keyed on it.
 
 ## 5. API map
@@ -327,11 +396,14 @@ Everything is under `/api`, authenticated by the session cookie. `GET /healthz` 
 | `wishlist` | `GET/POST items` · `DELETE items/{id}` · `POST/DELETE items/{id}/vote` · `GET/POST items/{id}/comments` · `DELETE comments/{id}` · `POST/DELETE comments/{id}/vote` | approved |
 | `game-khimki` | `GET assets/{game}/{key}` | **public** (art, cacheable) |
 | `game-khimki` | `GET config` · `POST attempt` (5/min per IP — paid) · `POST runs` · `GET runs/leaderboard` · `GET runs/me` | approved |
+| `game-vanyagotchi` | `GET config` · `GET state` · `POST actions/{action}` | approved |
 | `admin` | `GET accounts?status=` · `POST accounts/{id}/approve` · `POST accounts/{id}/block` · `GET settings` | admin+ |
 | `admin` | `POST accounts/{id}/promote` · `POST accounts/{id}/demote` · `PUT settings/open-registration` | superadmin only |
 | `realtime` | `GET realtime?room=` — WebSocket upgrade | approved |
 
-The two `game-khimki` rows are **«Смолтолк в Химках»**; a second game gets its own `/api/game-<name>/*` group rather than new keys in this one, while `realtime` is game-agnostic by design ([§8 → ADR-028](#adr-028--games-are-self-contained-modules), [ADR-030](#adr-030--game-modules-are-named-gamename)).
+The two `game-khimki` rows are **«Смолтолк в Химках»** and the `game-vanyagotchi` row is **«Ванягоччи»**; a third game gets its own `/api/game-<name>/*` group rather than new keys in either, while `realtime` is game-agnostic by design ([§8 → ADR-028](#adr-028--games-are-self-contained-modules), [ADR-030](#adr-030--game-modules-are-named-gamename)).
+
+Two things about the `game-vanyagotchi` row read oddly and are deliberate. **`GET state` writes** — it creates the pet on first sight and records a death the first time one is observed; both are idempotent, and the alternative to writing on read is a background job this system does not have ([§8 → ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked)). **The action is a path segment checked against the content catalogue**, not a fixed set of routes, so a new stat-restoring verb is a catalogue entry rather than a handler — and the request body is empty, because the client sends a verb and never a value.
 
 **`/api/game/*` no longer answers.** The pre-rename prefix was registered as a second route group on the same handlers for exactly one deploy cycle, so that a browser holding the previous SPA build in cache would not break mid-run; that cycle is over and the registration is deleted. `TestGameKhimkiLegacyPathAliasIsGone` in `test/integration/gamekhimki_test.go` now pins its **absence** — it asserts 404 rather than 401 on a gated path, because 401 would mean the route group had been re-registered and was merely refusing the request. On the client side `/app/game` redirects permanently to `/app/game-khimki`; that redirect is not an alias and stays.
 
@@ -726,3 +798,31 @@ _Accepted · 2026-07-25_
 _Reasoning:_ nginx passes `X-Forwarded-For: $proxy_add_x_forwarded_for`, which *appends* the peer to whatever the client already sent, so the header's leftmost entry is attacker-controlled. `middleware.RealIP` trusted exactly that entry and overwrote `r.RemoteAddr` with it — which made every per-IP limit forgeable by varying one header per request, the login limiter and the limiter guarding the paid LLM endpoint included. `X-Real-IP` is safe in the same position for two reasons that have to hold together: nginx sets it from `$remote_addr`, overwriting whatever the client sent, and the loopback check means a value that reached the app by any other route is not believed.
 
 _Consequence:_ the limits are only meaningful while the app sits behind that proxy, which is already the deployment (it listens on loopback). Both halves are pinned by tests, because the failure is silent: `TestClientIPTrustsProxyHeaderOnlyFromLoopback` covers the trust rule, and `TestRateLimitNotBypassableByForwardedHeader` drives a client rotating `X-Forwarded-For` and requires it to still be counted as one client.
+
+### 8.8 The pet
+
+#### ADR-038 · Time-varying state is computed on read, never ticked
+
+_Accepted · 2026-07-25_
+
+Anything that changes with the clock is stored as the pair `(value, as_of)` and evaluated when somebody reads it — `clamp(value − rate × hoursSince(as_of), min, max)`. There is no cron, no background goroutine, no per-entity timer and no scheduler anywhere in the system. Facts that a passage of time *creates* rather than merely alters — a pet's death — are **materialised lazily and idempotently by the first read that observes them**, at the instant derived from the pair rather than at the moment somebody happened to look. The 5 Hz realtime broadcast is not an exception to this: it renders, and writes nothing.
+
+_Reasoning:_ the obvious alternative is a job that walks every pet every minute and decrements. It costs a scheduler, a leader problem the day there are two processes, a per-entity write rate proportional to the population, and a class of bug where the job stops and the world silently freezes. The closed form costs one subtraction, and reading a value after a month away is exactly as cheap as reading it a second later, because it *is* the same subtraction. Offline progression is then not a feature anybody built — it is what the expression already means.
+
+_Two properties are load-bearing, and both are easy to break by accident._ First, the result is **exact, not an approximation of ticking**: linear decay evaluated at an instant is precisely what a continuous simulation would have produced, so there is no divergence between "was away" and "was watching" and nothing to gain by choosing when to look. **That safety is a property of linearity, not of the pattern.** The moment a rate depends on another decaying value — compounding, one stat draining another — the closed form becomes an approximation whose *error sign* decides whether being absent beats playing; a shipped idle game had exactly that bug and made not playing strictly better. If non-linear decay is ever wanted, derive the closed form from the continuous model and check the direction of its error deliberately. Second, **server time is the only clock**: `now` is the server's and `as_of` is a column, so a device with a wound-forward clock changes nothing, and the client is sent `server_now` so its own drawing can correct for its skew.
+
+_Consequence:_ a `GET` is allowed to write, which reads oddly in a route table and is the honest shape here — the write is idempotent and conditional (`UPDATE … WHERE died_at IS NULL`), so concurrent observers converge and the loser of the race can report the winner's timestamp without reading it back, because both derive the identical instant from the identical pair. It also means **nothing happens to a world nobody is looking at**, which is correct rather than a compromise: an event no player could have witnessed is not an event.
+
+#### ADR-039 · Game content is a Go catalogue, and the schema stores only its keys
+
+_Accepted · 2026-07-25_
+
+A game's content — the stats and their rates and bounds, the actions, the skins, the locations, the labels — lives in one Go file inside that game's package (`content.go`) and is served whole to the SPA by that game's `GET /config`. The database stores **keys as `text`**, never Postgres enums, and holds none of the meaning. The SPA hardcodes no key, no label and no threshold: it renders whatever the config describes.
+
+_Reasoning:_ this is a decision about the cost of a whole class of change, and migrations here are **immutable**, so getting it wrong is permanent. With enums, every new stat, skin, location or object kind is an `ALTER TYPE` — a migration, forever, for a value whose entire meaning is a label and a number. With a column per stat, every new stat is an `ALTER TABLE`. With the catalogue plus `text` keys, adding one is a Go-file edit: no migration, no client deploy, and the value's rate, bounds, label and rendering are all defined in the single place that can validate them against content anyway. A row whose key has left the catalogue is unrenderable and is skipped on read, which is the correct failure for a value only content can define.
+
+_The homogeneous half gets rows; the heterogeneous half gets columns._ A pet's stats are all the same shape — a scalar with a rate and an `as_of` — so they are rows in a tall table, one decay expression covers every one of them, and adding a stat needs no schema at all. A **stat whose rate is zero is a lifetime counter**, which is how this game gets its records without a second runs table. World objects are the opposite: heterogeneous rows carrying contended invariants (`claimed_by`, `remaining`, `exhausted_at`) that must be indexable, `NOT NULL`-able and `CHECK`-able, because a typo silently reading as NULL is the one bug class a contested claim can least afford. Choosing differently in the two tables is the decision, not an inconsistency.
+
+_And there is no JSONB, deliberately._ Both candidate uses were cosmetic and derive better from `hash(id)` against the catalogue — zero storage, and unable to drift out of step with the content. A JSONB column added now would ship unused, and an unused escape hatch is where load-bearing state goes to hide from constraints. _The trigger to revisit is named:_ the first kind that needs a persisted, kind-specific, non-derivable value earns either that column or a narrow side table **then**, decided with the concrete case in hand.
+
+_Consequence:_ the property is testable rather than aspirational, and is tested — the stubbed Playwright suite serves a config containing a stat and an action the SPA has never heard of and asserts both render, labelled from the config. A client that had learned a content key fails that test. The same rule is why an invariant that must live in the database cannot name a content value in DDL: the "at most one active event of a kind" index is predicated on a `singleton` boolean the catalogue sets at insert time, not on `kind IN ('key', 'beer_crate')`, which would have put content into an immutable migration.

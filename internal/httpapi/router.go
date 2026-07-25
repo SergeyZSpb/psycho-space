@@ -11,6 +11,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
 	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
+	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
 	"github.com/SergeyZSpb/psycho-space/internal/realtime"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/settings"
@@ -33,6 +34,10 @@ type Deps struct {
 	Sessions   *session.Manager
 	Wishlist   *wishlist.Service
 	GameKhimki *gamekhimki.Service
+	// GameVanyagotchi is the second game. The same service is also the
+	// RealtimeHandler below — one game, two surfaces: an HTTP one for the pet
+	// that outlives the process and a socket one for the plane that does not.
+	GameVanyagotchi *gamevanyagotchi.Service
 	// GameAssets is the shared art blob store — infrastructure, not a game, so
 	// every game's art is served through this one dependency. nil disables the
 	// asset route, which is the correct behaviour before anything is uploaded.
@@ -143,6 +148,24 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/runs/leaderboard", s.handleGameKhimkiLeaderboard)
 				r.Get("/runs/me", s.handleGameKhimkiStats)
 			})
+		})
+
+		// Game «Ванягоччи» — approved users only. Its own path segment and its
+		// own handlers: it shares no route, no table and no service code with
+		// the game above, and deleting it is deleting this block along with its
+		// package, its migration and its views.
+		//
+		// No LLM on any path here, ever — that rule is written into the game's
+		// package doc and is the reason this group needs no tight per-endpoint
+		// limiter the way /game-khimki/attempt does. The blanket 240/min above
+		// is the guard, and every write below is idempotent or clamped.
+		r.Route("/game-vanyagotchi", func(r chi.Router) {
+			r.Use(s.requireAuth)
+			r.Get("/config", s.handleGameVanyagotchiConfig)
+			r.Get("/state", s.handleGameVanyagotchiState)
+			// The verb is a path segment checked against the content catalogue,
+			// so a new action is a catalogue entry rather than a route.
+			r.Post("/actions/{action}", s.handleGameVanyagotchiAction)
 		})
 
 		// Game art — shared infrastructure, NOT a game. The blob store has

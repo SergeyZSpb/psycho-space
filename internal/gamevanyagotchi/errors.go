@@ -17,3 +17,19 @@ var (
 	// numbers. Out-of-range is not in this class — that is clamped.
 	ErrInvalidPosition = errors.New("gamevanyagotchi: invalid position")
 )
+
+// Sentinels for the HTTP path. Unlike the ones above these DO reach a client, as
+// a stable error code chosen by the handler — never as this text.
+var (
+	// ErrUnknownAction means the requested verb is not in the catalogue. A
+	// client that asks for one is either stale or probing; both are the same
+	// 404.
+	ErrUnknownAction = errors.New("gamevanyagotchi: unknown action")
+	// ErrUnknownStat means the catalogue disagrees with itself — an action that
+	// moves a stat which no longer exists. That is a content bug rather than
+	// anything the caller did, so it is a 500 and not a 404.
+	ErrUnknownStat = errors.New("gamevanyagotchi: unknown stat")
+	// ErrPetDead means the action needs a living pet and this one is not. Only
+	// an action that can revive him is allowed through.
+	ErrPetDead = errors.New("gamevanyagotchi: pet is dead")
+)

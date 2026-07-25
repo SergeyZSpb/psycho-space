@@ -121,7 +121,7 @@ func main() {
 	// so it is not the background timer this project rules out. It is created
 	// here rather than inside the service so tests can drive the same loop from a
 	// channel they control and never sleep.
-	gameVanyagotchiSvc := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom)
+	gameVanyagotchiSvc := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository())
 	vanyaTicker := time.NewTicker(gamevanyagotchi.BroadcastInterval)
 	defer vanyaTicker.Stop()
 	go gameVanyagotchiSvc.Run(hubCtx, vanyaTicker.C)
@@ -146,9 +146,12 @@ func main() {
 		Sessions:   sessions,
 		Wishlist:   wishlistSvc,
 		GameKhimki: gameKhimkiSvc,
-		GameAssets: gameAssetsSvc,
-		Settings:   settingsSvc,
-		VKVerifier: vkVerifier,
+		// One service, two surfaces: the pet over HTTP here, the plane over the
+		// socket via RealtimeHandler below.
+		GameVanyagotchi: gameVanyagotchiSvc,
+		GameAssets:      gameAssetsSvc,
+		Settings:        settingsSvc,
+		VKVerifier:      vkVerifier,
 
 		Realtime:        hub,
 		RealtimeCtx:     hubCtx,

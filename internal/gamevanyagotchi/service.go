@@ -6,11 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
+	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/realtime"
 )
 
@@ -52,17 +54,27 @@ const (
 	pseudonymChars = 12
 )
 
-// Service owns the shared plane: where everybody is standing, and telling
-// everybody about it.
+// Service owns two halves of the game that keep deliberately different company.
 //
-// Positions live in memory and nowhere else, which is not a shortcut. A position
-// is presence — it is meaningless once the socket is gone, and a stored one
-// would keep asserting something untrue after a restart. Anything durable in
-// this game (a pet, a stat, a claimed key) is Postgres's job and arrives in
-// Phase 2.
+// The shared plane — where everybody is standing, and telling everybody about it
+// — lives in memory and nowhere else, and that is not a shortcut. A position is
+// presence: it is meaningless once the socket is gone, and a stored one would
+// keep asserting something untrue after a restart.
+//
+// The pet is the opposite. It outlives the process, so it is Postgres's, and it
+// is read through the repository below. The two halves share a struct because
+// they are one game and the plane will soon draw what the database knows, but
+// they share no state: nothing on the realtime path touches the pool, and
+// nothing on the pet path touches the position map.
 type Service struct {
 	transport Transport
 	room      string
+
+	// q and repo are the durable half. Both may be nil in a test that only
+	// exercises the plane, which is safe because the two paths never meet — but
+	// the composition root always supplies them.
+	q    db.DBTX
+	repo Repository
 
 	// pseudonymKey turns an account id into the handle that goes on the wire.
 	// Read-only after construction, so it needs no lock. See pseudonym.
@@ -83,13 +95,43 @@ type Service struct {
 	// many devices it is signed in on: keying by connection made a second device
 	// a second dot, standing somewhere else, moving on its own.
 	mu  sync.Mutex
-	pos map[string]Point
+	pos map[string]placement
 }
 
-// NewService builds the game's realtime service. room is the transport room it
-// publishes to and accepts frames from; the caller supplies it so the game does
-// not hardcode a name the platform's allowlist also owns.
-func NewService(transport Transport, room string) *Service {
+// PositionGrace is how long an account keeps its place in the yard after its
+// last connection goes away.
+//
+// Without it, reloading the page put you back in the middle of the yard: a
+// refresh closes the socket, so for a moment the account has no connections at
+// all, and a map rebuilt from the live membership dropped the position before
+// the new socket arrived. The same thing happened on a tunnel, a lock screen and
+// every reconnect — which is a lot of teleporting for something the player did
+// not do.
+//
+// Two minutes because it has to outlast the longest ordinary absence the client
+// itself creates: it deliberately closes the socket after sixty seconds hidden
+// and reconnects on the way back. Beyond that the position is genuinely stale
+// and the entry point is the honest answer.
+//
+// This is a hold, not durability: a deploy restarts the process and the map
+// goes with it. Surviving that means writing the position down when the last
+// connection leaves — which is what pets.x / pets.y / pets.last_seen_at exist
+// for, and it is the slice that also makes an idle Ваня lie down and sleep
+// where he stood. It is deliberately not done from the broadcast loop.
+const PositionGrace = 2 * time.Minute
+
+// placement is a position plus the last tick at which its account was actually
+// connected, which is what the grace above is measured from.
+type placement struct {
+	at       Point
+	lastSeen time.Time
+}
+
+// NewService builds the game. room is the transport room it publishes to and
+// accepts frames from; the caller supplies it so the game does not hardcode a
+// name the platform's allowlist also owns. q and repo are the durable half and
+// may both be nil for a caller that only drives the plane.
+func NewService(transport Transport, room string, q db.DBTX, repo Repository) *Service {
 	key := make([]byte, pseudonymKeyBytes)
 	// crypto/rand, never math/rand: this key is the only thing standing between
 	// a broadcast handle and the account id behind it, so a guessable one would
@@ -100,8 +142,10 @@ func NewService(transport Transport, room string) *Service {
 	return &Service{
 		transport:    transport,
 		room:         room,
+		q:            q,
+		repo:         repo,
 		pseudonymKey: key,
-		pos:          make(map[string]Point),
+		pos:          make(map[string]placement),
 	}
 }
 
@@ -169,8 +213,13 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 			return
 		}
 		s.mu.Lock()
-		// By account, so all of that account's devices drive the one Ваня.
-		s.pos[m.AccountID] = p
+		// By account, so all of that account's devices drive the one Ваня. Only
+		// the point is written: lastSeen belongs to the broadcast, which is the
+		// only thing here holding a clock, and a moving player is by definition
+		// connected so the next tick refreshes it anyway.
+		cur := s.pos[m.AccountID]
+		cur.at = p
+		s.pos[m.AccountID] = cur
 		s.mu.Unlock()
 	}
 	// Anything else is a type this server does not know: a client newer than it,
@@ -222,8 +271,12 @@ func (s *Service) Run(ctx context.Context, tick <-chan time.Time) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick:
-			if err := s.broadcast(ctx); err != nil {
+		case now := <-tick:
+			// The tick carries its own timestamp, and that is the clock the
+			// grace period is measured against. A ticker sends the real time; a
+			// test sends whatever it likes, so the grace can be driven to expiry
+			// without a Clock seam and without ever sleeping.
+			if err := s.broadcast(ctx, now); err != nil {
 				if errors.Is(err, realtime.ErrHubClosed) || errors.Is(err, context.Canceled) {
 					return
 				}
@@ -233,49 +286,24 @@ func (s *Service) Run(ctx context.Context, tick <-chan time.Time) {
 	}
 }
 
-// broadcast sends one snapshot of the plane.
-func (s *Service) broadcast(ctx context.Context) error {
+// broadcast sends one snapshot of the plane, as of now.
+func (s *Service) broadcast(ctx context.Context, now time.Time) error {
 	members, err := s.transport.Members(ctx, s.room)
 	if err != nil {
 		return err
 	}
-	if len(members) == 0 {
-		// Nobody to tell. Also the only moment stale positions are cleared
-		// wholesale, which is fine: the rebuild below prunes continuously.
-		s.mu.Lock()
-		clear(s.pos)
-		s.mu.Unlock()
+
+	// Placed even when the room is empty, because that is also when the grace
+	// period has to be able to run out. An earlier version cleared the map
+	// wholesale here, which is exactly what teleported the last player in the
+	// yard back to the middle when they reloaded the page.
+	peers := s.place(members, now)
+	if len(peers) == 0 {
+		// Nobody to tell. Publishing into an empty room five times a second
+		// would be pure waste, and would hide a genuine "why is this room empty"
+		// question behind traffic.
 		return nil
 	}
-
-	peers := make([]Peer, 0, len(members))
-	s.mu.Lock()
-	// Rebuilt from the hub's member list rather than trimmed in place, so the
-	// position of an account with no connections left is dropped by
-	// construction. There is no leave event to miss and no bookkeeping that can
-	// drift from the hub.
-	//
-	// Keyed by account, and that keying IS the deduplication: the hub allows an
-	// account three connections and reports each of them as its own Member, but
-	// all three describe one Ваня standing in one place. The `seen` skip below is
-	// what stops a second device from arriving as a second dot — and, because the
-	// map is rebuilt from members every tick, an account keeps its position for
-	// as long as ANY of its connections survives and loses it when the last one
-	// goes.
-	next := make(map[string]Point, len(members))
-	for _, m := range members {
-		if _, seen := next[m.AccountID]; seen {
-			continue
-		}
-		p, ok := s.pos[m.AccountID]
-		if !ok {
-			p = spawn
-		}
-		next[m.AccountID] = p
-		peers = append(peers, Peer{ID: s.pseudonym(m.AccountID), X: p.X, Y: p.Y})
-	}
-	s.pos = next
-	s.mu.Unlock()
 
 	// Marshalled and published outside the lock: a slow publish must not hold up
 	// the read pumps writing moves.
@@ -284,4 +312,238 @@ func (s *Service) broadcast(ctx context.Context) error {
 		return err
 	}
 	return s.transport.Publish(ctx, s.room, frame)
+}
+
+// place reconciles the position map against who is actually connected and
+// returns the roster to publish.
+//
+// Keyed by account, and that keying IS the deduplication: the hub allows an
+// account three connections and reports each as its own Member, but all three
+// describe one Ваня standing in one place. The `seen` skip is what stops a
+// second device from arriving as a second dot.
+//
+// Membership decides who is IN the roster; the grace period decides how long a
+// position is REMEMBERED. Those were the same thing until a reload proved they
+// should not be — an absent account is not in the frame either way, so nobody
+// sees a ghost, and coming back inside the window puts you where you left off
+// instead of in the middle of the yard.
+func (s *Service) place(members []realtime.Member, now time.Time) []Peer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	peers := make([]Peer, 0, len(members))
+	present := make(map[string]bool, len(members))
+	for _, m := range members {
+		if present[m.AccountID] {
+			continue
+		}
+		present[m.AccountID] = true
+
+		p, ok := s.pos[m.AccountID]
+		if !ok {
+			p.at = spawn
+		}
+		p.lastSeen = now
+		s.pos[m.AccountID] = p
+		peers = append(peers, Peer{ID: s.pseudonym(m.AccountID), X: p.at.X, Y: p.at.Y})
+	}
+
+	// Forget whoever has been gone longer than the grace. Deleting during a
+	// range over a map is defined behaviour in Go, and doing it here rather than
+	// by rebuilding the map is what lets an absent account keep its entry: there
+	// is still no leave event to miss, because absence is inferred from the
+	// membership the hub reports rather than from a notification.
+	for id, p := range s.pos {
+		if !present[id] && now.Sub(p.lastSeen) >= PositionGrace {
+			delete(s.pos, id)
+		}
+	}
+	return peers
+}
+
+// ---------------------------------------------------------------------------
+// The pet. Everything below outlives the process; everything above dies with it.
+// ---------------------------------------------------------------------------
+
+// Config returns the content catalogue as the SPA receives it.
+//
+// No art decoration yet: no sprite has been uploaded, so every skin resolves to
+// its emoji-over-gradient placeholder, which is what lets this game ship
+// playable with zero images. Pointing a skin at an uploaded blob is one lookup
+// against the shared asset store, added when there is a blob to point at.
+func (s *Service) Config() Config { return Content() }
+
+// State returns the caller's pet with every stat decayed to this instant,
+// creating the pet on first sight and recording a death if this is the read that
+// observes one.
+func (s *Service) State(ctx context.Context, accountID string) (State, error) {
+	return s.state(ctx, accountID, time.Now().UTC())
+}
+
+// Act applies one catalogue action to the caller's pet and answers with the
+// server's own recomputed state.
+//
+// The client sends a verb and never a value — it does not say "set hp to 80",
+// it says "heal" — so there is nothing in the request to forge. That differs
+// deliberately from the first game, which carries its tension counter
+// client-side: a run there is ephemeral and unrecorded until it ends, and a pet
+// here is persistent.
+func (s *Service) Act(ctx context.Context, accountID, actionKey string) (State, error) {
+	action, ok := ActionByKey(actionKey)
+	if !ok {
+		return State{}, fmt.Errorf("%w: %q", ErrUnknownAction, actionKey)
+	}
+	stat, ok := StatByKey(action.StatKey)
+	if !ok {
+		// A catalogue that disagrees with itself — an action naming a stat that
+		// was removed. Caught here rather than silently doing nothing, because
+		// the alternative is a button that appears to work and does not.
+		return State{}, fmt.Errorf("%w: action %q moves %q", ErrUnknownStat, action.Key, action.StatKey)
+	}
+
+	now := time.Now().UTC()
+	before, err := s.state(ctx, accountID, now)
+	if err != nil {
+		return State{}, err
+	}
+	if !before.Alive && !action.RevivesFatal {
+		return State{}, ErrPetDead
+	}
+
+	current, ok := before.value(stat.Key)
+	if !ok {
+		// state() seeds every catalogue stat, so this cannot happen; treat a
+		// missing one as its starting value rather than as a zero, which for a
+		// stat whose floor is fatal would be the difference between "new" and
+		// "dead".
+		current = stat.Start
+	}
+	next := stat.Clamp(current + action.Delta)
+	if err := s.repo.SetStat(ctx, s.q, before.Pet.ID, stat.Key, next, now); err != nil {
+		return State{}, err
+	}
+
+	// Bringing him round.
+	//
+	// Death is recoverable in this game, and that is a design decision rather
+	// than an unfinished one: an irreversible loss in a fifteen-person friend
+	// group is how you lose a player permanently, whereas a Ваня who has to be
+	// revived is a story somebody tells. What death costs is the fright and
+	// whatever decayed while nobody was looking — the moment of it stays
+	// recorded until he is actually back on his feet.
+	if !before.Alive && action.RevivesFatal && next > stat.Min {
+		if err := s.repo.Revive(ctx, s.q, before.Pet.ID); err != nil {
+			return State{}, err
+		}
+	}
+
+	return s.state(ctx, accountID, now)
+}
+
+// state is the one read path, shared by State and Act so an action can never
+// answer with a differently-computed world than a plain read would have.
+//
+// now is passed in rather than taken, so that one action reads, writes and
+// answers against a single instant instead of three slightly different ones.
+func (s *Service) state(ctx context.Context, accountID string, now time.Time) (State, error) {
+	pet, err := s.repo.EnsurePet(ctx, s.q, accountID, catalogue.DefaultSkin, catalogue.DefaultLocation)
+	if err != nil {
+		return State{}, err
+	}
+
+	stored, err := s.storedStats(ctx, pet.ID, now)
+	if err != nil {
+		return State{}, err
+	}
+
+	// Values are built in CATALOGUE order, not in whatever order the query
+	// returned, because that order is the display order and is content too. A
+	// stored row whose key has left the catalogue is skipped rather than sent:
+	// the client resolves keys against the config, so a key the config does not
+	// mention is unrenderable, and that is the correct failure for a value only
+	// content can define.
+	values := make([]StatValue, 0, len(catalogue.Stats))
+	var deadAt time.Time
+	dead := false
+	for _, def := range catalogue.Stats {
+		row, ok := stored[def.Key]
+		if !ok {
+			continue
+		}
+		values = append(values, StatValue{
+			Key:   def.Key,
+			Value: def.At(row.Value, row.AsOf, now),
+			AsOf:  row.AsOf,
+		})
+		if !def.Dead(row.Value, row.AsOf, now) {
+			continue
+		}
+		at, ok := def.DeadAt(row.Value, row.AsOf)
+		if ok && (!dead || at.Before(deadAt)) {
+			deadAt, dead = at, true
+		}
+	}
+
+	if dead && pet.Alive() {
+		// The instant is derived from (value, as_of) alone — never from when
+		// somebody happened to look — so two readers observing the same death at
+		// different moments compute the identical timestamp. That is what makes
+		// losing the write race harmless: whoever wrote it wrote what we would
+		// have, and we can report it without reading it back.
+		if _, err := s.repo.MarkDied(ctx, s.q, pet.ID, deadAt); err != nil {
+			return State{}, err
+		}
+		at := deadAt
+		pet.DiedAt = &at
+	}
+
+	return State{Pet: pet, Stats: values, Alive: pet.Alive(), ServerNow: now}, nil
+}
+
+// storedStats reads a pet's stat rows, seeding any the catalogue defines and the
+// pet does not have yet.
+//
+// That seeding is what makes "adding a stat is a catalogue entry" true for pets
+// that already exist, rather than only for pets created afterwards. It is the
+// same lazy-materialisation shape as the death write and as the pet itself: no
+// migration backfills anything, and the first read that notices a gap fills it.
+//
+// The re-read after seeding is not belt-and-braces. SeedStats does nothing on
+// conflict, so when two requests seed the same pet at once the loser's rows are
+// discarded — and the loser would otherwise report the values it tried to write
+// rather than the ones that are actually stored.
+func (s *Service) storedStats(ctx context.Context, petID string, now time.Time) (map[string]StatRow, error) {
+	stored, err := s.statsByKey(ctx, petID)
+	if err != nil {
+		return nil, err
+	}
+
+	var missing []StatRow
+	for _, def := range catalogue.Stats {
+		if _, ok := stored[def.Key]; !ok {
+			missing = append(missing, StatRow{Key: def.Key, Value: def.Start, AsOf: now})
+		}
+	}
+	if len(missing) == 0 {
+		return stored, nil
+	}
+	if err := s.repo.SeedStats(ctx, s.q, petID, missing); err != nil {
+		return nil, err
+	}
+	return s.statsByKey(ctx, petID)
+}
+
+// statsByKey reads a pet's stored stat rows into a map. Keyed rather than
+// returned as a slice because every caller wants "the row for this catalogue
+// stat", and the query's own order is not the display order.
+func (s *Service) statsByKey(ctx context.Context, petID string) (map[string]StatRow, error) {
+	rows, err := s.repo.Stats(ctx, s.q, petID)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[string]StatRow, len(rows))
+	for _, r := range rows {
+		byKey[r.Key] = r
+	}
+	return byKey, nil
 }

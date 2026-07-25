@@ -10,6 +10,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **app:** systemd unit `psycho-space` under user `psychospace`; binary `/opt/psycho-space/psycho-space`; env `/etc/psycho-space/app.env`; logs `/var/log/psycho-space/app.log`.
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/gamekhimki/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
+- **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*`, view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows, and moving `as_of` is how you fast-forward. See "Working on «Ванягоччи» (the pet)" below for the queries, including how to kill and revive a pet on demand. Rates and labels are in `content.go`, not the database.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, the append-only decision records saying why it is that shape), `../CLAUDE.md` (working rules and gates).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
@@ -182,6 +183,61 @@ python3 deploy/upload-game-assets.py ~/Desktop/psycho-space/vanya_assets \
 
 - Art key = filename without extension; it **must** match a key in `content.go`. Re-running upserts. Remove one with `DELETE FROM game_assets WHERE game_key='…' AND art_key='…'`.
 - After upload, reload the game — the config now serves the real images (`<img>` in `GameKhimkiView.vue`; falls back to the emoji if a load fails).
+
+### Working on «Ванягоччи» (the pet)
+
+Nothing about a pet is ever computed on a timer, which makes it unusually easy to
+debug and unusually easy to misread: a stat's row holds `(value, as_of)` and the
+value you see in the app is `clamp(value − rate × hoursSince(as_of))` worked out
+at the moment of the request. **So the number in the database is not the number on
+the screen**, and moving `as_of` is how you travel in time.
+
+```bash
+# Somebody's pet and what it is actually storing.
+ssh psycho "sudo -u postgres psql psychospace -c \"
+  SELECT p.id, p.skin_key, p.location_key, p.died_at, s.stat_key, s.value, s.as_of
+    FROM game_vanyagotchi_pets p
+    JOIN game_vanyagotchi_pet_stats s ON s.pet_id = p.id
+   WHERE p.account_id = '<uuid>' AND p.deleted_at IS NULL\""
+```
+
+**To age a pet without waiting** — the only way to see decay, a death, or the
+revive path on demand — push `as_of` backwards. Health drains 3/hour from 100, so
+34 hours is comfortably dead:
+
+```sql
+UPDATE game_vanyagotchi_pet_stats
+   SET as_of = now() - interval '34 hours'
+ WHERE pet_id = '<uuid>' AND stat_key = 'hp';
+```
+
+Then load the game (or `curl` `/api/game-vanyagotchi/state`). That request is what
+writes `died_at`, and it writes the **derived** instant — roughly `as_of + 33.3h`,
+not "now" — so a `died_at` equal to the moment you looked means something is wrong
+with the derivation rather than with your test.
+
+**To bring somebody back**, press the button in the app; it clears `died_at`. Over
+`psql` the equivalent is clearing it *and* re-stamping health, because a pet whose
+`died_at` is NULL with health still at zero simply dies again on the next read:
+
+```sql
+UPDATE game_vanyagotchi_pet_stats SET value = 100, as_of = now()
+ WHERE pet_id = '<uuid>' AND stat_key = 'hp';
+UPDATE game_vanyagotchi_pets SET died_at = NULL, updated_at = now() WHERE id = '<uuid>';
+```
+
+**Rates and labels are not in the database.** They live in
+`internal/gamevanyagotchi/content.go` and ship with the binary, so changing how
+fast health drains, retitling a button, or adding a stat is a backend deploy with
+no migration and no frontend change — and existing pets pick a newly-added stat up
+on their next read. Adding a *stat* is safe that way; nothing backfills, because
+nothing needs to.
+
+**Positions are not in the database at all** (yet). A Ваня's place in the yard is
+in-process memory, held for `PositionGrace` (2 minutes) after the last socket
+closes so that reloading the page keeps your place. A deploy therefore returns
+everyone to the middle of the yard, which is expected, and `pets.x` / `pets.y` /
+`pets.last_seen_at` exist but are written by nothing so far.
 
 ### Tests
 

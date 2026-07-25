@@ -249,7 +249,7 @@ func buildAppRealtimeFull(t *testing.T, vkBaseURL string) (http.Handler, *realti
 		<-hub.Done()
 	})
 
-	vanya := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom)
+	vanya := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository())
 	tick := make(chan time.Time)
 	go vanya.Run(ctx, tick)
 
@@ -263,14 +263,18 @@ func buildAppRealtimeFull(t *testing.T, vkBaseURL string) (http.Handler, *realti
 	}
 	gameAssets := gameassets.NewService(pool, gameassets.NewPostgresRepository())
 	h := httpapi.NewServer(httpapi.Deps{
-		Config:          cfg,
-		Pool:            pool,
-		WebFS:           fstest.MapFS{"index.html": {Data: []byte("<html>psycho</html>")}},
-		VK:              vk.New(vkBaseURL, "app-1", "svc", vkRedirect),
-		Accounts:        newAccountService(),
-		Sessions:        sessions,
-		Wishlist:        wishlist.NewService(pool, wishlist.NewPostgresRepository()),
-		GameKhimki:      gamekhimki.NewService(pool, gamekhimki.NewPostgresRepository(), gamekhimki.NewOpenAIEvaluator(cfg.LLM), gameAssets),
+		Config:     cfg,
+		Pool:       pool,
+		WebFS:      fstest.MapFS{"index.html": {Data: []byte("<html>psycho</html>")}},
+		VK:         vk.New(vkBaseURL, "app-1", "svc", vkRedirect),
+		Accounts:   newAccountService(),
+		Sessions:   sessions,
+		Wishlist:   wishlist.NewService(pool, wishlist.NewPostgresRepository()),
+		GameKhimki: gamekhimki.NewService(pool, gamekhimki.NewPostgresRepository(), gamekhimki.NewOpenAIEvaluator(cfg.LLM), gameAssets),
+		// The same service on both surfaces, exactly as main.go wires it: the pet
+		// over HTTP, the plane over the socket. Wiring only one of them here would
+		// let a test pass against a shape production does not have.
+		GameVanyagotchi: vanya,
 		GameAssets:      gameAssets,
 		Settings:        settings.NewService(pool),
 		Realtime:        hub,
@@ -302,8 +306,13 @@ func buildAppCfg(vkBaseURL, llmURL string) http.Handler {
 		Sessions:   sessions,
 		Wishlist:   wishlist.NewService(pool, wishlist.NewPostgresRepository()),
 		GameKhimki: gamekhimki.NewService(pool, gamekhimki.NewPostgresRepository(), gamekhimki.NewOpenAIEvaluator(cfg.LLM), gameAssets),
-		GameAssets: gameAssets,
-		Settings:   settings.NewService(pool),
+		// The pet half of «Ванягоччи» with no transport at all, which is not a
+		// shortcut: the HTTP path never touches the hub, so a nil one is the
+		// honest way to say this app has no socket. A test that needs the plane
+		// uses buildAppRealtime* instead.
+		GameVanyagotchi: gamevanyagotchi.NewService(nil, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository()),
+		GameAssets:      gameAssets,
+		Settings:        settings.NewService(pool),
 	}).Handler()
 	return observability.WrapHandler(h, "http.server")
 }

@@ -32,6 +32,19 @@ type unicast struct {
 	msg    []byte
 }
 
+// epoch is the arbitrary instant the broadcast clock starts at in these tests.
+// Fixed rather than time.Now() so a failure reads the same on every run, and far
+// enough from the zero time that subtracting a grace period from it is still a
+// sane timestamp.
+var epoch = time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+
+// at is the timestamp a broadcast is driven with, `mins` minutes after the
+// epoch. Every test that does not care about the grace period passes at(0) and
+// the position map simply never expires anything.
+func at(mins float64) time.Time {
+	return epoch.Add(time.Duration(mins * float64(time.Minute)))
+}
+
 func (f *fakeTransport) setMembers(ms ...realtime.Member) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -147,9 +160,9 @@ const testRoom = "yard"
 func TestBroadcastPlacesANewConnectionAtTheSpawn(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
@@ -174,11 +187,11 @@ func TestBroadcastPlacesANewConnectionAtTheSpawn(t *testing.T) {
 func TestMoveShowsUpInTheNextFrame(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	svc.HandleInbound(context.Background(), member("a"), testRoom,
 		[]byte(`{"t":"vanyagotchi_move","x":0.1,"y":0.9}`))
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
@@ -204,10 +217,10 @@ func TestMoveShowsUpInTheNextFrame(t *testing.T) {
 func TestEveryFrameIsFullState(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	for i := 0; i < 3; i++ {
-		if err := svc.broadcast(context.Background()); err != nil {
+		if err := svc.broadcast(context.Background(), at(0)); err != nil {
 			t.Fatalf("broadcast %d: %v", i, err)
 		}
 	}
@@ -226,19 +239,19 @@ func TestEveryFrameIsFullState(t *testing.T) {
 // otherwise reappear tomorrow standing where it left off, which is not what
 // presence means. TestAnEntityOutlivesOneOfItsConnections is the multi-device
 // case, where one socket closing must NOT remove anything.
-func TestLeavingRemovesAPeerAndItsPosition(t *testing.T) {
+func TestLeavingRemovesAPeerFromTheFrameAtOnce(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	svc.HandleInbound(context.Background(), member("a"), testRoom,
 		[]byte(`{"t":"vanyagotchi_move","x":0.2,"y":0.3}`))
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
 	tr.setMembers(member("b"))
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast after leave: %v", err)
 	}
 
@@ -246,11 +259,18 @@ func TestLeavingRemovesAPeerAndItsPosition(t *testing.T) {
 	if _, ok := peerOf(svc, f, accountOf("a")); ok {
 		t.Fatalf("a disconnected peer is still in the frame: %+v", f)
 	}
+
+	// The position itself is REMEMBERED for a while — that is what makes a
+	// reload keep your place — but only for a while. Whoever is looking sees
+	// them gone either way, which is the property that matters here.
+	if err := svc.broadcast(context.Background(), at(0).Add(PositionGrace)); err != nil {
+		t.Fatalf("broadcast past the grace: %v", err)
+	}
 	svc.mu.Lock()
 	_, kept := svc.pos[accountOf("a")]
 	svc.mu.Unlock()
 	if kept {
-		t.Fatal("the position of a disconnected peer was kept")
+		t.Fatal("the position of a disconnected peer outlived the grace period")
 	}
 }
 
@@ -260,9 +280,9 @@ func TestLeavingRemovesAPeerAndItsPosition(t *testing.T) {
 // empty" question behind traffic.
 func TestAnEmptyRoomPublishesNothing(t *testing.T) {
 	tr := &fakeTransport{}
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 	if n := len(tr.frames()); n != 0 {
@@ -270,29 +290,117 @@ func TestAnEmptyRoomPublishesNothing(t *testing.T) {
 	}
 }
 
-// TestAnEmptyRoomForgetsPositions guards the leak the test above cannot see: if
-// everybody leaves at once there is no member list left to rebuild against, so
-// the positions have to be dropped explicitly or they stay forever.
-func TestAnEmptyRoomForgetsPositions(t *testing.T) {
+// TestAReloadKeepsYourPlace is the reason PositionGrace exists.
+//
+// Reloading the page closes the socket and opens a new one, so for a moment the
+// account has no connections at all. The map used to be rebuilt from the live
+// membership every tick, which dropped the position in that gap and put the
+// player back in the middle of the yard — for a refresh, a tunnel, a lock
+// screen, and every reconnect. Absence is not departure.
+func TestAReloadKeepsYourPlace(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	svc.HandleInbound(context.Background(), member("a"), testRoom,
 		[]byte(`{"t":"vanyagotchi_move","x":0.4,"y":0.4}`))
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	// The socket goes away, and a couple of ticks pass with the yard empty.
+	tr.setMembers()
+	for _, when := range []time.Time{at(0.2), at(0.4)} {
+		if err := svc.broadcast(context.Background(), when); err != nil {
+			t.Fatalf("broadcast into an empty room: %v", err)
+		}
+	}
+
+	// The new socket arrives, well inside the grace.
+	tr.setMembers(member("a"))
+	if err := svc.broadcast(context.Background(), at(0.6)); err != nil {
+		t.Fatalf("broadcast after the reload: %v", err)
+	}
+
+	frames := tr.frames()
+	p, ok := peerOf(svc, frames[len(frames)-1], accountOf("a"))
+	if !ok {
+		t.Fatal("the reloaded player is missing from the roster")
+	}
+	if p.X != 0.4 || p.Y != 0.4 {
+		t.Fatalf("peer at (%v,%v) after a reload; want where they were standing (0.4,0.4)", p.X, p.Y)
+	}
+}
+
+// TestAnEmptyRoomForgetsPositionsEventually guards the leak the grace period
+// could otherwise introduce: a position held for a reload must not be held
+// forever, or every account that ever connected stays in the map for the life of
+// the process.
+func TestAnEmptyRoomForgetsPositionsEventually(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	svc.HandleInbound(context.Background(), member("a"), testRoom,
+		[]byte(`{"t":"vanyagotchi_move","x":0.4,"y":0.4}`))
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
 	tr.setMembers()
-	if err := svc.broadcast(context.Background()); err != nil {
-		t.Fatalf("broadcast into an empty room: %v", err)
+	// One tick inside the grace: still remembered.
+	if err := svc.broadcast(context.Background(), at(1)); err != nil {
+		t.Fatalf("broadcast inside the grace: %v", err)
 	}
 	svc.mu.Lock()
-	n := len(svc.pos)
+	held := len(svc.pos)
 	svc.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("%d positions survived an empty room; want 0", n)
+	if held != 1 {
+		t.Fatalf("%d positions held one minute after leaving; want 1", held)
+	}
+
+	// One tick past it: forgotten. The grace is measured from the last tick the
+	// account was actually connected, which is at(0).
+	if err := svc.broadcast(context.Background(), at(0).Add(PositionGrace)); err != nil {
+		t.Fatalf("broadcast past the grace: %v", err)
+	}
+	svc.mu.Lock()
+	left := len(svc.pos)
+	svc.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d positions survived the grace period; want 0", left)
+	}
+}
+
+// TestComingBackAfterTheGraceStartsAtTheSpawn is the other half of the rule: a
+// position that has genuinely gone stale must not be resurrected, or a player
+// who was away all day would reappear wherever they happened to be standing at
+// breakfast.
+func TestComingBackAfterTheGraceStartsAtTheSpawn(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	svc.HandleInbound(context.Background(), member("a"), testRoom,
+		[]byte(`{"t":"vanyagotchi_move","x":0.9,"y":0.1}`))
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	tr.setMembers()
+	if err := svc.broadcast(context.Background(), at(0).Add(PositionGrace)); err != nil {
+		t.Fatalf("broadcast past the grace: %v", err)
+	}
+
+	tr.setMembers(member("a"))
+	if err := svc.broadcast(context.Background(), at(0).Add(2*PositionGrace)); err != nil {
+		t.Fatalf("broadcast on the return: %v", err)
+	}
+
+	frames := tr.frames()
+	p, _ := peerOf(svc, frames[len(frames)-1], accountOf("a"))
+	if p.X != spawn.X || p.Y != spawn.Y {
+		t.Fatalf("peer at (%v,%v) after a long absence; want the spawn (%v,%v)", p.X, p.Y, spawn.X, spawn.Y)
 	}
 }
 
@@ -303,7 +411,7 @@ func TestAnEmptyRoomForgetsPositions(t *testing.T) {
 func TestRejectedFramesLeaveThePositionAlone(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	svc.HandleInbound(context.Background(), member("a"), testRoom,
 		[]byte(`{"t":"vanyagotchi_move","x":0.8,"y":0.2}`))
@@ -317,7 +425,7 @@ func TestRejectedFramesLeaveThePositionAlone(t *testing.T) {
 		svc.HandleInbound(context.Background(), member("a"), testRoom, []byte(bad))
 	}
 
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 	p, _ := peerOf(svc, tr.frames()[0], accountOf("a"))
@@ -333,11 +441,11 @@ func TestRejectedFramesLeaveThePositionAlone(t *testing.T) {
 func TestFramesFromAnotherRoomAreIgnored(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	svc.HandleInbound(context.Background(), member("a"), "somewhere-else",
 		[]byte(`{"t":"vanyagotchi_move","x":0.9,"y":0.9}`))
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
@@ -353,7 +461,7 @@ func TestFramesFromAnotherRoomAreIgnored(t *testing.T) {
 func TestRunPublishesOnEachTick(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -380,7 +488,7 @@ func TestRunPublishesOnEachTick(t *testing.T) {
 // dies.
 func TestRunStopsWhenTheHubIsGone(t *testing.T) {
 	tr := &fakeTransport{membersErr: realtime.ErrHubClosed}
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	tick := make(chan time.Time, 1)
 	tick <- time.Time{}
@@ -400,7 +508,7 @@ func TestRunStopsWhenTheHubIsGone(t *testing.T) {
 func TestRunSurvivesATransientPublishFailure(t *testing.T) {
 	tr := &fakeTransport{publishErr: errors.New("transient")}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -427,7 +535,7 @@ func TestRunSurvivesATransientPublishFailure(t *testing.T) {
 func TestConcurrentMovesAreSafe(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"), member("c"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	var wg sync.WaitGroup
 	for _, id := range []string{"a", "b", "c"} {
@@ -444,7 +552,7 @@ func TestConcurrentMovesAreSafe(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
-			if err := svc.broadcast(context.Background()); err != nil {
+			if err := svc.broadcast(context.Background(), at(0)); err != nil {
 				t.Errorf("broadcast: %v", err)
 				return
 			}
@@ -459,9 +567,9 @@ func TestConcurrentMovesAreSafe(t *testing.T) {
 func TestTwoConnectionsOfOneAccountAreOneEntity(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(conn("phone", "acct-1"), conn("laptop", "acct-1"))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
@@ -490,11 +598,11 @@ func TestAMoveFromEitherDeviceMovesTheSameEntity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tr := &fakeTransport{}
 			tr.setMembers(phone, laptop)
-			svc := NewService(tr, testRoom)
+			svc := NewService(tr, testRoom, nil, nil)
 
 			svc.HandleInbound(context.Background(), tc.sender, testRoom,
 				fmt.Appendf(nil, `{"t":"vanyagotchi_move","x":%v,"y":%v}`, tc.x, tc.y))
-			if err := svc.broadcast(context.Background()); err != nil {
+			if err := svc.broadcast(context.Background(), at(0)); err != nil {
 				t.Fatalf("broadcast: %v", err)
 			}
 
@@ -521,17 +629,17 @@ func TestAnEntityOutlivesOneOfItsConnections(t *testing.T) {
 	tr := &fakeTransport{}
 	phone, laptop := conn("phone", "acct-1"), conn("laptop", "acct-1")
 	tr.setMembers(phone, laptop)
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	svc.HandleInbound(context.Background(), laptop, testRoom,
 		[]byte(`{"t":"vanyagotchi_move","x":0.25,"y":0.5}`))
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
 	// The laptop goes; the phone is still connected.
 	tr.setMembers(phone)
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast after one connection left: %v", err)
 	}
 	p, ok := peerOf(svc, tr.frames()[1], "acct-1")
@@ -546,17 +654,21 @@ func TestAnEntityOutlivesOneOfItsConnections(t *testing.T) {
 
 	// The phone goes too, and now there is nothing left to keep.
 	tr.setMembers(conn("someone-else", "acct-2"))
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast after the last connection left: %v", err)
 	}
 	if _, ok := peerOf(svc, tr.frames()[2], "acct-1"); ok {
 		t.Fatalf("an account with no connections is still on the plane: %+v", tr.frames()[2])
 	}
+	// Off the plane at once; out of memory once the grace has run out.
+	if err := svc.broadcast(context.Background(), at(0).Add(PositionGrace)); err != nil {
+		t.Fatalf("broadcast past the grace: %v", err)
+	}
 	svc.mu.Lock()
 	_, kept := svc.pos["acct-1"]
 	svc.mu.Unlock()
 	if kept {
-		t.Fatal("the position of a fully disconnected account was kept")
+		t.Fatal("the position of a fully disconnected account outlived the grace period")
 	}
 }
 
@@ -569,9 +681,9 @@ func TestTwoAccountsAreStillTwoEntities(t *testing.T) {
 		conn("a-phone", "acct-1"), conn("a-laptop", "acct-1"),
 		conn("b-phone", "acct-2"),
 	)
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
@@ -592,7 +704,7 @@ func TestTwoAccountsAreStillTwoEntities(t *testing.T) {
 // to not be the account id, which is the durable cross-session handle this
 // project declines to broadcast to everybody in a room.
 func TestThePseudonymIsStableAndIsNotTheAccountID(t *testing.T) {
-	svc := NewService(&fakeTransport{}, testRoom)
+	svc := NewService(&fakeTransport{}, testRoom, nil, nil)
 	const acct = "11111111-2222-3333-4444-555555555555"
 
 	first := svc.pseudonym(acct)
@@ -615,7 +727,7 @@ func TestThePseudonymIsStableAndIsNotTheAccountID(t *testing.T) {
 	// A second process is a second key, so the same account is a different
 	// entity there. That is the point of a per-process key: nothing published
 	// before a restart can be correlated with anything published after it.
-	if second := NewService(&fakeTransport{}, testRoom).pseudonym(acct); second == first {
+	if second := NewService(&fakeTransport{}, testRoom, nil, nil).pseudonym(acct); second == first {
 		t.Fatal("two services produced the same pseudonym; the key is not per-process")
 	}
 }
@@ -627,9 +739,9 @@ func TestTheRosterNeverCarriesAnAccountID(t *testing.T) {
 	tr := &fakeTransport{}
 	const acct = "11111111-2222-3333-4444-555555555555"
 	tr.setMembers(conn("c-1", acct))
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 	tr.mu.Lock()
@@ -652,7 +764,7 @@ func TestHelloIsAnsweredOnTheAskingConnectionOnly(t *testing.T) {
 	tr := &fakeTransport{}
 	asker, bystander := conn("asker", "acct-1"), conn("bystander", "acct-2")
 	tr.setMembers(asker, bystander)
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	svc.HandleInbound(context.Background(), asker, testRoom, []byte(`{"t":"vanyagotchi_hello"}`))
 
@@ -664,7 +776,7 @@ func TestHelloIsAnsweredOnTheAskingConnectionOnly(t *testing.T) {
 		t.Fatalf("you.id = %q; want the asker's own pseudonym %q", got.ID, svc.pseudonym("acct-1"))
 	}
 	// And the identity it was told is the identity it is drawn under.
-	if err := svc.broadcast(context.Background()); err != nil {
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 	if _, found := peerByID(tr.frames()[0], got.ID); !found {
@@ -684,7 +796,7 @@ func TestHelloFromASecondDeviceGetsTheSameID(t *testing.T) {
 	tr := &fakeTransport{}
 	phone, laptop := conn("phone", "acct-1"), conn("laptop", "acct-1")
 	tr.setMembers(phone, laptop)
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	svc.HandleInbound(context.Background(), phone, testRoom, []byte(`{"t":"vanyagotchi_hello"}`))
 	svc.HandleInbound(context.Background(), laptop, testRoom, []byte(`{"t":"vanyagotchi_hello"}`))
@@ -707,7 +819,7 @@ func TestOnlyAHelloIsAnswered(t *testing.T) {
 	tr := &fakeTransport{}
 	c := conn("c-1", "acct-1")
 	tr.setMembers(c)
-	svc := NewService(tr, testRoom)
+	svc := NewService(tr, testRoom, nil, nil)
 
 	for _, payload := range []string{
 		`{"t":"vanyagotchi_move","x":0.5,"y":0.5}`,

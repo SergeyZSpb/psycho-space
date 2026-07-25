@@ -9,6 +9,10 @@
     <div v-if="phase === 'intro'" class="splash">
       <div class="splash-emoji">🫃</div>
       <h1 class="splash-title">Ванягоччи</h1>
+      <p class="splash-lore">
+        Ваня — офигенный чел. Он любит пиво, но постоянно теряет ключи, что их
+        приходится искать. В этой игре каждый может почувствовать себя Ваней.
+      </p>
       <p class="splash-intro">
         Общий двор. Все Вани стоят на одной поляне — тапни, чтобы дойти туда,
         куда хочешь. Остальные видят тебя, ты видишь их.
@@ -47,20 +51,79 @@
           :data-you="id === store.youId ? '1' : undefined"
           :data-peer="id"
           :style="{ background: peerColour(id) }"
-        />
+        >
+          <!-- Your own Ваня wears his face and his condition. Everybody else is
+               still a plain dot: the roster does not carry a skin yet, and
+               inventing one client-side would show two people different worlds. -->
+          <span
+            v-if="id === store.youId && face"
+            class="peer-face"
+            data-test="peer-face"
+            :data-condition="petCondition"
+            >{{ face }}</span
+          >
+        </div>
         <p v-if="store.peerIds.length === 0" class="plane-empty">
           {{ emptyMessage }}
         </p>
       </div>
       </div>
 
-      <!-- Fixed-size status row. It costs the plane its height, never the other
-           way round. -->
+      <!-- Everything that is not the plane, in one block.
+           Grouped rather than laid out as four siblings so that the landscape
+           rule below can move the whole lot beside the plane with one
+           `flex-direction`, instead of each row having to opt out of being
+           squeezed into a column that is 350px tall. -->
+      <div class="panel">
+      <!-- Fixed-size stat row: it costs the plane its height, never the other
+           way round. Bars rather than numbers because the number that matters is
+           "is he all right", and every label, bound and threshold in here comes
+           from the catalogue. -->
+      <div v-if="bars.length" class="stats" data-test="pet-stats">
+        <div
+          v-for="bar in bars"
+          :key="bar.key"
+          class="stat"
+          :data-test="`stat-${bar.key}`"
+          :data-trouble="bar.trouble ? '1' : undefined"
+        >
+          <span class="stat-emoji" aria-hidden="true">{{ bar.emoji }}</span>
+          <span class="stat-track" role="img" :aria-label="`${bar.label}: ${bar.shown}`">
+            <span class="stat-fill" :style="{ width: `${bar.percent}%` }" />
+          </span>
+          <span class="stat-value" :data-test="`stat-value-${bar.key}`">{{ bar.shown }}</span>
+        </div>
+      </div>
+
+      <!-- What is going on with him, in one line. Fixed height whether or not
+           there is anything to say, so the plane above never resizes as the text
+           comes and goes. -->
+      <p class="petline" data-test="pet-line">{{ petLine }}</p>
+
+      <!-- Fixed-size action row. One button per catalogue action, so adding a
+           verb that moves a stat needs no change here. -->
+      <div v-if="actions.length" class="actions">
+        <v-btn
+          v-for="action in actions"
+          :key="action.key"
+          class="action-btn"
+          :data-test="`action-${action.key}`"
+          color="primary"
+          variant="tonal"
+          :disabled="acting"
+          @click="act(action)"
+        >
+          {{ action.emoji }} {{ action.label }}
+        </v-btn>
+      </div>
+
+      <!-- Fixed-size status row. -->
       <div class="hud">
         <span class="hud-count">во дворе: {{ store.peerIds.length }}</span>
         <span class="hud-status" :class="`hud-status--${store.status}`">
           {{ statusLabel }}
         </span>
+      </div>
       </div>
     </div>
   </v-container>
@@ -71,6 +134,18 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
 import { useGameVanyagotchiStore } from '../stores/gameVanyagotchi';
 import { applyFrame, isRenderablePosition, tapToPosition } from '../lib/vanyagotchiPlane';
+import {
+  condition,
+  decayedValue,
+  inTrouble,
+  skewMs,
+  statFraction,
+  type PetCondition,
+} from '../lib/vanyagotchiPet';
+import { gameVanyagotchiApi } from '../api/endpoints';
+import type { VanyagotchiAction, VanyagotchiConfig, VanyagotchiState } from '../api/types';
+import { ApiError } from '../api/client';
+import { useErrorStore } from '../stores/error';
 
 // «Ванягоччи» — the shared plane.
 //
@@ -99,6 +174,165 @@ const phase = ref<Phase>('intro');
 
 const store = useGameVanyagotchiStore();
 const client = realtimeClient();
+const errorStore = useErrorStore();
+
+// ---------------------------------------------------------------------------
+// The pet. Everything below is ordinary HTTP against a persistent thing, and it
+// shares nothing with the socket above except this screen — which is the whole
+// authority split: presence is in memory and dies with the process, the pet is
+// in Postgres and does not.
+// ---------------------------------------------------------------------------
+
+const config = ref<VanyagotchiConfig | null>(null);
+const petState = ref<VanyagotchiState | null>(null);
+const acting = ref(false);
+/** The line under the bars — what just happened, or that he is dead. */
+const flash = ref('');
+
+/**
+ * How far this device's clock is ahead of the server's.
+ *
+ * Not reactive: it is an input to the interpolation, not something rendered, and
+ * it is re-measured on every response — so the only thing that should trigger a
+ * redraw is `displayNow` ticking.
+ */
+let clockSkew = 0;
+
+/** This instant on the SERVER's clock. Ticked once a second while the yard is open. */
+const displayNow = ref(0);
+let displayTimer: number | undefined;
+
+/**
+ * How often the bars are recomputed.
+ *
+ * A second, because that is the coarsest interval at which a change is still
+ * perceptible as movement rather than as a jump, and because the arithmetic
+ * behind it is two subtractions. It is a redraw, not a poll: nothing is fetched,
+ * and the values it produces are the same closed form the server would compute.
+ */
+const DISPLAY_TICK_MS = 1_000;
+
+const stats = computed(() => config.value?.stats ?? []);
+const actions = computed(() => config.value?.actions ?? []);
+
+/** The decayed value of every stat, keyed, as of `displayNow`. */
+const values = computed(() => {
+  const out = new Map<string, number>();
+  const now = displayNow.value;
+  for (const def of stats.value) {
+    const stored = petState.value?.stats?.find((s) => s.key === def.key);
+    if (!stored) continue;
+    out.set(def.key, decayedValue(def, stored, now));
+  }
+  return out;
+});
+
+/** One bar per catalogue stat, in catalogue order — which is the display order. */
+const bars = computed(() =>
+  stats.value.flatMap((def) => {
+    const value = values.value.get(def.key);
+    if (value === undefined) return [];
+    return [
+      {
+        key: def.key,
+        label: def.label,
+        emoji: def.emoji,
+        percent: Math.round(statFraction(def, value) * 100),
+        shown: Math.round(value),
+        trouble: inTrouble(def, value),
+      },
+    ];
+  }),
+);
+
+const alive = computed(() => petState.value?.alive !== false);
+const petCondition = computed<PetCondition>(() =>
+  condition(stats.value, values.value, alive.value),
+);
+
+/** The skin the server says this pet wears, resolved against the catalogue. */
+const skin = computed(
+  () => config.value?.skins?.find((s) => s.key === petState.value?.pet?.skin_key) ?? null,
+);
+
+/** What to draw on your own dot. A death is legible without reading anything. */
+const face = computed(() => {
+  if (!petState.value) return '';
+  if (!alive.value) return '💀';
+  return skin.value?.emoji ?? '';
+});
+
+const petLine = computed(() => {
+  if (!petState.value) return '';
+  if (!alive.value) return 'Ваня не выдержал. Откачай его.';
+  return flash.value;
+});
+
+/**
+ * Loads the catalogue and the pet.
+ *
+ * A failure here is deliberately quiet. The plane is the point of this screen
+ * and it runs on the socket, so a pet that cannot be fetched costs the bars and
+ * the buttons and nothing else — popping the global modal over a working yard
+ * would be a worse answer than showing one less row. A real failure still
+ * reaches the modal when the player actually presses something.
+ */
+async function loadPet(): Promise<void> {
+  try {
+    const [cfg, st] = await Promise.all([
+      config.value ? Promise.resolve(config.value) : gameVanyagotchiApi.config(),
+      gameVanyagotchiApi.state(),
+    ]);
+    config.value = cfg;
+    applyPetState(st);
+  } catch {
+    /* the yard still works; see above */
+  }
+}
+
+/** Records a fresh state and re-measures the clock skew it was computed against. */
+function applyPetState(next: VanyagotchiState): void {
+  petState.value = next;
+  clockSkew = next.server_now ? skewMs(next.server_now, Date.now()) : 0;
+  displayNow.value = Date.now() - clockSkew;
+}
+
+/** Applies one catalogue action. The server answers with the state it computed. */
+async function act(action: VanyagotchiAction): Promise<void> {
+  if (acting.value) return;
+  acting.value = true;
+  try {
+    applyPetState(await gameVanyagotchiApi.act(action.key));
+    flash.value = action.done;
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'pet_dead') {
+      // Currently unreachable, and kept deliberately: every action in the
+      // catalogue can revive, so the server has no way to send this yet. The
+      // first verb that cannot — relieving himself, when that lands — makes it
+      // live, and without this branch that day would greet the player with the
+      // global "something went wrong" modal for a situation the screen is
+      // already explaining in words.
+      flash.value = '';
+      await loadPet();
+    } else {
+      errorStore.report(err);
+    }
+  } finally {
+    acting.value = false;
+  }
+}
+
+/**
+ * Re-reads the pet when the tab comes back.
+ *
+ * Both events, for the same reason the socket listens to both: a bfcache restore
+ * fires `pageshow` where `visibilitychange` may not, notably on iOS — and a page
+ * restored from the bfcache is exactly the one whose bars are most out of date.
+ */
+function onWake(): void {
+  if (document.visibilityState !== 'visible') return;
+  void loadPet();
+}
 
 const planeEl = ref<HTMLElement | null>(null);
 
@@ -291,12 +525,28 @@ function enterYard() {
   if (release) return;
   phase.value = 'play';
   release = client.subscribe({ frames: onFrame, status: onStatus });
+
+  // The pet comes with the yard, not with the route: fetching it behind the
+  // intro would spend a request on a screen that shows none of it.
+  void loadPet();
+  displayNow.value = Date.now() - clockSkew;
+  displayTimer = window.setInterval(() => {
+    displayNow.value = Date.now() - clockSkew;
+  }, DISPLAY_TICK_MS);
+  document.addEventListener('visibilitychange', onWake);
+  window.addEventListener('pageshow', onWake);
 }
 
 onBeforeUnmount(() => {
   release?.();
   release = undefined;
   clearStaleTimer();
+  if (displayTimer !== undefined) {
+    window.clearInterval(displayTimer);
+    displayTimer = undefined;
+  }
+  document.removeEventListener('visibilitychange', onWake);
+  window.removeEventListener('pageshow', onWake);
   peerEls.clear();
   lastPos.clear();
   // The socket may outlive this view by the grace period, but nothing is
@@ -333,9 +583,11 @@ onBeforeUnmount(() => {
   background: linear-gradient(160deg, #2b1b3d, #123043);
   color: rgba(255, 255, 255, 0.95);
 }
+/* Capped by both em and viewport: on a 568px-tall phone a fixed 84px emoji is
+   most of the budget the copy below needs. */
 .splash-emoji {
   flex: 0 0 auto;
-  font-size: 84px;
+  font-size: min(84px, 14svh);
   line-height: 1;
 }
 .splash-title {
@@ -344,10 +596,21 @@ onBeforeUnmount(() => {
   font-weight: 800;
   letter-spacing: 0.5px;
 }
+/* The two prose blocks are the ONLY shrinkable children on this screen, and that
+   is deliberate: `overflow: hidden` on the splash means something has to give on
+   a short phone, and it must not be the call to action or the disclaimer. So
+   these two clip and everything else keeps its size. */
+.splash-lore,
 .splash-intro {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
   max-width: 560px;
   line-height: 1.45;
+}
+.splash-lore {
+  font-size: 0.95rem;
+  opacity: 0.9;
 }
 .splash-cta {
   flex: 0 0 auto;
@@ -370,8 +633,13 @@ onBeforeUnmount(() => {
 }
 
 /* The frame is the ONLY flexible child, and it is what absorbs and gives up
-   slack. `min-height: 0` is load-bearing: without it a flex item refuses to
-   shrink below its content and the status row below gets pushed off screen. */
+   slack. `min-height: 0` says a flex item may shrink below its content, which is
+   what stops the rows below being pushed off a short screen.
+   Measured, so the comment does not overclaim: with the pet panel on the screen,
+   removing it no longer breaks any layout assertion — `overflow: hidden` on
+   `.stage` is carrying that now. It stays because it is the correct declaration
+   for the one flexible child and because the thing it guards against is a silent
+   regression, not because a test currently fails without it. */
 .plane-frame {
   flex: 1 1 auto;
   min-height: 0;
@@ -489,6 +757,119 @@ onBeforeUnmount(() => {
   z-index: 1;
 }
 
+/* Your own Ваня's face, centred on the dot. `pointer-events: none` is inherited
+   from .peer — the plane is the tap target, not the sprite. */
+.peer-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  line-height: 1;
+}
+/* Dead reads at a glance without anybody having to look at a bar. */
+.peer-face[data-condition='dead'] {
+  filter: grayscale(1);
+  opacity: 0.85;
+}
+/* Poorly wobbles, gently. Motion-sensitive users opt out below. */
+.peer-face[data-condition='poorly'] {
+  animation: peer-wobble 1.6s ease-in-out infinite;
+}
+@keyframes peer-wobble {
+  0%,
+  100% {
+    transform: rotate(-6deg);
+  }
+  50% {
+    transform: rotate(6deg);
+  }
+}
+
+/* The non-plane block: fixed size, and the plane pays for it rather than the
+   other way round. */
+.panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Stat bars. Fixed height, and one row per stat: two today, and the row is a
+   grid so a third arrives without a layout decision. */
+.stats {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stat {
+  display: grid;
+  grid-template-columns: 20px 1fr 34px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.stat-emoji {
+  font-size: 15px;
+  line-height: 1;
+  text-align: center;
+}
+.stat-track {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.28);
+  overflow: hidden;
+}
+.stat-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: rgb(var(--v-theme-success));
+  transition: width 400ms linear;
+}
+/* Trouble is a colour, and which values count as trouble is catalogue data —
+   the stylesheet is told, it does not know that 30 is a bad amount of health. */
+.stat[data-trouble='1'] .stat-fill {
+  background: rgb(var(--v-theme-warning));
+}
+.stat-value {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  opacity: 0.85;
+}
+
+/* Always present, empty or not, so the plane above does not resize when a line
+   of text appears and disappears. */
+.petline {
+  flex: 0 0 auto;
+  min-height: 1.1rem;
+  font-size: 0.76rem;
+  line-height: 1.1rem;
+  text-align: center;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* auto-fit so one button fills the row and four share it, each still at least a
+   thumb wide. */
+.actions {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+  gap: 8px;
+}
+/* 44px is the tap-target floor the mobile suite enforces; Vuetify's default
+   button is 36. */
+.action-btn {
+  min-height: 44px;
+}
+
 .hud {
   flex: 0 0 auto;
   display: flex;
@@ -520,6 +901,12 @@ onBeforeUnmount(() => {
   .peer {
     transition: none;
   }
+  .peer-face[data-condition='poorly'] {
+    animation: none;
+  }
+  .stat-fill {
+    transition: none;
+  }
 }
 
 /* Landscape phones have ~350px of height: keep the status row beside the plane
@@ -528,6 +915,14 @@ onBeforeUnmount(() => {
   .stage {
     flex-direction: row;
     align-items: stretch;
+  }
+  /* Beside the plane rather than under it: there are ~350px of height here, and
+     stacking four fixed rows below the plane collapses it to nothing. Capped so
+     a wide screen does not hand the panel half the world. */
+  .panel {
+    width: min(46%, 260px);
+    justify-content: flex-start;
+    overflow: hidden;
   }
   .hud {
     flex: 0 0 auto;
