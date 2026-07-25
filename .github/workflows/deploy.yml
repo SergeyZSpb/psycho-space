@@ -13,7 +13,9 @@ concurrency:
 
 env:
   GOLANGCI_LINT_VERSION: v2.12.2
-  GOTESTSUM_VERSION: v1.12.1
+  # v1.13.0 or newer: earlier releases pin golang.org/x/tools v0.24.0, whose
+  # tokeninternal package does not compile under Go 1.26.
+  GOTESTSUM_VERSION: v1.13.0
 
 jobs:
   build:
