@@ -207,17 +207,39 @@ func buildApp(vkBaseURL string) http.Handler { return buildAppCfg(vkBaseURL, llm
 // called on cleanup, and cancelling twice is harmless.
 func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc) {
 	t.Helper()
-	h, hub, cancel, _ := buildAppRealtimeGame(t, vkBaseURL)
+	h, hub, cancel, _, _ := buildAppRealtimeFull(t, vkBaseURL)
 	return h, hub, cancel
 }
 
 // buildAppRealtimeGame is buildAppRealtime plus «Ванягоччи» wired to the hub,
 // returning the channel that drives its broadcast.
-//
-// The tick is the test's, not a ticker: a test fires it and then reads the frame
-// it caused, so there is no "wait 200 ms and hope" anywhere. That is the whole
-// reason the service takes the tick as a parameter in production too.
 func buildAppRealtimeGame(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc, chan time.Time) {
+	t.Helper()
+	h, hub, cancel, tick, _ := buildAppRealtimeFull(t, vkBaseURL)
+	return h, hub, cancel, tick
+}
+
+// buildAppRealtimeSweep is buildAppRealtime plus the channel that fires one
+// revalidation sweep, for the tests that prove a socket outliving its
+// authorisation gets cut.
+func buildAppRealtimeSweep(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, chan time.Time) {
+	t.Helper()
+	h, hub, _, _, sweep := buildAppRealtimeFull(t, vkBaseURL)
+	return h, hub, sweep
+}
+
+// buildAppRealtimeFull builds the app with a running hub, «Ванягоччи», and the
+// revalidation sweep, returning the channel that drives each.
+//
+// Both ticks are the test's, not tickers: a test fires one and then reads the
+// frame it caused, so there is no "wait 200 ms and hope" anywhere. That is the
+// whole reason both the service and the revalidator take their tick as a
+// parameter in production too.
+//
+// The revalidator is wired exactly as main wires it, over the real
+// session.Manager — so these tests exercise the production query rather than a
+// stand-in, which is the only way the SQL itself can be guarded.
+func buildAppRealtimeFull(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc, chan time.Time, chan time.Time) {
 	t.Helper()
 	hub := realtime.NewHub()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -232,6 +254,8 @@ func buildAppRealtimeGame(t *testing.T, vkBaseURL string) (http.Handler, *realti
 	go vanya.Run(ctx, tick)
 
 	sessions := session.NewManager(pool, key(3), time.Hour, false)
+	sweep := make(chan time.Time)
+	go realtime.NewRevalidator(hub, realtime.SessionCheck(sessions.RevokedSessions)).Run(ctx, sweep)
 	cfg := config.Config{
 		Env:     "dev",
 		BaseURL: "http://localhost", // origin allowlist for the socket
@@ -253,7 +277,7 @@ func buildAppRealtimeGame(t *testing.T, vkBaseURL string) (http.Handler, *realti
 		RealtimeCtx:     ctx,
 		RealtimeHandler: vanya,
 	}).Handler()
-	return observability.WrapHandler(h, "http.server"), hub, cancel, tick
+	return observability.WrapHandler(h, "http.server"), hub, cancel, tick, sweep
 }
 
 // buildAppCfg builds the app with an optional LLM endpoint. Pass llmURL="" to

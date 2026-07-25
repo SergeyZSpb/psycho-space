@@ -47,6 +47,7 @@ type closeReason struct {
 type Conn struct {
 	id        string
 	accountID string
+	sessionID string
 	room      string
 	handler   Handler // nil: inbound frames are read for their bounds and discarded
 	ws        *websocket.Conn
@@ -64,11 +65,18 @@ type Conn struct {
 // came from. A nil handler is valid and means nobody is listening: the frames
 // are still read, so the read limit and the rate limit still apply, and the
 // payload is discarded.
-func NewConn(id, accountID, room string, ws *websocket.Conn, handler Handler) *Conn {
+//
+// sessionID is the session that authorised the upgrade. A socket outlives the
+// request that let it in, so it has to carry enough to be re-judged later, and
+// the session is the granularity that matters: a session can end while its
+// account stays perfectly valid, which is exactly the case no account-level
+// signal can see. It is the session's id and never its token — see Sink.
+func NewConn(id, accountID, sessionID, room string, ws *websocket.Conn, handler Handler) *Conn {
 	ws.SetReadLimit(MaxFrameBytes)
 	return &Conn{
 		id:        id,
 		accountID: accountID,
+		sessionID: sessionID,
 		room:      room,
 		handler:   handler,
 		ws:        ws,
@@ -85,6 +93,9 @@ func (c *Conn) ID() string { return c.id }
 
 // AccountID implements Sink.
 func (c *Conn) AccountID() string { return c.accountID }
+
+// SessionID implements Sink.
+func (c *Conn) SessionID() string { return c.sessionID }
 
 // TrySend implements Sink: it queues without blocking and reports false when
 // the client is behind.

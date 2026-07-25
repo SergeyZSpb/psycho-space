@@ -93,6 +93,25 @@ func main() {
 	hub := realtime.NewHub()
 	go hub.Run(hubCtx)
 
+	// A socket is authorised once, at the handshake, and then has no request left
+	// to re-check on. Blocking someone through the admin API closes their sockets
+	// in process, but nothing in this process observes a session reaching its
+	// expires_at, or a block applied straight in the database — so without this
+	// sweep those two cases would keep a live socket until the peer or the
+	// process went away. It re-applies requireAuth's rule to every live
+	// connection, in one batched query, and closes what no longer passes.
+	//
+	// The check is injected as a narrow interface so the hub stays ignorant of
+	// sessions and accounts, and the tick is injected for the same reason the
+	// game's broadcast tick is: tests fire a channel they own instead of
+	// sleeping. It reads and decides but writes nothing, which is what keeps it
+	// on the right side of the rule that no state here advances because time
+	// passed.
+	revalidator := realtime.NewRevalidator(hub, realtime.SessionCheck(sessions.RevokedSessions))
+	revalidateTicker := time.NewTicker(realtime.RevalidateInterval)
+	defer revalidateTicker.Stop()
+	go revalidator.Run(hubCtx, revalidateTicker.C)
+
 	// «Ванягоччи» — the second game. It publishes through the hub and reads from
 	// it; the hub knows nothing about it, which is the whole point of the Handler
 	// and Transport interfaces between them. The room name comes from the

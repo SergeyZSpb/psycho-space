@@ -118,11 +118,15 @@ func (s *Server) adminSetStatus(w http.ResponseWriter, r *http.Request, status s
 			slog.ErrorContext(r.Context(), "revoke sessions on block failed", "err", err)
 		}
 		// A live WebSocket has no request left to re-check the session on, so
-		// revoking in the database is not enough — close the sockets too. This
-		// in-process kick is currently the ONLY thing that cuts a live socket;
-		// there is no revalidation sweep behind it yet, so a session that expires
-		// on its own or a block applied straight in the database will not close
-		// one. See realtime.Hub.KickAccount.
+		// revoking in the database is not enough — close the sockets too.
+		//
+		// This in-process kick is not the only thing that cuts a live socket, but
+		// it is the only one that does so instantly: realtime.Revalidator sweeps
+		// every RevalidateInterval and would close these connections anyway, along
+		// with the two cases this path cannot see (a session expiring on its own,
+		// and a block applied straight in the database). Keeping the kick means an
+		// admin's action takes effect at once rather than up to a sweep later.
+		// See realtime.Hub.KickAccount.
 		if s.d.Realtime != nil {
 			s.d.Realtime.KickAccount(id)
 		}

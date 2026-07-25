@@ -34,6 +34,15 @@ const (
 	ReasonTooManyConnections = "too many connections"
 )
 
+// ReasonUnauthorized travels with CloseUnauthorized, and is the only reason that
+// does. Both revocation paths use it — the in-process kick when an admin blocks
+// someone, and the periodic sweep that catches an expired session or a block
+// applied straight in the database — because the client's response is the same
+// either way: stop, clear the session, and do not reconnect. The sweep could not
+// distinguish them in any case; all it learns is that the credential no longer
+// holds.
+const ReasonUnauthorized = "unauthorized"
+
 // Bye is the final frame a server-initiated close sends before the socket goes
 // away.
 //

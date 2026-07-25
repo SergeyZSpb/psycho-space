@@ -154,7 +154,7 @@ func (s *Server) handleVKCallback(w http.ResponseWriter, r *http.Request) {
 
 // handleMe returns the current account, or 401.
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	acc, ok := s.currentAccount(r)
+	acc, _, ok := s.currentAccount(r)
 	if !ok {
 		writeError(w, r, http.StatusUnauthorized, "unauthorized")
 		return
@@ -171,22 +171,28 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// currentAccount resolves the session cookie to an account.
-func (s *Server) currentAccount(r *http.Request) (*account.Account, bool) {
+// currentAccount resolves the session cookie to an account, and to the id of the
+// session that carried it.
+//
+// The session id is returned alongside because a WebSocket needs it: the socket
+// outlives this request and has to be re-judged against *this* session later, so
+// the one place that already resolves the cookie is the place to hand it on.
+// Callers with no such need discard it.
+func (s *Server) currentAccount(r *http.Request) (*account.Account, string, bool) {
 	c, err := r.Cookie(session.CookieName)
 	if err != nil || c.Value == "" {
-		return nil, false
+		return nil, "", false
 	}
-	id, err := s.d.Sessions.Resolve(r.Context(), c.Value)
+	sess, err := s.d.Sessions.Resolve(r.Context(), c.Value)
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
-	acc, err := s.d.Accounts.GetByID(r.Context(), id)
+	acc, err := s.d.Accounts.GetByID(r.Context(), sess.AccountID)
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	logging.SetAccountID(r.Context(), acc.ID) // stamp all subsequent logs for this request
-	return acc, true
+	return acc, sess.ID, true
 }
 
 func publicAccount(a *account.Account) map[string]any {
@@ -219,12 +225,22 @@ func clearCookie(w http.ResponseWriter, name string, secure bool) {
 
 type ctxKey int
 
-const accountCtxKey ctxKey = iota
+const (
+	accountCtxKey ctxKey = iota
+	sessionIDCtxKey
+)
 
-// requireAuth ensures an approved account; it stores it in the request context.
+// requireAuth ensures an approved account; it stores it, and the id of the
+// session that authenticated it, in the request context.
+//
+// This pair — a live session AND status=approved — is the definition of
+// "authorized" for the whole application. A WebSocket is admitted by it once and
+// then runs for hours without another request, so the same rule is re-applied to
+// live sockets in batch by session.Manager.RevokedSessions; change one and the
+// other has to change with it.
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		acc, ok := s.currentAccount(r)
+		acc, sessionID, ok := s.currentAccount(r)
 		if !ok {
 			writeError(w, r, http.StatusUnauthorized, "unauthorized")
 			return
@@ -234,6 +250,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), accountCtxKey, acc)
+		ctx = context.WithValue(ctx, sessionIDCtxKey, sessionID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -265,4 +282,11 @@ func (s *Server) requireSuperadmin(next http.Handler) http.Handler {
 func accountFromContext(ctx context.Context) (*account.Account, bool) {
 	acc, ok := ctx.Value(accountCtxKey).(*account.Account)
 	return acc, ok
+}
+
+// sessionIDFromContext returns the id of the session requireAuth authenticated
+// this request with. Only the WebSocket upgrade needs it — see handleRealtime.
+func sessionIDFromContext(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(sessionIDCtxKey).(string)
+	return id, ok
 }

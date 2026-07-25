@@ -14,6 +14,7 @@ import (
 type fakeSink struct {
 	id      string
 	account string
+	session string
 
 	mu       sync.Mutex
 	got      [][]byte
@@ -23,12 +24,20 @@ type fakeSink struct {
 	closeMsg string
 }
 
+// newFakeSink builds a connection with a session of its own, which is the shape
+// a single tab has. Use newFakeSinkSession where two connections must share one
+// session — a phone and a laptop signed in from the same cookie.
 func newFakeSink(id, account string) *fakeSink {
-	return &fakeSink{id: id, account: account}
+	return newFakeSinkSession(id, account, "sess-"+id)
+}
+
+func newFakeSinkSession(id, account, session string) *fakeSink {
+	return &fakeSink{id: id, account: account, session: session}
 }
 
 func (f *fakeSink) ID() string        { return f.id }
 func (f *fakeSink) AccountID() string { return f.account }
+func (f *fakeSink) SessionID() string { return f.session }
 
 func (f *fakeSink) TrySend(msg []byte) bool {
 	f.mu.Lock()
@@ -59,6 +68,14 @@ func (f *fakeSink) closeState() (bool, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.closed, f.closeArg
+}
+
+// closeReason is closeState plus the reason string, for the callers that assert
+// on the text a client actually branches on.
+func (f *fakeSink) closeReason() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closeMsg
 }
 
 // startHub runs a hub for the test's lifetime and returns it.

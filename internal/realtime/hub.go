@@ -63,6 +63,16 @@ type Sink interface {
 	// AccountID is the authenticated account, bound at upgrade. It is never
 	// read from a message body.
 	AccountID() string
+	// SessionID is the session this connection was upgraded with, bound at the
+	// handshake exactly as AccountID is.
+	//
+	// The hub never interprets it — this package does not know what a session
+	// is. It is carried so an injected Authorizer can be asked, in one batch,
+	// which live sockets are still authorised, and it is the session's own id
+	// rather than the token: only the token's HMAC is ever stored, and keeping a
+	// usable credential in process memory for the lifetime of a socket would
+	// create a second place for one to leak from, for no gain.
+	SessionID() string
 	// TrySend queues a message without blocking. It reports false when the
 	// client's buffer is full, which the hub treats as "this client is behind".
 	TrySend(msg []byte) bool
@@ -141,6 +151,16 @@ type kickCmd struct {
 	reason    string
 }
 
+type liveCmd struct {
+	reply chan<- []Credential
+}
+
+type closeSetCmd struct {
+	connIDs []string
+	code    int
+	reason  string
+}
+
 // Hub fans messages out to the connections in a room. All shared state is owned
 // by the single goroutine running Run; everything else talks to it over
 // channels, so there are no mutexes and no lock ordering to get wrong.
@@ -151,6 +171,8 @@ type Hub struct {
 	publishTo  chan publishToCmd
 	kick       chan kickCmd
 	members    chan membersCmd
+	live       chan liveCmd
+	closeSet   chan closeSetCmd
 
 	maxPerAccount int
 	maxTotal      int
@@ -169,6 +191,8 @@ func NewHub() *Hub {
 		publishTo:     make(chan publishToCmd), // unbuffered on purpose — see PublishTo
 		kick:          make(chan kickCmd, 8),
 		members:       make(chan membersCmd),
+		live:          make(chan liveCmd),
+		closeSet:      make(chan closeSetCmd), // unbuffered on purpose — see closeConnections
 		maxPerAccount: defaultMaxPerAccount,
 		maxTotal:      defaultMaxTotal,
 		done:          make(chan struct{}),
@@ -279,6 +303,38 @@ func (h *Hub) Run(ctx context.Context) {
 		case cmd := <-h.kick:
 			for s := range clients {
 				if s.AccountID() == cmd.accountID {
+					remove(s)
+					s.Close(cmd.code, cmd.reason)
+				}
+			}
+
+		case cmd := <-h.live:
+			// A fresh slice, for the same reason Members builds one: these maps
+			// belong to this goroutine, and the caller is about to spend a
+			// database round trip holding whatever it is given.
+			out := make([]Credential, 0, len(clients))
+			for s := range clients {
+				out = append(out, Credential{
+					ConnID:    s.ID(),
+					SessionID: s.SessionID(),
+					AccountID: s.AccountID(),
+				})
+			}
+			cmd.reply <- out
+
+		case cmd := <-h.closeSet:
+			// A set rather than a scan per id: a sweep names an arbitrary subset,
+			// and doing this the way PublishTo does — one linear scan per id —
+			// would be quadratic on the one path where the count can be large
+			// (every socket at once, when the database says everybody's session
+			// went). Deleting from `clients` while ranging it is defined
+			// behaviour, and is what the kick case above already relies on.
+			want := make(map[string]struct{}, len(cmd.connIDs))
+			for _, id := range cmd.connIDs {
+				want[id] = struct{}{}
+			}
+			for s := range clients {
+				if _, ok := want[s.ID()]; ok {
 					remove(s)
 					s.Close(cmd.code, cmd.reason)
 				}
@@ -396,18 +452,67 @@ func (h *Hub) Members(ctx context.Context, room string) ([]Member, error) {
 	}
 }
 
+// liveCredentials snapshots every registered connection, in no particular order.
+//
+// It is deliberately unexported, unlike Members. Members hands out an identity
+// and nothing else so a game can draw a roster; this hands out the ids an
+// authorisation decision is made from, and pairs with closeConnections, which
+// cuts sockets. Neither belongs in the surface a game is given — the only caller
+// is Revalidator, in this package.
+func (h *Hub) liveCredentials(ctx context.Context) ([]Credential, error) {
+	reply := make(chan []Credential, 1)
+	select {
+	case h.live <- liveCmd{reply: reply}:
+	case <-h.done:
+		return nil, ErrHubClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case out := <-reply:
+		return out, nil
+	case <-h.done:
+		return nil, ErrHubClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// closeConnections closes the named connections with one code and reason, and
+// ignores ids nobody holds — a connection that went away between the snapshot
+// and this call needed no closing, and connection ids are per-socket UUIDs that
+// are never reused, so a stale one can never name somebody else.
+//
+// The command channel is unbuffered for the same reason PublishTo's is: a
+// buffered one would go on accepting sends after shutdown, so a caller could not
+// tell "queued" from "the hub is gone".
+func (h *Hub) closeConnections(ctx context.Context, connIDs []string, code int, reason string) error {
+	if len(connIDs) == 0 {
+		return nil
+	}
+	select {
+	case h.closeSet <- closeSetCmd{connIDs: connIDs, code: code, reason: reason}:
+		return nil
+	case <-h.done:
+		return ErrHubClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // KickAccount closes every connection belonging to an account. It is called
 // when an admin blocks someone: the app revokes sessions immediately, and a
 // live socket must not outlive that.
 //
-// This is the only revocation path that exists today. There is NO periodic
-// revalidation sweep, so the two cases it cannot see — a session expiring on its
-// own, and a block applied straight in the database — currently leave a socket
-// alive until the peer or the process goes away. Adding that sweep is tracked as
-// its own work item and belongs before anything durable rides on this transport.
+// It is one of two revocation paths, and they are complements rather than
+// alternatives. This one is instant and deterministic, but it can only fire on
+// an event the process actually sees, so it is blind to a session expiring on
+// its own and to a block applied straight in the database. Revalidator sweeps
+// for exactly those, on a timer, and closes what it finds with the same code —
+// at worst one RevalidateInterval later.
 func (h *Hub) KickAccount(accountID string) {
 	select {
-	case h.kick <- kickCmd{accountID: accountID, code: CloseUnauthorized, reason: "unauthorized"}:
+	case h.kick <- kickCmd{accountID: accountID, code: CloseUnauthorized, reason: ReasonUnauthorized}:
 	case <-h.done:
 	}
 }

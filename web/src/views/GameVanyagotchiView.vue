@@ -26,10 +26,13 @@
       <!-- THE one flexible child. Everything else in this column is
            `flex: 0 0 auto`, so the plane is what absorbs and gives up slack and
            the status row below can never be pushed off a short screen. -->
+      <div class="plane-frame">
       <div
         ref="planeEl"
         class="plane"
+        :class="{ 'plane--stale': isStale }"
         data-test="plane"
+        :data-stale="isStale ? '1' : undefined"
         role="application"
         :aria-label="`Двор, во дворе ${store.peerIds.length}`"
         @pointerdown="onPlaneTap"
@@ -48,6 +51,7 @@
         <p v-if="store.peerIds.length === 0" class="plane-empty">
           {{ emptyMessage }}
         </p>
+      </div>
       </div>
 
       <!-- Fixed-size status row. It costs the plane its height, never the other
@@ -106,6 +110,39 @@ const peerEls = new Map<string, HTMLElement>();
 const lastPos = new Map<string, { x: number; y: number }>();
 
 let release: (() => void) | undefined;
+
+/**
+ * How long a disconnected plane keeps showing the world it last saw.
+ *
+ * A phone loses its socket constantly — a tunnel, a lock screen, a handover
+ * between cells — and reconnecting takes a second. Emptying the yard the instant
+ * the socket drops made every one of those look like everybody had left, which
+ * is both alarming and wrong. So the dots stay, visibly stale, for long enough
+ * to cover an ordinary reconnect, and are cleared only if the outage outlasts
+ * that. Longer than the reconnect backoff's first few attempts, short enough
+ * that nobody studies a frozen world believing it is live.
+ */
+const STALE_HOLD_MS = 8_000;
+
+/** True while the plane is showing a world that is no longer being updated. */
+const isStale = ref(false);
+let staleTimer: number | undefined;
+
+function clearStaleTimer() {
+  if (staleTimer !== undefined) {
+    window.clearTimeout(staleTimer);
+    staleTimer = undefined;
+  }
+}
+
+/** Drops the world entirely: nothing on screen, nothing remembered. */
+function forgetWorld() {
+  clearStaleTimer();
+  isStale.value = false;
+  store.clearRoster();
+  lastPos.clear();
+  peerEls.clear();
+}
 
 const statusLabel = computed(() => {
   switch (store.status) {
@@ -212,13 +249,23 @@ function onStatus(status: ConnectionStatus, detail?: Parameters<typeof store.set
     // pseudonym that identifies us is derived per connection lifetime.
     client.send({ t: TYPE_HELLO });
   }
-  if (status === 'closed' || status === 'idle' || status === 'terminal') {
-    // Leaving the dots on a dead socket would show a world that is no longer
-    // being updated as though it were live.
-    store.clearRoster();
-    lastPos.clear();
-    peerEls.clear();
+  if (status === 'open') {
+    clearStaleTimer();
+    isStale.value = false;
+    return;
   }
+  if (status === 'terminal') {
+    // No reconnect is coming, so there is nothing to hold the world for.
+    forgetWorld();
+    return;
+  }
+  // Down, but probably briefly. Keep the last world on screen and SAY it is
+  // stale rather than pretending it is live — showing a frozen plane as though
+  // it were current would be the actual lie. Clear only if the outage lasts.
+  if (store.peerIds.length === 0) return;
+  isStale.value = true;
+  clearStaleTimer();
+  staleTimer = window.setTimeout(forgetWorld, STALE_HOLD_MS);
 }
 
 /** A tap is a request to stand somewhere. The server decides whether it happens. */
@@ -249,6 +296,7 @@ function enterYard() {
 onBeforeUnmount(() => {
   release?.();
   release = undefined;
+  clearStaleTimer();
   peerEls.clear();
   lastPos.clear();
   // The socket may outlive this view by the grace period, but nothing is
@@ -321,16 +369,50 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-/* The plane is the ONLY flexible child. `min-height: 0` is load-bearing: without
-   it a flex item refuses to shrink below its content and the status row below
-   gets pushed off the screen.
-   `container-type: size` is what lets a dot be placed in `cqw`/`cqh`, so the
-   normalised 0..1 coordinates map to pixels entirely in CSS — there is no
-   measured box cached in JavaScript to invalidate when mobile chrome slides and
-   the plane resizes. */
-.plane {
+/* The frame is the ONLY flexible child, and it is what absorbs and gives up
+   slack. `min-height: 0` is load-bearing: without it a flex item refuses to
+   shrink below its content and the status row below gets pushed off screen. */
+.plane-frame {
   flex: 1 1 auto;
   min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* A size container so the plane below can be sized from THIS box rather than
+     from the viewport — the frame is what is left after the app bar and the
+     status row, and only it knows how much that is. */
+  container-type: size;
+}
+
+/* THE YARD HAS A FIXED SHAPE, and that is a rule of the game rather than a
+   layout preference.
+   Coordinates on the wire are normalised 0..1 per axis, so a plane that simply
+   took whatever space was left would give a phone a tall world and a tablet a
+   wide one: the same coordinates, but different distances between them. Two
+   players would not be looking at the same place. It matters more from Phase 2
+   on, where distance is a mechanic — the beer delivery is a race to ARRIVE, and
+   walking speed is defined in plane-widths per second, which only means anything
+   if a plane-width is the same shape for everybody.
+   3:4 portrait because that is close to what a phone already has left after the
+   app bar and the status row, so phones lose almost nothing and only tablets and
+   landscape letterbox. Changing this ratio changes the shape of the world for
+   everyone at once, which is the point: it is one number, in one place.
+   `container-type: size` is what lets a dot be placed in `cqw`/`cqh`, so the
+   0..1 coordinates map to pixels entirely in CSS — there is no measured box
+   cached in JavaScript to invalidate when mobile chrome slides and this resizes. */
+.plane {
+  /* Fit a 3:4 box inside the frame, exactly, in CSS alone.
+     `75cqh` is the width at which a 3:4 box is precisely as tall as the frame,
+     and `100cqw` is the width at which it is precisely as wide — so the smaller
+     of the two is the largest 3:4 box that fits, whichever way the frame is
+     shaped. Height then follows from the ratio.
+     Two blind alleys, recorded so they are not retried: `max-width`/`max-height`
+     alone leaves a flex item with no base size and it collapses to nothing; and
+     a definite height with `width: auto` does not re-derive the height when
+     `max-width` clamps the transferred width, so the ratio silently breaks on a
+     narrow frame (measured 336x685 — 0.49, not 0.75). */
+  width: min(100cqw, 75cqh);
+  aspect-ratio: 3 / 4;
   container-type: size;
   position: relative;
   overflow: hidden;
@@ -374,6 +456,23 @@ onBeforeUnmount(() => {
   will-change: transform;
   pointer-events: none; /* the plane is the tap target, not the dots */
 }
+/* A world that is no longer being updated, held on screen across a reconnect.
+   Dimmed and drained of colour so it reads as "this is what was there" rather
+   than as the current state — the status row alongside says why. */
+.plane--stale .peer {
+  opacity: 0.4;
+  filter: grayscale(0.8);
+}
+.plane--stale {
+  filter: brightness(0.85);
+}
+.plane,
+.plane .peer {
+  transition-property: transform, opacity, filter;
+  transition-duration: 220ms, 400ms, 400ms;
+  transition-timing-function: linear, ease, ease;
+}
+
 /* First placement: jump, do not fly in from the corner. */
 .peer--instant {
   transition: none;
@@ -435,6 +534,9 @@ onBeforeUnmount(() => {
     flex-direction: column;
     justify-content: flex-start;
     align-items: flex-end;
+  }
+  .plane-frame {
+    min-width: 0;
   }
 }
 </style>

@@ -43,6 +43,13 @@ interface SocketHarness {
   drop: (bye?: { code: number; reason: string }) => Promise<void>;
   /** How many times the page has opened a socket — reconnects included. */
   connections: () => number;
+  /**
+   * Refuse every further connection until released, so the client genuinely
+   * stays down. Without this a reconnect can complete inside a single Vue flush
+   * and the disconnected state never reaches the DOM at all — which is lovely in
+   * production and untestable in a browser.
+   */
+  holdDown: (down: boolean) => void;
   /** Waits until the page has opened at least n sockets. */
   waitForConnections: (n: number) => Promise<void>;
 }
@@ -61,9 +68,14 @@ async function stubSocket(page: Page): Promise<SocketHarness> {
     resolveReady = r;
   });
 
+  let down = false;
   await page.routeWebSocket('**/api/realtime*', (route) => {
-    ws = route;
     count += 1;
+    if (down) {
+      route.close({ code: 1006 });
+      return;
+    }
+    ws = route;
     route.onMessage((message) => {
       const text = typeof message === 'string' ? message : message.toString();
       try {
@@ -78,6 +90,9 @@ async function stubSocket(page: Page): Promise<SocketHarness> {
   return {
     sent,
     connections: () => count,
+    holdDown(value: boolean) {
+      down = value;
+    },
     async waitForConnections(n: number) {
       const deadline = Date.now() + 15_000;
       while (count < n) {
@@ -178,6 +193,42 @@ async function peerPosition(page: Page, id: string): Promise<{ x: string; y: str
     },
     [id, X_PROPERTY, Y_PROPERTY] as const,
   );
+}
+
+
+/**
+ * Records every stale/live transition of the plane, from before the app boots.
+ *
+ * A reconnect is over in well under a second, so the stale window is far too
+ * short to catch with a polled assertion — under load the check simply arrives
+ * after it has passed. A MutationObserver installed before boot cannot miss it,
+ * so the test asserts the recorded SEQUENCE instead of trying to be quick. Same
+ * technique, and the same reason, as the drawer-peek test in mobile.spec.ts.
+ */
+async function recordStale(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const log: boolean[] = [];
+    (window as unknown as { __staleLog: boolean[] }).__staleLog = log;
+    const read = () => !!document.querySelector('[data-test="plane"][data-stale="1"]');
+    let last: boolean | undefined;
+    new MutationObserver(() => {
+      const now = read();
+      if (now !== last) {
+        last = now;
+        log.push(now);
+      }
+    }).observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['data-stale'],
+    });
+  });
+}
+
+/** The recorded stale/live transitions so far. */
+function staleLog(page: Page): Promise<boolean[]> {
+  return page.evaluate(() => (window as unknown as { __staleLog: boolean[] }).__staleLog ?? []);
 }
 
 const plane = (page: Page) => page.locator('[data-test="plane"]');
@@ -410,6 +461,7 @@ test.describe('«Ванягоччи» — surviving a restart', () => {
   });
 
   test('a reconnect does not throw the player back to the intro', async ({ page }) => {
+    await recordStale(page);
     // Losing the socket is the normal case — the service restarts several times
     // a day. Being bounced back to a splash screen with a "Во двор" button every
     // time would be worse than the disconnect.
@@ -424,13 +476,19 @@ test.describe('«Ванягоччи» — surviving a restart', () => {
     // Still in the yard, with the plane on screen and the intro CTA gone.
     await expect(page.locator('[data-test="plane"]')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Во двор' })).toHaveCount(0);
-    await expect(page.getByText(/переподключаемся/)).toBeVisible();
 
     // And it really does come back, without anybody clicking anything.
     await socket.waitForConnections(2);
     await socket.push(roster({ id: 'peer-a', x: 0.6, y: 0.6 }));
     await expect(dots(page)).toHaveCount(1);
     await expect(page.getByText('на связи')).toBeVisible();
+
+    // Whether the stale state was ever painted depends on how fast the
+    // reconnect was — a quick one is coalesced away inside a single Vue flush,
+    // which is a feature. What must hold either way is that it ended live and
+    // never went stale-and-stayed-there.
+    const log = await staleLog(page);
+    expect(log.at(-1) ?? false, `stale transitions: ${JSON.stringify(log)}`).toBe(false);
   });
 
   test('it says hello again after reconnecting, because the pseudonym changed', async ({
@@ -464,5 +522,79 @@ test.describe('«Ванягоччи» — surviving a restart', () => {
     // reconnecting until the tab is closed.
     await page.waitForTimeout(3_000);
     expect(socket.connections()).toBe(1);
+  });
+});
+
+test.describe('«Ванягоччи» — the shape of the world, and losing it briefly', () => {
+  test('a blip does not empty the yard, it marks it stale', async ({ page }) => {
+    await recordStale(page);
+    // The bug this fixes, reported from a phone: "all disappeared". A mobile
+    // socket drops constantly — a tunnel, a lock screen, a cell handover — and
+    // clearing the plane the instant it did made every one of those look like
+    // everybody had left. The dots stay, visibly stale, across a reconnect.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'peer-a', x: 0.3, y: 0.3 }, { id: 'peer-b', x: 0.7, y: 0.7 }));
+    await expect(dots(page)).toHaveCount(2);
+
+    // Keep it down, so the disconnected state is something a browser can be
+    // asked about rather than a moment that has already passed.
+    socket.holdDown(true);
+    await socket.drop({ code: 1001, reason: 'restart' });
+
+    // The world is still on screen — this is the whole bug — and it says so.
+    await expect(page.locator('[data-test="plane"][data-stale="1"]')).toHaveCount(1);
+    await expect(dots(page)).toHaveCount(2);
+    await expect(page.getByText(/переподключаемся/)).toBeVisible();
+
+    // And the staleness lifts by itself when the socket comes back. `push`
+    // already waits for a socket to exist, so it is the readiness gate here —
+    // counting connections would be counting the refusals too.
+    socket.holdDown(false);
+    await socket.push(roster({ id: 'peer-a', x: 0.3, y: 0.3 }, { id: 'peer-b', x: 0.7, y: 0.7 }));
+    await expect(page.locator('[data-test="plane"][data-stale="1"]')).toHaveCount(0);
+    await expect(dots(page)).toHaveCount(2);
+    await expect(page.getByText('на связи')).toBeVisible();
+  });
+
+  test('a revoked session empties the yard at once, because nothing is coming back', async ({
+    page,
+  }) => {
+    // The other side of the rule above: holding a world is only honest while a
+    // reconnect is still possible.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'peer-a', x: 0.3, y: 0.3 }));
+    await expect(dots(page)).toHaveCount(1);
+
+    await socket.drop({ code: 4001, reason: 'unauthorized' });
+
+    await expect(dots(page)).toHaveCount(0);
+    await expect(page.locator('[data-test="plane"][data-stale="1"]')).toHaveCount(0);
+  });
+
+  test('the yard is the same shape on every device', async ({ page }) => {
+    // Coordinates are normalised per axis, so a plane that took whatever space
+    // was left would give a phone a tall world and a tablet a wide one — the
+    // same coordinates, different distances between them. Distance becomes a
+    // mechanic in Phase 2 (the beer delivery is a race to arrive), so the shape
+    // has to be the same for everybody.
+    await stubBackend(page);
+    await stubSocket(page);
+    await enterYard(page);
+
+    const box = await plane(page).boundingBox();
+    expect(box).not.toBeNull();
+    const ratio = (box?.width ?? 0) / (box?.height ?? 1);
+    expect(ratio, `plane is ${box?.width}x${box?.height}, ratio ${ratio}`).toBeCloseTo(3 / 4, 1);
+
+    // And it still fits: no scrolling, at any of the viewports this suite runs.
+    await expectNoOverflow(page, 'vanyagotchi yard shape');
+    const vScroll = await page.evaluate(
+      () => document.documentElement.scrollHeight - document.documentElement.clientHeight,
+    );
+    expect(vScroll).toBeLessThanOrEqual(1);
   });
 });

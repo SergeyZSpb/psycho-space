@@ -21,6 +21,18 @@ func (s *Server) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	// The socket has to carry the session that admitted it, so the revalidation
+	// sweep can re-judge it later. requireAuth always puts one on the context, so
+	// a missing id means a wiring mistake rather than an unauthenticated caller —
+	// and a socket nothing can revalidate is worse than a socket that never
+	// opened, so refuse instead of opening one.
+	sessionID, ok := sessionIDFromContext(r.Context())
+	if !ok || sessionID == "" {
+		slog.ErrorContext(r.Context(), "realtime: no session id on an authenticated request",
+			"account_id", acc.ID)
+		writeError(w, r, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if s.d.Realtime == nil || s.d.RealtimeCtx == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "realtime_unavailable")
 		return
@@ -62,7 +74,7 @@ func (s *Server) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := realtime.NewConn(uuid.NewString(), acc.ID, room, ws, s.d.RealtimeHandler)
+	conn := realtime.NewConn(uuid.NewString(), acc.ID, sessionID, room, ws, s.d.RealtimeHandler)
 	if err := s.d.Realtime.Register(r.Context(), conn, room); err != nil {
 		// Registration runs after the 101, so a refusal cannot be an HTTP status
 		// — it has to go out on the socket, and Refuse is what delivers it since

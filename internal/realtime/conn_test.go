@@ -55,7 +55,7 @@ func dialConnWith(t *testing.T, handler Handler) (*Conn, *websocket.Conn) {
 
 	select {
 	case ws := <-accepted:
-		return NewConn("test-conn", "acct-1", "yard", ws, handler), client
+		return NewConn("test-conn", "acct-1", "sess-1", "yard", ws, handler), client
 	case <-time.After(5 * time.Second):
 		t.Fatal("handshake never reached the server")
 		return nil, nil

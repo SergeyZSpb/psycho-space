@@ -374,3 +374,166 @@ func TestRealtimeBlockDeliversTerminalBye(t *testing.T) {
 		t.Fatalf("reconnect status = %v, want 401 (session revoked)", resp)
 	}
 }
+
+// --- revalidation sweep -----------------------------------------------------
+//
+// The three tests below cover what the in-process kick above cannot see. A
+// socket is authorised once, at the handshake, and then runs for hours with no
+// request left to re-check on; only an admin pressing "block" produces an
+// in-process event. A session reaching its expires_at, and a block written
+// straight into the database, produce none — so without the sweep those sockets
+// would live until the peer or the process went away.
+//
+// The sweep channel is unbuffered, which is what makes these deterministic: the
+// database is changed first, and the send returns only once the revalidator has
+// taken the tick, so the query cannot run against the old state.
+
+// sweepAndWait fires one sweep and waits for it to finish, by firing a second
+// tick that can only be received once the first sweep has returned. Used by the
+// negative case, which has no frame to wait for.
+func sweepAndWait(t *testing.T, sweep chan time.Time) {
+	t.Helper()
+	for range 2 {
+		select {
+		case sweep <- time.Now():
+		case <-time.After(3 * time.Second):
+			t.Fatal("the revalidator never took the tick")
+		}
+	}
+}
+
+// expireSession pushes every session of an account past its expires_at, which is
+// what time would do on its own. Nothing in the process observes it.
+func expireSession(t *testing.T, accountID string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE sessions SET expires_at = now() - interval '1 minute'
+		  WHERE account_id = $1::uuid AND deleted_at IS NULL`, accountID); err != nil {
+		t.Fatalf("expire sessions: %v", err)
+	}
+}
+
+// TestRealtimeSweepClosesAnExpiredSession is the case with no account-level
+// signal at all: the account is still approved and its sessions were never
+// revoked — that one session simply ran out. Only a check keyed on the session
+// itself can see it.
+func TestRealtimeSweepClosesAnExpiredSession(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, sweep := buildAppRealtimeSweep(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	user := loginAs(t, app.URL, "7300", "user")
+	userCookie := cookieHeader(t, user, app.URL)
+	conn, _, err := dialRealtime(t, app.URL, userCookie, "http://localhost")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+
+	frames := readFrames(t, conn)
+	waitRegistered(t, hub, frames)
+
+	expireSession(t, accountIDByUID(t, "7300"))
+	sweep <- time.Now()
+
+	expectBye(t, frames, realtime.CloseUnauthorized)
+	expectClosed(t, frames)
+
+	// The same expiry that closed the socket also refuses the reconnect, so the
+	// client is not merely disconnected but locked out until it logs in again.
+	if _, resp, err := dialRealtime(t, app.URL, userCookie, "http://localhost"); err == nil {
+		t.Fatal("an expired session could reconnect")
+	} else if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("reconnect status = %v, want 401 (session expired)", resp)
+	}
+}
+
+// TestRealtimeSweepClosesAnAccountBlockedInTheDatabase covers the other blind
+// spot: an operator blocking somebody with psql, exactly as RUNBOOK's admin SQL
+// does, never reaches Hub.KickAccount and leaves the session rows untouched.
+func TestRealtimeSweepClosesAnAccountBlockedInTheDatabase(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, sweep := buildAppRealtimeSweep(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	user := loginAs(t, app.URL, "7301", "user")
+	userCookie := cookieHeader(t, user, app.URL)
+	conn, _, err := dialRealtime(t, app.URL, userCookie, "http://localhost")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+
+	frames := readFrames(t, conn)
+	waitRegistered(t, hub, frames)
+
+	// Straight into the table — no admin endpoint, so no in-process kick and no
+	// session revocation. The session stays perfectly valid; the account does not.
+	setRoleStatus(t, accountIDByUID(t, "7301"), "user", "blocked")
+	sweep <- time.Now()
+
+	expectBye(t, frames, realtime.CloseUnauthorized)
+	expectClosed(t, frames)
+
+	// The reconnect is refused too, and with 403 rather than 401: the session is
+	// still live, it is the account that is no longer approved.
+	if _, resp, err := dialRealtime(t, app.URL, userCookie, "http://localhost"); err == nil {
+		t.Fatal("a blocked account could reconnect")
+	} else if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("reconnect status = %v, want 403 (account not approved)", resp)
+	}
+}
+
+// TestRealtimeSweepLeavesAHealthySocketAlone is the negative control, and the
+// one that would fail if the sweep ever closed everybody — the most damaging way
+// this could break, and the one a positive test cannot detect.
+func TestRealtimeSweepLeavesAHealthySocketAlone(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, sweep := buildAppRealtimeSweep(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	user := loginAs(t, app.URL, "7302", "user")
+	userCookie := cookieHeader(t, user, app.URL)
+	conn, _, err := dialRealtime(t, app.URL, userCookie, "http://localhost")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+
+	frames := readFrames(t, conn)
+	waitRegistered(t, hub, frames)
+
+	sweepAndWait(t, sweep)
+
+	// Still connected: a publish after the sweep still reaches it, which proves
+	// the socket is both open and still registered with the hub. Any bye frame
+	// arriving instead is a failure.
+	const probe = `{"t":"survived"}`
+	if err := hub.Publish(context.Background(), "yard", []byte(probe)); err != nil {
+		t.Fatalf("publish after sweep: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case data, ok := <-frames:
+			if !ok {
+				t.Fatal("the sweep closed a socket whose session and account were both fine")
+			}
+			var b realtime.Bye
+			if err := json.Unmarshal(data, &b); err == nil && b.T == realtime.TypeBye {
+				t.Fatalf("the sweep sent a bye (code %d, %q) to a healthy socket", b.Code, b.Reason)
+			}
+			if string(data) == probe {
+				return
+			}
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	t.Fatal("a healthy socket stopped receiving after a sweep")
+}
