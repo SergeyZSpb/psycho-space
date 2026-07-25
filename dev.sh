@@ -55,6 +55,11 @@ target_lint() {
   go_ vet ./...
   echo "== golangci-lint =="
   golangci_ run ./...
+  # Two doc defects the rest of the gate is blind to: a mermaid block broken by
+  # a semicolon (invisible until the page is opened on GitHub) and a decision
+  # record with a dead anchor or a duplicate id. Both shipped to main before
+  # this check existed. Pure text inspection, so it costs milliseconds.
+  ./scripts/check-docs.sh
 }
 
 target_test() {
