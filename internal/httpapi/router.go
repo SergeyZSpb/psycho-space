@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"io/fs"
 	"net/http"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/game"
+	"github.com/SergeyZSpb/psycho-space/internal/realtime"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/settings"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
@@ -32,6 +34,11 @@ type Deps struct {
 	Game       *game.Service
 	Settings   *settings.Service
 	VKVerifier *vk.IDTokenVerifier // nil = id_token verification disabled
+	// Realtime is the WebSocket hub; nil disables the endpoint. RealtimeCtx is
+	// the hub's lifetime — NOT a request context, which is cancelled as soon as
+	// the upgrade handler returns.
+	Realtime    *realtime.Hub
+	RealtimeCtx context.Context
 }
 
 // rateLimit builds a per-client-IP rate limiter that renders the canonical JSON
@@ -121,6 +128,11 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/runs/me", s.handleGameStats)
 			})
 		})
+
+		// Realtime — approved users only. One socket per connection; the
+		// handshake spends one token of the blanket limiter above and the
+		// socket bounds itself thereafter (there is no request left to count).
+		r.With(s.requireAuth).Get("/realtime", s.handleRealtime)
 
 		// Admin — approve/block for admins; promote + settings for superadmin only.
 		r.Route("/admin", func(r chi.Router) {

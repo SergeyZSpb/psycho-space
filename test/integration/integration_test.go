@@ -25,6 +25,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/game"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
+	"github.com/SergeyZSpb/psycho-space/internal/realtime"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/settings"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
@@ -198,6 +199,41 @@ func newAccountService() *account.Service {
 }
 
 func buildApp(vkBaseURL string) http.Handler { return buildAppCfg(vkBaseURL, llmBaseURL) }
+
+// buildAppRealtime builds the app with a running WebSocket hub. The returned
+// cancel drains the hub, so a test can exercise the shutdown path; it is also
+// called on cleanup, and cancelling twice is harmless.
+func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc) {
+	t.Helper()
+	hub := realtime.NewHub()
+	ctx, cancel := context.WithCancel(context.Background())
+	go hub.Run(ctx)
+	t.Cleanup(func() {
+		cancel()
+		<-hub.Done()
+	})
+
+	sessions := session.NewManager(pool, key(3), time.Hour, false)
+	cfg := config.Config{
+		Env:     "dev",
+		BaseURL: "http://localhost", // origin allowlist for the socket
+		VK:      config.VK{AppID: "app-1", ServiceToken: "svc", RedirectURI: vkRedirect, BaseURL: vkBaseURL},
+	}
+	h := httpapi.NewServer(httpapi.Deps{
+		Config:      cfg,
+		Pool:        pool,
+		WebFS:       fstest.MapFS{"index.html": {Data: []byte("<html>psycho</html>")}},
+		VK:          vk.New(vkBaseURL, "app-1", "svc", vkRedirect),
+		Accounts:    newAccountService(),
+		Sessions:    sessions,
+		Wishlist:    wishlist.NewService(pool, wishlist.NewPostgresRepository()),
+		Game:        game.NewService(pool, game.NewPostgresRepository(), game.NewOpenAIEvaluator(cfg.LLM)),
+		Settings:    settings.NewService(pool),
+		Realtime:    hub,
+		RealtimeCtx: ctx,
+	}).Handler()
+	return observability.WrapHandler(h, "http.server"), hub, cancel
+}
 
 // buildAppCfg builds the app with an optional LLM endpoint. Pass llmURL="" to
 // leave the game judge unconfigured (so /api/game/attempt returns 503).

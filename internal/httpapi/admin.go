@@ -117,6 +117,14 @@ func (s *Server) adminSetStatus(w http.ResponseWriter, r *http.Request, status s
 		if err := s.d.Sessions.RevokeAllForAccount(r.Context(), id); err != nil {
 			slog.ErrorContext(r.Context(), "revoke sessions on block failed", "err", err)
 		}
+		// A live WebSocket has no request left to re-check the session on, so
+		// revoking in the database is not enough — close the sockets too. This
+		// is the instant path; the hub's periodic revalidation is the backstop
+		// for what it cannot see (a session expiring on its own, or a block
+		// applied straight in the database).
+		if s.d.Realtime != nil {
+			s.d.Realtime.KickAccount(id)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

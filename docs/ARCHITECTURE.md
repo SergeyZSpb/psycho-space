@@ -126,7 +126,29 @@ sequenceDiagram
 
 The prompt order is load-bearing: the provider caches a matching **prefix**, so anything per-turn placed early would invalidate the cached system prompt for every concurrent player. Full reasoning, measurements and costs: `RUNBOOK.md` → *Working on the game*.
 
-### 2.4 Deploy
+### 2.4 Realtime connection lifetime
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant N as nginx
+    participant A as psycho-space
+    participant H as hub
+
+    B->>N: GET /api/realtime (session cookie, Origin)
+    Note over N: location /api/realtime<br/>proxy_http_version 1.1 + Upgrade/Connection<br/>re-declares X-Real-IP (headers do NOT merge)
+    N->>A: upgraded request
+    Note over A: requireAuth (approved only) → origin check → 101
+    A->>H: Register(conn, room) — caps checked here
+    loop while connected
+        H-->>B: broadcast (non-blocking; a slow client is dropped, never waited on)
+        B->>A: frames (≤4 KiB, ≤10/s)
+    end
+    Note over A,H: SIGTERM → cancel hub ctx → close 1001 → THEN http.Shutdown<br/>(Shutdown alone does not close hijacked connections)
+```
+
+### 2.5 Deploy
 
 ```mermaid
 sequenceDiagram
@@ -163,6 +185,7 @@ flowchart LR
     end
 
     HTTP["httpapi<br/>chi router · middleware · handlers"]
+    RT["realtime<br/>WebSocket hub · per-conn pumps"]
 
     subgraph domain["domain packages — repository.go + postgres_repository.go + service.go + errors.go"]
         ACC["account"]
@@ -176,8 +199,8 @@ flowchart LR
     WEB["web<br/>go:embed of the built SPA"]
     MIG["migrations<br/>NNN_*.sql, embedded"]
 
-    MAIN --> CFG & DB & LOG & OBS & HTTP & WEB & MIG
-    HTTP --> ACC & SESS & WISH & GAME & SET & VKP
+    MAIN --> CFG & DB & LOG & OBS & HTTP & WEB & MIG & RT
+    HTTP --> ACC & SESS & WISH & GAME & SET & VKP & RT
     ACC & SESS & WISH & GAME & SET --> DB
     ACC & SESS --> CRY
     SEED -.reuses.-> ACC & SESS & CRY & DB
@@ -277,6 +300,7 @@ Everything is under `/api`, authenticated by the session cookie. `GET /healthz` 
 | `game` | `GET config` · `POST attempt` (5/min per IP — paid) · `POST runs` · `GET runs/leaderboard` · `GET runs/me` | approved |
 | `admin` | `GET accounts?status=` · `POST accounts/{id}/approve` · `POST accounts/{id}/block` · `GET settings` | admin+ |
 | `admin` | `POST accounts/{id}/promote` · `POST accounts/{id}/demote` · `PUT settings/open-registration` | superadmin only |
+| `realtime` | `GET realtime?room=` — WebSocket upgrade | approved |
 
 Anything not matching `/api` or `/healthz` is served the embedded SPA, so client-side routes resolve on a hard refresh.
 
@@ -295,6 +319,11 @@ Anything not matching `/api` or `/healthz` is served the embedded SPA, so client
 | Error disclosure | Stable codes + trace id; `err.Error()` never reaches a client | `internal/httpapi/respond.go` |
 | Asset content type | Allowlisted image types + `nosniff` | `internal/httpapi/game.go` — `imageContentType` |
 | Consent (152-ФЗ) | Checkbox gates the VK widget; `consent_at` + `consent_version` persisted | SPA + `accounts` |
+| WebSocket origin | Validated at upgrade (library default; never `InsecureSkipVerify`) — the same-origin policy does **not** apply to WebSocket | `internal/httpapi/realtime.go` |
+| WebSocket frame size | `SetReadLimit(4096)` — the 1 MiB `bodyLimit` wraps `r.Body` and the hijack bypasses it | `internal/realtime/conn.go` |
+| WebSocket message rate | 10/s per connection, burst 20 — the HTTP limiter fires once, at the handshake | `internal/realtime/conn.go` |
+| Connection caps | 3 per account, 200 per process | `internal/realtime/hub.go` |
+| Revocation on a live socket | Blocking an account closes its sockets with 4001 (terminal for the client) | `internal/httpapi/admin.go` → `Hub.KickAccount` |
 
 **On the client IP** — nginx sends `X-Forwarded-For: $proxy_add_x_forwarded_for`, which *appends* the peer to whatever the client sent, so its leftmost entry is attacker-controlled. chi's `middleware.RealIP` trusted exactly that and overwrote `RemoteAddr` with it, which made every per-IP limit forgeable by varying a header — including the one protecting the endpoint that spends money. `clientIP` reads `X-Real-IP` (which nginx overwrites) and only when the request came from loopback.
 

@@ -21,6 +21,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/logging"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
+	"github.com/SergeyZSpb/psycho-space/internal/realtime"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/settings"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
@@ -77,6 +78,13 @@ func main() {
 	slog.Info("game evaluator", "llm_configured", cfg.LLM.Enabled(), "model", cfg.LLM.Model)
 	gameSvc := game.NewService(pool, game.NewPostgresRepository(), gameEval)
 	settingsSvc := settings.NewService(pool)
+
+	// The realtime hub outlives any single request. Its context is what every
+	// socket is bound to, so cancelling it is what drains them on shutdown.
+	hubCtx, stopHub := context.WithCancel(context.Background())
+	defer stopHub()
+	hub := realtime.NewHub()
+	go hub.Run(hubCtx)
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
 
 	var vkVerifier *vk.IDTokenVerifier
@@ -100,15 +108,11 @@ func main() {
 		Game:       gameSvc,
 		Settings:   settingsSvc,
 		VKVerifier: vkVerifier,
+
+		Realtime:    hub,
+		RealtimeCtx: hubCtx,
 	})
-	httpServer := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           observability.WrapHandler(srv.Handler(), "http.server"),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	httpServer := httpapi.NewHTTPServer(cfg.HTTPAddr, srv.Handler(), httpapi.DefaultTimeouts())
 
 	go func() {
 		slog.Info("http listening", "addr", cfg.HTTPAddr)
@@ -123,6 +127,19 @@ func main() {
 	<-stop
 
 	slog.Info("shutting down")
+
+	// Drain the WebSocket hub FIRST. http.Server.Shutdown does not close or
+	// wait for hijacked connections — its own documentation says so — and this
+	// service restarts on every deploy, several times a day. Without this every
+	// connected player gets a bare TCP reset instead of a close frame, and the
+	// client cannot tell a planned restart from a network fault.
+	stopHub()
+	select {
+	case <-hub.Done():
+	case <-time.After(5 * time.Second):
+		slog.Warn("realtime hub did not drain in time")
+	}
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

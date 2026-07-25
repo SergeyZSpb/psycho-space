@@ -109,6 +109,28 @@ _Reasoning, both measured:_ the provider bills a cached prefix at a quarter rate
 
 The provider's content filter answered substance-use turns with prose instead of JSON, which players saw as an error. `TestContentAvoidsDrugFlavouredPrompts` guards the whole prompt surface against the regression.
 
+## Realtime
+
+### WebSocket, in the same binary, with an in-memory hub
+
+There is one process, so the hub is a map guarded by a single goroutine and messages reach every client in the room in microseconds. Presence lives only in memory, because it is meaningless after a restart — persisting it would let it lie.
+
+_Reasoning for WebSocket over SSE:_ at this scale neither latency nor efficiency decides it. What decides it is that every client→server action over SSE is a fresh HTTP request through the blanket per-IP limiter — and that limiter is the same mechanism protecting the paid LLM endpoint. Loosening it for chat-frequency traffic would be loosening exactly the wrong thing. A WebSocket spends one token at the handshake and then bounds itself.
+
+### No realtime message may reach the LLM
+
+_Reasoning:_ the LLM is the only paid dependency, and its cost is currently bounded by human turn-taking behind a 5/min per-IP limit. A broadcast or a timer can multiply one player's action into many calls, which is unbounded in a way the first game never was. If a feature needs the judge, it goes through the existing HTTP endpoint. This is written in the package doc comment because it is the sort of rule that erodes silently.
+
+### Shutdown drains the hub before the HTTP server
+
+_Reasoning:_ `http.Server.Shutdown` does not close or wait for hijacked connections — its own documentation says so. This service restarts on every deploy, several times a day, so without an explicit drain each one would reset every player's socket with no close frame. Draining first sends close code 1001, which lets the client distinguish a planned restart from a network failure and reconnect promptly instead of backing off.
+
+### What is *not* a problem: hijacked connections and server timeouts
+
+Widely repeated advice (golang/go#8296) says a hijacked connection inherits the server's `ReadTimeout`/`WriteTimeout`, so a WebSocket library must clear them. `net/http` has since fixed this at the source: `hijackLocked` calls `rwc.SetDeadline(time.Time{})` before handing the connection over. `handleRealtime` therefore does no deadline juggling, and `TestHijackedConnOutlivesServerWriteTimeout` pins the behaviour so that a future Go change surfaces as a failing test rather than as sockets dying in production.
+
+_Recorded because the opposite is easy to "fix" defensively:_ code that clears a deadline nothing sets is dead code with a comment that misleads the next reader.
+
 ## Testing
 
 ### Two Playwright suites, on purpose
