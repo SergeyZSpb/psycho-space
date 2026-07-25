@@ -78,7 +78,8 @@ interface ConfigFixture {
   title: string;
   stats: StatDef[];
   actions: ActionDef[];
-  skins: { key: string; label: string; emoji: string; gradient: string }[];
+  /** `image` is present only for a skin the asset store has a blob for. */
+  skins: { key: string; label: string; emoji: string; gradient: string; image?: string }[];
   locations: { key: string; label: string; entry: { x: number; y: number } }[];
   default_skin: string;
   default_location: string;
@@ -177,7 +178,33 @@ const RELIEVE: ActionDef = {
   revives_fatal: false,
 };
 
-/** The catalogue as shipped today. */
+/** The shipped skin: an emoji over a gradient, because no sprite exists yet. */
+const SKIN_VANYA = 'vanya';
+const VANYA_EMOJI = '🫃';
+
+/**
+ * A skin key with a picture behind it, which the shipped catalogue does not have
+ * yet.
+ *
+ * Invented here on purpose. `Config` decorates a skin with an art URL whenever
+ * the shared asset store holds a blob for it, so the sprite branch is a live
+ * path with no live data — exactly the shape that rots unnoticed. A data URI
+ * rather than a file, so the picture is part of the fixture and the test needs
+ * no network of its own.
+ */
+const SKIN_PAINTED = 'vanya-drawn';
+const PAINTED_IMAGE =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+/**
+ * What a dot draws for a key the catalogue does not describe. Mirrored from
+ * src/lib/vanyagotchiPlane.ts — a silhouette rather than a blank, because the
+ * entity is real and standing there and the only thing missing is this client's
+ * idea of what it looks like.
+ */
+const UNKNOWN_ART = '👤';
+
+/** The catalogue as shipped today, plus one skin that carries a picture. */
 const CATALOGUE: ConfigFixture = {
   game_key: 'vanyagotchi',
   title: 'Ванягоччи',
@@ -185,14 +212,21 @@ const CATALOGUE: ConfigFixture = {
   actions: [DRINK, RELIEVE],
   skins: [
     {
-      key: 'vanya',
+      key: SKIN_VANYA,
       label: 'дядя Ваня',
-      emoji: '🫃',
+      emoji: VANYA_EMOJI,
       gradient: 'linear-gradient(160deg, #6b4a2f, #2f4a6b)',
+    },
+    {
+      key: SKIN_PAINTED,
+      label: 'нарисованный Ваня',
+      emoji: VANYA_EMOJI,
+      gradient: 'linear-gradient(160deg, #6b4a2f, #2f4a6b)',
+      image: PAINTED_IMAGE,
     },
   ],
   locations: [{ key: 'yard', label: 'двор', entry: { x: 0.5, y: 0.5 } }],
-  default_skin: 'vanya',
+  default_skin: SKIN_VANYA,
   default_location: 'yard',
 };
 
@@ -388,10 +422,18 @@ async function stubSocket(page: Page): Promise<SocketHarness> {
   };
 }
 
+/**
+ * One entry of a roster frame. `art`, `label` and `pose` are optional because
+ * they are optional on the wire — `label` is omitted outright for a Ваня with no
+ * name — and every combination has to draw somebody.
+ */
 interface Peer {
   id: string;
   x: number;
   y: number;
+  art?: string;
+  label?: string;
+  pose?: string;
 }
 
 function roster(...peers: Peer[]): string {
@@ -462,6 +504,9 @@ function barFraction(page: Page, key: string): Promise<number> {
 
 const plane = (page: Page) => page.locator('[data-test="plane"]');
 const dots = (page: Page) => page.locator('[data-test="peer"]');
+/** One entity's face. On every dot, not only on the caller's own. */
+const face = (page: Page, id: string) =>
+  page.locator(`[data-peer="${id}"] [data-test="peer-face"]`);
 const petLine = (page: Page) => page.locator('[data-test="pet-line"]');
 const statValue = (page: Page, key: string) => page.locator(`[data-test="stat-value-${key}"]`);
 const actionBtn = (page: Page, key: string) => page.locator(`[data-test="action-${key}"]`);
@@ -795,10 +840,14 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
 
   test('a dead Ваня is legible from the dot as well as from the line', async ({ page }) => {
     // Death has to read without anybody parsing a number: the line says what to
-    // do about it, and the face on your own dot says it at a glance. The face
-    // only renders on YOUR dot — the roster carries no skin, and inventing one
-    // for everybody else would show two players different worlds — so the socket
-    // has to answer the hello before there is anything to look at.
+    // do about it, and the face on the dot says it at a glance.
+    //
+    // The pose comes off the WIRE and not out of this screen's own pet state,
+    // which is why the socket has to speak before there is anything to look at.
+    // That is not an implementation detail: the yard shows everybody ONE world,
+    // and a condition worked out locally could only ever be worked out from
+    // numbers its owner alone can see — so a dying Ваня would look ill to
+    // himself and perfectly well to the player standing next to him.
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
@@ -813,14 +862,70 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(petLine(page)).toHaveText(DEATH_LINE);
 
     await socket.push(JSON.stringify({ t: TYPE_YOU, id: 'me' }));
-    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5 }, { id: 'other', x: 0.2, y: 0.2 }));
+    await socket.push(
+      roster(
+        { id: 'me', x: 0.5, y: 0.5, art: SKIN_VANYA, pose: 'dead' },
+        { id: 'other', x: 0.2, y: 0.2, art: SKIN_VANYA, pose: 'fine' },
+      ),
+    );
     await expect(dots(page)).toHaveCount(2);
 
-    const face = page.locator('[data-test="peer-face"]');
-    await expect(face).toHaveCount(1);
-    await expect(face).toHaveAttribute('data-condition', 'dead');
-    // And it is on OUR dot, not on the stranger's.
-    await expect(page.locator('[data-peer="me"] [data-test="peer-face"]')).toHaveCount(1);
+    // Both of them have a face, because appearance is sent for everybody.
+    await expect(page.locator('[data-test="peer-face"]')).toHaveCount(2);
+    await expect(face(page, 'me')).toHaveAttribute('data-condition', 'dead');
+    // And the neighbour keeps his own condition: a screen that painted its own
+    // pet's state across the yard would have buried him too.
+    await expect(face(page, 'other')).toHaveAttribute('data-condition', 'fine');
+  });
+
+  test('a skin key resolves against the catalogue, and an unknown one still draws somebody', async ({
+    page,
+  }) => {
+    // THE property this iteration is bought for, and the reason the wire carries
+    // a catalogue KEY rather than a picture: a skin — or, later, an NPC that is
+    // not a Ваня at all — can be added on the server with no client deploy. A
+    // client that refused to render what it had not heard of would have to ship
+    // in lockstep with the server, which is precisely the coupling being avoided.
+    //
+    // All three branches in one frame, because they are one decision: picture if
+    // the catalogue has one, its emoji if not, and a silhouette if the catalogue
+    // has never heard of the key. The third is the one with no other coverage —
+    // nothing else in the suite can produce a key the config does not define.
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ hp: 61, beer: 33, bladder: 44 }),
+    });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      roster(
+        { id: 'plain', x: 0.2, y: 0.2, art: SKIN_VANYA, pose: 'fine' },
+        { id: 'painted', x: 0.5, y: 0.5, art: SKIN_PAINTED, pose: 'fine' },
+        { id: 'npc', x: 0.8, y: 0.8, art: 'npc-babushka-2027', pose: 'poorly' },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(3);
+
+    // A key the catalogue describes with an emoji and no blob: the emoji, and
+    // it is the CATALOGUE's emoji rather than anything this screen knows.
+    await expect(face(page, 'plain')).toHaveText(VANYA_EMOJI);
+    await expect(face(page, 'plain').locator('img')).toHaveCount(0);
+
+    // A key with a picture behind it: the picture wins, and the emoji is not
+    // drawn underneath it.
+    const sprite = face(page, 'painted').locator('img.peer-sprite');
+    await expect(sprite).toHaveCount(1);
+    await expect(sprite).toHaveAttribute('src', PAINTED_IMAGE);
+    await expect(face(page, 'painted')).toHaveText('');
+
+    // A key from a server newer than this client: a placeholder, and — the part
+    // that matters — a dot that is still on the plane, still counted, still
+    // carrying its own pose. Invisible would be the wrong answer.
+    await expect(face(page, 'npc')).toHaveText(UNKNOWN_ART);
+    await expect(face(page, 'npc')).toHaveAttribute('data-condition', 'poorly');
+    await expect(page.locator('[data-peer="npc"]')).toBeVisible();
+    await expect(page.getByText('во дворе: 3')).toBeVisible();
   });
 
   test('a catalogue key the SPA has never heard of renders anyway', async ({ page }) => {

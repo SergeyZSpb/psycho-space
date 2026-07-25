@@ -18,6 +18,23 @@ type Repository interface {
 	// same instant produce one pet.
 	EnsurePet(ctx context.Context, q db.DBTX, accountID, skinKey, locationKey string) (Pet, error)
 
+	// FindPet returns the account's pet without creating one, reporting whether
+	// there was any.
+	//
+	// Separate from EnsurePet because the plane must not conjure a pet for
+	// somebody who has merely opened a socket: creating one is what the first
+	// HTTP read does, deliberately and once. A player whose client has not asked
+	// for its state yet simply renders with catalogue defaults.
+	FindPet(ctx context.Context, q db.DBTX, accountID string) (Pet, bool, error)
+
+	// SavePosition records where an account's pet was standing, and when.
+	//
+	// Written once per session on the last disconnect, never per move: thirty
+	// players moving at the socket's ten messages a second would be three
+	// hundred writes a second to persist something that is only read when they
+	// come back.
+	SavePosition(ctx context.Context, q db.DBTX, accountID string, at Point, seen time.Time) error
+
 	// Stats returns the stored (value, as_of) pairs for a pet, undecayed. The
 	// decay is applied by the caller, because it is a pure function of the pair
 	// and the clock and has no business inside a query.

@@ -28,6 +28,24 @@ package gamevanyagotchi
 
 import "math"
 
+// Poses an entity can be drawn in.
+//
+// Derived, never stored: a pose is a pure function of the stats and the clock,
+// exactly as the values themselves are, so there is no mood column to fall out
+// of step with the numbers it claims to summarise and nothing to migrate when a
+// pose is added. The client is told which one to draw and knows nothing about
+// how it was decided.
+const (
+	// PoseFine is an ordinary Ваня.
+	PoseFine = "fine"
+	// PosePoorly is one whose fatal stat has fallen into its warning range —
+	// which the catalogue defines, so "looking rough" and "the bar turned amber"
+	// are the same threshold rather than two numbers that drift apart.
+	PosePoorly = "poorly"
+	// PoseDead is one who did not make it. Reversible; see Service.Act.
+	PoseDead = "dead"
+)
+
 // Point is a position on the plane in normalised coordinates: 0..1 on each axis,
 // origin top-left. Normalised rather than pixels because the client maps them in
 // CSS (`--x`/`--y` against the container's own size), so the server never needs

@@ -256,11 +256,31 @@ whole stat is a backend deploy with **no migration and no frontend change** —
 and existing pets pick a newly-added stat up on their next read. Nothing
 backfills, because nothing needs to.
 
-**Positions are not in the database at all** (yet). A Ваня's place in the yard is
-in-process memory, held for `PositionGrace` (2 minutes) after the last socket
-closes so that reloading the page keeps your place. A deploy therefore returns
-everyone to the middle of the yard, which is expected, and `pets.x` / `pets.y` /
-`pets.last_seen_at` exist but are written by nothing so far.
+**Positions live in memory and are written down on the way out.** A Ваня's place
+in the yard is in-process state, held for `PositionGrace` (2 minutes) after the
+last socket closes so that reloading the page keeps your place — and written to
+`pets.x` / `pets.y` / `pets.last_seen_at` **once**, when that last connection
+goes away, or for everybody at once when the service shuts down. So a deploy no
+longer returns the yard to the middle. A *crash* still does, for whoever had not
+been written yet; that is accepted rather than fixed.
+
+```sql
+-- where everyone was last seen standing
+SELECT account_id, round(x::numeric, 2) AS x, round(y::numeric, 2) AS y, last_seen_at
+  FROM game_vanyagotchi_pets WHERE deleted_at IS NULL ORDER BY last_seen_at DESC NULLS LAST;
+```
+
+**A NULL x/y is normal** — it means that pet has never been in the yard, and he
+starts at his location's entry point from the catalogue.
+
+**The yard's appearance comes from an in-memory cache, not from a query.** The
+5 Hz broadcast never touches Postgres: each account's skin, name and stat pairs
+are read when its client says hello and refreshed whenever it acts over HTTP
+(ADR-041). Consequences when debugging: a pet renamed or re-skinned straight in
+the database **will not change on screen until that client reconnects or acts**,
+and that is by design rather than a bug. The *pose* is not cached — it is derived
+from the cached pairs on every tick, so a Ваня visibly deteriorates without
+anything being refreshed.
 
 ### Tests
 

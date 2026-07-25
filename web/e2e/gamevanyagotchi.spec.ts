@@ -23,12 +23,44 @@ const TYPE_YOU = 'vanyagotchi_you';
 const X_PROPERTY = '--x';
 const Y_PROPERTY = '--y';
 
+/**
+ * The longest name a dot will show, in code points. Mirrored from
+ * src/lib/vanyagotchiPlane.ts, for the same reason as everything else here: a
+ * cap that quietly moved should fail this test rather than be followed.
+ */
+const LABEL_MAX = 16;
+
+/**
+ * One entry of a roster frame.
+ *
+ * A frame says two kinds of thing about an entity, and the split is the whole
+ * design: WHERE it stands changes five times a second and is written straight to
+ * CSS, WHAT it looks like changes a few times an hour and goes through Vue.
+ *
+ * `art`, `label` and `pose` are optional here rather than required because they
+ * are optional on the WIRE too — `label` is omitted entirely for a Ваня who has
+ * no name, and a server halfway through a deploy may send none of the three.
+ * Every one of those has to draw somebody.
+ */
 interface Peer {
   id: string;
   x: number;
   y: number;
+  /** A catalogue skin key, never a picture — see the appearance suite below. */
+  art?: string;
+  /** The pet's name. Left out, never empty, when it has none. */
+  label?: string;
+  /** 'fine' | 'poorly' | 'dead', as the SERVER decided it. */
+  pose?: string;
 }
 
+/**
+ * A roster frame.
+ *
+ * `JSON.stringify` drops an undefined property rather than writing `null`, which
+ * is exactly what the Go `omitempty` on `Label` does — so a peer built without a
+ * name here reaches the client in the same shape a nameless one really does.
+ */
 function roster(...peers: Peer[]): string {
   return JSON.stringify({ t: TYPE_ROSTER, peers });
 }
@@ -161,6 +193,14 @@ async function expectNoOverflow(page: Page, label: string): Promise<void> {
   expect(diff, `horizontal overflow on "${label}": ${diff}px`).toBeLessThanOrEqual(0);
 }
 
+/** The play screen must never scroll vertically either — that is the layout rule. */
+async function expectNoVerticalScroll(page: Page, label: string): Promise<void> {
+  const diff = await page.evaluate(
+    () => document.documentElement.scrollHeight - document.documentElement.clientHeight,
+  );
+  expect(diff, `vertical scroll on "${label}": ${diff}px`).toBeLessThanOrEqual(1);
+}
+
 function isMobile(page: Page): boolean {
   const vp = page.viewportSize();
   return !!vp && vp.width <= 600;
@@ -233,6 +273,49 @@ function staleLog(page: Page): Promise<boolean[]> {
 
 const plane = (page: Page) => page.locator('[data-test="plane"]');
 const dots = (page: Page) => page.locator('[data-test="peer"]');
+/** One entity's face. On EVERY dot now, not only on your own. */
+const face = (page: Page, id: string) =>
+  page.locator(`[data-peer="${id}"] [data-test="peer-face"]`);
+/** One entity's name, if it has one — the element is absent when it does not. */
+const nameTag = (page: Page, id: string) =>
+  page.locator(`[data-peer="${id}"] [data-test="peer-label"]`);
+
+/**
+ * The stylesheet's cap on a name's WIDTH, mirrored: `min(80px, 30cqw)` against
+ * the plane's own box. Both branches matter — the px ceiling stops a name
+ * growing past legible on a tablet, the percentage keeps it the same fraction of
+ * the world on every device — so both are asserted, and whichever is smaller on
+ * the viewport under test is the one actually in force.
+ */
+const LABEL_MAX_PX = 80;
+const LABEL_MAX_PLANE_FRACTION = 0.3;
+
+/**
+ * Asserts one dot's name is no wider than the cap allows.
+ *
+ * This is the assertion that has teeth. A name is centred on its dot, so an
+ * uncapped one covers every neighbour it reaches — which is what a player would
+ * actually see, and which no page-level scroll check can detect: `.stage` clips
+ * its own overflow and the root stylesheet sets `overflow-x: hidden`, so the
+ * page cannot grow a scrollbar however wide a label gets.
+ *
+ * A pixel of slack on each bound, because a fractional layout size rounds.
+ */
+async function expectLabelWithinCap(page: Page, id: string): Promise<void> {
+  const label = await nameTag(page, id).boundingBox();
+  const box = await plane(page).boundingBox();
+  expect(label, `no label box for ${id}`).not.toBeNull();
+  expect(box, 'the plane has no box').not.toBeNull();
+  const width = label?.width ?? 0;
+  const planeWidth = box?.width ?? 1;
+  expect(width, `${id}'s name is ${Math.round(width)}px wide`).toBeLessThanOrEqual(
+    LABEL_MAX_PX + 1,
+  );
+  expect(
+    width / planeWidth,
+    `${id}'s name is ${Math.round((width / planeWidth) * 100)}% of the yard wide`,
+  ).toBeLessThanOrEqual(LABEL_MAX_PLANE_FRACTION + 0.01);
+}
 
 /** Loads the game and steps past the intro into the yard. */
 async function enterYard(page: Page): Promise<void> {
@@ -596,5 +679,240 @@ test.describe('«Ванягоччи» — the shape of the world, and losing it 
       () => document.documentElement.scrollHeight - document.documentElement.clientHeight,
     );
     expect(vScroll).toBeLessThanOrEqual(1);
+  });
+});
+
+test.describe('«Ванягоччи» — a yard of people rather than a field of dots', () => {
+  // Until this iteration a roster entry was three fields — an id and a pair of
+  // coordinates — and the plane drew everybody as an identical coloured circle.
+  // The frame now also says what each entity LOOKS like, and it says it about
+  // every entity rather than only about the caller's own, which is the
+  // difference between one shared world and every player watching a private one.
+  //
+  // These tests deliberately drive appearance through the SOCKET and assert on a
+  // peer that is NOT yours. Everything about a neighbour's Ваня — his skin, his
+  // name, how he is doing — can only have come off the wire: this screen holds
+  // no state about anybody else and could not derive it if it wanted to.
+
+  test('every dot wears its own face and its own condition, not just yours', async ({ page }) => {
+    // Three entities, three different poses, and the two that matter are the
+    // ones that are not us. A screen that painted its own pet's condition onto
+    // the yard — the obvious shortcut, and the one that makes two players see
+    // two different worlds — would give all three the same face.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(JSON.stringify({ t: TYPE_YOU, id: 'me' }));
+    await socket.push(
+      roster(
+        { id: 'me', x: 0.5, y: 0.5, art: 'vanya', label: 'я', pose: 'fine' },
+        { id: 'neighbour', x: 0.2, y: 0.3, art: 'vanya', label: 'сосед', pose: 'poorly' },
+        { id: 'goner', x: 0.8, y: 0.7, art: 'vanya', label: 'бедолага', pose: 'dead' },
+      ),
+    );
+
+    await expect(dots(page)).toHaveCount(3);
+    // A face per dot — the count is the assertion that this is no longer a
+    // privilege of the caller's own entity.
+    await expect(page.locator('[data-test="peer-face"]')).toHaveCount(3);
+
+    await expect(face(page, 'me')).toHaveAttribute('data-condition', 'fine');
+    await expect(face(page, 'neighbour')).toHaveAttribute('data-condition', 'poorly');
+    await expect(face(page, 'goner')).toHaveAttribute('data-condition', 'dead');
+
+    // And each name is on its own dot rather than all of them on one.
+    await expect(nameTag(page, 'neighbour')).toHaveText('сосед');
+    await expect(nameTag(page, 'goner')).toHaveText('бедолага');
+    await expect(page.locator('[data-test="peer-label"]')).toHaveCount(3);
+  });
+
+  test('an unnamed Ваня gets no label element, and never the word "undefined"', async ({
+    page,
+  }) => {
+    // Most Ваняs have no name — naming one is a dialog nobody has opened yet —
+    // so "no name" is the common case rather than an edge one. It is one state
+    // at every layer: the field is absent from the frame, `capLabel` answers
+    // undefined, and the template's `v-if` renders no element at all. The bug
+    // this forecloses is the classic one, where a missing name reaches the DOM
+    // as the four-letter string a template interpolated out of nothing.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      roster(
+        { id: 'named', x: 0.3, y: 0.3, art: 'vanya', label: 'Ваня', pose: 'fine' },
+        { id: 'nameless', x: 0.7, y: 0.7, art: 'vanya', pose: 'fine' },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(2);
+
+    await expect(nameTag(page, 'named')).toHaveText('Ваня');
+
+    // Checked before the element count, so that this assertion is the one a
+    // stringifying `capLabel` trips over rather than being shadowed by it.
+    await expect(page.locator('[data-peer="nameless"]')).not.toContainText('undefined');
+    await expect(plane(page)).not.toContainText('undefined');
+
+    // Absent, not empty: nothing is rendered and nothing occupies the space.
+    await expect(nameTag(page, 'nameless')).toHaveCount(0);
+    await expect(page.locator('[data-test="peer-label"]')).toHaveCount(1);
+    // He is still drawn, with a face — a nameless entity is not a broken one.
+    await expect(face(page, 'nameless')).toBeVisible();
+  });
+
+  test('a change of pose lands on the dot that is already there', async ({ page }) => {
+    // The same guarantee the position tier has, for the tier above it. Poses
+    // arrive inside a frame that also carries coordinates, five times a second,
+    // and re-keying the list on one would throw away every element on the plane
+    // — taking the imperatively-written positions with it and restarting the
+    // dot's CSS transition from wherever it happened to be. The marker is how a
+    // browser can be asked whether this is literally the same node.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(roster({ id: 'peer-a', x: 0.4, y: 0.4, art: 'vanya', label: 'Ваня', pose: 'fine' }));
+    await expect(face(page, 'peer-a')).toHaveAttribute('data-condition', 'fine');
+    await page.evaluate(() => {
+      document.querySelector('[data-peer="peer-a"]')?.setAttribute('data-marked', '1');
+    });
+
+    // Same entity, same place, worse day.
+    await socket.push(roster({ id: 'peer-a', x: 0.4, y: 0.4, art: 'vanya', label: 'Ваня', pose: 'dead' }));
+
+    await expect(face(page, 'peer-a')).toHaveAttribute('data-condition', 'dead');
+    await expect(page.locator('[data-peer="peer-a"][data-marked="1"]')).toHaveCount(1);
+    // The position survived with it, which is the thing a re-keyed list would
+    // have silently dropped on the floor.
+    expect(await peerPosition(page, 'peer-a')).toEqual({ x: '0.4', y: '0.4' });
+  });
+
+  test('long names cost the yard nothing, and never grow past their cap', async ({ page }) => {
+    // A busy yard of long names is the case that breaks this screen. Three
+    // independent caps stop it — `capLabel` bounds the STRING, the stylesheet
+    // bounds the WIDTH, and the plane's `overflow: hidden` is the backstop — and
+    // this asserts the two that are load-bearing rather than the backstop.
+    //
+    // The page-scroll checks below are kept as regression guards, but they are
+    // deliberately not the point: `.stage` clips its own overflow and
+    // styles/mobile.css puts `overflow-x: hidden` on the root, so a runaway name
+    // would be swallowed twice over before it ever reached a scrollbar. What
+    // WOULD be visible to a player is a name spilling across the neighbours, and
+    // that is a measurement of the label's own box.
+    //
+    // Dots deliberately ON the edges: a name is centred on its dot, so one at
+    // x=0 or x=1 hangs half its width past the plane. That is left clipped on
+    // purpose (a drifted name reads as belonging to the dot next to it, which is
+    // worse than a cut one), so what is asserted is the width, not containment.
+    const LONG = 'Владислав-Афанасий Многобуквенный из Химок';
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    // The yard's geometry before a single name is in it, so the comparison
+    // afterwards is against this screen rather than against a hardcoded size.
+    const emptyPlane = await plane(page).boundingBox();
+    expect(emptyPlane, 'the plane has no box').not.toBeNull();
+
+    await socket.push(
+      roster(
+        { id: 'left', x: 0, y: 0.5, art: 'vanya', label: LONG, pose: 'fine' },
+        { id: 'right', x: 1, y: 0.5, art: 'vanya', label: LONG, pose: 'poorly' },
+        { id: 'top', x: 0.5, y: 0, art: 'vanya', label: LONG, pose: 'fine' },
+        { id: 'bottom', x: 0.5, y: 1, art: 'vanya', label: LONG, pose: 'dead' },
+        ...Array.from({ length: 4 }, (_, i) => ({
+          id: `crowd-${i}`,
+          x: 0.3 + i * 0.1,
+          y: 0.4,
+          art: 'vanya',
+          label: LONG,
+          pose: 'fine',
+        })),
+      ),
+    );
+    await expect(dots(page)).toHaveCount(8);
+
+    // THE assertion: a name is a fraction of the world wide, not a third of the
+    // screen. Without the width cap this label measures the whole 42 characters
+    // and covers every neighbour it passes.
+    await expectLabelWithinCap(page, 'left');
+    await expectLabelWithinCap(page, 'right');
+
+    // And the yard did not move to accommodate any of them — same box, to the
+    // pixel. A label that could stretch its parent would show up here as a
+    // plane that had shrunk or changed shape.
+    const namedPlane = await plane(page).boundingBox();
+    expect(namedPlane?.width, 'the plane changed width once names arrived').toBeCloseTo(
+      emptyPlane?.width ?? 0,
+      1,
+    );
+    expect(namedPlane?.height, 'the plane changed height once names arrived').toBeCloseTo(
+      emptyPlane?.height ?? 0,
+      1,
+    );
+
+    await expectNoOverflow(page, 'vanyagotchi yard full of long names');
+    await expectNoVerticalScroll(page, 'vanyagotchi yard full of long names');
+    // The status row is the fixed child; a plane stretched by a name would be
+    // the thing that pushed it off.
+    const hud = page.getByText(/во дворе:/);
+    await expect(hud).toBeVisible();
+    const hudBox = await hud.boundingBox();
+    const viewportHeight = page.viewportSize()?.height ?? 0;
+    expect((hudBox?.y ?? 0) + (hudBox?.height ?? 0)).toBeLessThanOrEqual(viewportHeight);
+
+    // And the STRING was cut, not merely hidden by CSS — so nothing downstream
+    // (an aria label, a tooltip, anything added later) has to re-derive the cap,
+    // and a server that never validated a name cannot put a kilobyte of it in
+    // the DOM. Counted in code points, because that is the unit the cap is in:
+    // cutting UTF-16 in the middle of a surrogate pair is how the same field
+    // grows a replacement character the first time somebody uses an emoji.
+    const shown = (await nameTag(page, 'left').textContent()) ?? '';
+    expect([...shown].length, `label rendered ${shown.length} units: ${shown}`).toBeLessThanOrEqual(
+      LABEL_MAX,
+    );
+    expect([...LONG].length, 'the fixture is no longer past the cap').toBeGreaterThan(LABEL_MAX);
+  });
+
+  test('long names still fit the smallest screen we support', async ({ page }) => {
+    // 320x568 is the floor, and it is the width at which the cap's OTHER branch
+    // is the one in force: the plane is about 231px across there, so `30cqw` is
+    // ~69px and wins the `min()` against the 80px ceiling. That is the whole
+    // point of sizing a name in the world's units before the device's — a name
+    // that is a third of the yard wide on a phone and a seventh on a tablet is
+    // two different games — and this is the only viewport in the suite that
+    // exercises it.
+    //
+    // Set before `goto` rather than resized afterwards, so the layout is built
+    // for this size rather than reflowed into it.
+    await page.setViewportSize({ width: 320, height: 568 });
+    const LONG = 'Владислав-Афанасий Многобуквенный из Химок';
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      roster(
+        ...Array.from({ length: 8 }, (_, i) => ({
+          id: `peer-${i}`,
+          x: (i % 4) / 3,
+          y: Math.floor(i / 4),
+          art: 'vanya',
+          label: LONG,
+          pose: (['fine', 'poorly', 'dead'] as const)[i % 3],
+        })),
+      ),
+    );
+    await expect(dots(page)).toHaveCount(8);
+
+    await expectLabelWithinCap(page, 'peer-0');
+    await expectLabelWithinCap(page, 'peer-3');
+    await expectNoOverflow(page, 'vanyagotchi yard of long names at 320x568');
+    await expectNoVerticalScroll(page, 'vanyagotchi yard of long names at 320x568');
+    // The plane was not squeezed to nothing to make room for the names either.
+    const box = await plane(page).boundingBox();
+    expect(box?.height ?? 0, 'the plane collapsed under a crowd of names').toBeGreaterThan(120);
   });
 });

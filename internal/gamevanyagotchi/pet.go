@@ -35,10 +35,35 @@ type Pet struct {
 	// read that observed it. nil means alive.
 	DiedAt    *time.Time `json:"died_at"`
 	CreatedAt time.Time  `json:"created_at"`
+
+	// Where he was standing when his owner's last connection went away, and
+	// when that was. nil until he has ever stood anywhere.
+	//
+	// Not sent to the client: position reaches a screen over the socket, five
+	// times a second, and a second copy in an HTTP body would be a second
+	// authority to disagree with it. These exist so a Ваня is still where you
+	// left him after a deploy — the plane is in-memory presence, and a restart
+	// would otherwise put everybody back in the middle of the yard.
+	X          *float64   `json:"-"`
+	Y          *float64   `json:"-"`
+	LastSeenAt *time.Time `json:"-"`
 }
 
 // Alive reports whether the pet is currently not dead.
 func (p Pet) Alive() bool { return p.DiedAt == nil }
+
+// Standing returns where the pet was last seen, and whether that is known.
+func (p Pet) Standing() (Point, bool) {
+	if p.X == nil || p.Y == nil {
+		return Point{}, false
+	}
+	x, okX := clampUnit(*p.X)
+	y, okY := clampUnit(*p.Y)
+	if !okX || !okY {
+		return Point{}, false
+	}
+	return Point{X: x, Y: y}, true
+}
 
 // StatRow is a stat exactly as it is stored: the pair the decay reads.
 type StatRow struct {

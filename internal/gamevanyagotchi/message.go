@@ -61,10 +61,29 @@ type Roster struct {
 // so a per-recipient field would have to be rendered per recipient. A client
 // learns which entity is its own by sending TypeHello once and keeping the id
 // from the TypeYou reply.
+//
+// Art, Label and Pose are what stop the yard being a field of anonymous dots.
+// They are DERIVED from the pet the account owns — its skin, its name, and its
+// condition worked out from its own stats — and they are sent to everybody,
+// because a world where each player can only see their own Ваня properly is two
+// worlds rather than one shared one.
+//
+// The client stays kind-agnostic: it resolves Art against the catalogue it
+// already fetched and renders the emoji-over-gradient placeholder for a key it
+// has no image for. It contains no skin key, no pose name and no notion of what
+// a Ваня looks like, which is what keeps "add a skin" a backend-only change —
+// and it is why an NPC will be able to arrive later as just another entry in
+// this list, with no client work at all.
 type Peer struct {
 	ID string  `json:"id"`
 	X  float64 `json:"x"`
 	Y  float64 `json:"y"`
+	// Art is a catalogue skin key, resolved client-side.
+	Art string `json:"art"`
+	// Label is the pet's name, absent until it has been given one.
+	Label string `json:"label,omitempty"`
+	// Pose is how he is doing: see PoseFine and friends.
+	Pose string `json:"pose"`
 }
 
 // You tells one client which entity in the roster is its own. It is the answer

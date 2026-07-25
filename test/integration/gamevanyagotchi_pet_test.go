@@ -45,8 +45,14 @@ import (
 // the catalogue's own fields, because a test that asked the implementation what
 // it thought would agree with itself whatever it computed.
 //
-// UID namespace: 72xx. 71xx belongs to the realtime tests in
+// UID namespace: 72xx. 71xx and 73xx belong to the realtime tests in
 // gamevanyagotchi_test.go, and the database is shared across the whole package.
+//
+// A handful of the helpers below read the pets table on the PLANE's behalf —
+// where a pet was last standing, and whether anything about it has been written
+// at all. They live here rather than next to those tests because this is the
+// file that owns raw SQL against this game's tables, and because the plane's own
+// file is about frames on a socket.
 
 // petStatEpsilon is the tolerance for a decayed value in these tests.
 //
@@ -216,6 +222,87 @@ func petRecent(t *testing.T, what string, ts time.Time) {
 	if age := time.Since(ts); age < -time.Second || age > time.Minute {
 		t.Fatalf("%s is stamped %s (%s ago), want the instant of the write", what, ts.UTC(), age)
 	}
+}
+
+// petStanding reads where a pet was last written down, and when.
+//
+// All three are NULL until a departure has been written: a position is presence,
+// and until somebody has actually left there is nothing durable to say about it.
+// Returned as pointers rather than zero values because "at the top-left corner
+// at the zero time" and "never stood anywhere" are different answers and only
+// one of them means the write happened.
+func petStanding(t *testing.T, petIDs string) (*float64, *float64, *time.Time) {
+	t.Helper()
+	var x, y *float64
+	var seen *time.Time
+	if err := pool.QueryRow(context.Background(),
+		`SELECT x, y, last_seen_at FROM game_vanyagotchi_pets WHERE id = $1::uuid`,
+		petIDs).Scan(&x, &y, &seen); err != nil {
+		t.Fatalf("standing position of %s: %v", petIDs, err)
+	}
+	return x, y, seen
+}
+
+// petWaitStanding waits until a departure has been written down and returns it.
+//
+// A poll rather than a wait on anything, because the write is deliberately off
+// the broadcast's own path: the tick notices somebody has gone and says so down
+// a channel, and a goroutine of the game's does the writing. There is nothing
+// from outside the process to synchronise with, so the condition itself is what
+// is waited on — never a fixed sleep, which would be slower and would still be a
+// race.
+func petWaitStanding(t *testing.T, petIDs string) (float64, float64, time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		x, y, seen := petStanding(t, petIDs)
+		if x != nil && y != nil && seen != nil {
+			return *x, *y, *seen
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pet %s still has no position written down; a departure was never persisted", petIDs)
+		}
+		// Nothing inside the process is observable from out here to wait on, so
+		// the condition itself is what is polled. The pause is BETWEEN polls
+		// rather than instead of them: the loop returns the instant the row
+		// appears.
+		<-time.After(20 * time.Millisecond)
+	}
+}
+
+// petSetName names a pet directly.
+//
+// There is no endpoint for it yet — naming happens in a dialog the SPA has not
+// grown — so the row is written here rather than through a flow that does not
+// exist. Direct setup rather than a test-only endpoint: production code carries
+// no path that exists for a test's benefit.
+func petSetName(t *testing.T, petIDs, name string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE game_vanyagotchi_pets SET name = $2 WHERE id = $1::uuid`, petIDs, name); err != nil {
+		t.Fatalf("name pet %s: %v", petIDs, err)
+	}
+}
+
+// petTouchedAt returns the most recent updated_at across a pet's own row and
+// every one of its stat rows — one number standing for "has anything about this
+// pet been written".
+//
+// Every write in this game's repository sets updated_at to now(), so a value
+// that has not moved is a pet nothing has touched. That is a proxy rather than a
+// proof, and a deliberate one: counting statements through pg_stat would be more
+// literal, far more fragile, and would still be answering the same question.
+func petTouchedAt(t *testing.T, petIDs string) time.Time {
+	t.Helper()
+	var at time.Time
+	if err := pool.QueryRow(context.Background(),
+		`SELECT greatest(
+		          (SELECT updated_at FROM game_vanyagotchi_pets WHERE id = $1::uuid),
+		          (SELECT max(updated_at) FROM game_vanyagotchi_pet_stats WHERE pet_id = $1::uuid))`,
+		petIDs).Scan(&at); err != nil {
+		t.Fatalf("last write to pet %s: %v", petIDs, err)
+	}
+	return at
 }
 
 // petDiedAt reads the recorded moment of death, nil while the pet is alive.

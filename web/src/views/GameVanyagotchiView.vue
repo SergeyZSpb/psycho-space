@@ -42,26 +42,29 @@
         @pointerdown="onPlaneTap"
       >
         <div
-          v-for="id in store.peerIds"
-          :key="id"
-          :ref="(el) => setPeerEl(id, el as Element | null)"
+          v-for="peer in drawn"
+          :key="peer.id"
+          :ref="(el) => setPeerEl(peer.id, el as Element | null)"
           class="peer"
-          :class="{ 'peer--you': id === store.youId }"
+          :class="{ 'peer--you': peer.id === store.youId }"
           data-test="peer"
-          :data-you="id === store.youId ? '1' : undefined"
-          :data-peer="id"
-          :style="{ background: peerColour(id) }"
+          :data-you="peer.id === store.youId ? '1' : undefined"
+          :data-peer="peer.id"
+          :style="{ background: peerColour(peer.id) }"
         >
-          <!-- Your own Ваня wears his face and his condition. Everybody else is
-               still a plain dot: the roster does not carry a skin yet, and
-               inventing one client-side would show two people different worlds. -->
-          <span
-            v-if="id === store.youId && face"
-            class="peer-face"
-            data-test="peer-face"
-            :data-condition="petCondition"
-            >{{ face }}</span
-          >
+          <!-- Everybody wears their own face and their own condition, and both
+               come off the wire rather than out of this screen's own state. The
+               yard is one world: a pose worked out locally would be worked out
+               from numbers only its owner can see, so your Ваня would look ill
+               to you and fine to everybody standing next to him. -->
+          <span class="peer-face" data-test="peer-face" :data-condition="peer.pose">
+            <img v-if="peer.image" class="peer-sprite" :src="peer.image" alt="" />
+            <template v-else>{{ peer.emoji }}</template>
+          </span>
+          <!-- Absent until a Ваня has been named, which is most of them today. -->
+          <span v-if="peer.label" class="peer-label" data-test="peer-label">{{
+            peer.label
+          }}</span>
         </div>
         <p v-if="store.peerIds.length === 0" class="plane-empty">
           {{ emptyMessage }}
@@ -130,18 +133,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, shallowRef } from 'vue';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
 import { useGameVanyagotchiStore } from '../stores/gameVanyagotchi';
-import { applyFrame, isRenderablePosition, tapToPosition } from '../lib/vanyagotchiPlane';
 import {
-  condition,
-  decayedValue,
-  inTrouble,
-  skewMs,
-  statFraction,
-  type PetCondition,
-} from '../lib/vanyagotchiPet';
+  applyFrame,
+  isRenderablePosition,
+  readAppearances,
+  resolveArt,
+  sameAppearance,
+  tapToPosition,
+  type PeerAppearance,
+} from '../lib/vanyagotchiPlane';
+import { decayedValue, inTrouble, skewMs, statFraction } from '../lib/vanyagotchiPet';
 import { gameVanyagotchiApi } from '../api/endpoints';
 import type { VanyagotchiAction, VanyagotchiConfig, VanyagotchiState } from '../api/types';
 import { ApiError } from '../api/client';
@@ -156,8 +160,11 @@ import { useErrorStore } from '../stores/error';
 // height minus the app bar, exactly one flexible child, and `overflow: hidden`
 // so "never scrolls" is literal.
 //
-// The two-tier state split is the other thing to preserve. Membership goes
-// through pinia and a keyed v-for; POSITIONS DO NOT ENTER VUE AT ALL. A frame
+// The two-tier state split is the other thing to preserve, and the line is drawn
+// by RATE OF CHANGE rather than by kind. Membership and appearance — who is in
+// the yard, what they look like, how they are doing — change a few times an hour
+// and go through the keyed v-for, each behind a guard that only assigns on a real
+// change (sameIds, sameAppearance). POSITIONS DO NOT ENTER VUE AT ALL: a frame
 // arrives five times a second, and binding it to reactivity would spend a
 // scheduler pass and a vdom patch per entity to produce a transform the
 // compositor could have been handed directly.
@@ -246,21 +253,6 @@ const bars = computed(() =>
 );
 
 const alive = computed(() => petState.value?.alive !== false);
-const petCondition = computed<PetCondition>(() =>
-  condition(stats.value, values.value, alive.value),
-);
-
-/** The skin the server says this pet wears, resolved against the catalogue. */
-const skin = computed(
-  () => config.value?.skins?.find((s) => s.key === petState.value?.pet?.skin_key) ?? null,
-);
-
-/** What to draw on your own dot. A death is legible without reading anything. */
-const face = computed(() => {
-  if (!petState.value) return '';
-  if (!alive.value) return '💀';
-  return skin.value?.emoji ?? '';
-});
 
 const petLine = computed(() => {
   if (!petState.value) return '';
@@ -343,6 +335,31 @@ const planeEl = ref<HTMLElement | null>(null);
 const peerEls = new Map<string, HTMLElement>();
 const lastPos = new Map<string, { x: number; y: number }>();
 
+/**
+ * What everybody looks like — the reactive tier, and the only part of a roster
+ * frame that is allowed in here.
+ *
+ * A shallowRef holding a frozen array, exactly like the store's peerIds and for
+ * the same reason: the whole array is replaced when something really changes and
+ * nothing deeper is tracked. It is replaced only when sameAppearance says a face,
+ * a name or a pose actually moved, so the five frames a second that describe an
+ * unchanged yard cost one comparison and no render.
+ */
+const appearance = shallowRef<readonly PeerAppearance[]>([]);
+
+/**
+ * Everybody, ready to draw: the wire's appearance with its art key resolved
+ * against the catalogue this screen already fetched.
+ *
+ * Recomputed when appearance changes or when the catalogue finally arrives — the
+ * plane runs on the socket and the catalogue comes over HTTP, so the yard is
+ * routinely populated before it lands, and every dot is a placeholder until it
+ * does.
+ */
+const drawn = computed(() =>
+  appearance.value.map((peer) => ({ ...peer, ...resolveArt(config.value?.skins, peer.art) })),
+);
+
 let release: (() => void) | undefined;
 
 /**
@@ -374,6 +391,7 @@ function forgetWorld() {
   clearStaleTimer();
   isStale.value = false;
   store.clearRoster();
+  appearance.value = [];
   lastPos.clear();
   peerEls.clear();
 }
@@ -421,6 +439,14 @@ const emptyMessage = computed(() =>
  * The id is a server-side UUID, so hashing it gives every dot the same colour on
  * every screen at once with nothing to synchronise — and a peer keeps its colour
  * across frames without any of it entering the reactive graph.
+ *
+ * KEPT now that the roster carries art, rather than replaced by the skin's own
+ * gradient, and the reason is what the two answer. The hash answers *which one
+ * is that*; the art answers *what is that*. There is one skin in the catalogue
+ * today, so painting dots with it would make a yard of twenty players twenty
+ * identical dots — the art would be doing no work and the only thing that
+ * distinguished anybody would have been thrown away to make room for it. They
+ * layer instead: hue underneath, face on top.
  */
 function peerColour(id: string): string {
   let hash = 0;
@@ -443,6 +469,18 @@ function setPeerEl(id: string, el: Element | null) {
     return;
   }
   const node = el as HTMLElement;
+  // Already holding this exact element, so this is a re-render rather than an
+  // arrival, and there is nothing to place instantly.
+  //
+  // Vue invokes a function ref on EVERY patch, not only when the element
+  // changes — and it re-invokes regardless of the callback's identity, so a
+  // stable callback would not help. Without this guard the "first placement"
+  // path below ran on every re-render, which since the stat bars started
+  // redrawing once a second means roughly once a second forever: each time
+  // adding `peer--instant`, which suppresses the transition for that frame. A
+  // move landing in one of those windows jumped instead of gliding.
+  if (peerEls.get(id) === node) return;
+
   peerEls.set(id, node);
   const known = lastPos.get(id);
   if (!known) return;
@@ -460,10 +498,13 @@ function onFrame(frame: RealtimeFrame) {
   if (frame.t !== TYPE_ROSTER) return;
   const peers = Array.isArray(frame.peers) ? frame.peers : [];
 
-  const ids: string[] = [];
+  // Who is here, and what they look like, from one pass through one guard — so
+  // the keyed list and the head count cannot end up disagreeing about the yard.
+  const looks = readAppearances(peers);
+  const ids = looks.map((look) => look.id);
+
   for (const peer of peers) {
     if (!isRenderablePosition(peer)) continue;
-    ids.push(peer.id);
     lastPos.set(peer.id, { x: peer.x, y: peer.y });
   }
   // Every frame is full state, so anybody absent from it has gone.
@@ -471,8 +512,11 @@ function onFrame(frame: RealtimeFrame) {
     if (!ids.includes(id)) lastPos.delete(id);
   }
 
-  // Membership first (reactive, usually a no-op), then positions (not reactive).
+  // The two reactive facts first — each usually a no-op, and each behind its own
+  // guard so an unchanged yard costs no render — then positions, which are not
+  // reactive at all.
   store.applyRoster(ids);
+  if (!sameAppearance(appearance.value, looks)) appearance.value = looks;
   applyFrame(peers, peerEls);
 }
 
@@ -553,6 +597,7 @@ onBeforeUnmount(() => {
   // rendering its frames any more — leaving the roster behind would show the
   // next visit a world that stopped updating when we left.
   store.clearRoster();
+  appearance.value = [];
 });
 </script>
 
@@ -757,7 +802,7 @@ onBeforeUnmount(() => {
   z-index: 1;
 }
 
-/* Your own Ваня's face, centred on the dot. `pointer-events: none` is inherited
+/* Everybody's face, centred on their dot. `pointer-events: none` is inherited
    from .peer — the plane is the tap target, not the sprite. */
 .peer-face {
   position: absolute;
@@ -767,6 +812,56 @@ onBeforeUnmount(() => {
   justify-content: center;
   font-size: 26px;
   line-height: 1;
+}
+
+/* A sprite, once the catalogue has one for this art key. Inset rather than
+   filling the dot, so the entity's own colour survives as a rim: the picture
+   says WHAT this is and the hue says WHO, and a skin everybody happens to be
+   wearing would otherwise erase the second. */
+.peer-sprite {
+  width: calc(100% - 6px);
+  height: calc(100% - 6px);
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* The name under the dot, capped in three independent places, because several
+   long names in a small yard is the case that breaks this screen. `capLabel`
+   caps the string, this caps the width, and the plane's own `overflow: hidden`
+   is the backstop. Measured at 360x800, 390x844, 768x1024 and 320x568 with eight
+   dots, four of them named far past the cap and one at each edge: no horizontal
+   or vertical page overflow at any of them, so "never scrolls" survives labels.
+
+   What the same measurement DOES show is that a name on a dot within half a
+   label of an edge is clipped by the plane — half of it at the sides, all of it
+   along the bottom. That is left alone deliberately. The fix would be to clamp
+   the label inside the plane (`left: clamp(...)` off `--x`, which works), and the
+   thing it buys is worse than the thing it costs: with the name no longer
+   centred on its dot it drifts up to half a label sideways, and in a busy yard a
+   drifted name reads as belonging to the dot NEXT to it. A cut name is still
+   unambiguously this Ваня's; a wrong one is not. Clipping is also what the plane
+   already does to a dot standing on the edge — half a circle — so the boundary
+   behaves the same way for everything on it. */
+.peer-label {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  /* Sized in the WORLD's units before the device's: a 3:4 plane is 231px across
+     on a 320px phone and 573px on a tablet, and a name that is a third of the
+     yard wide on one and a seventh on the other is two different games. The px
+     ceiling is what stops it growing past legible on a big screen. */
+  max-width: min(80px, 30cqw);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.94);
+  /* Legible over both ends of the plane's gradient without a background plate,
+     which at this size would be most of what you saw. */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 /* Dead reads at a glance without anybody having to look at a bar. */
 .peer-face[data-condition='dead'] {

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/realtime"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // fakeTransport stands in for the hub. Every property of the broadcast worth
@@ -842,6 +844,425 @@ func TestOnlyAHelloIsAnswered(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Appearance: what stops the yard being a field of anonymous dots.
+// ---------------------------------------------------------------------------
+
+// TestEveryPeerCarriesItsArtAndPoseAndOnlyANamedPetALabel is the whole of the
+// roster's appearance contract, in one frame.
+//
+// It goes to EVERYBODY, and that is the point: a world where each player can
+// only see their own Ваня properly is two worlds rather than one shared one. The
+// label is the one field that may be absent, because a pet is named in a dialog
+// and is nil until then — publishing an empty string as a name would put a blank
+// caption under an entity rather than none.
+func TestEveryPeerCarriesItsArtAndPoseAndOnlyANamedPetALabel(t *testing.T) {
+	hpDef := mustStat(t, StatHP)
+	name := "Ваня"
+
+	tr := &fakeTransport{}
+	tr.setMembers(member("named"), member("nameless"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	// Cached exactly as the two human-paced events fill it — a hello, or its
+	// owner acting over HTTP. Which of the two put it there is not this test's
+	// subject; that they are what the frame is built from is.
+	svc.remember(accountOf("named"), Pet{SkinKey: SkinVanya, Name: &name},
+		[]StatRow{{Key: StatHP, Value: (hpDef.Min + hpDef.WarnAt) / 2, AsOf: at(0)}})
+	svc.remember(accountOf("nameless"), Pet{SkinKey: SkinVanya},
+		[]StatRow{{Key: StatHP, Value: (hpDef.WarnAt + hpDef.Max) / 2, AsOf: at(0)}})
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	f := tr.frames()[0]
+
+	named, ok := peerOf(svc, f, accountOf("named"))
+	if !ok {
+		t.Fatalf("the named account is not on the plane: %+v", f)
+	}
+	if named.Art != SkinVanya {
+		t.Errorf("art = %q; want the pet's own skin %q", named.Art, SkinVanya)
+	}
+	if named.Label != name {
+		t.Errorf("label = %q; want %q", named.Label, name)
+	}
+	if named.Pose != PosePoorly {
+		t.Errorf("pose = %q; want %q — his health is inside the catalogue's warning range", named.Pose, PosePoorly)
+	}
+
+	nameless, ok := peerOf(svc, f, accountOf("nameless"))
+	if !ok {
+		t.Fatalf("the unnamed account is not on the plane: %+v", f)
+	}
+	if nameless.Label != "" {
+		t.Errorf("an unnamed pet was labelled %q; want no label at all", nameless.Label)
+	}
+	if nameless.Art != SkinVanya || nameless.Pose != PoseFine {
+		t.Errorf("an unnamed but healthy pet was drawn as %+v; want the skin it has and %q", nameless, PoseFine)
+	}
+}
+
+// TestAPlayerTheCacheKnowsNothingAboutIsStillDrawn is the rule that a missing
+// lookup must never cost somebody their presence.
+//
+// A client that has connected but not yet said hello, or one whose owner has
+// never opened the game over HTTP, has nothing cached at all. Rendering nothing
+// for them would make a real person invisible to everyone else in the yard for
+// the sake of a name — so they are drawn with the catalogue's default skin, no
+// label, and no trouble.
+func TestAPlayerTheCacheKnowsNothingAboutIsStillDrawn(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("stranger"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	f := tr.frames()[0]
+	p, ok := peerOf(svc, f, accountOf("stranger"))
+	if !ok {
+		t.Fatalf("an account with nothing cached was left out of the roster entirely: %+v", f)
+	}
+	if p.Art != Content().DefaultSkin {
+		t.Errorf("art = %q; want the catalogue default %q", p.Art, Content().DefaultSkin)
+	}
+	if p.Label != "" {
+		t.Errorf("label = %q; want none — nothing is known about this pet, not even that it has a name", p.Label)
+	}
+	if p.Pose != PoseFine {
+		t.Errorf("pose = %q; want %q — an unknown pet must not be drawn as one that is dying", p.Pose, PoseFine)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Durable position: what makes a deploy leave the yard where it was.
+// ---------------------------------------------------------------------------
+
+// noPool stands in for the connection pool on the plane's durable path.
+//
+// The service does no durable work at all while its pool or its repository is
+// nil — which is what lets every test above drive the plane with both of them
+// unset — so a test of the durable half needs something non-nil to hand it. The
+// fake repository ignores it entirely, and every method here panics rather than
+// answering, so a query that somehow reached the pool fails loudly instead of
+// quietly reading nothing.
+type noPool struct{}
+
+func (noPool) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	panic("gamevanyagotchi: the plane reached the connection pool")
+}
+
+func (noPool) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	panic("gamevanyagotchi: the plane reached the connection pool")
+}
+
+func (noPool) QueryRow(context.Context, string, ...any) pgx.Row {
+	panic("gamevanyagotchi: the plane reached the connection pool")
+}
+
+// planeService builds the plane with its durable half wired up.
+//
+// Run is deliberately never started by the tests below. Departures are queued by
+// the broadcast and written by a goroutine of Run's, so driving broadcast
+// directly and reading the queue makes every assertion here synchronous: no
+// waiting, no polling, and no way for a passing test to be a race that happened
+// to land the right way round.
+func planeService(tr Transport, repo Repository) *Service {
+	return NewService(tr, testRoom, noPool{}, repo)
+}
+
+// queued drains everything the plane has asked to have written down.
+func queued(svc *Service) []positionSave {
+	var out []positionSave
+	for {
+		select {
+		case sv := <-svc.saves:
+			out = append(out, sv)
+		default:
+			return out
+		}
+	}
+}
+
+// TestADepartureIsQueuedOnceHoweverLongItLasts is why placement carries a
+// `saved` flag at all.
+//
+// Absence is not an event: there is no leave hook, so it is re-observed on every
+// tick until the grace period runs out. Queueing the write each time would be
+// five database writes a second for somebody who has already gone — the
+// per-tick traffic this whole design exists to avoid — and every one after the
+// first would say exactly what the first one said.
+//
+// Asserted on the queue rather than on the repository because the queue is the
+// seam the broadcast itself touches. What is under test is what the TICK does;
+// the writer behind it is a goroutine, and reaching past it would mean
+// synchronising with something this assertion does not need.
+func TestADepartureIsQueuedOnceHoweverLongItLasts(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	repo := &fakeRepo{}
+	svc := planeService(tr, repo)
+
+	svc.HandleInbound(context.Background(), member("a"), testRoom,
+		[]byte(`{"t":"vanyagotchi_move","x":0.2,"y":0.3}`))
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	// Gone, and noticed on every one of the next several ticks — all of them
+	// well inside the grace, so the position is still being held.
+	tr.setMembers()
+	for i := 1; i <= 5; i++ {
+		if err := svc.broadcast(context.Background(), at(float64(i)*0.1)); err != nil {
+			t.Fatalf("broadcast %d after the departure: %v", i, err)
+		}
+	}
+
+	saves := queued(svc)
+	if len(saves) != 1 {
+		t.Fatalf("%d writes queued for one departure observed over five ticks; want exactly 1", len(saves))
+	}
+	if saves[0].accountID != accountOf("a") {
+		t.Errorf("queued a write for %q; want %q", saves[0].accountID, accountOf("a"))
+	}
+	if saves[0].at.X != 0.2 || saves[0].at.Y != 0.3 {
+		t.Errorf("queued position (%v,%v); want where he was standing (0.2,0.3)", saves[0].at.X, saves[0].at.Y)
+	}
+	// The instant recorded is the last tick he was actually connected, not the
+	// one that noticed he had gone — the first is when he was last seen and the
+	// second is merely when somebody looked.
+	if !saves[0].seen.Equal(at(0)) {
+		t.Errorf("queued seen = %v; want the last tick he was connected, %v", saves[0].seen, at(0))
+	}
+}
+
+// TestComingBackMakesTheNextDepartureANewOne is the other half of that flag. It
+// suppresses repeats of ONE departure and must not suppress the next one, or a
+// player who reloaded the page would keep his old resting place forever and
+// every walk after the first reconnect would be lost on the way out.
+func TestComingBackMakesTheNextDepartureANewOne(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	repo := &fakeRepo{}
+	svc := planeService(tr, repo)
+
+	svc.HandleInbound(context.Background(), member("a"), testRoom,
+		[]byte(`{"t":"vanyagotchi_move","x":0.1,"y":0.1}`))
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	// Away — written down once.
+	tr.setMembers()
+	if err := svc.broadcast(context.Background(), at(0.2)); err != nil {
+		t.Fatalf("broadcast while away: %v", err)
+	}
+
+	// Back inside the grace, and standing somewhere else by the time he goes
+	// again.
+	tr.setMembers(member("a"))
+	if err := svc.broadcast(context.Background(), at(0.4)); err != nil {
+		t.Fatalf("broadcast on the return: %v", err)
+	}
+	svc.HandleInbound(context.Background(), member("a"), testRoom,
+		[]byte(`{"t":"vanyagotchi_move","x":0.9,"y":0.8}`))
+	if err := svc.broadcast(context.Background(), at(0.6)); err != nil {
+		t.Fatalf("broadcast after the second move: %v", err)
+	}
+
+	tr.setMembers()
+	if err := svc.broadcast(context.Background(), at(0.8)); err != nil {
+		t.Fatalf("broadcast on the second departure: %v", err)
+	}
+
+	saves := queued(svc)
+	if len(saves) != 2 {
+		t.Fatalf("%d writes queued for two departures; want exactly 2: %+v", len(saves), saves)
+	}
+	second := saves[1]
+	if second.at.X != 0.9 || second.at.Y != 0.8 {
+		t.Errorf("the second departure was written at (%v,%v); want where he was standing by then (0.9,0.8)",
+			second.at.X, second.at.Y)
+	}
+	if !second.seen.Equal(at(0.6)) {
+		t.Errorf("the second departure carries seen = %v; want the last tick of his second visit, %v — it is a new departure, not a repeat of the first",
+			second.seen, at(0.6))
+	}
+}
+
+// TestTheShutdownFlushWritesDownEverybodyStillStanding is the leg that only a
+// deploy exercises.
+//
+// A restart is everybody leaving at once with no further tick to notice it, so
+// without this the whole yard would come back standing in the middle — which is
+// the exact failure durable position exists to fix, and the one that shows up
+// nowhere but production.
+func TestTheShutdownFlushWritesDownEverybodyStillStanding(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"), member("b"))
+	repo := &fakeRepo{}
+	svc := planeService(tr, repo)
+
+	svc.HandleInbound(context.Background(), member("a"), testRoom,
+		[]byte(`{"t":"vanyagotchi_move","x":0.2,"y":0.4}`))
+	svc.HandleInbound(context.Background(), member("b"), testRoom,
+		[]byte(`{"t":"vanyagotchi_move","x":0.7,"y":0.6}`))
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	svc.flushPositions()
+
+	saved := repo.saved()
+	if len(saved) != 2 {
+		t.Fatalf("the shutdown flush wrote %d positions; want one for each of the two players: %+v", len(saved), saved)
+	}
+	want := map[string]Point{
+		accountOf("a"): {X: 0.2, Y: 0.4},
+		accountOf("b"): {X: 0.7, Y: 0.6},
+	}
+	for _, sv := range saved {
+		w, ok := want[sv.accountID]
+		if !ok {
+			t.Fatalf("the flush wrote a position for %q, who is not in the yard", sv.accountID)
+		}
+		if sv.at != w {
+			t.Errorf("%q was written down at (%v,%v); want (%v,%v)", sv.accountID, sv.at.X, sv.at.Y, w.X, w.Y)
+		}
+		if !sv.seen.Equal(at(0)) {
+			t.Errorf("%q was written down as last seen at %v; want the last tick, %v", sv.accountID, sv.seen, at(0))
+		}
+		delete(want, sv.accountID)
+	}
+	if len(want) != 0 {
+		t.Fatalf("the flush left %v out entirely", want)
+	}
+}
+
+// TestTheShutdownFlushDoesNotWriteADepartureDownTwice is the same flag seen from
+// the other end.
+//
+// Somebody who left a moment before the restart is STILL held in memory — the
+// grace period is what makes a reload keep your place — so the flush can see
+// him. Writing him again would be a second write saying exactly what the queued
+// one said, and it is the flush, arriving later, that would win: he would be
+// recorded as last seen at the shutdown rather than at the moment he actually
+// left.
+func TestTheShutdownFlushDoesNotWriteADepartureDownTwice(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("staying"), member("leaving"))
+	repo := &fakeRepo{}
+	svc := planeService(tr, repo)
+
+	// Both of them go and stand somewhere first, which is what makes their
+	// positions worth writing down at all: a spawn point nobody chose is
+	// provisional and is deliberately NOT persisted — see the test below.
+	for _, who := range []string{"staying", "leaving"} {
+		svc.HandleInbound(context.Background(), member(who), testRoom,
+			[]byte(`{"t":"vanyagotchi_move","x":0.3,"y":0.7}`))
+	}
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	// One socket goes, and the tick queues that departure.
+	tr.setMembers(member("staying"))
+	if err := svc.broadcast(context.Background(), at(0.2)); err != nil {
+		t.Fatalf("broadcast after the departure: %v", err)
+	}
+	if n := len(queued(svc)); n != 1 {
+		t.Fatalf("%d writes queued for one departure; want 1", n)
+	}
+	svc.mu.Lock()
+	_, held := svc.pos[accountOf("leaving")]
+	svc.mu.Unlock()
+	if !held {
+		t.Fatal("the departed account was forgotten immediately; this test needs it still held, which is what makes the flush able to see it")
+	}
+
+	svc.flushPositions()
+
+	saved := repo.saved()
+	if len(saved) != 1 {
+		t.Fatalf("the flush wrote %d positions; want 1 — only the player who is still standing there: %+v", len(saved), saved)
+	}
+	if saved[0].accountID != accountOf("staying") {
+		t.Fatalf("the flush wrote down %q; want %q, since the other one's departure had already been written",
+			saved[0].accountID, accountOf("staying"))
+	}
+}
+
+// TestAHelloPutsAPetBackWhereItLastStood is the reconnect a deploy causes: the
+// position map died with the old process, so the only thing that knows where
+// anybody was standing is the pets table.
+//
+// The second half is the case the guard in load exists for. A reconnect INSIDE
+// the grace is also a hello, and there the in-memory position is the newer
+// truth — winding him back to the last one written down would undo the very
+// thing the grace period is for.
+func TestAHelloPutsAPetBackWhereItLastStood(t *testing.T) {
+	stood := Point{X: 0.8, Y: 0.15}
+	if stood == spawn {
+		t.Fatal("the stored position is the spawn, so this test could not tell a restore from a default")
+	}
+	name := "Ваня"
+	saved := time.Now().UTC().Add(-time.Hour)
+	repo := &fakeRepo{
+		pet: &Pet{
+			ID: "pet-a", AccountID: accountOf("a"), Name: &name, SkinKey: SkinVanya,
+			LocationKey: LocationYard, X: &stood.X, Y: &stood.Y, LastSeenAt: &saved,
+		},
+		rows: []StatRow{{Key: StatHP, Value: mustStat(t, StatHP).Max, AsOf: at(0)}},
+	}
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := planeService(tr, repo)
+
+	svc.HandleInbound(context.Background(), member("a"), testRoom, []byte(`{"t":"vanyagotchi_hello"}`))
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	p, ok := peerOf(svc, tr.frames()[0], accountOf("a"))
+	if !ok {
+		t.Fatalf("the account that said hello is not on the plane: %+v", tr.frames()[0])
+	}
+	if p.X != stood.X || p.Y != stood.Y {
+		t.Fatalf("peer at (%v,%v) on a fresh process; want where he was standing when he last left (%v,%v)",
+			p.X, p.Y, stood.X, stood.Y)
+	}
+	// The same hello is what fills the cache, so the appearance arrives with the
+	// position rather than a frame later.
+	if p.Art != SkinVanya || p.Label != name {
+		t.Errorf("peer drawn as %+v; want the skin and name the pet actually has", p)
+	}
+
+	// He walks somewhere else, and his socket drops and comes back inside the
+	// grace. The hello must leave him where he is.
+	svc.HandleInbound(context.Background(), member("a"), testRoom,
+		[]byte(`{"t":"vanyagotchi_move","x":0.35,"y":0.45}`))
+	tr.setMembers()
+	if err := svc.broadcast(context.Background(), at(0.2)); err != nil {
+		t.Fatalf("broadcast while the socket is away: %v", err)
+	}
+	tr.setMembers(member("a"))
+	svc.HandleInbound(context.Background(), member("a"), testRoom, []byte(`{"t":"vanyagotchi_hello"}`))
+	if err := svc.broadcast(context.Background(), at(0.4)); err != nil {
+		t.Fatalf("broadcast after the reconnect: %v", err)
+	}
+
+	frames := tr.frames()
+	back, ok := peerOf(svc, frames[len(frames)-1], accountOf("a"))
+	if !ok {
+		t.Fatalf("the reconnected account is missing from the roster: %+v", frames[len(frames)-1])
+	}
+	if back.X != 0.35 || back.Y != 0.45 {
+		t.Fatalf("peer at (%v,%v) after reconnecting inside the grace; want where he was standing (0.35,0.45) — the stored position is older news",
+			back.X, back.Y)
+	}
+}
+
 // waitForCount waits until the transport has seen n frames.
 func waitForCount(t *testing.T, tr *fakeTransport, n int) {
 	t.Helper()
@@ -853,4 +1274,125 @@ func waitForCount(t *testing.T, tr *fakeTransport, n int) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d published frames", n)
+}
+
+// TestAPositionNobodyChoseIsNotWrittenDown guards a data-loss bug that would be
+// invisible until somebody complained.
+//
+// The hub registers a connection at the upgrade, BEFORE its client has said
+// hello — so a tick can land in that gap and put a spawn point in the map for
+// somebody whose stored position has not been read yet. If that provisional
+// placement were persisted on departure, a player whose hello never arrived (an
+// old cached client, a slow query, a dropped frame) would have the real position
+// he left behind quietly overwritten with the middle of the yard. Nothing would
+// error; he would just stop being where he was.
+func TestAPositionNobodyChoseIsNotWrittenDown(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("drifter"))
+	repo := &fakeRepo{}
+	svc := planeService(tr, repo)
+
+	// Seen by the plane, never moved, never said hello: placed at the spawn by
+	// the broadcast alone.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	tr.setMembers()
+	if err := svc.broadcast(context.Background(), at(0.2)); err != nil {
+		t.Fatalf("broadcast after the departure: %v", err)
+	}
+	if n := len(queued(svc)); n != 0 {
+		t.Fatalf("%d writes queued for a position nobody chose; want none", n)
+	}
+
+	// And the shutdown path agrees with the tick, which is the half that only
+	// ever runs in production.
+	svc.flushPositions()
+	if saved := repo.saved(); len(saved) != 0 {
+		t.Fatalf("the flush wrote %d provisional positions; want none: %+v", len(saved), saved)
+	}
+}
+
+// TestAStoredPositionReplacesTheSpawnTheTickInvented is the other half of the
+// same ordering problem, from the arriving side.
+//
+// A tick between the upgrade and the hello leaves a spawn point in the map. The
+// stored position then arrives and MUST be allowed to replace it — treating the
+// map as already-decided is what would make a returning Ваня teleport to the
+// middle, which is the entire failure durable position exists to prevent.
+func TestAStoredPositionReplacesTheSpawnTheTickInvented(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("returning"))
+	acct := accountOf("returning")
+	stood := Point{X: 0.15, Y: 0.85}
+	repo := &fakeRepo{pet: &Pet{
+		ID: "pet-1", AccountID: acct, SkinKey: SkinVanya, LocationKey: LocationYard,
+		X: &stood.X, Y: &stood.Y,
+	}}
+	svc := planeService(tr, repo)
+
+	// The gap: a frame is published before the client has said anything.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast before the hello: %v", err)
+	}
+	svc.HandleInbound(context.Background(), member("returning"), testRoom,
+		[]byte(`{"t":"vanyagotchi_hello"}`))
+	if err := svc.broadcast(context.Background(), at(0.2)); err != nil {
+		t.Fatalf("broadcast after the hello: %v", err)
+	}
+
+	frames := tr.frames()
+	p, ok := peerOf(svc, frames[len(frames)-1], acct)
+	if !ok {
+		t.Fatal("the returning player is missing from the roster")
+	}
+	if p.X != stood.X || p.Y != stood.Y {
+		t.Fatalf("returning peer at (%v,%v); want where he left off (%v,%v)", p.X, p.Y, stood.X, stood.Y)
+	}
+}
+
+// TestRunWritesEverybodyDownOnTheWayOut is the shutdown path, driven through Run
+// rather than by calling the flush directly — because calling it directly is
+// exactly the thing that cannot fail.
+//
+// This is the half of durable position that ONLY happens in production. A deploy
+// cancels the context the tick loop, the writer and every socket share; there is
+// no further tick to notice that everybody has left, so without an explicit
+// flush on the way out a restart would write nothing at all and the whole yard
+// would come back standing in the middle. A test that only ever called
+// flushPositions() would keep passing with that flush deleted from Run.
+func TestRunWritesEverybodyDownOnTheWayOut(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("sleeper"))
+	repo := &fakeRepo{}
+	svc := planeService(tr, repo)
+
+	svc.HandleInbound(context.Background(), member("sleeper"), testRoom,
+		[]byte(`{"t":"vanyagotchi_move","x":0.2,"y":0.8}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		svc.Run(ctx, tick)
+		close(done)
+	}()
+
+	// One frame, so the position is held and its owner is present.
+	tick <- at(0)
+
+	// The deploy.
+	cancel()
+	<-done
+
+	saved := repo.saved()
+	if len(saved) != 1 {
+		t.Fatalf("shutdown wrote %d positions; want the one player standing in the yard: %+v", len(saved), saved)
+	}
+	if saved[0].accountID != accountOf("sleeper") {
+		t.Fatalf("shutdown wrote down %q; want %q", saved[0].accountID, accountOf("sleeper"))
+	}
+	if saved[0].at.X != 0.2 || saved[0].at.Y != 0.8 {
+		t.Fatalf("shutdown wrote (%v,%v); want where he was standing (0.2,0.8)", saved[0].at.X, saved[0].at.Y)
+	}
 }

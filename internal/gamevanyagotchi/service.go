@@ -96,7 +96,36 @@ type Service struct {
 	// a second dot, standing somewhere else, moving on its own.
 	mu  sync.Mutex
 	pos map[string]placement
+	// display is what the plane draws for each account — see display.go. Guarded
+	// by the same lock as pos, because every tick reads both together and a
+	// second lock would buy nothing but an ordering rule to get wrong.
+	display map[string]display
+
+	// saves carries departures to the goroutine that writes them down. Buffered
+	// and sent to WITHOUT blocking: the broadcast must never wait on Postgres,
+	// and a dropped save costs a returning Ваня his last resting place, which is
+	// the same thing a crash costs and is acceptable for a nap.
+	saves chan positionSave
 }
+
+// positionSave is one account's last known position, on its way to being
+// written down.
+type positionSave struct {
+	accountID string
+	at        Point
+	seen      time.Time
+}
+
+// savesBuffer is how many departures may be queued before the plane starts
+// dropping them. A hundred is far beyond any plausible simultaneous exodus in a
+// yard this size, and the alternative — an unbounded queue — would turn a
+// database outage into memory growth.
+const savesBuffer = 100
+
+// flushTimeout bounds the write done on the way out of Run. Comfortably longer
+// than a few dozen single-row updates against a database on the same box, and
+// comfortably shorter than the shutdown budget the rest of the drain works to.
+const flushTimeout = 2 * time.Second
 
 // PositionGrace is how long an account keeps its place in the yard after its
 // last connection goes away.
@@ -125,6 +154,20 @@ const PositionGrace = 2 * time.Minute
 type placement struct {
 	at       Point
 	lastSeen time.Time
+	// saved records that this account's departure has already been written
+	// down, so that being absent for the whole grace period costs one write
+	// rather than one per tick.
+	saved bool
+	// provisional marks a position nobody chose: the spawn point the broadcast
+	// puts a newly-seen account at so that it has somewhere to be drawn.
+	//
+	// It exists because of an ordering that is easy to miss. The hub registers a
+	// connection at the upgrade, BEFORE the client has said hello — so a tick
+	// can land in that gap and fill the map with a spawn point. Without this
+	// flag, the stored position arriving a moment later would look like it was
+	// racing a real one and be discarded, and a returning Ваня would silently
+	// teleport to the middle exactly as he did before any of this was built.
+	provisional bool
 }
 
 // NewService builds the game. room is the transport room it publishes to and
@@ -146,6 +189,8 @@ func NewService(transport Transport, room string, q db.DBTX, repo Repository) *S
 		repo:         repo,
 		pseudonymKey: key,
 		pos:          make(map[string]placement),
+		display:      make(map[string]display),
+		saves:        make(chan positionSave, savesBuffer),
 	}
 }
 
@@ -203,6 +248,11 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 	switch env.T {
 	case TypeHello:
 		s.replyWhoAmI(ctx, m)
+		// A hello is a fresh socket, which is the human-paced moment this game
+		// gets to read the database on the plane's behalf. It happens on this
+		// connection's own read pump, so a slow query delays one client's next
+		// frame and never the yard's.
+		s.load(ctx, m.AccountID)
 	case TypeMove:
 		p, err := parseInbound(payload)
 		if err != nil {
@@ -219,6 +269,9 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 		// connected so the next tick refreshes it anyway.
 		cur := s.pos[m.AccountID]
 		cur.at = p
+		// Chosen by a person, so no longer the spawn default that a stored
+		// position is allowed to replace.
+		cur.provisional = false
 		s.pos[m.AccountID] = cur
 		s.mu.Unlock()
 	}
@@ -267,9 +320,19 @@ func (s *Service) replyWhoAmI(ctx context.Context, m realtime.Member) {
 // produces the same correct frame, because the frame is full state rather than a
 // step forward from the last one.
 func (s *Service) Run(ctx context.Context, tick <-chan time.Time) {
+	// One writer, owned by this loop and gone with it. Departures are written
+	// here rather than on the tick because the tick must never wait on Postgres
+	// — it only notices that somebody has left and says so down a channel.
+	go s.persistPositions(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
+			// Everybody is leaving at once, and there will be no further tick to
+			// notice it. Without this a deploy would put the whole yard back in
+			// the middle — the exact failure durable position exists to fix, and
+			// one that only ever happens in production.
+			s.flushPositions()
 			return
 		case now := <-tick:
 			// The tick carries its own timestamp, and that is the clock the
@@ -341,24 +404,126 @@ func (s *Service) place(members []realtime.Member, now time.Time) []Peer {
 
 		p, ok := s.pos[m.AccountID]
 		if !ok {
+			// Somewhere to be drawn until we know better. Marked provisional so
+			// the stored position, which arrives on this connection's hello a
+			// moment later, is allowed to replace it.
 			p.at = spawn
+			p.provisional = true
 		}
 		p.lastSeen = now
+		// Back in the yard, so a later departure is a new one to write down.
+		p.saved = false
 		s.pos[m.AccountID] = p
-		peers = append(peers, Peer{ID: s.pseudonym(m.AccountID), X: p.at.X, Y: p.at.Y})
+
+		// Appearance comes from the cache, never from a query — see display.go.
+		// An account with nothing cached yet (a client that has not said hello,
+		// or one whose pet has never been read) still draws, as the catalogue's
+		// default skin with no name and no trouble. Rendering nothing at all
+		// would make a player invisible to the yard for the sake of a label.
+		d := s.display[m.AccountID]
+		peers = append(peers, Peer{
+			ID:    s.pseudonym(m.AccountID),
+			X:     p.at.X,
+			Y:     p.at.Y,
+			Art:   d.skin(),
+			Label: d.name,
+			Pose:  d.pose(now),
+		})
 	}
 
-	// Forget whoever has been gone longer than the grace. Deleting during a
-	// range over a map is defined behaviour in Go, and doing it here rather than
-	// by rebuilding the map is what lets an absent account keep its entry: there
-	// is still no leave event to miss, because absence is inferred from the
-	// membership the hub reports rather than from a notification.
+	// Whoever has just gone gets written down, once. `saved` is what makes it
+	// once: absence is observed on every tick until the grace expires, and
+	// queueing a write five times a second for somebody who has left would be
+	// the per-tick database traffic this design does not have.
 	for id, p := range s.pos {
-		if !present[id] && now.Sub(p.lastSeen) >= PositionGrace {
+		if present[id] {
+			continue
+		}
+		if !p.saved && !p.provisional {
+			p.saved = true
+			s.pos[id] = p
+			s.enqueueSave(positionSave{accountID: id, at: p.at, seen: p.lastSeen})
+		}
+		// Forget whoever has been gone longer than the grace. Deleting during a
+		// range over a map is defined behaviour in Go, and doing it here rather
+		// than by rebuilding the map is what lets an absent account keep its
+		// entry: there is still no leave event to miss, because absence is
+		// inferred from the membership the hub reports rather than from a
+		// notification.
+		if now.Sub(p.lastSeen) >= PositionGrace {
 			delete(s.pos, id)
+			delete(s.display, id)
 		}
 	}
 	return peers
+}
+
+// enqueueSave hands a departure to the writer without ever blocking.
+//
+// A full queue means Postgres is not keeping up with people leaving, which at
+// this scale means Postgres is in trouble generally. Dropping is the right
+// answer: the plane must keep running, and the cost is that one Ваня reappears
+// where he was last written rather than where he last stood.
+func (s *Service) enqueueSave(sv positionSave) {
+	if s.repo == nil || s.q == nil {
+		return
+	}
+	select {
+	case s.saves <- sv:
+	default:
+		slog.Warn("gamevanyagotchi: position save dropped, queue full")
+	}
+}
+
+// persistPositions writes departures down until the game stops.
+func (s *Service) persistPositions(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case sv := <-s.saves:
+			s.savePosition(ctx, sv)
+		}
+	}
+}
+
+// savePosition writes one position, logging rather than propagating a failure —
+// there is nobody to propagate it to, and losing a resting place is not worth
+// stopping the game for.
+func (s *Service) savePosition(ctx context.Context, sv positionSave) {
+	if err := s.repo.SavePosition(ctx, s.q, sv.accountID, sv.at, sv.seen); err != nil {
+		slog.WarnContext(ctx, "gamevanyagotchi: saving a position failed", "err", err)
+	}
+}
+
+// flushPositions writes down where everybody currently is, on the way out.
+//
+// Its own context, because the one that just ended is the reason we are here —
+// using it would cancel every write immediately. Bounded, because shutdown is
+// already racing the service manager's patience, and a hung database must not
+// turn a deploy into a kill.
+func (s *Service) flushPositions() {
+	if s.repo == nil || s.q == nil {
+		return
+	}
+	s.mu.Lock()
+	pending := make([]positionSave, 0, len(s.pos))
+	for id, p := range s.pos {
+		if p.saved || p.provisional {
+			continue
+		}
+		pending = append(pending, positionSave{accountID: id, at: p.at, seen: p.lastSeen})
+	}
+	s.mu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+	defer cancel()
+	for _, sv := range pending {
+		s.savePosition(ctx, sv)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +684,11 @@ func (s *Service) state(ctx context.Context, accountID string, now time.Time) (S
 		}
 	}
 
+	// The other half of keeping Postgres off the broadcast tick: every HTTP read
+	// and every action passes through here, so the plane's copy is refreshed by
+	// the same human-paced events that change it.
+	s.remember(accountID, pet, rowsOf(stored))
+
 	if dead && pet.Alive() {
 		// The instant is derived from (value, as_of) alone — never from when
 		// somebody happened to look — so two readers observing the same death at
@@ -530,9 +700,21 @@ func (s *Service) state(ctx context.Context, accountID string, now time.Time) (S
 		}
 		at := deadAt
 		pet.DiedAt = &at
+		// Cached again, so the plane and the response cannot disagree about
+		// whether the death has been recorded.
+		s.remember(accountID, pet, rowsOf(stored))
 	}
 
 	return State{Pet: pet, Stats: values, Alive: pet.Alive(), ServerNow: now}, nil
+}
+
+// rowsOf flattens the stored pairs back into a slice, for the cache.
+func rowsOf(stored map[string]StatRow) []StatRow {
+	rows := make([]StatRow, 0, len(stored))
+	for _, r := range stored {
+		rows = append(rows, r)
+	}
+	return rows
 }
 
 // storedStats reads a pet's stat rows, seeding any the catalogue defines and the

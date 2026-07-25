@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
+	"github.com/SergeyZSpb/psycho-space/internal/realtime"
 )
 
 // The durable half, driven against an in-memory repository.
@@ -46,6 +48,11 @@ type fakeRepo struct {
 	ensured int
 	seeded  int
 	revived int
+	// statReads counts calls to Stats, which is how a test says "and the plane
+	// drew that without asking the database again": the cache exists precisely
+	// so the broadcast never reads, and a cache that quietly re-read would be
+	// invisible in every frame it produced.
+	statReads int
 	// writes counts calls to WriteStats; written keeps the batch each call was
 	// handed. The batch is the interesting part: the coupled decay is only exact
 	// while every stat is re-stamped together, and a response cannot show that.
@@ -55,6 +62,24 @@ type fakeRepo struct {
 	// actually wrote. Both are needed: a second read must not even ask.
 	markDiedCalls int
 	died          []time.Time
+
+	// mu guards positions ALONE, and that narrowness is the point rather than an
+	// oversight. Every other field here is touched only from the pet path, which
+	// is one goroutine per test; a position is the one thing production writes
+	// from a goroutine of its own — the writer Service.Run starts — so it is the
+	// one field a test could ever see appended to concurrently.
+	mu sync.Mutex
+	// positions records every SavePosition call, in order. A departure leaves no
+	// other trace, so this is what "he was written down where he was standing"
+	// is asserted against.
+	positions []savedPosition
+}
+
+// savedPosition is one SavePosition call, exactly as it was made.
+type savedPosition struct {
+	accountID string
+	at        Point
+	seen      time.Time
 }
 
 var _ Repository = (*fakeRepo)(nil)
@@ -73,7 +98,36 @@ func (f *fakeRepo) EnsurePet(_ context.Context, _ db.DBTX, accountID, skinKey, l
 	return *f.pet, nil
 }
 
+// FindPet reads without creating, which is what the plane does: opening a
+// socket must not conjure a pet for somebody who has never opened the game. The
+// account id is honoured rather than ignored, so a test with two players on the
+// plane cannot accidentally hand both of them the same Ваня.
+func (f *fakeRepo) FindPet(_ context.Context, _ db.DBTX, accountID string) (Pet, bool, error) {
+	if f.pet == nil || f.pet.AccountID != accountID {
+		return Pet{}, false, nil
+	}
+	return *f.pet, true, nil
+}
+
+// SavePosition records a departure. Nothing here reads it back — the pet path
+// never asks where anybody is standing — so recording the call IS the behaviour
+// under test.
+func (f *fakeRepo) SavePosition(_ context.Context, _ db.DBTX, accountID string, at Point, seen time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.positions = append(f.positions, savedPosition{accountID: accountID, at: at, seen: seen})
+	return nil
+}
+
+// saved returns every position written down so far, in the order it was written.
+func (f *fakeRepo) saved() []savedPosition {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]savedPosition(nil), f.positions...)
+}
+
 func (f *fakeRepo) Stats(_ context.Context, _ db.DBTX, _ string) ([]StatRow, error) {
+	f.statReads++
 	return append([]StatRow(nil), f.rows...), nil
 }
 
@@ -970,4 +1024,122 @@ func TestAStatAddedAfterAPetExistsIsSeededOnTheNextRead(t *testing.T) {
 	// A stat seeded at THIS instant cannot have crossed anything yet, so the
 	// pre-existing hp has only its base rate applied to it.
 	nearlyStat(t, statOf(t, st, StatHP).Value, stored-hpDef.DecayPerHour*age, "the pre-existing hp")
+}
+
+// planeMember is the caller as the transport reports it, for the tests below
+// that ask what the plane would draw. One connection is enough: the roster is
+// built per ACCOUNT, and how several connections of one account collapse into
+// one entity is service_test.go's subject rather than this file's.
+var planeMember = []realtime.Member{{ConnID: "c-1", AccountID: testAccount}}
+
+// TestAnHTTPReadRefreshesWhatThePlaneDraws is the seam that keeps Postgres off
+// the broadcast tick.
+//
+// The tick reads nothing, so the appearance it publishes is only ever as fresh
+// as the last human-paced event that filled the cache — a hello on a new socket,
+// or its owner acting over HTTP. This is the second of those, and it is the one
+// that runs while the socket is already open: a player who renames his Ваня or
+// drinks himself into trouble has to become visible to the yard without anybody
+// reconnecting.
+//
+// Asserted through place, which is the real render path, rather than by reading
+// the cache map — what matters is the frame the other players would receive.
+func TestAnHTTPReadRefreshesWhatThePlaneDraws(t *testing.T) {
+	hpDef := mustStat(t, StatHP)
+	name := "Ваня"
+	asOf := time.Now().UTC()
+
+	// Health inside its warning range, with both needs parked at the far end of
+	// their own so nothing else is in play: the pose under test is the one the
+	// fatal stat alone decides.
+	rows := append([]StatRow{{Key: StatHP, Value: (hpDef.Min + hpDef.WarnAt) / 2, AsOf: asOf}},
+		calmNeeds(t, asOf, 0)...)
+	repo := playedFor(rows...)
+	repo.pet.Name = &name
+	svc := petService(repo)
+
+	// Before the read the plane knows nothing about him, and still draws him:
+	// catalogue default, no label, no trouble.
+	before := svc.place(planeMember, asOf)
+	if len(before) != 1 {
+		t.Fatalf("an account with no pet read yet produced %d entities; want 1: %+v", len(before), before)
+	}
+	if before[0].Art != Content().DefaultSkin || before[0].Label != "" || before[0].Pose != PoseFine {
+		t.Fatalf("before any read the plane drew %+v; want the catalogue default skin, no label and no trouble", before[0])
+	}
+
+	if _, err := svc.State(context.Background(), testAccount); err != nil {
+		t.Fatalf("State: %v", err)
+	}
+
+	reads := repo.statReads
+	after := svc.place(planeMember, asOf)
+	if len(after) != 1 {
+		t.Fatalf("the roster carries %d entities after a read; want 1: %+v", len(after), after)
+	}
+	got := after[0]
+	if got.Art != repo.pet.SkinKey {
+		t.Errorf("the plane draws %q; want the pet's own skin %q", got.Art, repo.pet.SkinKey)
+	}
+	if got.Label != name {
+		t.Errorf("the plane labels him %q; want %q — a named Ваня is what stops the yard being anonymous dots", got.Label, name)
+	}
+	if got.Pose != PosePoorly {
+		t.Errorf("the plane draws him %q; want %q — his health is inside the catalogue's own warning range", got.Pose, PosePoorly)
+	}
+	// And it drew all of that without asking the database anything. That is the
+	// whole point of the cache: at five frames a second a query per tick would be
+	// the traffic this design does not have.
+	if repo.statReads != reads {
+		t.Errorf("rendering the plane made %d further reads of the stored stats; want none", repo.statReads-reads)
+	}
+}
+
+// TestAReadThatRecordsADeathLeavesThePlaneShowingHimDead closes the one gap
+// between the two halves of that refresh.
+//
+// A read both computes a death and writes it down, so the cache is filled twice
+// on that path: once before the write and once after it. Only the second one
+// carries the recorded instant — and without it the plane would hold an entry
+// that says "alive, with these numbers" about a pet the database has just
+// recorded as dead. He would still be DRAWN dead today, because his health is on
+// its floor, but the two would disagree about why; the moment an action lifts
+// him off that floor without the cache being told, the disagreement becomes a
+// visible one.
+func TestAReadThatRecordsADeathLeavesThePlaneShowingHimDead(t *testing.T) {
+	hpDef := mustStat(t, StatHP)
+	asOf := time.Now().UTC().Add(-time.Hour)
+	rows := append([]StatRow{{Key: StatHP, Value: hpDef.Min, AsOf: asOf}}, calmNeeds(t, asOf, 1)...)
+	repo := playedFor(rows...)
+	svc := petService(repo)
+
+	st, err := svc.State(context.Background(), testAccount)
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.Alive || st.Pet.DiedAt == nil {
+		t.Fatalf("a pet whose health ran out an hour ago read back alive: %+v", st.Pet)
+	}
+	if len(repo.died) != 1 {
+		t.Fatalf("%d deaths written; want exactly one — this test is about the cache the write leaves behind", len(repo.died))
+	}
+
+	svc.mu.Lock()
+	entry, cached := svc.display[testAccount]
+	svc.mu.Unlock()
+	if !cached {
+		t.Fatal("the read cached nothing at all for the account it just answered for")
+	}
+	if entry.diedAt == nil || !entry.diedAt.Equal(*st.Pet.DiedAt) {
+		t.Fatalf("the plane's copy records the death as %v; want the instant just written down, %v — the cache was filled before the write and never refreshed",
+			entry.diedAt, st.Pet.DiedAt)
+	}
+
+	peers := svc.place(planeMember, time.Now().UTC())
+	if len(peers) != 1 {
+		t.Fatalf("the roster carries %d entities; want 1: %+v", len(peers), peers)
+	}
+	if peers[0].Pose != PoseDead {
+		t.Fatalf("the plane draws a dead Ваня as %q; want %q", peers[0].Pose, PoseDead)
+	}
 }

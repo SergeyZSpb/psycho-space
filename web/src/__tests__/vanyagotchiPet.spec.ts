@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  clampStat,
-  condition,
-  decayedValue,
-  inTrouble,
-  skewMs,
-  statFraction,
-} from '../lib/vanyagotchiPet';
+import { clampStat, decayedValue, inTrouble, skewMs, statFraction } from '../lib/vanyagotchiPet';
 import type { VanyagotchiStat, VanyagotchiStatValue } from '../api/types';
 
 // These tests exist because this file is a SECOND implementation of arithmetic
@@ -250,38 +243,7 @@ describe('inTrouble', () => {
   });
 });
 
-describe('condition', () => {
-  const defs = [HP, BEER, BLADDER];
-
-  // Death is a recorded fact the server sends, not "hp happens to be zero now",
-  // which is why `alive` wins over every value.
-  it('is dead whenever the server says so', () => {
-    expect(condition(defs, new Map([['hp', 100]]), false)).toBe('dead');
-  });
-
-  it('is poorly when the fatal stat is in trouble', () => {
-    expect(condition(defs, new Map([['hp', 12]]), true)).toBe('poorly');
-  });
-
-  // A worrying bladder is not a health problem: only the fatal stat decides how
-  // he looks, or every stat added later would silently change his face. Both
-  // needs are unmet here — which is the state that is ABOUT to make him poorly —
-  // and his face still says fine until the health itself is.
-  it('ignores a non-fatal stat in trouble', () => {
-    expect(
-      condition(
-        defs,
-        new Map([
-          ['hp', 90],
-          ['beer', 2],
-          ['bladder', 95],
-        ]),
-        true,
-      ),
-    ).toBe('fine');
-  });
-
-  it('is fine when there is nothing to go on', () => {
-    expect(condition(defs, new Map(), true)).toBe('fine');
-  });
-});
+// The `condition` block that stood here is gone with the function it tested:
+// the pose every dot is drawn in now comes down the roster frame, decided once
+// on the server, so the properties it pinned — dead beats every value, only the
+// fatal stat decides — belong to display_test.go and to nothing in this bundle.

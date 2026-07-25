@@ -102,29 +102,18 @@ export function inTrouble(def: VanyagotchiStat, value: number): boolean {
   return def.good_high ? value < def.warn_at : value > def.warn_at;
 }
 
-/** How the pet should look, in the three states the yard can draw. */
-export type PetCondition = 'dead' | 'poorly' | 'fine';
-
-/**
- * The pet's overall condition, derived from the fatal stat rather than from a
- * mood column.
- *
- * There is no mood in the database and there should not be: it is a pure
- * function of values that already exist, so it cannot drift out of step with
- * them and it costs no storage. `alive` still comes from the server, because
- * death is a recorded fact — the instant it happened — and not merely "hp is
- * zero right now".
- */
-export function condition(
-  defs: readonly VanyagotchiStat[],
-  values: ReadonlyMap<string, number>,
-  alive: boolean,
-): PetCondition {
-  if (!alive) return 'dead';
-  for (const def of defs) {
-    if (!def.fatal) continue;
-    const v = values.get(def.key);
-    if (v !== undefined && inTrouble(def, v)) return 'poorly';
-  }
-  return 'fine';
-}
+// How the pet LOOKS is deliberately not computed here any more.
+//
+// There was a `condition()` in this file that derived a pose from the fatal
+// stat, and it was right about the arithmetic and wrong about the authority: it
+// could only ever see this player's own pet, so the yard drew one Ваня with a
+// face and everybody else as an anonymous dot. The pose now arrives per entity
+// in the roster frame, worked out server-side from the same catalogue thresholds
+// (internal/gamevanyagotchi/display.go), so every player sees the same world and
+// a pose can be added without a client deploy. See `PeerPose` in
+// lib/vanyagotchiPlane.ts.
+//
+// The bars kept their local arithmetic, and the difference is worth stating: a
+// bar is YOUR pet's number redrawn between fetches, so a copy of the formula
+// only ever disagrees with the server about your own screen. A pose is a fact
+// several people look at at once, so it has exactly one author.

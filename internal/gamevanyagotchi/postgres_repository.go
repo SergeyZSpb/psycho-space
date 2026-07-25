@@ -2,9 +2,11 @@ package gamevanyagotchi
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
+	"github.com/jackc/pgx/v5"
 )
 
 // PostgresRepository is the pgx-backed Repository.
@@ -15,7 +17,16 @@ func NewPostgresRepository() *PostgresRepository { return &PostgresRepository{} 
 
 // petColumns is the projection every read of a pet uses, so the scan order can
 // only be got wrong in one place.
-const petColumns = `id::text, account_id::text, name, skin_key, location_key, died_at, created_at`
+const petColumns = `id::text, account_id::text, name, skin_key, location_key, died_at, created_at, x, y, last_seen_at`
+
+// scanPet reads petColumns in order, so the projection can only be got wrong in
+// one place.
+func scanPet(row pgx.Row) (Pet, error) {
+	var p Pet
+	err := row.Scan(&p.ID, &p.AccountID, &p.Name, &p.SkinKey, &p.LocationKey,
+		&p.DiedAt, &p.CreatedAt, &p.X, &p.Y, &p.LastSeenAt)
+	return p, err
+}
 
 // EnsurePet creates the account's pet if it has none, then returns it.
 //
@@ -41,14 +52,41 @@ func (PostgresRepository) EnsurePet(ctx context.Context, q db.DBTX, accountID, s
 		return Pet{}, err
 	}
 
-	var p Pet
-	err := q.QueryRow(ctx,
+	return scanPet(q.QueryRow(ctx,
 		`SELECT `+petColumns+`
 		   FROM game_vanyagotchi_pets
 		  WHERE account_id = $1::uuid AND deleted_at IS NULL`,
 		accountID,
-	).Scan(&p.ID, &p.AccountID, &p.Name, &p.SkinKey, &p.LocationKey, &p.DiedAt, &p.CreatedAt)
-	return p, err
+	))
+}
+
+// FindPet reads without creating. pgx.ErrNoRows is the ordinary "no pet yet"
+// answer here rather than a failure, so it is translated into the bool instead
+// of being handed to a caller that would have to know about pgx to read it.
+func (PostgresRepository) FindPet(ctx context.Context, q db.DBTX, accountID string) (Pet, bool, error) {
+	p, err := scanPet(q.QueryRow(ctx,
+		`SELECT `+petColumns+`
+		   FROM game_vanyagotchi_pets
+		  WHERE account_id = $1::uuid AND deleted_at IS NULL`,
+		accountID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Pet{}, false, nil
+	}
+	if err != nil {
+		return Pet{}, false, err
+	}
+	return p, true, nil
+}
+
+func (PostgresRepository) SavePosition(ctx context.Context, q db.DBTX, accountID string, at Point, seen time.Time) error {
+	_, err := q.Exec(ctx,
+		`UPDATE game_vanyagotchi_pets
+		    SET x = $2, y = $3, last_seen_at = $4, updated_at = now()
+		  WHERE account_id = $1::uuid AND deleted_at IS NULL`,
+		accountID, at.X, at.Y, seen,
+	)
+	return err
 }
 
 func (PostgresRepository) Stats(ctx context.Context, q db.DBTX, petID string) ([]StatRow, error) {

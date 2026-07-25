@@ -245,6 +245,19 @@ func (s Stat) DeadAtWith(value float64, asOf time.Time, drivers map[string]StatR
 	return addHours(cur, left/rate)
 }
 
+// Troubled reports whether a value sits in the range the catalogue calls
+// trouble: below WarnAt when high is good, above it otherwise.
+//
+// One expression for both directions, and the threshold is content — so the
+// amber bar on a screen and the rough-looking Ваня on the plane are decided by
+// the same number rather than by two that can drift apart.
+func (s Stat) Troubled(v float64) bool {
+	if s.GoodHigh {
+		return v < s.WarnAt
+	}
+	return v > s.WarnAt
+}
+
 // Dead reports whether this stat is at its fatal floor at now, coupling
 // included.
 func (s Stat) Dead(value float64, asOf, now time.Time, drivers map[string]StatRow) bool {

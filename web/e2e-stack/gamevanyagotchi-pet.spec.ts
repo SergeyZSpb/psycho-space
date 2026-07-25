@@ -179,6 +179,46 @@ async function enterYardFrom(page: Page): Promise<void> {
   await expect(page.locator('[data-test="plane"]')).toBeVisible();
 }
 
+/**
+ * Makes the plane re-read a pet that was changed behind its back.
+ *
+ * Needed because of a deliberate performance property rather than a shortcut:
+ * the 5 Hz broadcast is a render step that touches no database, so what it draws
+ * comes from an in-memory cache filled on the two occasions a human causes — a
+ * client saying hello on a fresh socket, and that account acting over HTTP. A
+ * row changed by this file's direct-DB setup is neither, so nothing would ever
+ * notice it.
+ *
+ * A reload rather than an action, because an action would also change the very
+ * stats being set up. It is also what a real player does constantly: a reload,
+ * a lock screen, a tunnel — every one of them is a fresh socket and a fresh
+ * hello.
+ */
+async function refreshTheYardsIdeaOf(page: Page): Promise<void> {
+  await page.reload();
+  await enterYardFrom(page);
+}
+
+const dots = (page: Page) => page.locator('[data-test="peer"]');
+/** The caller's own dot, and everybody else's — the plane marks which is which. */
+const yourDot = (page: Page) => page.locator('[data-test="peer"][data-you="1"]');
+const theirDot = (page: Page) => page.locator('[data-test="peer"]:not([data-you="1"])');
+/** A dot's face, which now carries the condition the SERVER decided. */
+const faceOf = (dot: ReturnType<typeof dots>) => dot.locator('[data-test="peer-face"]');
+
+/** Every dot's normalised position, read from the custom properties. Copied. */
+async function positions(page: Page): Promise<{ x: number; y: number }[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[data-test="peer"]')].map((el) => {
+      const style = getComputedStyle(el);
+      return {
+        x: Number.parseFloat(style.getPropertyValue('--x')),
+        y: Number.parseFloat(style.getPropertyValue('--y')),
+      };
+    }),
+  );
+}
+
 /** A stat's number as the screen is currently showing it. */
 async function shown(page: Page, key: string): Promise<number> {
   const text = await page.locator(`[data-test="stat-value-${key}"]`).textContent();
@@ -670,6 +710,158 @@ test('reading the state twice returns the same pet, and a server clock with it',
       expect(acted.status(), `POST ${url}`).toBe(200);
       expect(((await acted.json()) as { pet: { id: string } }).pet.id).toBe(firstPet.id);
     }
+  } finally {
+    await context.close();
+  }
+});
+
+test("a neighbour sees how ill your Ваня really is, without being told", async ({
+  browser,
+  baseURL,
+}) => {
+  // THE claim this iteration makes, end to end: one shared world.
+  //
+  // Everything else in this file is a player looking at his own pet. Here the
+  // pet's condition is changed for ONE account, in the database, and asserted on
+  // the OTHER account's screen — a browser that never fetched that pet, is not
+  // allowed to, and has no way of computing anything about it. The pose can only
+  // have been derived on the server, from stats only the server can see, and
+  // published to everybody in the roster.
+  //
+  // That is also why a pose is not worked out in the client even for your own
+  // Ваня. A locally-derived condition is derived from numbers its owner alone
+  // has, so a dying Ваня would look ill to himself and perfectly well to the
+  // player standing next to him — two worlds wearing one plane.
+  test.setTimeout(150_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const seeded = await stack();
+  forgetPet(seeded[PLAYER_A]);
+  forgetPet(seeded[PLAYER_B]);
+
+  const ctxA = await browser.newContext(PHONE);
+  const ctxB = await browser.newContext(PHONE);
+  try {
+    await loginAs(ctxA, PLAYER_A);
+    await loginAs(ctxB, PLAYER_B);
+    const pageA = await ctxA.newPage();
+    const pageB = await ctxB.newPage();
+    await pageA.goto(`${base}/app/game-vanyagotchi`);
+    await pageB.goto(`${base}/app/game-vanyagotchi`);
+
+    // Both pets exist and are comfortably well before anybody looks at anybody:
+    // every stat clear of its threshold, so hp rots at its own single point an
+    // hour and nothing drifts over a threshold while the test runs.
+    await readState(pageA);
+    await readState(pageB);
+    const WELL = { hp: 60, beer: BEER_EMPTY_AT + 30, bladder: BLADDER_FULL_AT - 60 };
+    setStats(seeded[PLAYER_A], WELL);
+    setStats(seeded[PLAYER_B], WELL);
+
+    await enterYardFrom(pageA);
+    await enterYardFrom(pageB);
+    await expect(dots(pageB)).toHaveCount(2, { timeout: 15_000 });
+    await expect(yourDot(pageB)).toHaveCount(1, { timeout: 15_000 });
+
+    // B is watching A's Ваня. B never asked for it and could not be told: the
+    // pet endpoints are scoped to the caller's own account.
+    const watched = faceOf(theirDot(pageB));
+    await expect(watched, "B's neighbour started out looking unwell").toHaveAttribute(
+      'data-condition',
+      'fine',
+      { timeout: 20_000 },
+    );
+
+    // A's health falls into the range the CATALOGUE calls trouble — the same
+    // threshold that turns his own bar amber, so a rough-looking Ваня and an
+    // amber bar are one moment rather than two numbers that drift apart.
+    setStats(seeded[PLAYER_A], { ...WELL, hp: 10 });
+    await refreshTheYardsIdeaOf(pageA);
+
+    await expect(watched, "A's decline never reached B's screen").toHaveAttribute(
+      'data-condition',
+      'poorly',
+      { timeout: 30_000 },
+    );
+
+    // And all the way to the floor.
+    setStats(seeded[PLAYER_A], { ...WELL, hp: 0 });
+    await refreshTheYardsIdeaOf(pageA);
+
+    await expect(watched, "A's death never reached B's screen").toHaveAttribute(
+      'data-condition',
+      'dead',
+      { timeout: 30_000 },
+    );
+
+    // B's own Ваня was never touched. The yard is showing two different
+    // conditions at once, which is the assertion that separates "everybody is
+    // drawn from the server" from "the screen painted its own state on all of
+    // them" — the shortcut that passes every single-player test in this file.
+    await expect(faceOf(yourDot(pageB)), "B's own Ваня was buried along with A's").toHaveAttribute(
+      'data-condition',
+      'fine',
+    );
+    // A agrees about his own, from the other end of the same socket.
+    await expect(faceOf(yourDot(pageA))).toHaveAttribute('data-condition', 'dead', {
+      timeout: 20_000,
+    });
+  } finally {
+    await ctxA.close();
+    await ctxB.close();
+  }
+});
+
+test('a Ваня who has never stood anywhere arrives in the middle of the yard', async ({
+  browser,
+  baseURL,
+}) => {
+  // A stored position is nullable and starts null, because there is no honest
+  // value to invent for a pet that has never been in the yard: 0.5 written into
+  // the row at creation would be a position the player never chose, and the
+  // moment the spawn point moves every one of those rows is a lie.
+  //
+  // So "the middle" is the SERVER's spawn constant applied at render time, and
+  // the check below that the columns really are null is what stops this test
+  // passing for the wrong reason — with a default of 0.5 in the schema, a
+  // completely broken restore path would still put him in the centre.
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const seeded = await stack();
+  forgetPet(seeded[PLAYER_A]);
+
+  const context = await browser.newContext(PHONE);
+  try {
+    await loginAs(context, PLAYER_A);
+    const page = await context.newPage();
+    await page.goto(`${base}/app/game-vanyagotchi`);
+
+    // The first read creates the pet — lazily, which is the storage design.
+    await readState(page);
+    expect(
+      psql(
+        `SELECT x IS NULL AND y IS NULL FROM game_vanyagotchi_pets ` +
+          `WHERE account_id = '${uuid(seeded[PLAYER_A].account_id)}' AND deleted_at IS NULL`,
+      ),
+      'a freshly created pet already had a stored position',
+    ).toBe('t');
+
+    await enterYardFrom(page);
+    await expect(dots(page)).toHaveCount(1, { timeout: 15_000 });
+
+    // He is drawn, and drawn in the middle. Read off the custom properties,
+    // which are written from the frame — an unset property parses as NaN, so
+    // this also fails if no position ever reached the DOM at all.
+    await expect
+      .poll(async () => (await positions(page))[0]?.x, {
+        message: 'a pet with no stored position never arrived on the plane',
+        timeout: 15_000,
+      })
+      .toBeCloseTo(0.5, 2);
+    expect((await positions(page))[0]?.y, 'he arrived off-centre vertically').toBeCloseTo(0.5, 2);
+
+    // And he is a real entity rather than a placeholder: he has a face, and the
+    // yard counts him.
+    await expect(faceOf(yourDot(page))).toHaveCount(1);
+    await expect(page.getByText('во дворе: 1')).toBeVisible();
   } finally {
     await context.close();
   }
