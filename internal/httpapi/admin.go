@@ -119,9 +119,10 @@ func (s *Server) adminSetStatus(w http.ResponseWriter, r *http.Request, status s
 		}
 		// A live WebSocket has no request left to re-check the session on, so
 		// revoking in the database is not enough — close the sockets too. This
-		// is the instant path; the hub's periodic revalidation is the backstop
-		// for what it cannot see (a session expiring on its own, or a block
-		// applied straight in the database).
+		// in-process kick is currently the ONLY thing that cuts a live socket;
+		// there is no revalidation sweep behind it yet, so a session that expires
+		// on its own or a block applied straight in the database will not close
+		// one. See realtime.Hub.KickAccount.
 		if s.d.Realtime != nil {
 			s.d.Realtime.KickAccount(id)
 		}

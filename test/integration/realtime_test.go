@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -48,6 +49,98 @@ func dialRealtime(t *testing.T, appURL, cookie, origin string) (*websocket.Conn,
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return websocket.Dial(ctx, wsURL(appURL, "/api/realtime"), &websocket.DialOptions{HTTPHeader: h})
+}
+
+// readFrames starts the single reader for a socket and streams every frame it
+// delivers. Only one goroutine may read a WebSocket, so tests take frames from
+// here rather than calling Read themselves — otherwise a readiness probe and an
+// assertion end up competing for the same frame.
+func readFrames(t *testing.T, conn *websocket.Conn) <-chan []byte {
+	t.Helper()
+	out := make(chan []byte, 32)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		defer close(out)
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			select {
+			case out <- data:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
+// waitRegistered publishes a probe until one comes back, which proves the
+// handler has registered the socket with the hub. That is a condition, not a
+// duration — the handler registers after the upgrade response has already been
+// returned to the dialer.
+func waitRegistered(t *testing.T, hub *realtime.Hub, frames <-chan []byte) {
+	t.Helper()
+	const probe = `{"t":"probe"}`
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := hub.Publish(context.Background(), "yard", []byte(probe)); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+		select {
+		case got, ok := <-frames:
+			if !ok {
+				t.Fatal("socket closed while waiting for registration")
+			}
+			if string(got) == probe {
+				return
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	t.Fatal("socket never registered with the hub")
+}
+
+// expectBye requires a bye frame carrying wantCode to arrive, skipping any
+// leftover readiness probes.
+func expectBye(t *testing.T, frames <-chan []byte, wantCode int) {
+	t.Helper()
+	for {
+		select {
+		case data, ok := <-frames:
+			if !ok {
+				t.Fatalf("socket closed without a bye frame (wanted code %d)", wantCode)
+			}
+			var b realtime.Bye
+			if err := json.Unmarshal(data, &b); err != nil || b.T != realtime.TypeBye {
+				continue
+			}
+			if b.Code != wantCode {
+				t.Fatalf("bye code = %d, want %d (reason %q)", b.Code, wantCode, b.Reason)
+			}
+			return
+		case <-time.After(3 * time.Second):
+			t.Fatalf("no bye frame arrived (wanted code %d)", wantCode)
+		}
+	}
+}
+
+// expectClosed requires the frame stream to end — i.e. the socket really did go
+// away rather than merely being told it would.
+func expectClosed(t *testing.T, frames <-chan []byte) {
+	t.Helper()
+	for {
+		select {
+		case _, ok := <-frames:
+			if !ok {
+				return
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("socket is still open")
+		}
+	}
 }
 
 // TestRealtimeRequiresApprovedSession confirms the socket is gated by exactly
@@ -215,34 +308,8 @@ func TestRealtimeDrainsOnHubShutdown(t *testing.T) {
 	}
 	defer conn.CloseNow()
 
-	// Let the handler register before draining, using a delivered broadcast as
-	// the barrier rather than a sleep.
-	readCtx, cancelRead := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelRead()
-	ready := make(chan struct{})
-	go func() {
-		for {
-			_, data, err := conn.Read(readCtx)
-			if err != nil {
-				return
-			}
-			if string(data) == `{"t":"ready"}` {
-				close(ready)
-				return
-			}
-		}
-	}()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		_ = hub.Publish(context.Background(), "yard", []byte(`{"t":"ready"}`))
-		select {
-		case <-ready:
-			deadline = time.Time{} // registered
-		case <-time.After(50 * time.Millisecond):
-			continue
-		}
-		break
-	}
+	frames := readFrames(t, conn)
+	waitRegistered(t, hub, frames)
 
 	stopHub()
 	select {
@@ -251,11 +318,58 @@ func TestRealtimeDrainsOnHubShutdown(t *testing.T) {
 		t.Fatal("hub did not drain")
 	}
 
-	// The client now sees a close, and it carries the going-away code so the
-	// client knows to reconnect promptly rather than back off.
-	closeCtx, cancelClose := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancelClose()
-	if _, _, err := conn.Read(closeCtx); err == nil {
-		t.Fatal("socket still readable after the hub drained")
+	// The last frame before the socket goes away says why, so the client can tell
+	// a deploy from a network failure and reconnect promptly instead of backing
+	// off. The transport close cannot carry that — see realtime.Conn.Close for
+	// why the reason travels as a frame instead of a close code.
+	//
+	// This is also the ordering that made the mechanism subtle: shutdown cancels
+	// the hub context and only then asks each connection to close, so the write
+	// pump sees cancellation before the reason exists.
+	expectBye(t, frames, realtime.CloseGoingAway)
+	expectClosed(t, frames)
+}
+
+// TestRealtimeBlockDeliversTerminalBye covers the revocation path end to end,
+// through the real admin endpoint rather than by poking the hub: blocking an
+// account must both revoke its sessions and close its live sockets, and the
+// socket must be told the reason is terminal so the client stops reconnecting
+// instead of hammering the handshake forever.
+func TestRealtimeBlockDeliversTerminalBye(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, _ := buildAppRealtime(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	victim := loginAs(t, app.URL, "7007", "user")
+	victimCookie := cookieHeader(t, victim, app.URL)
+	super := loginAs(t, app.URL, "7008", "superadmin")
+	victimID := accountIDByUID(t, "7007")
+
+	conn, _, err := dialRealtime(t, app.URL, victimCookie, "http://localhost")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+
+	frames := readFrames(t, conn)
+	waitRegistered(t, hub, frames)
+
+	if s, _ := doJSON(t, super, http.MethodPost,
+		app.URL+"/api/admin/accounts/"+victimID+"/block", nil); s != http.StatusNoContent {
+		t.Fatalf("block returned %d, want 204", s)
+	}
+
+	expectBye(t, frames, realtime.CloseUnauthorized)
+	expectClosed(t, frames)
+
+	// And the terminal signal does not depend on that frame arriving: the block
+	// revoked the session, so a reconnect is refused before any upgrade. This is
+	// what the client actually keys "stop trying" off.
+	if _, resp, err := dialRealtime(t, app.URL, victimCookie, "http://localhost"); err == nil {
+		t.Fatal("a blocked account could reconnect")
+	} else if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("reconnect status = %v, want 401 (session revoked)", resp)
 	}
 }

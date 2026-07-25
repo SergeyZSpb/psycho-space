@@ -5,7 +5,7 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** the *why* behind psycho-space — the decisions that shaped it, each with the reasoning and, where one exists, the measurement that settled it. `ARCHITECTURE.md` describes the shape; this file says why that shape.
-- **status:** current as of 2026-07-25. The project is deployed and live; the game is the largest subsystem.
+- **status:** current as of the realtime close-reason work (2026-07-25). The project is deployed and live; the game is the largest subsystem. The newest entries are the three under *Realtime* covering why a close reason is a frame rather than a close code, and why the read pump is detached from shutdown.
 - **related:** `../CLAUDE.md` (rules), `ARCHITECTURE.md` (structure), `RUNBOOK.md` (operations), and the owner's local living doc for the private operational detail and the outstanding TODO list.
 - **done:** every decision below is settled and implemented.
 - **next:** append a section when a decision is made that a future reader would otherwise have to reverse-engineer. Amend in place when one is revisited — and say what changed it.
@@ -123,7 +123,23 @@ _Reasoning:_ the LLM is the only paid dependency, and its cost is currently boun
 
 ### Shutdown drains the hub before the HTTP server
 
-_Reasoning:_ `http.Server.Shutdown` does not close or wait for hijacked connections — its own documentation says so. This service restarts on every deploy, several times a day, so without an explicit drain each one would reset every player's socket with no close frame. Draining first sends close code 1001, which lets the client distinguish a planned restart from a network failure and reconnect promptly instead of backing off.
+_Reasoning:_ `http.Server.Shutdown` does not close or wait for hijacked connections — its own documentation says so. This service restarts on every deploy, several times a day, so without an explicit drain each one would reset every player's socket with no warning at all. Draining first gives every connected client a reason before the socket goes away, which is what lets it distinguish a planned restart from a network failure and reconnect promptly instead of backing off.
+
+### The close *reason* travels as a frame, not as a close code
+
+A server-initiated close sends one last text frame — `{"t":"bye","code":1001,"reason":"restart"}` — immediately before dropping the socket. The transport close itself stays abrupt, so a browser reports `1006 / wasClean:false` for every disconnect. The client branches on the `code` in that frame, not on `CloseEvent.code`.
+
+_Reasoning:_ emitting a real close code means calling the library's `Conn.Close`, and that runs a full close handshake: a 5 s write, then a 5 s wait for the peer's reply which needs the read lock our own read pump is already holding while blocked in `Read`, then a join bounded by a 15 s timer. That is seconds of stall on the two paths that must never stall — the single hub goroutine, which would freeze the whole room, and a shutdown drain budgeted at 5 s for every connection at once. The unexported `writeClose`, which would emit the code without waiting, is not reachable. So the choice is between a code that arrives late enough to hurt and a frame that arrives on time; the frame wins, and it can carry more than a number.
+
+_Nothing safety-critical rests on that frame arriving._ Blocking an account also revokes its sessions, so its reconnect is refused by `requireAuth` with a 401 before any upgrade — and **that HTTP status, not the frame, is what the client treats as terminal.** The `bye` only makes the stop immediate.
+
+### The read pump must not observe shutdown
+
+Reads run on `context.WithoutCancel`, so cancelling the hub context does not cancel them.
+
+_Reasoning:_ `coder/websocket`'s `setupReadTimeout` installs a `context.AfterFunc` on the read context that calls `c.close()` when it fires. So a read whose context is cancelled does not merely return an error — **it tears down the whole connection.** Handing it the hub context meant that on every deploy the read pump destroyed the socket before the write pump could say why, silently degrading the most common disconnect in production into an unexplained network error. The loop still always terminates, because every path out of `Serve` calls `hardClose` and that makes the read fail.
+
+_Recorded because it is invisible in the API:_ nothing in `Read`'s signature suggests the context outlives the call, and the first version of this code passed its own test by winning a goroutine race. The regression test now inserts a deliberate gap between the cancellation and the close request so it cannot pass by luck.
 
 ### What is *not* a problem: hijacked connections and server timeouts
 

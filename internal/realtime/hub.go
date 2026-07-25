@@ -257,9 +257,13 @@ func (h *Hub) Publish(ctx context.Context, room string, msg []byte) error {
 
 // KickAccount closes every connection belonging to an account. It is called
 // when an admin blocks someone: the app revokes sessions immediately, and a
-// live socket must not outlive that. The periodic revalidation sweep is the
-// backstop for the cases this cannot see — a session expiring on its own, or a
-// block applied directly in the database.
+// live socket must not outlive that.
+//
+// This is the only revocation path that exists today. There is NO periodic
+// revalidation sweep, so the two cases it cannot see — a session expiring on its
+// own, and a block applied straight in the database — currently leave a socket
+// alive until the peer or the process goes away. Adding that sweep is tracked as
+// its own work item and belongs before anything durable rides on this transport.
 func (h *Hub) KickAccount(accountID string) {
 	select {
 	case h.kick <- kickCmd{accountID: accountID, code: CloseUnauthorized, reason: "unauthorized"}:

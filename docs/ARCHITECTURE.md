@@ -5,7 +5,7 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** the structural view of psycho-space — logical containers, runtime flows, package layout, data model, deployment. `CLAUDE.md` carries the *rules*; this file carries the *shape*.
-- **status:** current as of the game/rate-limit work (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local.
+- **status:** current as of the realtime close-reason work (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped and carries a `bye` frame; **no client consumes it yet** and nothing publishes game messages.
 - **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only).
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point.
 - **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP.
@@ -145,8 +145,13 @@ sequenceDiagram
         H-->>B: broadcast (non-blocking; a slow client is dropped, never waited on)
         B->>A: frames (≤4 KiB, ≤10/s)
     end
-    Note over A,H: SIGTERM → cancel hub ctx → close 1001 → THEN http.Shutdown<br/>(Shutdown alone does not close hijacked connections)
+    Note over A,H: SIGTERM → cancel hub ctx → hub asks each conn to close
+    H->>A: Close(1001, "restart")
+    A-->>B: {"t":"bye","code":1001,...} then the socket drops
+    Note over A,H: THEN http.Shutdown (Shutdown alone does not close hijacked connections)
 ```
+
+The reason arrives as a **frame**, not as a WebSocket close code — a browser sees `1006` for every disconnect and reads the reason from the last `bye` frame instead. Codes: `1001` planned restart (reconnect promptly), `1013` evicted or over a cap (back off), `4001` session revoked (terminal — stop). See `docs/DESIGN.md` → *The close reason travels as a frame* for why, and *The read pump must not observe shutdown* for the library trap that makes the ordering load-bearing.
 
 ### 2.5 Deploy
 
@@ -323,7 +328,7 @@ Anything not matching `/api` or `/healthz` is served the embedded SPA, so client
 | WebSocket frame size | `SetReadLimit(4096)` — the 1 MiB `bodyLimit` wraps `r.Body` and the hijack bypasses it | `internal/realtime/conn.go` |
 | WebSocket message rate | 10/s per connection, burst 20 — the HTTP limiter fires once, at the handshake | `internal/realtime/conn.go` |
 | Connection caps | 3 per account, 200 per process | `internal/realtime/hub.go` |
-| Revocation on a live socket | Blocking an account closes its sockets with 4001 (terminal for the client) | `internal/httpapi/admin.go` → `Hub.KickAccount` |
+| Revocation on a live socket | Blocking an account revokes its sessions and closes its sockets, sending `bye` code 4001. **This in-process kick is the only path that cuts a live socket** — there is no revalidation sweep, so a session that expires on its own, or a block applied straight in the database, leaves the socket open until the peer or the process goes away. The reconnect is still refused by `requireAuth`. | `internal/httpapi/admin.go` → `Hub.KickAccount` |
 
 **On the client IP** — nginx sends `X-Forwarded-For: $proxy_add_x_forwarded_for`, which *appends* the peer to whatever the client sent, so its leftmost entry is attacker-controlled. chi's `middleware.RealIP` trusted exactly that and overwrote `RemoteAddr` with it, which made every per-IP limit forgeable by varying a header — including the one protecting the endpoint that spends money. `clientIP` reads `X-Real-IP` (which nginx overwrites) and only when the request came from loopback.
 

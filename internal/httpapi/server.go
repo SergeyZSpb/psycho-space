@@ -9,7 +9,7 @@ import (
 
 // Timeouts bounds an HTTP server's I/O. Extracted from main so a test can build
 // a server with short timeouts and prove that a hijacked connection is not
-// killed by them — see TestHijackedConnSurvivesWriteTimeout. Waiting out the
+// killed by them — see TestHijackedConnOutlivesServerWriteTimeout. Waiting out the
 // production 30 s in a test is not an option, and the integration harness uses
 // httptest.NewServer, which sets no timeouts at all and so cannot catch the
 // regression either.
@@ -32,9 +32,13 @@ func DefaultTimeouts() Timeouts {
 
 // NewHTTPServer builds the production HTTP server around a handler.
 //
-// Note that Read/Write timeouts are inherited by a hijacked connection
-// (golang/go#8296), so any handler that upgrades to a WebSocket must clear the
-// deadlines itself — handleRealtime does.
+// The folklore around golang/go#8296 says these Read/Write timeouts are
+// inherited by a hijacked connection, so an upgrading handler must clear the
+// deadlines itself. On current Go that is no longer true: net/http's
+// hijackLocked clears the deadline as part of the hijack, so handleRealtime
+// deliberately does NOT clear it again, and clearing it there would be dead
+// code. TestHijackedConnOutlivesServerWriteTimeout pins that as a negative
+// control, so a regression in either direction is caught rather than assumed.
 func NewHTTPServer(addr string, h http.Handler, t Timeouts) *http.Server {
 	return &http.Server{
 		Addr:              addr,

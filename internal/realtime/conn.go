@@ -28,7 +28,19 @@ const (
 	// writeTimeout bounds one message write, so a reader that has stopped
 	// reading cannot pin a goroutine and a send buffer indefinitely.
 	writeTimeout = 5 * time.Second
+	// byeGrace is how long the write pump waits for a close reason after its
+	// context is cancelled. Shutdown cancels the hub context and only then walks
+	// its clients calling Close, so without this window the pump would exit on
+	// the cancellation and the client would never learn why. Small enough that
+	// every connection still drains well inside the 5 s budget in main.
+	byeGrace = 250 * time.Millisecond
 )
+
+// closeReason is a pending close request handed from Close to the write pump.
+type closeReason struct {
+	code   int
+	reason string
+}
 
 // Conn adapts a WebSocket to the hub's Sink and runs the two pumps that feed
 // it. One Conn owns exactly one socket.
@@ -38,9 +50,11 @@ type Conn struct {
 	ws        *websocket.Conn
 	send      chan []byte
 
+	// closing carries at most one close request to the write pump. Capacity 1
+	// plus closeOnce is what makes Close non-blocking without a lossy default.
+	closing   chan closeReason
 	closeOnce sync.Once
-	closeCode int
-	closeText string
+	hardOnce  sync.Once
 }
 
 // NewConn wraps an accepted WebSocket.
@@ -51,6 +65,7 @@ func NewConn(id, accountID string, ws *websocket.Conn) *Conn {
 		accountID: accountID,
 		ws:        ws,
 		send:      make(chan []byte, defaultSendBuffer),
+		closing:   make(chan closeReason, 1),
 	}
 }
 
@@ -71,16 +86,54 @@ func (c *Conn) TrySend(msg []byte) bool {
 	}
 }
 
-// Close implements Sink. It records the reason and closes the socket; repeated
-// calls are no-ops, so the hub and the pumps may both call it.
+// Close implements Sink. It asks the write pump to tell the client why the
+// socket is going away and then tear it down. Repeated calls are no-ops, so the
+// hub and the pumps may all call it, and it never blocks — the channel has
+// capacity 1 and closeOnce guarantees a single send.
+//
+// The reason travels as an ordinary text frame (a Bye), not as a WebSocket close
+// code, and that is a deliberate trade rather than an oversight. The library's
+// Conn.Close is the only public way to emit a close code, and it runs a full
+// close handshake: a 5 s write, then a 5 s wait for the peer's reply which needs
+// the read lock our own read pump already holds while blocked in Read, then a
+// join with a 15 s timer. That is seconds of stall on paths that must never
+// stall — the single hub goroutine, and a shutdown drain budgeted at 5 s for
+// every connection at once. The unexported writeClose, which would emit the code
+// without waiting, is not reachable from here.
+//
+// So the transport close stays abrupt (a browser sees 1006) and the *reason*
+// arrives in the frame immediately before it. Nothing safety-critical rests on
+// that frame being delivered: blocking an account also revokes its sessions, so
+// its reconnect is refused by requireAuth with a 401/403 before any upgrade, and
+// that HTTP status — not this frame — is the client's terminal signal.
 func (c *Conn) Close(code int, reason string) {
 	c.closeOnce.Do(func() {
-		c.closeCode, c.closeText = code, reason
-		// CloseNow rather than Close: a graceful close handshake can block on a
-		// peer that has stopped reading, and every caller here is on a path
-		// that must not block (the hub loop, or shutdown).
+		c.closing <- closeReason{code: code, reason: reason}
+	})
+}
+
+// hardClose drops the socket without a handshake. Idempotent, and safe to call
+// from any goroutine: every caller is on a path that must not block.
+func (c *Conn) hardClose() {
+	c.hardOnce.Do(func() {
 		_ = c.ws.CloseNow()
 	})
+}
+
+// writeBye makes a best-effort attempt to deliver the reason before the socket
+// drops. It deliberately does not use the pump's context: by the time shutdown
+// asks for a close that context is already cancelled, and a write on it would
+// fail instantly, which is the bug this exists to prevent.
+func (c *Conn) writeBye(ctx context.Context, cr closeReason) {
+	frame := encodeBye(cr.code, cr.reason)
+	if frame == nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
+	defer cancel()
+	// A failure here means the peer is already gone — there is nobody left to
+	// tell, and hardClose is about to run regardless.
+	_ = c.ws.Write(writeCtx, websocket.MessageText, frame)
 }
 
 // Serve runs the read and write pumps until either ends, then unregisters from
@@ -99,8 +152,12 @@ func (c *Conn) Serve(ctx context.Context, hub *Hub) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		defer cancel()
 		c.readPump(ctx)
+		// The peer is gone, or misbehaved. Ask the write pump to wind up rather
+		// than cancelling its context: cancellation makes it pay the bye grace
+		// window for a socket that has nobody left to tell, and the request path
+		// is a no-op if the hub already asked first.
+		c.Close(CloseGoingAway, "peer closed")
 	}()
 	go func() {
 		defer wg.Done()
@@ -108,17 +165,28 @@ func (c *Conn) Serve(ctx context.Context, hub *Hub) {
 		c.writePump(ctx)
 	}()
 	wg.Wait()
-	c.Close(CloseGoingAway, "closed")
+	// Both pumps are gone, so nothing can write a Bye any more; just make sure
+	// the socket is not left open.
+	c.hardClose()
 }
 
 // readPump drains inbound frames. Nothing acts on them yet — the first slice
 // proves transport, auth and lifetime. What it does do is enforce the bounds:
 // oversized frames are rejected by SetReadLimit, and a client that exceeds the
 // rate limit is disconnected.
+//
+// Reads deliberately run on a context that is never cancelled. The library
+// installs a context.AfterFunc on the read context that closes the whole
+// connection when it fires (setupReadTimeout), so handing it a context that
+// shutdown cancels would tear the socket down before the write pump could send
+// the Bye explaining why — the most common disconnect in production, silently
+// degraded to a network error. The loop still always terminates: every exit path
+// out of Serve runs hardClose, and that makes this Read fail.
 func (c *Conn) readPump(ctx context.Context) {
+	readCtx := context.WithoutCancel(ctx)
 	limiter := rate.NewLimiter(rate.Limit(msgPerSecond), msgBurst)
 	for {
-		_, _, err := c.ws.Read(ctx)
+		_, _, err := c.ws.Read(readCtx)
 		if err != nil {
 			// Peer closed, deadline, read limit exceeded, or ctx cancelled.
 			// Every one of these means this connection is finished.
@@ -138,10 +206,32 @@ func (c *Conn) readPump(ctx context.Context) {
 func (c *Conn) writePump(ctx context.Context) {
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
+	defer c.hardClose()
 
 	for {
+		// A pending close outranks queued messages. Without this the drain could
+		// end up waiting behind as many as defaultSendBuffer writes, each bounded
+		// only by writeTimeout — many times the whole shutdown budget.
+		select {
+		case cr := <-c.closing:
+			c.writeBye(ctx, cr)
+			return
+		default:
+		}
+
 		select {
 		case <-ctx.Done():
+			// Shutdown cancels the hub context and only then walks its clients
+			// calling Close, so wait a moment for that request rather than
+			// exiting and leaving the client to guess.
+			select {
+			case cr := <-c.closing:
+				c.writeBye(ctx, cr)
+			case <-time.After(byeGrace):
+			}
+			return
+		case cr := <-c.closing:
+			c.writeBye(ctx, cr)
 			return
 		case msg := <-c.send:
 			writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
