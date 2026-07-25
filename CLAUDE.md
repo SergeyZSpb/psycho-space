@@ -86,6 +86,19 @@ One-paragraph orientation, so this file stands alone: a browser hits nginx (TLS,
 - **No test/dev-only code in production paths** — no test endpoints, mock handlers, or debug backdoors. Tests use real flows or direct DB setup.
 - Consent (152-ФЗ) is captured before any PD processing: the VK widget is gated behind an explicit consent checkbox; `consent_at`/`consent_version` are recorded.
 
+**Never print a secret in CI — the logs are public**
+
+This repository is public, and so is every Actions log and job summary. GitHub masks the literal value of a registered secret as `***`, but that is the only thing it can do, and it is easy to defeat by accident:
+
+- **A transformed secret is not masked.** Base64-encode it, embed it in a URL, hash it, print it a character at a time, or pass it through a tool that reformats it, and the mask no longer matches. `echo "$KEY" | base64` prints the key.
+- **`set -x` prints commands after expansion.** Never enable shell tracing in a step that touches a secret.
+- **Whole-environment dumps leak everything** — no `env`, `printenv`, `set`, or "debug: print all inputs" steps.
+- **A file written from secrets must not be echoed.** `deploy.yml` renders `app.env` with `umask 077` and never `cat`s it; keep it that way.
+- **Third-party actions see what you pass them.** Pass a secret only to a step that genuinely needs it.
+- **Error paths leak too** — a tool that echoes its own arguments on failure will print the credential it was given. Prefer passing secrets by environment variable, never as a command-line argument (they also show up in `ps`).
+
+Every task that touches CI runs `./scripts/ci-check-secrets.sh` against the run (see *Task workflow* step 6). It flags credential-shaped strings and deliberately **never prints the match** — printing it to "check" would copy the secret somewhere new. If it fires for real: rotate the value, delete the run's logs, and fix what printed it. Note that `APP_ENC_KEY` and `APP_HMAC_KEY` **cannot** be rotated without data loss, so they are the ones to be most careful with.
+
 **Git & workflow**
 - Set a git identity appropriate to you before committing (`git config user.name/user.email`).
 - Push over HTTPS with a personal access token; don't persist the token in `.git/config` — push via an inline `https://x-access-token:$TOKEN@github.com/...` URL.
@@ -137,6 +150,52 @@ The full-stack e2e suite needs none of this: `scripts/e2e-stack.sh` generates th
 
 **Handle with care.** `APP_ENC_KEY` and `APP_HMAC_KEY` are not rotatable in place: losing the encryption key makes stored profiles unrecoverable, and changing the HMAC key breaks every blind index, which orphans every account. The server host and hardened SSH port are secret too — they live in these secrets, in the operator's `~/.ssh/config`, and in the local living doc, and must never appear in the repository.
 
+## Every doc opens with an LLM-continuation block
+
+**Every documentation file in this repo starts with an `## LLM Continuation Context` block**, directly under the H1. Its only job is to let the *next agent* (or the owner, six weeks later) resume the topic without re-deriving it. It is written **for machines, not humans** — optimise for hand-off, not readability; that it renders on the page too is an accepted cost, not a reason to soften it into prose.
+
+- **New docs: mandatory.** No doc is created without one.
+- **Existing docs: add on touch.** Editing an older doc that lacks one? Add it in that edit. Don't retrofit docs you aren't otherwise touching.
+- **Keep it current.** Update it in the same commit that changes the doc, so `status` / `next` / `done` never lie. **A stale block is worse than none** — it will be believed.
+- **Scope:** every markdown doc in this repo (`docs/*`, `README.md` where useful) and the owner's local living-doc set.
+
+Canonical shape:
+
+```markdown
+## LLM Continuation Context
+
+_Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
+
+- **topic:** <one line — what this doc or work item is>
+- **status:** <where it stands: shipped, phase 2 of 3, blocked on …>
+- **code:** <path:line entry points — the ground truth>
+- **relocate:** <greps or search terms to re-find that ground truth if the links rot>
+- **done:** <what is complete>
+- **next:** <the self-prompt: concrete next actions>
+- **decisions / constraints:** <fixed decisions a continuing agent must NOT relitigate>
+```
+
+The fields are a **checklist, not a straitjacket** — drop one that is genuinely empty, add one the topic needs (`related:`, `env:`, `risks:`). The test is: *could a fresh agent, given only this block, pick up the thread and know where to look?* If not, it is too thin. **Never put secrets or personal data in one** — these render publicly.
+
+**Durable knowledge belongs in a doc, not in an assistant's private memory.** A memory file lives on one machine, unversioned and invisible to everyone else. A doc is shared, reviewed, and version-controlled — and already opens with the block that serves the "let the next agent resume" purpose. If nothing owns a piece of knowledge yet, the missing doc is the fix.
+
+## Working style — autonomy, subagents, and session goals
+
+**Default to executing, not consulting.** When given a task, start: read the code, make the change, verify it, push it. Do not ask questions the codebase already answers, and do not pause for sign-off between obvious steps. Ask once, and keep going, when an answer genuinely changes what gets built. Switch to plan-or-review mode only when explicitly asked ("make a plan", "review this", "what's your approach first").
+
+**Fan out subagents wherever the work splits.** Before starting anything non-trivial, decompose it into independent streams and dispatch them **in a single message so they run concurrently** — sequential subagent calls throw away the entire benefit. Each gets a self-contained prompt: they share no context with the session or with each other. Useful splits:
+
+- **Read-many:** one agent per unrelated area of the codebase when a task needs several areas understood at once.
+- **Interface-first:** define the contract (small, fast), then fan out tests, implementation, and callers against it.
+- **Research-many:** one agent per open question (library choice, prior art, an external API's real behaviour).
+- **Per-surface:** the same shape of change across several packages, views, or endpoints.
+
+Tell subagents **not to edit files the session is editing** — parallel writes to one file lose work. Prefer having them report findings and letting the session apply the edits, unless the streams touch genuinely disjoint files.
+
+**Propose a session goal before a large task.** For anything multi-phase or long-running, suggest the user set one with `/goal <text>`, and offer concrete text rather than just the suggestion — a standing goal re-grounds the work each turn and survives context compaction, which is what keeps a long autonomous run on track. Bundle three things into the proposed text: the objective and what "done" means here; a reminder to close every item against the Definition of Done below; and an instruction to fan out subagents for independent streams. Propose it, let the user edit or decline, then proceed either way — the goal helps continuity, it is not a gate.
+
+**Report progress, not deliberation.** Brief status as work lands ("rate-limit fix in, dispatching docs + CI in parallel") — not a running commentary on your reasoning.
+
 ## Task workflow
 
 For each work item:
@@ -145,7 +204,11 @@ For each work item:
 3. **Extend the test base** — unit tests for the changed logic **and** a testcontainers integration test when there's an end-to-end path (see *Tests are a deliverable*).
 4. **Gate** — `./dev.sh pre-commit` must pass (build → lint → unit → web → e2e → integration → full-stack e2e). Never `--no-verify`; fix the cause.
 5. **Commit + push to `main`** — Conventional Commits. This deploys, so only push a green, verified change.
-6. **Watch the deploy to completion — don't fire-and-forget.** Pushing to `main` triggers `deploy.yml` (runs the full suite, then ships over SSH). Watch that run to green, then verify (health check / the behaviour you changed). A red deploy means prod is stale — treat it as unfinished work.
+6. **Watch the deploy to completion, and read what it produced — never fire-and-forget.** Pushing to `main` triggers `deploy.yml` (full suite, then ships over SSH). All four steps are required before the task is done:
+   - **Watch it to a conclusion:** `gh run watch <run-id> --exit-status` (find it with `gh run list --limit 1`). A run left unwatched is a task left unfinished — a red deploy means production is still running the old code.
+   - **Read the job output, don't just accept the green tick.** Open the run's **job summary** and check the test + coverage table each workflow publishes: per-suite pass/fail/skip counts and coverage percentages. Confirm the numbers moved the way your change should have moved them — a suite that silently ran **zero** tests is green and worthless, and coverage that fell where you added code means the test you wrote isn't exercising it. `gh run view <run-id>` lists the jobs; `gh run view <run-id> --log-failed` gets straight to a failure.
+   - **Check no secrets were printed:** `./scripts/ci-check-secrets.sh <run-id>` (zero-arg = latest run). **The logs of this repository are public.** See *Never print a secret in CI* below.
+   - **Verify the behaviour in production** — the health check plus whatever you actually changed.
 7. **Write back — the docs are part of the change, not a follow-up.** In the same commit: `docs/ARCHITECTURE.md` if you touched the structure (a package, a route group, a table, a runtime flow); `docs/DESIGN.md` if you made a decision whose reasoning is not recoverable from the diff; `docs/RUNBOOK.md` if you worked out an operational or debugging procedure, or if you changed behaviour it describes; this file if a convention changed; and the living doc for durable project state. Each doc's `## LLM Continuation Context` block is updated with it — a stale block is worse than none. Docs that contradict the code are a defect owned by the change that caused them.
 
 **CI vs deploy:** `main` = `deploy.yml` (lint · unit · web · e2e · integration · full-stack e2e, then auto-deploy over SSH) — the normal path. Both workflows publish a test + coverage summary to the run's job summary and upload the Playwright videos. Any non-`main` branch/PR = `ci.yml` (same tests, no deploy) — only if you deliberately want to stage something before it deploys.
@@ -159,12 +222,23 @@ Close a work item with a compact checklist — mark each **✅ done · ⏭️ sk
 | Requirements grounded (living doc read) | |
 | Test base extended — unit + integration (or stated reason) | |
 | `./dev.sh pre-commit` green | |
-| Pushed to `main` → **auto-deploy watched to green + verified** *(or noted as an owner action)* | |
+| Pushed to `main` → **auto-deploy watched to green** *(or noted as an owner action)* | |
+| CI job output read — test counts + coverage checked, not just the green tick | |
+| CI logs scanned for leaked secrets (`./scripts/ci-check-secrets.sh`) | |
+| Behaviour verified in production | |
 | Docs synced — `ARCHITECTURE.md` / `DESIGN.md` / `RUNBOOK.md` as applicable, each with its continuation block | |
 | Living doc current to as-built; LLM-continuation block updated | |
 | Secrets/PII posture respected — nothing sensitive committed | |
 
-Then give a short **end-of-task report**: what shipped (behavioural bullets) · tests added/extended (named) · areas/repos touched · push status (which ref — branch vs `main`) · judgement calls made without explicit direction.
+Then close with a structured **end-of-task report** — sections in this order, each tight bullets rather than prose. This is the receipt the user reviews after letting the work run unsupervised, so it has to let them reconstruct *what changed, where it landed, and what was decided for them* at a glance. Omit a section only when it is genuinely empty, and then say "none" rather than dropping the heading.
+
+1. **What shipped** — the user-visible or behavioural changes, one line each. Not a file-by-file diff.
+2. **Tests added or extended** — named (file / test), unit **and** integration/e2e. Mandatory section; "none" is valid only for a genuinely test-exempt change, with the reason.
+3. **CI + deploy** — the run, its conclusion, the test counts and coverage from its summary, the secret scan result, and what was verified in production.
+4. **Working-tree status** — branch, and whether anything is left staged, unstaged, or untracked. Anything left dirty is called out with why.
+5. **Push status** — what was committed and what was pushed, naming the ref. Make it unambiguous whether anything landed on `main`.
+6. **Judgement calls made without being asked** — every decision the user did not direct: design choices, trade-offs, assumptions filled in for missing requirements, scope added or dropped. This is the review surface; when in doubt, list it. "None" only if the task was fully specified.
+7. **The Definition-of-Done table above**, filled in.
 
 ## Deploy
 
