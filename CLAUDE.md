@@ -196,9 +196,24 @@ Tell subagents **not to edit files the session is editing** — parallel writes 
 
 **Report progress, not deliberation.** Brief status as work lands ("rate-limit fix in, dispatching docs + CI in parallel") — not a running commentary on your reasoning.
 
+## Iterations — break large work into deployable, verifiable slices
+
+Any work item bigger than a single commit is planned as a **sequence of iterations, each one independently deployable and independently verifiable**. This is not a scheduling preference, it is how a change gets proven on the only environment that matters: `main` auto-deploys, so an iteration that cannot ship on its own is an iteration whose behaviour nobody can observe in production.
+
+**What qualifies as an iteration:**
+
+- **It deploys on its own.** It leaves `main` green and production working. A slice that only makes sense once the next two land is not an iteration — it is the first third of one, and it belongs merged into the slice that completes it.
+- **It is verifiable from outside the code.** There is something concrete a human or CI can run to see the new behaviour: a green test in the suite where that behaviour would actually break (see *Tests are a deliverable*), a `curl` recipe, a screen to open at 360 px, an observable log line or metric. "It compiles" and "the types line up" are not verification.
+- **It carries its own tests and its own doc write-back.** Every iteration closes against the Definition of Done, not just the final one. Deferring tests or docs to a later slice defeats the purpose, because the slice has already deployed.
+- **It is small enough to review in one sitting** — typically one to three commits. Consistently larger usually means the slice is doing two things.
+
+**Structure the sequence as a walking skeleton, not as layers.** The first iteration is a thin end-to-end slice that touches every layer the finished feature will touch — migration, service, API, client — while doing the simplest possible thing. Integration risk (schema shape, auth, proxy config, the never-scroll layout) then surfaces on day one instead of at the end. Each later iteration adds one increment of real behaviour to a skeleton that never stops walking: the second entity, a real validation rule replacing a hardcoded value, the next branch of the happy path. If the first iteration contains nothing frightening, it is probably too thin to be worth deploying.
+
+**Write the sequence down before starting.** The living doc names the iterations, the demoable deliverable for each, and the commit slicing — so progress is measured in shipped, verified increments rather than in accumulated work-in-progress. Keep that list current as slices land; a plan that still describes an iteration which already shipped is a stale plan.
+
 ## Task workflow
 
-For each work item:
+Applies to each work item — and separately to **each iteration** of a larger one (see above):
 1. **Ground it** — read the living doc + this file. For anything non-trivial, write or refresh the plan in the living doc *before* coding, and keep its `## LLM Continuation Context` block (`status`/`next`/`done`) accurate.
 2. **Branch** — `<type>-short-slug` off an up-to-date `main`; implement in small, reviewable slices.
 3. **Extend the test base** — unit tests for the changed logic **and** a testcontainers integration test when there's an end-to-end path (see *Tests are a deliverable*).
