@@ -25,7 +25,18 @@ fi
 # Route go/npm through mise so versions match mise.toml when mise is present.
 go_()    { if command -v mise >/dev/null 2>&1; then mise exec -- go    "$@"; else go    "$@"; fi; }
 npm_()   { if command -v mise >/dev/null 2>&1; then mise exec -- npm   "$@"; else npm   "$@"; fi; }
+npx_()   { if command -v mise >/dev/null 2>&1; then mise exec -- npx   "$@"; else npx   "$@"; fi; }
 gofmt_() { if command -v mise >/dev/null 2>&1; then mise exec -- gofmt "$@"; else gofmt "$@"; fi; }
+golangci_() {
+  if command -v mise >/dev/null 2>&1 && mise which golangci-lint >/dev/null 2>&1; then
+    mise exec -- golangci-lint "$@"
+  elif command -v golangci-lint >/dev/null 2>&1; then
+    golangci-lint "$@"
+  else
+    echo "golangci-lint not found — it is pinned in mise.toml; run 'mise install'." >&2
+    return 1
+  fi
+}
 
 target_build() {
   echo "== build =="
@@ -42,12 +53,8 @@ target_lint() {
     return 1
   fi
   go_ vet ./...
-  if command -v golangci-lint >/dev/null 2>&1; then
-    echo "== golangci-lint =="
-    golangci-lint run
-  else
-    echo "info: golangci-lint not installed — skipping (recommended: mise/asdf install it)" >&2
-  fi
+  echo "== golangci-lint =="
+  golangci_ run ./...
 }
 
 target_test() {
@@ -67,12 +74,60 @@ target_integration() {
 target_web() {
   if [ -f web/package.json ]; then
     echo "== web (type-check + unit) =="
-    # Don't download Playwright browsers on npm ci here — the e2e suite is a
-    # separate on-demand check (npm run test:e2e), not part of this fast gate.
-    export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
     ( cd web && npm_ ci --no-audit --no-fund && npm_ run type-check && npm_ run test )
   else
     echo "info: no web/ frontend yet — skipping" >&2
+  fi
+}
+
+# Playwright mobile-responsiveness suite. Part of the pre-commit gate: the
+# mobile-first rule in CLAUDE.md is only real if something enforces it, and the
+# whole suite runs in seconds once the browser is cached. The browser download
+# is a one-off (`npx playwright install chromium`); every project in
+# playwright.config.ts is Chromium, so nothing else is fetched.
+target_e2e() {
+  if [ ! -f web/playwright.config.ts ]; then
+    echo "info: no web/playwright.config.ts — skipping e2e" >&2
+    return 0
+  fi
+  echo "== e2e (Playwright, mobile viewports) =="
+  ( cd web && [ -d node_modules ] || npm_ ci --no-audit --no-fund )
+  if ! ( cd web && npx_ playwright test "$@" ); then
+    echo "e2e failed. If the browser is missing, run: (cd web && npx playwright install chromium)" >&2
+    return 1
+  fi
+}
+
+# Full-stack e2e: the browser drives the real binary against a real Postgres
+# (scripts/e2e-stack.sh brings the stack up and seeds accounts). Needs Docker —
+# the same dependency the testcontainers integration tests already have.
+target_e2e_stack() {
+  if [ ! -f web/playwright.stack.config.ts ]; then
+    echo "info: no web/playwright.stack.config.ts — skipping full-stack e2e" >&2
+    return 0
+  fi
+  echo "== e2e full-stack (real binary + Postgres) =="
+  ( cd web && [ -d node_modules ] || npm_ ci --no-audit --no-fund )
+  ( cd web && npx_ playwright test --config=playwright.stack.config.ts "$@" )
+}
+
+# Coverage for both Go layers. Kept separate rather than merged: the unit
+# profile measures the packages' own tests, the integration profile is built
+# with -coverpkg=./... so it reports what an end-to-end run actually exercises.
+target_cover() {
+  echo "== coverage (Go unit) =="
+  mkdir -p .coverage
+  go_ test -covermode=atomic -coverprofile=.coverage/unit.out ./...
+  go_ tool cover -func=.coverage/unit.out | tail -1
+  if [ -d test/integration ]; then
+    echo "== coverage (Go integration) =="
+    go_ test -tags=integration -covermode=atomic -coverpkg=./... \
+      -coverprofile=.coverage/integration.out ./test/integration/...
+    go_ tool cover -func=.coverage/integration.out | tail -1
+  fi
+  if [ -f web/package.json ]; then
+    echo "== coverage (web) =="
+    ( cd web && npm_ ci --no-audit --no-fund && npm_ run test:coverage )
   fi
 }
 
@@ -104,7 +159,9 @@ target_pre_commit() {
   target_lint
   target_test
   target_web
+  target_e2e
   target_integration
+  target_e2e_stack
   echo "== pre-commit OK =="
 }
 
@@ -114,6 +171,9 @@ case "${1:-help}" in
   test)        target_test ;;
   integration) target_integration ;;
   web)         target_web ;;
+  e2e)         shift || true; target_e2e "$@" ;;
+  e2e-stack)   shift || true; target_e2e_stack "$@" ;;
+  cover)       target_cover ;;
   run)         target_run ;;
   seed)        shift; target_seed "$@" ;;
   db-up)       target_db_up ;;
@@ -127,11 +187,14 @@ psycho-space dev.sh targets:
   test         unit tests
   integration  testcontainers integration tests (when test/integration exists)
   web          frontend type-check + unit tests (when web/ exists)
+  e2e          Playwright mobile-responsiveness suite, stubbed /api (args pass through)
+  e2e-stack    Playwright full-stack e2e: real binary + Postgres (needs Docker)
+  cover        coverage: Go unit + Go integration + web
   run          run the server locally (sources ./.env if present)
   seed         seed a local approved account + session, print the cookie (dev; args pass through)
   db-up        start the local Postgres (docker compose up -d db)
   db-down      stop the local Postgres (keeps the data volume)
-  pre-commit   build + lint + test + web + integration (the git hook runs this)
+  pre-commit   build + lint + test + web + e2e + integration + e2e-stack (the git hook runs this)
 EOF
     ;;
 esac

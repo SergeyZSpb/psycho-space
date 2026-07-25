@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e:stack": "playwright test --config=playwright.stack.config.ts"
   },
   "dependencies": {
     "@babel/runtime": "7.29.7",
@@ -24,6 +26,7 @@
     "@playwright/test": "1.61.1",
     "@types/node": "22.20.1",
     "@vitejs/plugin-vue": "5.2.4",
+    "@vitest/coverage-v8": "2.1.9",
     "@vue/test-utils": "2.4.11",
     "jsdom": "25.0.1",
     "sass": "1.101.6",

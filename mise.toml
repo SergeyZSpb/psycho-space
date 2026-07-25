@@ -3,6 +3,9 @@
 [tools]
 go = "1.26.3"
 node = "24.16.0"
+# Part of the mandatory lint gate — `./dev.sh lint` fails if it is missing, so a
+# finding cannot be invisible on one machine and blocking on another.
+golangci-lint = "2.12.2"
 
 [env]
 # Keep the Go build/module cache inside the repo-adjacent home cache (default is fine);

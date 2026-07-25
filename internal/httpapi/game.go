@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/game"
@@ -49,10 +50,35 @@ func (s *Server) handleGameAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "asset_not_found")
 		return
 	}
-	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Type", imageContentType(ct))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.WriteHeader(http.StatusOK)
+	//nolint:gosec // G705: the bytes are an opaque image blob, not a rendered
+	// document — the response is pinned to an allowlisted image content type
+	// (imageContentType) and sent with X-Content-Type-Options: nosniff.
 	_, _ = w.Write(b)
+}
+
+// imageContentType constrains a stored asset's content type to image types.
+// The value is a plain column in game_assets, so anything able to write that
+// table could otherwise have the app serve active content (text/html) from its
+// own origin. Anything unrecognised is served as an opaque download instead.
+func imageContentType(ct string) string {
+	switch strings.ToLower(strings.TrimSpace(ct)) {
+	case "image/webp":
+		return "image/webp"
+	case "image/png":
+		return "image/png"
+	case "image/jpeg", "image/jpg":
+		return "image/jpeg"
+	case "image/gif":
+		return "image/gif"
+	case "image/avif":
+		return "image/avif"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 // handleGameAttempt judges one dialogue turn via the LLM. Requires a configured

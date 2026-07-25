@@ -36,9 +36,12 @@ type Deps struct {
 
 // rateLimit builds a per-client-IP rate limiter that renders the canonical JSON
 // error envelope (with trace_id) on 429.
+//
+// The key comes from clientIP, which trusts X-Real-IP only from the local proxy
+// — never the client-supplied X-Forwarded-For. See clientIP for why.
 func (s *Server) rateLimit(reqs int, window time.Duration) func(http.Handler) http.Handler {
-	return httprate.Limit(reqs, window,
-		httprate.WithKeyFuncs(httprate.KeyByIP),
+	return httprate.LimitBy(reqs, window,
+		func(r *http.Request) (string, error) { return clientIP(r), nil },
 		httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusTooManyRequests, "rate_limited")
 		}),
@@ -57,7 +60,9 @@ func NewServer(d Deps) *Server { return &Server{d: d} }
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.RealIP)
+	// No middleware.RealIP: it rewrites r.RemoteAddr from the client-supplied
+	// X-Forwarded-For, which made every per-IP rate limit forgeable. Rate limits
+	// key off clientIP instead.
 	r.Use(accountLogContext)
 	r.Use(traceHeader)
 	r.Use(requestLogger)

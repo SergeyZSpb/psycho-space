@@ -1,9 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// On-demand mobile-responsiveness e2e. NOT wired into the pre-commit / `dev.sh web`
-// gate — run explicitly with `npm run test:e2e`. The suite serves the production
-// build via `vite preview` and stubs the backend with Playwright route
-// interception (no real VK / no Go server needed).
+// Mobile-responsiveness suite. Serves the production build via `vite preview`
+// and stubs /api with Playwright route interception — no Go server, no DB — so
+// it can put the UI into states that are awkward to arrange for real (pending,
+// blocked, a 90-character unbroken word) and assert layout at phone widths.
+//
+// It is NOT the end-to-end suite: playwright.stack.config.ts drives the real
+// binary against a real PostgreSQL. Both run in the pre-commit gate
+// (`./dev.sh e2e` and `./dev.sh e2e-stack`).
 
 const PORT = 4173;
 const BASE_URL = `http://localhost:${PORT}`;
@@ -17,7 +21,11 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: BASE_URL,
+    // Kept for every test, pass or fail: a recording is the fastest way to see
+    // what a mobile layout actually did.
+    video: 'on',
     trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
   },
   projects: [
     {

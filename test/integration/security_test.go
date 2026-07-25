@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -35,6 +36,53 @@ func TestRateLimitAuth(t *testing.T) {
 	}
 	if !got429 {
 		t.Fatal("never hit the rate limit")
+	}
+}
+
+// TestRateLimitIgnoresForwardedForSpoofing drives the whole stack the way nginx
+// does — a fixed X-Real-IP plus an X-Forwarded-For the caller controls — and
+// confirms the limiter still counts it as one client.
+//
+// Regression guard: the router used to run chi's middleware.RealIP, which
+// rewrote RemoteAddr from the leftmost X-Forwarded-For entry. Since nginx sends
+// $proxy_add_x_forwarded_for (the client's own value with the peer appended),
+// that entry is attacker-controlled, and rotating it put every request in a
+// fresh bucket — defeating the login limiter and the paid LLM endpoint's.
+func TestRateLimitIgnoresForwardedForSpoofing(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	app := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app.Close()
+
+	cli := &http.Client{}
+	got429 := false
+	for i := 1; i <= 40; i++ {
+		req, err := http.NewRequest(http.MethodGet, app.URL+"/api/auth/vk/state", nil)
+		if err != nil {
+			t.Fatalf("req %d: %v", i, err)
+		}
+		// What nginx sets from $remote_addr — one real client.
+		req.Header.Set("X-Real-IP", "203.0.113.7")
+		// What the client forged, a different hop every time.
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d, 203.0.113.7", i))
+		resp, err := cli.Do(req)
+		if err != nil {
+			t.Fatalf("req %d: %v", i, err)
+		}
+		resp.Body.Close()
+		if i <= 30 && resp.StatusCode != http.StatusOK {
+			t.Fatalf("req %d: status %d, want 200 (under limit)", i, resp.StatusCode)
+		}
+		if i > 30 {
+			if resp.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("req %d: status %d, want 429 — a rotated X-Forwarded-For must not mint a new bucket",
+					i, resp.StatusCode)
+			}
+			got429 = true
+		}
+	}
+	if !got429 {
+		t.Fatal("never hit the rate limit — the forged header bypassed it")
 	}
 }
 

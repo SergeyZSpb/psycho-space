@@ -23,6 +23,8 @@ func (s *Server) handleVKState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
+	//nolint:gosec // G124: Secure is env-driven (config.CookieSecure — true in prod,
+	// false only so local http://localhost works); HttpOnly and SameSite are set below.
 	http.SetCookie(w, &http.Cookie{
 		Name:     vkStateCookie,
 		Value:    state,
@@ -200,6 +202,8 @@ func publicAccount(a *account.Account) map[string]any {
 }
 
 func clearCookie(w http.ResponseWriter, name string, secure bool) {
+	//nolint:gosec // G124: Secure is env-driven (config.CookieSecure — true in prod,
+	// false only so local http://localhost works); HttpOnly and SameSite are set below.
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    "",

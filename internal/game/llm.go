@@ -614,7 +614,9 @@ func buildMessages(ch Character, transcript []Exchange, choice string, anger int
 	windowed := windowTranscript(transcript, budget)
 
 	// Kept for the log only: how many distinct options the judge can see in the
-	// history it was handed. It is no longer re-sent as a list — see exchangeFooter.
+	// history it was handed. It is not re-sent as a list — each past turn is
+	// replayed as the JSON object the judge returned (judgeReplayJSON), which
+	// already carries that turn's options.
 	already := recentlyOffered(ch, windowed)
 
 	messages := []chatMessage{{Role: "system", Content: sys}}

@@ -26,5 +26,27 @@ services:
       timeout: 3s
       retries: 10
 
+  # Throwaway Postgres for the full-stack e2e suite (scripts/e2e-stack.sh).
+  # Separate from `db` on purpose: a different port so it never collides with a
+  # running dev server, and tmpfs storage so every run starts from an empty
+  # database instead of inheriting whatever the developer was poking at.
+  db-e2e:
+    profiles: ["e2e"]
+    image: postgres:16
+    container_name: psycho-pg-e2e
+    environment:
+      POSTGRES_USER: psychospace
+      POSTGRES_PASSWORD: psychospace
+      POSTGRES_DB: psychospace
+    ports:
+      - "55433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U psychospace -d psychospace"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
 volumes:
   psycho-pgdata:

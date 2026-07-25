@@ -91,6 +91,8 @@ func (m *Manager) RevokeAllForAccount(ctx context.Context, accountID string) err
 
 // SetCookie writes the session cookie.
 func (m *Manager) SetCookie(w http.ResponseWriter, raw string) {
+	//nolint:gosec // G124: Secure is env-driven (config.CookieSecure — true in prod,
+	// false only so local http://localhost works); HttpOnly and SameSite are set below.
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    raw,
@@ -104,6 +106,8 @@ func (m *Manager) SetCookie(w http.ResponseWriter, raw string) {
 
 // ClearCookie expires the session cookie.
 func (m *Manager) ClearCookie(w http.ResponseWriter) {
+	//nolint:gosec // G124: Secure is env-driven (config.CookieSecure — true in prod,
+	// false only so local http://localhost works); HttpOnly and SameSite are set below.
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",

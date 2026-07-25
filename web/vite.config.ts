@@ -28,5 +28,16 @@ export default defineConfig({
     environment: 'jsdom',
     globals: false,
     include: ['src/**/*.spec.ts'],
+    coverage: {
+      provider: 'v8',
+      // `json-summary` is what the CI step summary reads; `text` keeps the
+      // local run readable. Views/components are excluded because the unit
+      // suite covers the lib/store logic — the rendered UI is verified by the
+      // Playwright suite instead, and counting it here would report a
+      // misleadingly low number for code that IS tested, just not by vitest.
+      reporter: ['text', 'json-summary'],
+      reportsDirectory: './coverage',
+      include: ['src/lib/**/*.ts', 'src/stores/**/*.ts', 'src/api/**/*.ts'],
+    },
   },
 });
