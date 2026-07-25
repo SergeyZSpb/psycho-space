@@ -72,16 +72,37 @@
           <v-alert variant="tonal" density="compact" class="bubble mb-2">
             <!-- A verse too tall for the box ROLLS like post-credits instead of
                  being clipped: the text is rendered twice and the reel shifts by
-                 exactly half its height, so the loop is seamless. -->
-            <div ref="verseBox" class="verse-viewport">
+                 exactly half its height, so the loop is seamless. It holds still
+                 before it starts and settles after a couple of passes — see
+                 lib/gameKhimkiCredits.ts for the pacing and why.
+
+                 The frame is the skip affordance: tap (or Enter/Space on a focused
+                 frame) drops the whole verse into a scrollable box at once, so
+                 nobody is ever stuck waiting for a line to come round again. -->
+            <div
+              class="verse-frame"
+              :role="verse.skippable.value ? 'button' : undefined"
+              :tabindex="verse.skippable.value ? 0 : undefined"
+              :aria-label="verse.skippable.value ? 'Показать куплет целиком' : undefined"
+              @click="revealVerse"
+              @keydown.enter.prevent="revealVerse"
+              @keydown.space.prevent="revealVerse"
+            >
               <div
-                class="verse-reel"
-                :class="{ rolling: verseRolls }"
-                :style="verseRolls ? { animationDuration: verseSeconds + 's' } : undefined"
+                ref="verseBox"
+                class="verse-viewport"
+                :class="{ 'verse-viewport--revealed': verse.revealed.value }"
               >
-                <div ref="verseFirst" class="verse">{{ reply }}</div>
-                <div v-if="verseRolls" class="verse" aria-hidden="true">{{ reply }}</div>
+                <div
+                  class="verse-reel"
+                  :class="{ rolling: verse.rolling.value }"
+                  :style="verse.reelStyle.value"
+                >
+                  <div ref="verseFirst" class="verse">{{ reply }}</div>
+                  <div v-if="verse.rolling.value" class="verse" aria-hidden="true">{{ reply }}</div>
+                </div>
               </div>
+              <span v-if="verse.skippable.value" class="verse-hint">весь текст</span>
             </div>
           </v-alert>
           <!-- Options keep their height while the judge thinks; the loader
@@ -191,7 +212,7 @@ import { useErrorStore } from '../stores/error';
 import { BOARDS, boardMeta } from '../lib/gameKhimkiBoards';
 import { angerColor, angerLabel } from '../lib/gameKhimkiAnger';
 import { recordExchange } from '../lib/gameKhimkiTranscript';
-import { creditsDuration, shouldRoll } from '../lib/gameKhimkiCredits';
+import { useVersePacing } from '../composables/useVersePacing';
 import type {
   GameKhimkiArt,
   GameKhimkiBoardKey,
@@ -230,25 +251,28 @@ const anger = ref(0);
 // which themes remain would play the game for them.
 const themesDone = ref<string[]>([]);
 const busy = ref(false);
-// Rolling state for a verse that outgrows its box (see lib/gameKhimkiCredits.ts).
+// Rolling state for a verse that outgrows its box (see lib/gameKhimkiCredits.ts
+// for the pacing and composables/useVersePacing.ts for the state machine).
 const verseBox = ref<HTMLElement | null>(null);
 const verseFirst = ref<HTMLElement | null>(null);
-const verseRolls = ref(false);
-const verseSeconds = ref(0);
+const verse = useVersePacing();
 
-// Re-measure whenever he says something new: stop any roll, let the layout settle,
-// then start one only if the verse genuinely overflows.
+// Re-measure whenever he says something new: `start` cancels whatever the last
+// reply left running, so two verses can never roll over each other. Measuring
+// happens after the DOM has caught up with the new text.
 watch(reply, async () => {
-  verseRolls.value = false;
+  verse.cancel();
   await nextTick();
   const box = verseBox.value;
   const first = verseFirst.value;
   if (!box || !first) return;
-  if (shouldRoll(first.scrollHeight, box.clientHeight)) {
-    verseSeconds.value = creditsDuration(first.scrollHeight);
-    verseRolls.value = true;
-  }
+  verse.start(first.scrollHeight, box.clientHeight);
 });
+
+// Tap or keyboard on the verse: skip the wait and show the whole thing at once.
+function revealVerse() {
+  if (verse.skippable.value) verse.reveal();
+}
 const rateLimited = ref(false);
 
 const character = computed<GameKhimkiCharacter | null>(() => {
@@ -525,6 +549,36 @@ async function finish(won: boolean) {
 .bubble :deep(.v-alert__content) {
   overflow: hidden;
 }
+/* The frame wraps the rolling window so the skip hint can sit over it without
+   scrolling away with the text and without costing a row of layout height —
+   vertical space on the play screen is the scarcest thing there is. */
+.verse-frame {
+  position: relative;
+}
+/* Only a frame that can actually skip becomes a control, and then it has to meet
+   the 44px tap-target rule. An overflowing verse box is taller than that already;
+   the minimum is here for the case where it somehow is not. */
+.verse-frame[role='button'] {
+  min-height: 44px;
+  cursor: pointer;
+}
+.verse-frame[role='button']:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.verse-hint {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  padding: 1px 5px;
+  border-radius: 6px;
+  font-size: 0.6rem;
+  line-height: 1.3;
+  opacity: 0.65;
+  background: rgba(var(--v-theme-surface), 0.82);
+  pointer-events: none; /* the whole frame is the target, not this badge */
+}
 /* The window the verse rolls through. Capped by BOTH font size and viewport: a
    fixed em height overflowed 320x568 by 27px and pushed the options off-screen,
    which is worse than a cramped verse. */
@@ -532,17 +586,28 @@ async function finish(won: boolean) {
   max-height: min(8.5em, 15dvh);
   overflow: hidden;
 }
+/* Skipped (or reduced-motion): the box gives up as much height as it can spare
+   and the reader scrolls the remainder. The cap keeps the four options on screen
+   — the art pane above is `flex: 1 1 auto; min-height: 0`, so the extra height
+   comes out of the picture and the play screen still never scrolls. */
+.verse-viewport--revealed {
+  max-height: min(24em, 34dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .verse {
   font-style: italic;
   white-space: pre-line; /* he raps: line breaks are the verse */
   padding-bottom: 0.7em; /* gap between the loop's two copies */
 }
 /* Two copies, shifted by exactly half the reel: the second lands where the first
-   started, so the loop has no visible seam. */
+   started, so the loop has no visible seam. Duration, the opening hold and the
+   number of passes all arrive as inline style from useVersePacing, because they
+   are computed from the measured verse and from the constants in
+   lib/gameKhimkiCredits.ts — duplicating them here would let the two drift. */
 .verse-reel.rolling {
   animation-name: verse-credits;
   animation-timing-function: linear;
-  animation-iteration-count: infinite;
 }
 @keyframes verse-credits {
   from {
@@ -552,7 +617,10 @@ async function finish(won: boolean) {
     transform: translateY(-50%);
   }
 }
-/* Motion-sensitive users get a scrollable box instead of a moving one. */
+/* Motion-sensitive users get a scrollable box instead of a moving one. The
+   composable already checks the same query and never starts a roll for them, so
+   this is a backstop for the case where `matchMedia` is unavailable and the
+   probe has to answer "no preference". */
 @media (prefers-reduced-motion: reduce) {
   .verse-reel.rolling {
     animation: none;

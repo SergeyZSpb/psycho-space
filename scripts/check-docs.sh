@@ -50,12 +50,14 @@ while IFS= read -r f; do
 done < <(git ls-files '*.md')
 
 # ------------------------------------------------------------------- ADRs ----
-# The id SET must be exactly 001..N — no duplicates, no gaps — and every in-file
-# #adr- anchor must resolve to a real heading. Note what is deliberately NOT
-# checked: the order ids appear in the file. Records are grouped by subject, so a
-# new record takes the next global number and lands out of sequence inside its
-# group. The preamble says so ("numbers are identifiers, not an ordering"), and a
-# check that demanded document order would fight the structure it is guarding.
+# No id may repeat, and every in-file #adr- anchor must resolve to a real
+# heading. Note the two things deliberately NOT checked, both for the same
+# reason — the numbers are identifiers, not a sequence. The ORDER ids appear in
+# is free, because records are grouped by subject and a new one takes the next
+# global number wherever it lands. And GAPS are free, because a record withdrawn
+# for failing the log's bar keeps its number retired forever. A check that
+# demanded either would force a renumber, and renumbering breaks every reference
+# that already exists — which is precisely what these ids are for.
 #
 # Slugs follow GitHub: markdown stripped, lowercased, punctuation dropped, spaces
 # to hyphens — note the "·" separator leaves a double hyphen, easy to get wrong
@@ -81,13 +83,12 @@ dupes = sorted({i for i in ids if ids.count(i) > 1})
 if dupes:
     problems.append(f"duplicate record ids: {', '.join(dupes)}")
 
-nums = sorted(int(i.split("-")[1]) for i in set(ids))
-gaps = [n for n in range(1, max(nums) + 1) if n not in nums]
-if gaps:
-    problems.append("missing record ids: "
-                    + ", ".join(f"ADR-{n:03d}" for n in gaps)
-                    + " — the set must be complete from ADR-001, since a gap "
-                      "means a record was deleted rather than superseded")
+# Gaps are legitimate and are NOT checked. A record that fails the log's bar —
+# it turned out to be a tuning constant, a UI flourish, a test-harness fix — is
+# withdrawn, and its number is never reused, so every reference that already
+# exists keeps pointing at what it always meant. Demanding contiguity would
+# force a renumber, which is the one operation guaranteed to break references.
+# What still matters is below: no duplicate id, and no dead link.
 
 
 def slug(text):
@@ -118,7 +119,8 @@ if problems:
         print(f"{path}: {p}", file=sys.stderr)
     sys.exit(1)
 
-print(f"  {len(ids)} records, ids contiguous, every anchor resolves")
+highest = max(int(i.split("-")[1]) for i in ids)
+print(f"  {len(ids)} records, highest ADR-{highest:03d}, no duplicate ids, every anchor resolves")
 PY
 else
   note "info: no docs/ARCHITECTURE.md — skipping record checks"

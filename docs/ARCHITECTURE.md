@@ -5,11 +5,11 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** psycho-space at two altitudes in one file — the structural view (§1–7: logical containers, runtime flows, package layout, data model, deployment) and the numbered decision records that say *why* it has that shape (§8, append-only). `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
-- **status:** current as of «Ванягоччи» I2 (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped, carries a `bye` frame, and now has both of its game seams — inbound `Handler` and `Hub.Members` (ADR-033). Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (`internal/gamevanyagotchi/` — realtime, **no LLM on any path**; the server-side wire protocol is shipped, **no client consumes it yet**, and it has no table, no pet and no durable state). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — and ADR-027…035 were appended the same day.
+- **status:** current as of «Ванягоччи» I2 (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped, carries a `bye` frame, and now has both of its game seams — inbound `Handler` and `Hub.Members` (ADR-033). Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (`internal/gamevanyagotchi/` — realtime, **no LLM on any path**; the server-side wire protocol is shipped, **no client consumes it yet**, and it has no table, no pet and no durable state). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — ADR-027…034 were appended the same day, and four records were withdrawn the same day for failing the log's architecture bar, so the numbering has permanent gaps.
 - **rename complete (2026-07-25):** game 1 moved off generic `game` naming onto the `Game<Name>` convention (ADR-030) — package `internal/game/` → `internal/gamekhimki/` (types inside keep plain names, so `gamekhimki.Service`), table `game_runs` → `game_khimki_runs` via `migrations/007_game_khimki_rename.sql` (**`game_assets` deliberately NOT renamed** — the blob store is shared infrastructure, ADR-031), routes `/api/game/*` → `/api/game-khimki/*`, SPA `GameView.vue` → `GameKhimkiView.vue` and `/app/game` → `/app/game-khimki` with a permanent redirect. `game_key` **values** are untouched (`smalltalk_khimki`) — data, not names, and the art blobs are keyed on them. **The one-deploy-cycle `/api/game/*` alias has served its cycle and is deleted**; `TestGameKhimkiLegacyPathAliasIsGone` pins its absence, and nothing may be written against that prefix again. The `/app/game` → `/app/game-khimki` SPA redirect is permanent and stays. Sections 1–7 below describe the post-rename state.
 - **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only).
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `grep -n '^#### ADR-' docs/ARCHITECTURE.md` lists every decision record.
-- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. Numbers are identifiers, not an ordering: take the next global one, wherever the group. Highest record when this was written: **ADR-035** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`. `./scripts/check-docs.sh` (in the lint gate) rejects a gap, a duplicate, or a dead anchor.
+- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. **The bar is architecture:** a decision that shapes deployment, data, a component boundary, or the cost of a whole class of change. A tuning constant, a UI behaviour or a test-harness fix does **not** get a record however subtle its reasoning — that goes in a comment beside the code. Four records were withdrawn on 2026-07-25 for failing this bar, so **the numbering has gaps and a number is never reused**; existing references therefore never shift. Numbers are identifiers, not an ordering and not a sequence: take the next global one, wherever the group. Highest record when this was written: **ADR-034** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id or a dead anchor, and deliberately permits gaps.
 - **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP — §1–7 describe all of it, §8 records the decisions behind it.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff is appended to §8 as a **new** record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
 - **related:** `../CLAUDE.md` (rules), `RUNBOOK.md` (operations — and the owner of the measurements and operational economics, notably the game's per-turn cost, which is re-measured rather than superseded), the owner's local living doc (roadmap, TODO, private operational detail). `docs/DESIGN.md` was merged into §8 here on 2026-07-25 and deleted; `git log -- docs/DESIGN.md` still resolves its history.
@@ -372,7 +372,9 @@ Anything not matching `/api` or `/healthz` is served the embedded SPA, so client
 
 The code says *what*, and comments say *why this line*. Neither says why the system is shaped the way it is, and that is exactly what gets re-derived — usually wrongly — by whoever touches the project next. Each entry below is a decision, its reasoning, and its consequence.
 
-The rule for this log: **an entry is added when the reasoning is not recoverable from the diff.** "Renamed a variable" is not a decision. "Chose server-side sessions over JWT" is.
+**The bar is high, and it is about architecture.** A record is for a decision that shapes the *system* — how it is deployed, how it stores and protects data, where a boundary between components falls, what a whole class of future change will cost. Two questions have to be answered yes: is the reasoning unrecoverable from the diff, **and** would somebody redesigning this part need to know it? "Chose server-side sessions over JWT" is a record. "Renamed a variable" is not, and neither is a tuning constant, a UI behaviour, or a bug fix in the test harness — however subtle the reasoning behind it, that reasoning belongs in a comment next to the code it governs, where it will be read by the person actually changing it.
+
+Four records were withdrawn on 2026-07-25 for failing that bar — an animation speed, a nav-drawer flourish, a test-harness race, and a note about defensive code that was correctly absent. Each one's reasoning still exists as a comment beside the code, which is where it was always more useful. **Withdrawal leaves a permanent gap in the numbering:** a number is never reused, so every existing reference keeps meaning what it meant, and `git log` still has the withdrawn text.
 
 Sections 1–7 above are the structural view — what the system is made of and how it behaves. The records below are the other altitude: the durable decisions that produced that shape, each with the reasoning, and where one exists the measurement or the failure that settled it. They are grouped by subject, and a record describes a decision rather than the current code, which the sections above already cover.
 
@@ -387,7 +389,7 @@ Fixing a typo or a rotted link inside a record is fine. Changing what it decided
 
 **The date on a record is when the record was written, not when the decision was taken.** They are usually the same day, and when they are not, the record's own commit in `git log` is the authority on the former.
 
-**The numbers are identifiers, not an ordering.** A new record takes the next globally unused number whichever group it lands in, so numbering within a group is often non-sequential — that is expected, and renumbering to tidy it up would break every existing reference. Find the next number with:
+**The numbers are identifiers, not an ordering, and not a sequence.** A new record takes the next globally unused number whichever group it lands in, so numbering within a group is often non-sequential, and a withdrawn record leaves a hole. Both are expected; renumbering to tidy either up would break every existing reference, and a reused number would silently redirect one. Find the next number with:
 
 ```bash
 grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1
@@ -641,14 +643,6 @@ _Reasoning:_ two separate things, both load-bearing.
 
 _Consequence:_ the rate lives in `gamevanyagotchi.BroadcastInterval` and is half of a two-part decision — the other half is the CSS transition duration on the client, chosen to be slightly longer so consecutive segments overlap. Changing one without the other makes motion either stutter or lag, which is why the constant is documented as a pair rather than exposed as a knob.
 
-#### ADR-020 · What is *not* a problem: hijacked connections and server timeouts
-
-_Accepted · 2026-07-25_
-
-Widely repeated advice (golang/go#8296) says a hijacked connection inherits the server's `ReadTimeout`/`WriteTimeout`, so a WebSocket library must clear them. `net/http` has since fixed this at the source: `hijackLocked` calls `rwc.SetDeadline(time.Time{})` before handing the connection over. `handleRealtime` therefore does no deadline juggling, and `TestHijackedConnOutlivesServerWriteTimeout` pins the behaviour so that a future Go change surfaces as a failing test rather than as sockets dying in production.
-
-_Recorded because the opposite is easy to "fix" defensively:_ code that clears a deadline nothing sets is dead code with a comment that misleads the next reader.
-
 ### 8.6 Testing
 
 #### ADR-021 · Two Playwright suites, on purpose
@@ -675,31 +669,7 @@ _Accepted · 2026-07-25_
 
 Running the existing tests green proves nothing was broken; it does not prove the change was tested. Every code-touching change extends the suite — unit tests for the logic, and an integration or e2e test when there is an end-to-end path.
 
-#### ADR-032 · The port answering is not the stack being ready
-
-_Accepted · 2026-07-25_
-
-`scripts/e2e-stack.sh` writes the seeded accounts to a temporary file and `mv`s it into place, and the Playwright fixture that reads them is **async and waits** for that file to appear.
-
-_Reasoning, learned from a red deploy:_ Playwright's readiness probe is `webServer.url`, which is satisfied by `/healthz` — and the server answers that **before** the script has seeded anything, because seeding needs the schema the server creates at boot. So the suite is already running tests while the accounts are still being created, and the first test that logs in can legitimately arrive first. That window was not merely a missing file: `{ … } > "$SEED_FILE"` truncates on open and then appends one line per `go run ./cmd/dev-seed`, so for about a second the file on disk is progressively-invalid JSON. A test read it mid-write, failed on a JSON parse error, and took production's deploy with it — the change under test had nothing to do with the harness. A poller over the two write styles measured 133 partial observations against 0.
-
-_Consequence:_ `rename(2)` is atomic within a directory, so the only states a reader can now observe are "absent" and "complete", and waiting out the first is a loop the fixture owns. A stale file from an earlier run is deleted at startup rather than left to be read, because the keys are regenerated per run (ADR-005) — a stale file parses perfectly and hands the tests cookies the new server will never accept, which is a worse failure than a missing one. Making `stack()` synchronous again would reintroduce the race, so it stays `async`.
-
-### 8.7 The SPA
-
-#### ADR-035 · The nav drawer peeks itself open once per page load
-
-_Accepted · 2026-07-25_
-
-On mount of the app shell the navigation drawer opens by itself, holds for 900 ms, and closes again. It fires **once per full page load**, only where the drawer is an **overlay** at the current breakpoint, and **never** under `prefers-reduced-motion: reduce`. Any user action that touches the drawer — the app-bar icon, the scrim, Escape, a route change — cancels the pending auto-close rather than fighting it.
-
-_Reasoning:_ sections and games are being added to this app one at a time, and on a phone every one of them lives behind an icon that gives no sign there is anything new behind it. Somebody who opens a deep link, or who has only ever used the wishlist, has no reason to look. A reveal that happens *to* them costs one second and needs no notification system, no badge state and nothing stored per user.
-
-Three bounds keep it from being obnoxious. It hangs off the shell's `onMounted`, and the shell is the parent route component for every `/app/*` route, so it survives client-side navigation and cannot re-fire on every screen — the once-per-load property is structural rather than a flag. Where the drawer is permanent the nav is already on screen, so there is nothing to reveal and the peek is a no-op. And an unrequested slide-in is exactly what the reduced-motion preference is about, so that case is skipped entirely rather than shortened.
-
-_Consequence, and the reason the tests look the way they do:_ a closed Vuetify drawer stays in the DOM slid off-screen, so `toBeVisible()` cannot tell open from closed — the assertions use the `v-navigation-drawer--active` modifier and the scrim instead. And a 900 ms event is easy to miss between two polled assertions, so the Playwright tests install a `MutationObserver` before the app boots and assert the recorded *sequence* of drawer states. A test that merely looked afterwards would pass whether or not the peek had ever happened.
-
-### 8.8 Operations
+### 8.7 Operations
 
 #### ADR-024 · Errors carry a trace id, and never carry the error text
 
