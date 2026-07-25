@@ -185,6 +185,17 @@ func main() {
 		slog.Warn("realtime hub did not drain in time")
 	}
 
+	// Then wait for the game's own loop, which is writing down where everybody
+	// was standing on its way out. Cancelling its context is not enough: without
+	// this wait the process could exit mid-flush, and a deploy would silently
+	// fail to save anybody's place — the one thing durable position exists for,
+	// failing in the only situation it is ever exercised.
+	select {
+	case <-gameVanyagotchiSvc.Done():
+	case <-time.After(5 * time.Second):
+		slog.Warn("gamevanyagotchi did not finish saving positions in time")
+	}
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

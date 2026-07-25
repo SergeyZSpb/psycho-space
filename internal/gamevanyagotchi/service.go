@@ -101,6 +101,16 @@ type Service struct {
 	// second lock would buy nothing but an ordering rule to get wrong.
 	display map[string]display
 
+	// done is closed when Run returns, so shutdown can WAIT for the flush.
+	//
+	// Without it the flush was racing process exit and losing: main cancels the
+	// hub context, waits for the hub to drain, shuts the HTTP server down and
+	// returns — and nothing anywhere waited for this game's loop, so the process
+	// could be gone before the positions reached Postgres. It survived locally
+	// and failed in CI, which is exactly the shape of bug that would otherwise
+	// have been found by a deploy quietly not saving anybody's place.
+	done chan struct{}
+
 	// saves carries departures to the goroutine that writes them down. Buffered
 	// and sent to WITHOUT blocking: the broadcast must never wait on Postgres,
 	// and a dropped save costs a returning Ваня his last resting place, which is
@@ -191,6 +201,7 @@ func NewService(transport Transport, room string, q db.DBTX, repo Repository) *S
 		pos:          make(map[string]placement),
 		display:      make(map[string]display),
 		saves:        make(chan positionSave, savesBuffer),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -320,6 +331,12 @@ func (s *Service) replyWhoAmI(ctx context.Context, m realtime.Member) {
 // produces the same correct frame, because the frame is full state rather than a
 // step forward from the last one.
 func (s *Service) Run(ctx context.Context, tick <-chan time.Time) {
+	// Closed last, so a caller that waits on Done knows the flush below has
+	// finished rather than merely started. Run is called once, by the
+	// composition root; calling it twice would close this twice and panic, which
+	// is the correct answer to doing that.
+	defer close(s.done)
+
 	// One writer, owned by this loop and gone with it. Departures are written
 	// here rather than on the tick because the tick must never wait on Postgres
 	// — it only notices that somebody has left and says so down a channel.
@@ -348,6 +365,11 @@ func (s *Service) Run(ctx context.Context, tick <-chan time.Time) {
 		}
 	}
 }
+
+// Done is closed once Run has returned and everybody standing in the yard has
+// been written down. Shutdown waits on it — see the field's comment for what
+// went wrong when nothing did.
+func (s *Service) Done() <-chan struct{} { return s.done }
 
 // broadcast sends one snapshot of the plane, as of now.
 func (s *Service) broadcast(ctx context.Context, now time.Time) error {
