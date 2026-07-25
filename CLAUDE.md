@@ -2,7 +2,7 @@
 
 Self-contained working rules for this repository. Any developer (with or without Claude) should be able to pick up the project from this file alone. This project is standalone and unrelated to any employer.
 
-**Canonical living doc:** `~/Desktop/psycho-space.md` — the design, phased rollout, and the owner's TODO list. Read it first; keep it current as work lands (it opens with an `## LLM Continuation Context` block for fast hand-off). If that path isn't present on your machine, ask the owner for the current living-doc location.
+**Canonical living doc:** `~/Desktop/psycho-space/psycho-space.md` — the design, phased rollout, and the owner's TODO list. Read it first; keep it current as work lands (it opens with an `## LLM Continuation Context` block for fast hand-off). The whole `~/Desktop/psycho-space/` folder holds the project's local (uncommitted) assets: the living doc, the game-art source images in `vanya_assets/`, and scratch notes. If that folder isn't present on your machine, ask the owner for the current location.
 
 ## Working with Claude — chat tone
 

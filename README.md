@@ -4,7 +4,7 @@
 
 A small Russian-language landing page + allowlist-gated community app. Login via **VK ID**. First app section: a wishlist with upvotes (more to come). Go backend + Vue SPA (embedded in one binary) + a single Ubuntu box behind nginx.
 
-> **Details live in [`CLAUDE.md`](./CLAUDE.md)** (project rules, conventions, security posture) and the canonical living doc at `~/Desktop/psycho-space.md` (design, rollout, owner TODO). This README only covers getting started.
+> **Details live in [`CLAUDE.md`](./CLAUDE.md)** (project rules, conventions, security posture) and the canonical living doc at `~/Desktop/psycho-space/psycho-space.md` (design, rollout, owner TODO). This README only covers getting started.
 
 ## Quick start (local)
 

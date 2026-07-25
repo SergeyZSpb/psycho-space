@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** operational runbook for the psycho-space production box (SSH, logs, DB, nginx, TLS, admin bootstrap).
 - **status:** written during P0/P1. Server is provisioned by `scripts/bootstrap.sh`; deploys via `.github/workflows/deploy.yml`.
-- **host/port:** intentionally NOT recorded here — this repo is public. The real host and hardened SSH port live only in the GitHub `prod` environment secrets (`DEPLOY_SSH_HOST`, `DEPLOY_SSH_PORT`) and in the operator's local `~/.ssh/config` (+ the local living doc `~/Desktop/psycho-space.md`). Use the `psycho` ssh alias below.
+- **host/port:** intentionally NOT recorded here — this repo is public. The real host and hardened SSH port live only in the GitHub `prod` environment secrets (`DEPLOY_SSH_HOST`, `DEPLOY_SSH_PORT`) and in the operator's local `~/.ssh/config` (+ the local living doc `~/Desktop/psycho-space/psycho-space.md`). Use the `psycho` ssh alias below.
 - **app:** systemd unit `psycho-space` under user `psychospace`; binary `/opt/psycho-space/psycho-space`; env `/etc/psycho-space/app.env`; logs `/var/log/psycho-space/app.log`.
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/game/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
@@ -166,11 +166,11 @@ Two kinds: **character-mood** (`vanya_*`) — the same дядя Ваня, changi
 
 ```bash
 # prod (hardened SSH alias `psycho`):
-python3 deploy/upload-game-assets.py ~/Desktop/vanya_assets \
+python3 deploy/upload-game-assets.py ~/Desktop/psycho-space/vanya_assets \
   | ssh psycho "sudo -u postgres psql psychospace"
 
 # local dev DB:
-python3 deploy/upload-game-assets.py ~/Desktop/vanya_assets \
+python3 deploy/upload-game-assets.py ~/Desktop/psycho-space/vanya_assets \
   | psql "postgres://psychospace:psychospace@localhost:5432/psychospace"
 ```
 
