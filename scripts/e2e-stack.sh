@@ -29,8 +29,10 @@ SEED_FILE="web/e2e-stack/.stack.json"
 log() { echo "[e2e-stack] $*" >&2; }
 
 server_pid=""
+tmp_seed=""
 cleanup() {
   local code=$?
+  [ -n "$tmp_seed" ] && rm -f "$tmp_seed"
   [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null || true
   log "stopping the e2e database"
   docker compose --profile e2e down --remove-orphans >/dev/null 2>&1 || true
@@ -39,6 +41,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$STACK_DIR" "$(dirname "$SEED_FILE")"
+
+# Drop any seed file an earlier run left behind, before anything can read it.
+# The encryption and blind-index keys below are regenerated per run, so a stale
+# file is worse than a missing one: it parses perfectly and hands the tests
+# cookies this server will never accept.
+rm -f "$SEED_FILE"
 
 log "starting Postgres (compose profile e2e, port ${DB_PORT})"
 # Force-recreate: compose would happily reuse a container left running by an
@@ -90,6 +98,15 @@ log "seeding accounts"
 seed() { # $1 role, $2 status, $3 vk-id, $4 name
   go run ./cmd/dev-seed -json -role "$1" -status "$2" -vk-id "$3" -name "$4"
 }
+# Written to a temporary file and renamed into place, never redirected straight
+# at $SEED_FILE. Playwright's readiness signal is the health endpoint above, so
+# by the time this runs the suite is ALREADY executing tests — and `> $SEED_FILE`
+# truncates on open and then appends one line per `go run`, roughly a second of
+# progressively-invalid JSON. A test that called loginAs in that window read a
+# half-written file and failed with a JSON parse error, which is what took a
+# deploy red. rename(2) is atomic, so a reader now sees either no file at all or
+# the finished one, and the fixture waits for it.
+tmp_seed="$(mktemp "${SEED_FILE}.XXXXXX")" # same directory, so the rename is atomic
 {
   echo '{'
   printf '  "baseURL": "%s",\n' "$BASE_URL"
@@ -101,7 +118,8 @@ seed() { # $1 role, $2 status, $3 vk-id, $4 name
   # test never fight over the same row, whatever order they run in.
   printf '  "pending2": %s\n'   "$(seed user       pending  900005 'Ждун Второй'      | tr -d '\n')"
   echo '}'
-} > "$SEED_FILE"
+} > "$tmp_seed"
+mv -f "$tmp_seed" "$SEED_FILE"
 
 log "stack ready — ${BASE_URL} (accounts in ${SEED_FILE})"
 wait "$server_pid"

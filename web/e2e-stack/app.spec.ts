@@ -165,7 +165,7 @@ test.describe('superadmin', () => {
   });
 
   test('approves the seeded pending account, and it moves tabs', async ({ page }) => {
-    const pending = stack().pending;
+    const pending = (await stack()).pending;
 
     await page.goto('/app/admin');
     await expect(page.getByRole('heading', { name: 'Админка' })).toBeVisible();
