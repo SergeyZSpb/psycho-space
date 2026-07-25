@@ -19,6 +19,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
 	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
+	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/logging"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
@@ -91,6 +92,20 @@ func main() {
 	defer stopHub()
 	hub := realtime.NewHub()
 	go hub.Run(hubCtx)
+
+	// «Ванягоччи» — the second game. It publishes through the hub and reads from
+	// it; the hub knows nothing about it, which is the whole point of the Handler
+	// and Transport interfaces between them. The room name comes from the
+	// platform's allowlist rather than being spelled out here a second time.
+	//
+	// The broadcast rate is a RENDER tick: it moves no state and writes nothing,
+	// so it is not the background timer this project rules out. It is created
+	// here rather than inside the service so tests can drive the same loop from a
+	// channel they control and never sleep.
+	gameVanyagotchiSvc := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom)
+	vanyaTicker := time.NewTicker(gamevanyagotchi.BroadcastInterval)
+	defer vanyaTicker.Stop()
+	go gameVanyagotchiSvc.Run(hubCtx, vanyaTicker.C)
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
 
 	var vkVerifier *vk.IDTokenVerifier
@@ -116,8 +131,9 @@ func main() {
 		Settings:   settingsSvc,
 		VKVerifier: vkVerifier,
 
-		Realtime:    hub,
-		RealtimeCtx: hubCtx,
+		Realtime:        hub,
+		RealtimeCtx:     hubCtx,
+		RealtimeHandler: gameVanyagotchiSvc,
 	})
 	httpServer := httpapi.NewHTTPServer(cfg.HTTPAddr, srv.Handler(), httpapi.DefaultTimeouts())
 

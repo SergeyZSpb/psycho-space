@@ -52,7 +52,7 @@ func TestHijackedConnOutlivesServerWriteTimeout(t *testing.T) {
 			t.Errorf("accept: %v", err)
 			return
 		}
-		conn := realtime.NewConn("test-conn", "test-account", ws)
+		conn := realtime.NewConn("test-conn", "test-account", "yard", ws, nil)
 		if err := hub.Register(r.Context(), conn, "yard"); err != nil {
 			t.Errorf("register: %v", err)
 			return

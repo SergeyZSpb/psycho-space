@@ -12,10 +12,16 @@ import (
 	"github.com/coder/websocket"
 )
 
-// dialConn brings up a live socket and returns both ends: the server-side Conn
-// under test and the client that observes what it writes. Serve is deliberately
-// left unstarted so a test can decide whether pumps are running.
+// dialConn brings up a live socket with no inbound handler.
 func dialConn(t *testing.T) (*Conn, *websocket.Conn) {
+	t.Helper()
+	return dialConnWith(t, nil)
+}
+
+// dialConnWith brings up a live socket and returns both ends: the server-side
+// Conn under test and the client that observes what it writes. Serve is
+// deliberately left unstarted so a test can decide whether pumps are running.
+func dialConnWith(t *testing.T, handler Handler) (*Conn, *websocket.Conn) {
 	t.Helper()
 
 	accepted := make(chan *websocket.Conn, 1)
@@ -49,7 +55,7 @@ func dialConn(t *testing.T) (*Conn, *websocket.Conn) {
 
 	select {
 	case ws := <-accepted:
-		return NewConn("test-conn", "acct-1", ws), client
+		return NewConn("test-conn", "acct-1", "yard", ws, handler), client
 	case <-time.After(5 * time.Second):
 		t.Fatal("handshake never reached the server")
 		return nil, nil

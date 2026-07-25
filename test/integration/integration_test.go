@@ -24,6 +24,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
 	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
+	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
 	"github.com/SergeyZSpb/psycho-space/internal/realtime"
@@ -206,6 +207,18 @@ func buildApp(vkBaseURL string) http.Handler { return buildAppCfg(vkBaseURL, llm
 // called on cleanup, and cancelling twice is harmless.
 func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc) {
 	t.Helper()
+	h, hub, cancel, _ := buildAppRealtimeGame(t, vkBaseURL)
+	return h, hub, cancel
+}
+
+// buildAppRealtimeGame is buildAppRealtime plus «Ванягоччи» wired to the hub,
+// returning the channel that drives its broadcast.
+//
+// The tick is the test's, not a ticker: a test fires it and then reads the frame
+// it caused, so there is no "wait 200 ms and hope" anywhere. That is the whole
+// reason the service takes the tick as a parameter in production too.
+func buildAppRealtimeGame(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc, chan time.Time) {
+	t.Helper()
 	hub := realtime.NewHub()
 	ctx, cancel := context.WithCancel(context.Background())
 	go hub.Run(ctx)
@@ -213,6 +226,10 @@ func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.H
 		cancel()
 		<-hub.Done()
 	})
+
+	vanya := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom)
+	tick := make(chan time.Time)
+	go vanya.Run(ctx, tick)
 
 	sessions := session.NewManager(pool, key(3), time.Hour, false)
 	cfg := config.Config{
@@ -222,20 +239,21 @@ func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.H
 	}
 	gameAssets := gameassets.NewService(pool, gameassets.NewPostgresRepository())
 	h := httpapi.NewServer(httpapi.Deps{
-		Config:      cfg,
-		Pool:        pool,
-		WebFS:       fstest.MapFS{"index.html": {Data: []byte("<html>psycho</html>")}},
-		VK:          vk.New(vkBaseURL, "app-1", "svc", vkRedirect),
-		Accounts:    newAccountService(),
-		Sessions:    sessions,
-		Wishlist:    wishlist.NewService(pool, wishlist.NewPostgresRepository()),
-		GameKhimki:  gamekhimki.NewService(pool, gamekhimki.NewPostgresRepository(), gamekhimki.NewOpenAIEvaluator(cfg.LLM), gameAssets),
-		GameAssets:  gameAssets,
-		Settings:    settings.NewService(pool),
-		Realtime:    hub,
-		RealtimeCtx: ctx,
+		Config:          cfg,
+		Pool:            pool,
+		WebFS:           fstest.MapFS{"index.html": {Data: []byte("<html>psycho</html>")}},
+		VK:              vk.New(vkBaseURL, "app-1", "svc", vkRedirect),
+		Accounts:        newAccountService(),
+		Sessions:        sessions,
+		Wishlist:        wishlist.NewService(pool, wishlist.NewPostgresRepository()),
+		GameKhimki:      gamekhimki.NewService(pool, gamekhimki.NewPostgresRepository(), gamekhimki.NewOpenAIEvaluator(cfg.LLM), gameAssets),
+		GameAssets:      gameAssets,
+		Settings:        settings.NewService(pool),
+		Realtime:        hub,
+		RealtimeCtx:     ctx,
+		RealtimeHandler: vanya,
 	}).Handler()
-	return observability.WrapHandler(h, "http.server"), hub, cancel
+	return observability.WrapHandler(h, "http.server"), hub, cancel, tick
 }
 
 // buildAppCfg builds the app with an optional LLM endpoint. Pass llmURL="" to

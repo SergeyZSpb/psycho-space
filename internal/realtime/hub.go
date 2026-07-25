@@ -71,10 +71,46 @@ type Sink interface {
 	Close(code int, reason string)
 }
 
+// Member is what the hub will tell a caller about one connection: an identity
+// and nothing else. It is deliberately a value type rather than the Sink, so a
+// domain service can ask who is present without acquiring the ability to write
+// to, or close, somebody's socket.
+//
+// The identity is the CONNECTION, not the account. Three tabs are three members,
+// and the id is a per-connection UUID that means nothing after the socket goes
+// away — which is the right lifetime for presence, and keeps a durable
+// account identifier off the wire when a roster is broadcast to peers.
+type Member struct {
+	ConnID    string
+	AccountID string
+}
+
+// Handler receives frames that clients sent. It is how a domain service reads a
+// socket: the hub itself never interprets a payload, it only decides who is
+// connected and where a message goes.
+//
+// It stays free of any game's vocabulary — no message names, no verbs — because
+// this package must not learn that a game exists. What the bytes mean is the
+// handler's business.
+//
+// HandleInbound is called on the connection's own read-pump goroutine, so it
+// runs concurrently across connections and MUST NOT BLOCK: a handler that waits
+// stalls that client's reads, and the socket is already rate-limited on the
+// assumption that reading is cheap. It is deliberately not called on the hub
+// goroutine, which owns every room and must never wait for anything.
+type Handler interface {
+	HandleInbound(ctx context.Context, m Member, room string, payload []byte)
+}
+
 type client struct {
 	sink      Sink
 	room      string
 	overflows int
+}
+
+type membersCmd struct {
+	room  string
+	reply chan<- []Member
 }
 
 type registerCmd struct {
@@ -102,6 +138,7 @@ type Hub struct {
 	unregister chan Sink
 	publish    chan publishCmd
 	kick       chan kickCmd
+	members    chan membersCmd
 
 	maxPerAccount int
 	maxTotal      int
@@ -118,6 +155,7 @@ func NewHub() *Hub {
 		unregister:    make(chan Sink),
 		publish:       make(chan publishCmd, 64),
 		kick:          make(chan kickCmd, 8),
+		members:       make(chan membersCmd),
 		maxPerAccount: defaultMaxPerAccount,
 		maxTotal:      defaultMaxTotal,
 		done:          make(chan struct{}),
@@ -210,6 +248,16 @@ func (h *Hub) Run(ctx context.Context) {
 					s.Close(cmd.code, cmd.reason)
 				}
 			}
+
+		case cmd := <-h.members:
+			// A fresh slice every time: the maps above belong to this goroutine
+			// and handing out anything that aliases them would be a data race
+			// the caller could not see.
+			out := make([]Member, 0, len(rooms[cmd.room]))
+			for s := range rooms[cmd.room] {
+				out = append(out, Member{ConnID: s.ID(), AccountID: s.AccountID()})
+			}
+			cmd.reply <- out
 		}
 	}
 }
@@ -253,6 +301,35 @@ func (h *Hub) Publish(ctx context.Context, room string, msg []byte) error {
 		return ErrHubClosed
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// Members reports who is currently connected to a room, in no particular order.
+// An unknown or empty room yields an empty slice, not an error.
+//
+// This is a pull, and that is the point: a domain service that rebuilds its view
+// from this on every broadcast cannot drift out of step with the hub, because it
+// holds no join/leave bookkeeping of its own to get wrong. The alternative —
+// pushing join and leave events at a service — would make presence a thing two
+// components each believe they know, which is the bug this avoids. It also
+// composes with the backpressure design: a roster built from the current member
+// set is idempotent full state, so dropping a frame costs nothing.
+func (h *Hub) Members(ctx context.Context, room string) ([]Member, error) {
+	reply := make(chan []Member, 1)
+	select {
+	case h.members <- membersCmd{room: room, reply: reply}:
+	case <-h.done:
+		return nil, ErrHubClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case out := <-reply:
+		return out, nil
+	case <-h.done:
+		return nil, ErrHubClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

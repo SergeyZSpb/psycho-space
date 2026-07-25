@@ -47,6 +47,8 @@ type closeReason struct {
 type Conn struct {
 	id        string
 	accountID string
+	room      string
+	handler   Handler // nil: inbound frames are read for their bounds and discarded
 	ws        *websocket.Conn
 	send      chan []byte
 
@@ -57,17 +59,26 @@ type Conn struct {
 	hardOnce  sync.Once
 }
 
-// NewConn wraps an accepted WebSocket.
-func NewConn(id, accountID string, ws *websocket.Conn) *Conn {
+// NewConn wraps an accepted WebSocket. The room is the one this connection is
+// about to be registered into, carried here so an inbound frame can say where it
+// came from. A nil handler is valid and means nobody is listening: the frames
+// are still read, so the read limit and the rate limit still apply, and the
+// payload is discarded.
+func NewConn(id, accountID, room string, ws *websocket.Conn, handler Handler) *Conn {
 	ws.SetReadLimit(MaxFrameBytes)
 	return &Conn{
 		id:        id,
 		accountID: accountID,
+		room:      room,
+		handler:   handler,
 		ws:        ws,
 		send:      make(chan []byte, defaultSendBuffer),
 		closing:   make(chan closeReason, 1),
 	}
 }
+
+// Room is the room this connection was opened against.
+func (c *Conn) Room() string { return c.room }
 
 // ID implements Sink.
 func (c *Conn) ID() string { return c.id }
@@ -170,10 +181,19 @@ func (c *Conn) Serve(ctx context.Context, hub *Hub) {
 	c.hardClose()
 }
 
-// readPump drains inbound frames. Nothing acts on them yet — the first slice
-// proves transport, auth and lifetime. What it does do is enforce the bounds:
-// oversized frames are rejected by SetReadLimit, and a client that exceeds the
-// rate limit is disconnected.
+// readPump drains inbound frames, enforces the per-connection bounds, and hands
+// what survives to the handler. Oversized frames are rejected by SetReadLimit,
+// and a client that exceeds the rate limit is disconnected.
+//
+// The rate check runs BEFORE the handler, so a flood costs the handler nothing —
+// the bound the socket already had is the bound the game inherits, and no game
+// has to remember to rate-limit itself. Binary frames are dropped: every
+// protocol here is JSON text, and accepting both would mean two decode paths
+// where one is never exercised.
+//
+// Identity comes from the connection, never from the payload. A message cannot
+// claim to be from another account because HandleInbound is not given anything
+// the payload could influence.
 //
 // Reads deliberately run on a context that is never cancelled. The library
 // installs a context.AfterFunc on the read context that closes the whole
@@ -186,7 +206,7 @@ func (c *Conn) readPump(ctx context.Context) {
 	readCtx := context.WithoutCancel(ctx)
 	limiter := rate.NewLimiter(rate.Limit(msgPerSecond), msgBurst)
 	for {
-		_, _, err := c.ws.Read(readCtx)
+		typ, payload, err := c.ws.Read(readCtx)
 		if err != nil {
 			// Peer closed, deadline, read limit exceeded, or ctx cancelled.
 			// Every one of these means this connection is finished.
@@ -198,6 +218,13 @@ func (c *Conn) readPump(ctx context.Context) {
 			c.Close(CloseTryAgainLater, "rate limited")
 			return
 		}
+		if c.handler == nil || typ != websocket.MessageText {
+			continue
+		}
+		// On this goroutine on purpose: one read pump per connection, so a
+		// handler that is slow delays only the client that sent the frame, and
+		// never the hub goroutine that every room depends on.
+		c.handler.HandleInbound(readCtx, Member{ConnID: c.id, AccountID: c.accountID}, c.room, payload)
 	}
 }
 

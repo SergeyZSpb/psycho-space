@@ -27,7 +27,7 @@ func (s *Server) handleRealtime(w http.ResponseWriter, r *http.Request) {
 
 	room := r.URL.Query().Get("room")
 	if room == "" {
-		room = defaultRoom
+		room = DefaultRoom
 	}
 	if !isKnownRoom(room) {
 		writeError(w, r, http.StatusBadRequest, "unknown_room")
@@ -61,7 +61,7 @@ func (s *Server) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := realtime.NewConn(uuid.NewString(), acc.ID, ws)
+	conn := realtime.NewConn(uuid.NewString(), acc.ID, room, ws, s.d.RealtimeHandler)
 	if err := s.d.Realtime.Register(r.Context(), conn, room); err != nil {
 		conn.Close(realtime.CloseTryAgainLater, "cannot register")
 		slog.WarnContext(r.Context(), "realtime: register refused",
@@ -93,6 +93,13 @@ func originHost(baseURL string) string {
 
 // Rooms are a closed set: an open-ended room name would let any client create
 // unbounded rooms, and there is no reason to allow it.
-const defaultRoom = "yard"
+//
+// DefaultRoom is exported so the composition root can hand the same name to
+// whichever service publishes into it, instead of that service spelling the
+// string out a second time. One room serves a whole game — locations inside a
+// game are a field in its own messages, deliberately not rooms, because a room
+// per location would both make this platform file learn a game's vocabulary and
+// scatter a handful of players across empty rooms.
+const DefaultRoom = "yard"
 
-func isKnownRoom(room string) bool { return room == defaultRoom }
+func isKnownRoom(room string) bool { return room == DefaultRoom }

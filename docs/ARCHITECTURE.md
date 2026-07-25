@@ -5,11 +5,11 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** psycho-space at two altitudes in one file — the structural view (§1–7: logical containers, runtime flows, package layout, data model, deployment) and the numbered decision records that say *why* it has that shape (§8, append-only). `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
-- **status:** current as of the `Game<Name>` rename (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped and carries a `bye` frame; **no client consumes it yet** and nothing publishes game messages. Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (game 2 — `internal/gamevanyagotchi/`, realtime, no LLM on any path, in design and not yet in this repo). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — and ADR-027…031 were appended the same day for decisions that until then lived only in the code, in `CLAUDE.md`, or in `RUNBOOK.md`.
+- **status:** current as of «Ванягоччи» I2 (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped, carries a `bye` frame, and now has both of its game seams — inbound `Handler` and `Hub.Members` (ADR-033). Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (`internal/gamevanyagotchi/` — realtime, **no LLM on any path**; the server-side wire protocol is shipped, **no client consumes it yet**, and it has no table, no pet and no durable state). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — and ADR-027…034 were appended the same day.
 - **rename complete (2026-07-25):** game 1 moved off generic `game` naming onto the `Game<Name>` convention (ADR-030) — package `internal/game/` → `internal/gamekhimki/` (types inside keep plain names, so `gamekhimki.Service`), table `game_runs` → `game_khimki_runs` via `migrations/007_game_khimki_rename.sql` (**`game_assets` deliberately NOT renamed** — the blob store is shared infrastructure, ADR-031), routes `/api/game/*` → `/api/game-khimki/*`, SPA `GameView.vue` → `GameKhimkiView.vue` and `/app/game` → `/app/game-khimki` with a permanent redirect. `game_key` **values** are untouched (`smalltalk_khimki`) — data, not names, and the art blobs are keyed on them. **The one-deploy-cycle `/api/game/*` alias has served its cycle and is deleted**; `TestGameKhimkiLegacyPathAliasIsGone` pins its absence, and nothing may be written against that prefix again. The `/app/game` → `/app/game-khimki` SPA redirect is permanent and stays. Sections 1–7 below describe the post-rename state.
 - **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only).
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `grep -n '^#### ADR-' docs/ARCHITECTURE.md` lists every decision record.
-- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. Numbers are identifiers, not an ordering: take the next global one, wherever the group. Highest record when this was written: **ADR-032** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`. `./scripts/check-docs.sh` (in the lint gate) rejects a gap, a duplicate, or a dead anchor.
+- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. Numbers are identifiers, not an ordering: take the next global one, wherever the group. Highest record when this was written: **ADR-034** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`. `./scripts/check-docs.sh` (in the lint gate) rejects a gap, a duplicate, or a dead anchor.
 - **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP — §1–7 describe all of it, §8 records the decisions behind it.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff is appended to §8 as a **new** record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
 - **related:** `../CLAUDE.md` (rules), `RUNBOOK.md` (operations — and the owner of the measurements and operational economics, notably the game's per-turn cost, which is re-measured rather than superseded), the owner's local living doc (roadmap, TODO, private operational detail). `docs/DESIGN.md` was merged into §8 here on 2026-07-25 and deleted; `git log -- docs/DESIGN.md` still resolves its history.
@@ -141,6 +141,7 @@ sequenceDiagram
     participant N as nginx
     participant A as psycho-space
     participant H as hub
+    participant G as gamevanyagotchi
 
     B->>N: GET /api/realtime (session cookie, Origin)
     Note over N: location /api/realtime<br/>proxy_http_version 1.1 + Upgrade/Connection<br/>re-declares X-Real-IP (headers do NOT merge)
@@ -148,14 +149,19 @@ sequenceDiagram
     Note over A: requireAuth (approved only) → origin check → 101
     A->>H: Register(conn, room) — caps checked here
     loop while connected
+        G->>H: Members(room) on the game's own 5 Hz tick
+        G->>H: Publish(room, roster) — idempotent full state
         H-->>B: broadcast (non-blocking — a slow client is dropped, never waited on)
         B->>A: frames (≤4 KiB, ≤10/s)
+        A->>G: HandleInbound(Member, room, payload) — read pump, after the rate limit
     end
     Note over A,H: SIGTERM → cancel hub ctx → hub asks each conn to close
     H->>A: Close(1001, "restart")
     A-->>B: {"t":"bye","code":1001,...} then the socket drops
     Note over A,H: THEN http.Shutdown (Shutdown alone does not close hijacked connections)
 ```
+
+**The hub carries bytes and decides nothing.** A game publishes through it and reads from it across two game-agnostic seams — a `Handler` for inbound frames and a `Members` query for presence — so `internal/realtime` contains no game's vocabulary and «Ванягоччи» owns its own wire types. See [ADR-033](#adr-033--a-game-reads-the-socket-through-a-game-agnostic-handler-and-pulls-presence) and [ADR-034](#adr-034--the-broadcast-tick-is-injected-and-belongs-to-the-game).
 
 The reason arrives as a **frame**, not as a WebSocket close code — a browser sees `1006` for every disconnect and reads the reason from the last `bye` frame instead. Codes: `1001` planned restart (reconnect promptly), `1013` evicted or over a cap (back off), `4001` session revoked (terminal — stop). See [ADR-018 · *The close reason travels as a frame*](#adr-018--the-close-reason-travels-as-a-frame-not-as-a-close-code) for why, and [ADR-019 · *The read pump must not observe shutdown*](#adr-019--the-read-pump-must-not-observe-shutdown) for the library trap that makes the ordering load-bearing.
 
@@ -206,16 +212,18 @@ flowchart LR
         VKP["vk (client + id_token verifier)"]
         subgraph games["games — self-contained, share nothing with each other"]
             GAME["gamekhimki<br/>«Смолтолк в Химках»"]
+            VANYA["gamevanyagotchi<br/>«Ванягоччи» — shared plane"]
         end
     end
 
     WEB["web<br/>go:embed of the built SPA"]
     MIG["migrations<br/>NNN_*.sql, embedded"]
 
-    MAIN --> CFG & DB & LOG & OBS & HTTP & WEB & MIG & RT
+    MAIN --> CFG & DB & LOG & OBS & HTTP & WEB & MIG & RT & VANYA
     HTTP --> ACC & SESS & WISH & GAME & SET & VKP & RT
     ACC & SESS & WISH & GAME & SET --> DB
     ACC & SESS --> CRY
+    VANYA -- "publishes through / reads from" --> RT
     SEED -.reuses.-> ACC & SESS & CRY & DB
 ```
 
@@ -344,7 +352,9 @@ Anything not matching `/api` or `/healthz` is served the embedded SPA, so client
 | Consent (152-ФЗ) | Checkbox gates the VK widget; `consent_at` + `consent_version` persisted | SPA + `accounts` |
 | WebSocket origin | Validated at upgrade (library default; never `InsecureSkipVerify`) — the same-origin policy does **not** apply to WebSocket | `internal/httpapi/realtime.go` |
 | WebSocket frame size | `SetReadLimit(4096)` — the 1 MiB `bodyLimit` wraps `r.Body` and the hijack bypasses it | `internal/realtime/conn.go` |
-| WebSocket message rate | 10/s per connection, burst 20 — the HTTP limiter fires once, at the handshake | `internal/realtime/conn.go` |
+| WebSocket message rate | 10/s per connection, burst 20 — the HTTP limiter fires once, at the handshake. Checked **before** the frame reaches a game, so a game inherits the bound rather than having to reimplement it | `internal/realtime/conn.go` |
+| Socket identity | The account is bound at upgrade and travels to a game as `realtime.Member`; **no inbound frame has an account field**, so a payload cannot claim to be someone else | `internal/realtime/conn.go` — `readPump` |
+| Inbound payloads | Text frames only, ≤4 KiB, parsed by the owning game; anything malformed, unknown or non-finite is dropped without a reply and without a log line (a log per bad frame would be a flood lever at 10/s) | `internal/gamevanyagotchi/message.go` |
 | Connection caps | 3 per account, 200 per process | `internal/realtime/hub.go` |
 | Revocation on a live socket | Blocking an account revokes its sessions and closes its sockets, sending `bye` code 4001. **This in-process kick is the only path that cuts a live socket** — there is no revalidation sweep, so a session that expires on its own, or a block applied straight in the database, leaves the socket open until the peer or the process goes away. The reconnect is still refused by `requireAuth`. | `internal/httpapi/admin.go` → `Hub.KickAccount` |
 
@@ -600,6 +610,36 @@ Reads run on `context.WithoutCancel`, so cancelling the hub context does not can
 _Reasoning:_ `coder/websocket`'s `setupReadTimeout` installs a `context.AfterFunc` on the read context that calls `c.close()` when it fires. So a read whose context is cancelled does not merely return an error — **it tears down the whole connection.** Handing it the hub context meant that on every deploy the read pump destroyed the socket before the write pump could say why, silently degrading the most common disconnect in production into an unexplained network error. The loop still always terminates, because every path out of `Serve` calls `hardClose` and that makes the read fail.
 
 _Recorded because it is invisible in the API:_ nothing in `Read`'s signature suggests the context outlives the call, and the first version of this code passed its own test by winning a goroutine race. The regression test now inserts a deliberate gap between the cancellation and the close request so it cannot pass by luck.
+
+#### ADR-033 · A game reads the socket through a game-agnostic `Handler`, and pulls presence
+
+_Accepted · 2026-07-25_
+
+`internal/realtime` gained exactly two seams: a `Handler` interface (`HandleInbound(ctx, Member, room, payload)`) called on the connection's own read pump, and `Hub.Members(ctx, room) []Member`. The handler is supplied by the composition root through `httpapi.Deps.RealtimeHandler`, which is typed as the interface, so no platform file names a game. «Ванягоччи» owns its own wire types in its own package and publishes through `Hub.Publish`.
+
+_Reasoning:_ before this, the read pump discarded every payload — it read frames only to enforce the read limit and the rate limit — so no inbound message could reach any domain service at all, and the hub had no way to say who was in a room. Both were needed, and the shape of each was the decision.
+
+**Inbound dispatch runs on the read pump, never on the hub goroutine.** That goroutine owns every room and fans out to every client; a game handler that blocked there would freeze the whole yard behind one player, which is precisely what the hub's non-blocking fanout exists to prevent. One read pump per connection means a slow handler delays only the client that sent the frame. The rate check runs *before* the handler for a second reason worth stating: it means a game inherits the socket's bound for free instead of every game having to remember to limit itself.
+
+**Presence is pulled, not pushed.** The tempting alternative — the hub notifying a service on join and leave — makes presence a thing two components each believe they know, and the bug is then a service whose roster has quietly drifted from the hub's. Rebuilding the roster from `Members` on every broadcast cannot drift, needs no join/leave bookkeeping, and prunes departed connections by construction. It also composes with the backpressure design: a roster built from the current member set *is* idempotent full state, so a dropped frame costs nothing.
+
+`Member` is a value type carrying a connection id and an account id, deliberately not the `Sink` — a service should be able to ask who is present without acquiring the ability to write to, or close, somebody's socket.
+
+_Consequence:_ the roster broadcast to peers identifies entities by **connection** id, which is a per-socket UUID that means nothing once the socket is gone. Two tabs are two entities, and no durable per-person identifier is fanned out to the room — so the frame carries no personal data and needs no redaction step.
+
+#### ADR-034 · The broadcast tick is injected, and belongs to the game
+
+_Accepted · 2026-07-25_
+
+`gamevanyagotchi.Service.Run(ctx, tick <-chan time.Time)` takes its tick as a parameter. `main` passes a `time.Ticker`; tests pass a channel they fire themselves. The hub has no tick of its own.
+
+_Reasoning:_ two separate things, both load-bearing.
+
+**It is a render tick, not the background timer this project rules out.** The rule that nothing runs on a timer is about *state*: no cron, no per-entity goroutine, nothing that writes to the database because time passed. This loop writes nothing, owns nothing and decides nothing — it reads the hub's current members and sends a snapshot. Because the frame is full state rather than a step forward from the last one, a tick that is late, early, skipped or duplicated produces the same correct frame. That property is what makes the distinction safe rather than a euphemism.
+
+**Injecting it removes every timing sleep from the tests.** The repository has no clock injection anywhere, and determinism has so far come from substituting network dependencies. A test that fires the tick and then reads the frame it caused has no race to lose; the alternative is `time.Sleep(250ms)` in every realtime test, which is slow when it works and flaky when it does not. It is an ordinary constructor-style parameter, not test-only code on a production path — the same shape as `session.NewManager`'s injected TTL.
+
+_Consequence:_ the rate lives in `gamevanyagotchi.BroadcastInterval` and is half of a two-part decision — the other half is the CSS transition duration on the client, chosen to be slightly longer so consecutive segments overlap. Changing one without the other makes motion either stutter or lag, which is why the constant is documented as a pair rather than exposed as a knob.
 
 #### ADR-020 · What is *not* a problem: hijacked connections and server timeouts
 

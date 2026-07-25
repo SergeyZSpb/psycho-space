@@ -44,6 +44,11 @@ type Deps struct {
 	// the upgrade handler returns.
 	Realtime    *realtime.Hub
 	RealtimeCtx context.Context
+	// RealtimeHandler receives inbound socket frames. It is an interface, not a
+	// game, so this file names no game and the upgrade path stays game-agnostic;
+	// main decides which service is behind it. nil means frames are read for
+	// their bounds and discarded.
+	RealtimeHandler realtime.Handler
 }
 
 // rateLimit builds a per-client-IP rate limiter that renders the canonical JSON
