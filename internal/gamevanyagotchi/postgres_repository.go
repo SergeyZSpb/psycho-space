@@ -91,12 +91,7 @@ func (PostgresRepository) SeedStats(ctx context.Context, q db.DBTX, petID string
 	if len(rows) == 0 {
 		return nil
 	}
-	keys := make([]string, len(rows))
-	values := make([]float64, len(rows))
-	asOf := make([]time.Time, len(rows))
-	for i, r := range rows {
-		keys[i], values[i], asOf[i] = r.Key, r.Value, r.AsOf
-	}
+	keys, values, asOf := statArrays(rows)
 	_, err := q.Exec(ctx,
 		`INSERT INTO game_vanyagotchi_pet_stats (pet_id, stat_key, value, as_of)
 		 SELECT $1::uuid, k, v, a
@@ -107,20 +102,41 @@ func (PostgresRepository) SeedStats(ctx context.Context, q db.DBTX, petID string
 	return err
 }
 
-// SetStat writes the pair the decay reads.
+// WriteStats upserts the pairs the decay reads, in one statement.
 //
-// An upsert rather than an UPDATE so it cannot silently write nothing: a stat
-// added to the catalogue between a read and an action would have no row, and an
-// UPDATE would report success having changed nothing at all.
-func (PostgresRepository) SetStat(ctx context.Context, q db.DBTX, petID, statKey string, value float64, asOf time.Time) error {
+// Upserts rather than UPDATEs so it cannot silently write nothing: a stat added
+// to the catalogue between a read and an action would have no row, and an UPDATE
+// would report success having changed nothing at all. The conflict target IS
+// named here, because the arbiter is the table's primary key rather than a
+// partial index.
+//
+// One statement over arrays rather than a loop because the caller always writes
+// every stat at once — see the interface comment for why that is not optional.
+func (PostgresRepository) WriteStats(ctx context.Context, q db.DBTX, petID string, rows []StatRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	keys, values, asOf := statArrays(rows)
 	_, err := q.Exec(ctx,
 		`INSERT INTO game_vanyagotchi_pet_stats (pet_id, stat_key, value, as_of)
-		 VALUES ($1::uuid, $2, $3, $4)
+		 SELECT $1::uuid, k, v, a
+		   FROM unnest($2::text[], $3::float8[], $4::timestamptz[]) AS t(k, v, a)
 		 ON CONFLICT (pet_id, stat_key)
 		 DO UPDATE SET value = EXCLUDED.value, as_of = EXCLUDED.as_of, updated_at = now()`,
-		petID, statKey, value, asOf,
+		petID, keys, values, asOf,
 	)
 	return err
+}
+
+// statArrays splits rows into the parallel arrays both statements bind.
+func statArrays(rows []StatRow) ([]string, []float64, []time.Time) {
+	keys := make([]string, len(rows))
+	values := make([]float64, len(rows))
+	asOf := make([]time.Time, len(rows))
+	for i, r := range rows {
+		keys[i], values[i], asOf[i] = r.Key, r.Value, r.AsOf
+	}
+	return keys, values, asOf
 }
 
 // MarkDied records the death, and the `died_at IS NULL` guard is what makes it

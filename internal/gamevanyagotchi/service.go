@@ -393,12 +393,14 @@ func (s *Service) Act(ctx context.Context, accountID, actionKey string) (State, 
 	if !ok {
 		return State{}, fmt.Errorf("%w: %q", ErrUnknownAction, actionKey)
 	}
-	stat, ok := StatByKey(action.StatKey)
-	if !ok {
-		// A catalogue that disagrees with itself — an action naming a stat that
-		// was removed. Caught here rather than silently doing nothing, because
-		// the alternative is a button that appears to work and does not.
-		return State{}, fmt.Errorf("%w: action %q moves %q", ErrUnknownStat, action.Key, action.StatKey)
+	for _, e := range action.Effects {
+		if _, ok := StatByKey(e.StatKey); !ok {
+			// A catalogue that disagrees with itself — an action moving a stat
+			// that was removed. Caught here rather than silently doing nothing,
+			// because the alternative is a button that appears to work and does
+			// not.
+			return State{}, fmt.Errorf("%w: action %q moves %q", ErrUnknownStat, action.Key, e.StatKey)
+		}
 	}
 
 	now := time.Now().UTC()
@@ -410,16 +412,28 @@ func (s *Service) Act(ctx context.Context, accountID, actionKey string) (State, 
 		return State{}, ErrPetDead
 	}
 
-	current, ok := before.value(stat.Key)
-	if !ok {
-		// state() seeds every catalogue stat, so this cannot happen; treat a
-		// missing one as its starting value rather than as a zero, which for a
-		// stat whose floor is fatal would be the difference between "new" and
-		// "dead".
-		current = stat.Start
+	// EVERY stat is written, not only the ones this action moves, and all of
+	// them carry the same instant. That is the invariant the coupled decay
+	// rests on: hp's drain is a function of the other stats' trajectories, so a
+	// window whose start predates a driver's own as_of has a stretch of history
+	// nobody can reconstruct. Emptying the bladder and writing only the bladder
+	// would erase the morning's damage — the value would be re-derived later
+	// from a pair that says it was never full.
+	next := make([]StatRow, 0, len(before.Stats))
+	for _, cur := range before.Stats {
+		def, ok := StatByKey(cur.Key)
+		if !ok {
+			continue
+		}
+		value := cur.Value
+		for _, e := range action.Effects {
+			if e.StatKey == cur.Key {
+				value = def.Clamp(value + e.Delta)
+			}
+		}
+		next = append(next, StatRow{Key: cur.Key, Value: value, AsOf: now})
 	}
-	next := stat.Clamp(current + action.Delta)
-	if err := s.repo.SetStat(ctx, s.q, before.Pet.ID, stat.Key, next, now); err != nil {
+	if err := s.repo.WriteStats(ctx, s.q, before.Pet.ID, next); err != nil {
 		return State{}, err
 	}
 
@@ -431,13 +445,29 @@ func (s *Service) Act(ctx context.Context, accountID, actionKey string) (State, 
 	// revived is a story somebody tells. What death costs is the fright and
 	// whatever decayed while nobody was looking — the moment of it stays
 	// recorded until he is actually back on his feet.
-	if !before.Alive && action.RevivesFatal && next > stat.Min {
+	//
+	// Only if the action actually lifted the fatal stat off its floor: an action
+	// allowed on a corpse that failed to move the thing that killed him has not
+	// revived anybody.
+	if !before.Alive && action.RevivesFatal && revives(next) {
 		if err := s.repo.Revive(ctx, s.q, before.Pet.ID); err != nil {
 			return State{}, err
 		}
 	}
 
 	return s.state(ctx, accountID, now)
+}
+
+// revives reports whether the rows about to be written leave every fatal stat
+// above its floor.
+func revives(rows []StatRow) bool {
+	for _, r := range rows {
+		def, ok := StatByKey(r.Key)
+		if ok && def.Fatal && r.Value <= def.Min {
+			return false
+		}
+	}
+	return true
 }
 
 // state is the one read path, shared by State and Act so an action can never
@@ -470,15 +500,20 @@ func (s *Service) state(ctx context.Context, accountID string, now time.Time) (S
 		if !ok {
 			continue
 		}
+		// `stored` is passed as the drivers for every stat, which is safe
+		// because the dependency graph is one layer deep: a stat with penalties
+		// is never itself a driver, so nothing here can consult a value that is
+		// still being computed.
 		values = append(values, StatValue{
-			Key:   def.Key,
-			Value: def.At(row.Value, row.AsOf, now),
-			AsOf:  row.AsOf,
+			Key:         def.Key,
+			Value:       def.AtWith(row.Value, row.AsOf, now, stored),
+			AsOf:        row.AsOf,
+			RatePerHour: def.RateAt(row.AsOf, now, stored),
 		})
-		if !def.Dead(row.Value, row.AsOf, now) {
+		if !def.Dead(row.Value, row.AsOf, now, stored) {
 			continue
 		}
-		at, ok := def.DeadAt(row.Value, row.AsOf)
+		at, ok := def.DeadAtWith(row.Value, row.AsOf, stored)
 		if ok && (!dead || at.Before(deadAt)) {
 			deadAt, dead = at, true
 		}

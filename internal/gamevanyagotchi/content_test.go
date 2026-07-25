@@ -1,6 +1,9 @@
 package gamevanyagotchi
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // The catalogue is data, and data has no compiler.
 //
@@ -10,6 +13,17 @@ import "testing"
 // cannot actually kill. The whole point of the catalogue is that content changes
 // without a client deploy and without a migration — which means these checks are
 // the only gate a content change passes through at all.
+//
+// Since health became a CONSEQUENCE rather than a chore, the catalogue also
+// carries the coupling — which stat drives which, from what threshold, at what
+// extra rate — and the closed-form decay in decay.go is only exact while that
+// coupling keeps a particular shape. Those structural conditions are content
+// too, so they are checked here, next to the numbers that can break them, rather
+// than being left as a paragraph of prose nobody re-reads before retuning a rate.
+//
+// Note that neither Stat nor Action is comparable with == any more: one holds a
+// slice of penalties and the other a slice of effects. Comparisons against a
+// zero value therefore go through reflect.DeepEqual.
 
 // TestTheCatalogueIsPopulated is first because everything below it would pass
 // vacuously against an empty catalogue: a range over nothing asserts nothing,
@@ -100,21 +114,169 @@ func TestEveryStatHasAUsableRange(t *testing.T) {
 	}
 }
 
-// TestEveryActionMovesAStatThatExists is the catalogue agreeing with itself.
+// TestEveryActionMovesStatsThatExist is the catalogue agreeing with itself.
 // An action naming a stat that has been renamed or removed is a button that
 // appears to work: Act answers ErrUnknownStat, which is a 500 rather than
 // anything the player did wrong.
-func TestEveryActionMovesAStatThatExists(t *testing.T) {
+//
+// An action moves a LIST of stats now — drinking tops him up, cheers him up and
+// fills his bladder — so every entry in that list has to resolve, not just the
+// first one. An effect whose key has gone would otherwise be an action that is
+// half a verb, failing only for the players who press it.
+func TestEveryActionMovesStatsThatExist(t *testing.T) {
 	for _, a := range Content().Actions {
 		t.Run(a.Key, func(t *testing.T) {
-			s, ok := StatByKey(a.StatKey)
-			if !ok {
-				t.Fatalf("action moves stat %q, which is not in the catalogue", a.StatKey)
+			if len(a.Effects) == 0 {
+				t.Fatal("the action moves nothing at all; pressing it would be a no-op the player is invited to try")
 			}
-			if got := s.Clamp(s.Start + a.Delta); got < s.Min || got > s.Max {
-				t.Fatalf("applying delta %v to a fresh %q lands at %v, outside [%v, %v]", a.Delta, s.Key, got, s.Min, s.Max)
+			for _, e := range a.Effects {
+				s, ok := StatByKey(e.StatKey)
+				if !ok {
+					t.Fatalf("action moves stat %q, which is not in the catalogue", e.StatKey)
+				}
+				if e.Delta == 0 {
+					t.Errorf("effect on %q has a delta of zero; it is content that does nothing", e.StatKey)
+				}
+				if got := s.Clamp(s.Start + e.Delta); got < s.Min || got > s.Max {
+					t.Fatalf("applying delta %v to a fresh %q lands at %v, outside [%v, %v]", e.Delta, s.Key, got, s.Min, s.Max)
+				}
 			}
 		})
+	}
+}
+
+// TestEveryPenaltyNamesAStatAndAThresholdInsideItsRange is the first of the
+// coupling checks, and it is the one a rename breaks silently.
+//
+// A penalty whose driver is not in the catalogue is evaluated as "no penalty at
+// all" by design — decay.go refuses to guess at a stat it cannot read — so
+// retiring a stat that something depends on does not fail, it quietly makes the
+// game easier and nobody finds out. A threshold outside the driver's own bounds
+// is the same defect wearing a number: either it is satisfied from the moment a
+// pet is born, or it can never be satisfied at all.
+func TestEveryPenaltyNamesAStatAndAThresholdInsideItsRange(t *testing.T) {
+	for _, s := range Content().Stats {
+		for _, p := range s.Penalties {
+			t.Run(s.Key+" penalised by "+p.WhenKey, func(t *testing.T) {
+				driver, ok := StatByKey(p.WhenKey)
+				if !ok {
+					t.Fatalf("driver %q is not in the catalogue; the penalty is silently never applied", p.WhenKey)
+				}
+				if p.Threshold < driver.Min || p.Threshold > driver.Max {
+					t.Errorf("threshold %v is outside %q's range [%v, %v]; it fires either always or never",
+						p.Threshold, driver.Key, driver.Min, driver.Max)
+				}
+				if p.RatePerHour <= 0 {
+					t.Errorf("the penalty adds %v/hour to the drain; a penalty that does not hurt is content that does nothing",
+						p.RatePerHour)
+				}
+			})
+		}
+	}
+}
+
+// TestTheDependencyGraphIsOneLayerDeep is the property the whole exactness
+// argument rests on, so it is worth failing loudly for.
+//
+// decay.go integrates a penalised stat by reading each driver's own trajectory
+// across the window — with At, which applies no coupling. That is correct only
+// while a driver is never itself penalised: the moment a stat both has penalties
+// and drives another one, the drivers' trajectories are no longer knowable
+// without solving a system, the closed form silently becomes an approximation,
+// and the sign of its error decides whether being absent beats playing. Nothing
+// in the type system prevents that catalogue entry. This test does.
+func TestTheDependencyGraphIsOneLayerDeep(t *testing.T) {
+	stats := Content().Stats
+
+	penalised := make(map[string]bool, len(stats))
+	for _, s := range stats {
+		if len(s.Penalties) > 0 {
+			penalised[s.Key] = true
+		}
+	}
+
+	for _, s := range stats {
+		for _, p := range s.Penalties {
+			if penalised[p.WhenKey] {
+				t.Errorf("%q is driven by %q, which is itself penalised: the dependency graph is two layers deep, "+
+					"so the decay in decay.go is no longer exact and needs its own derivation before this ships",
+					s.Key, p.WhenKey)
+			}
+		}
+	}
+	// Guarding against the vacuous pass: a catalogue with no coupling in it at
+	// all satisfies the loop above while describing a different game from the
+	// one the design and the decay engine were built for.
+	if len(penalised) == 0 {
+		t.Fatal("no stat has any penalties; health is supposed to be a consequence of the needs, not a chore of its own")
+	}
+}
+
+// TestEveryPenaltyIsDrivenByAStatThatCanActuallyReachIt covers the other way a
+// penalty becomes decoration.
+//
+// A penalty is a SUFFIX of the window, described by a single onset instant, and
+// that is only true because a driver moves monotonically towards its threshold
+// or away from it forever. A driver heading the wrong way never crosses, so
+// decay.go correctly applies nothing — which means a catalogue entry pairing
+// "hurt him while the beer is empty" with a beer that refills on its own is not
+// an error anywhere, just a rule that never fires. Almost certainly a content
+// bug, and invisible without this.
+func TestEveryPenaltyIsDrivenByAStatThatCanActuallyReachIt(t *testing.T) {
+	for _, s := range Content().Stats {
+		for _, p := range s.Penalties {
+			t.Run(s.Key+" penalised by "+p.WhenKey, func(t *testing.T) {
+				driver, ok := StatByKey(p.WhenKey)
+				if !ok {
+					t.Skipf("driver %q is not in the catalogue; covered by its own test", p.WhenKey)
+				}
+				// DecayPerHour is signed: positive falls towards Min, negative
+				// rises towards Max. A driver already past the threshold at its
+				// starting value qualifies whatever it does next, because the
+				// penalty is on from the pet's first hour.
+				switch {
+				case p.Above && driver.DecayPerHour < 0, p.Above && driver.Start >= p.Threshold:
+				case !p.Above && driver.DecayPerHour > 0, !p.Above && driver.Start <= p.Threshold:
+				default:
+					t.Errorf("%q is meant to hurt while %q is %s %v, but %q starts at %v and moves at %v/hour: "+
+						"it can never get there, so the penalty is content that never fires",
+						s.Key, driver.Key, aboveOrBelow(p.Above), p.Threshold, driver.Key, driver.Start, driver.DecayPerHour)
+				}
+			})
+		}
+	}
+}
+
+// aboveOrBelow renders a penalty's direction for a failure message.
+func aboveOrBelow(above bool) string {
+	if above {
+		return "at or above"
+	}
+	return "at or below"
+}
+
+// TestAWarningColourMeansItIsCostingHimHealth pins a deliberate coincidence of
+// two numbers that are free to drift apart.
+//
+// A stat's WarnAt is what turns its bar amber, and a penalty's Threshold is
+// where that stat starts costing him health. They are set to the same value on
+// purpose, so the warning colour carries information rather than being
+// decoration: the moment the beer bar goes amber is the moment the empty beer
+// begins killing him. Retune one and forget the other and the game still works,
+// which is exactly why nothing but a test notices.
+func TestAWarningColourMeansItIsCostingHimHealth(t *testing.T) {
+	stats := Content().Stats
+	for _, s := range stats {
+		for _, p := range s.Penalties {
+			driver, ok := StatByKey(p.WhenKey)
+			if !ok {
+				continue // covered by TestEveryPenaltyNamesAStatAndAThresholdInsideItsRange
+			}
+			if driver.WarnAt != p.Threshold {
+				t.Errorf("%q warns at %v but starts costing %q health at %v; the amber bar would mean nothing",
+					driver.Key, driver.WarnAt, s.Key, p.Threshold)
+			}
+		}
 	}
 }
 
@@ -171,17 +333,32 @@ func TestExactlyOneStatIsFatalAndItActuallyDrains(t *testing.T) {
 	}
 }
 
-// TestSomeActionCanUndoADeath is the shipped-to-production check. Death in this
-// game is deliberately recoverable — an irreversible loss in a fifteen-person
-// friend group is how a player leaves permanently — so a catalogue in which no
-// action revives is a dead end that would reach a player before anyone noticed.
-func TestSomeActionCanUndoADeath(t *testing.T) {
+// TestDeathIsRecoverableAndTheRefusalIsReachable pins both halves of the
+// revival rule, and they fail for opposite reasons.
+//
+// Death in this game is deliberately recoverable — an irreversible loss in a
+// fifteen-person friend group is how a player leaves permanently — so a
+// catalogue in which no action revives is a dead end that would reach a player
+// before anyone noticed. The other half is subtler: if EVERY action revived,
+// Act's death guard could never fire, ErrPetDead would be unreachable, and the
+// 409 the client is written to handle would be dead code that nothing proves
+// works. A dead Ваня not being able to go to the toilet is what makes that path
+// real.
+func TestDeathIsRecoverableAndTheRefusalIsReachable(t *testing.T) {
+	var revives, refuses []string
 	for _, a := range Content().Actions {
 		if a.RevivesFatal {
-			return
+			revives = append(revives, a.Key)
+			continue
 		}
+		refuses = append(refuses, a.Key)
 	}
-	t.Fatal("no action sets revives_fatal: a dead pet would be unrecoverable and the account would be finished with the game")
+	if len(revives) == 0 {
+		t.Error("no action sets revives_fatal: a dead pet would be unrecoverable and the account would be finished with the game")
+	}
+	if len(refuses) == 0 {
+		t.Error("every action sets revives_fatal: Act's death guard can never fire, so ErrPetDead and the 409 it becomes are unreachable")
+	}
 }
 
 // TestContentHandsOutACopy is the defect the first game learned by having it.
@@ -234,28 +411,33 @@ func TestContentHandsOutACopy(t *testing.T) {
 // unreachable, so the positive half is what stops this test being green and
 // worthless.
 func TestALookupFindsWhatIsThereAndMissesWhatIsNot(t *testing.T) {
-	if s, ok := StatByKey(StatHP); !ok || s.Key != StatHP {
-		t.Fatalf("StatByKey(%q) = (%+v, %v); want the catalogue's own entry", StatHP, s, ok)
+	for _, key := range []string{StatHP, StatBeer, StatBladder} {
+		if s, ok := StatByKey(key); !ok || s.Key != key {
+			t.Fatalf("StatByKey(%q) = (%+v, %v); want the catalogue's own entry", key, s, ok)
+		}
 	}
-	if a, ok := ActionByKey(ActionHeal); !ok || a.Key != ActionHeal {
-		t.Fatalf("ActionByKey(%q) = (%+v, %v); want the catalogue's own entry", ActionHeal, a, ok)
+	for _, key := range []string{ActionDrink, ActionRelieve} {
+		if a, ok := ActionByKey(key); !ok || a.Key != key {
+			t.Fatalf("ActionByKey(%q) = (%+v, %v); want the catalogue's own entry", key, a, ok)
+		}
 	}
 
 	// A client asking for one of these is either stale or probing; both have to
 	// be a clean miss rather than a zero-valued entry that looks real. The
 	// near-misses are the interesting rows — a lookup that trimmed or folded case
-	// would resolve a key the config never published.
-	for _, key := range []string{"", "no-such-key", " " + StatHP, "HP", ActionHeal} {
+	// would resolve a key the config never published. Compared with DeepEqual
+	// rather than ==: both types now hold a slice and are no longer comparable.
+	for _, key := range []string{"", "no-such-key", " " + StatHP, "HP", ActionDrink} {
 		if s, ok := StatByKey(key); ok {
 			t.Errorf("StatByKey(%q) resolved to %+v; want a miss", key, s)
-		} else if s != (Stat{}) {
+		} else if !reflect.DeepEqual(s, Stat{}) {
 			t.Errorf("StatByKey(%q) missed but returned %+v; want the zero value", key, s)
 		}
 	}
-	for _, key := range []string{"", "no-such-key", " " + ActionHeal, "HEAL", StatHP} {
+	for _, key := range []string{"", "no-such-key", " " + ActionDrink, "DRINK", StatHP} {
 		if a, ok := ActionByKey(key); ok {
 			t.Errorf("ActionByKey(%q) resolved to %+v; want a miss", key, a)
-		} else if a != (Action{}) {
+		} else if !reflect.DeepEqual(a, Action{}) {
 			t.Errorf("ActionByKey(%q) missed but returned %+v; want the zero value", key, a)
 		}
 	}

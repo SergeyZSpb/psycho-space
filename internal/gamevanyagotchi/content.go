@@ -28,22 +28,32 @@ import "time"
 // names, so nothing in this package's schema has a game_key column.
 const GameKey = "vanyagotchi"
 
-// Stat keys. Two of them, and two is the minimum that earns a tall stats table:
-// with one stat, a column would have been the honest choice.
+// Stat keys.
+//
+// Two of them are NEEDS the player acts on, and one is the CONSEQUENCE of
+// neglecting them. That split is the shape of the game: you cannot touch health
+// directly, you keep him watered and let him out, and health follows.
 const (
-	// StatHP is the decay loop — the timer at the centre of the game.
+	// StatHP is the consequence. It barely rots on its own; what kills him is
+	// an empty beer and a full bladder, through the penalties below.
 	StatHP = "hp"
-	// StatBladder is the relief loop's half of the pair. It FILLS rather than
-	// drains, which is why the rate below is signed rather than a magnitude:
-	// one expression covers both directions and there is no second code path
-	// for a stat that goes the other way.
+	// StatBeer is how much beer is in Ваня. It drains, and running dry hurts.
+	StatBeer = "beer"
+	// StatBladder is the other half of the pair. It FILLS rather than drains,
+	// which is why every rate here is signed rather than a magnitude: one
+	// expression covers both directions and there is no second code path for a
+	// stat that goes the other way.
 	StatBladder = "bladder"
 )
 
 // Action keys.
 const (
-	// ActionHeal restores hp — the timely dose that keeps him going.
-	ActionHeal = "heal"
+	// ActionDrink is the one that helps: it tops him up, cheers him up, and
+	// fills his bladder, which is what makes the second verb necessary.
+	ActionDrink = "drink"
+	// ActionRelieve empties the bladder. It is the other half of the loop
+	// drinking creates.
+	ActionRelieve = "relieve"
 )
 
 // Skin and location keys.
@@ -93,6 +103,27 @@ type Stat struct {
 	// flag exists rather than the service naming StatHP directly so that "which
 	// stat can kill" stays a property of content.
 	Fatal bool `json:"fatal"`
+	// Penalties are the extra drain this stat suffers while OTHER stats sit in a
+	// bad range — the coupling that turns two needs into one consequence.
+	//
+	// Only a stat that no other stat depends on may appear as a driver, and only
+	// a stat with no penalties may drive: the dependency graph is one layer deep
+	// on purpose, because that is what keeps the decay closed-form and exact.
+	// See decay.go, and ADR-040 for why that is not a detail.
+	Penalties []Penalty `json:"penalties,omitempty"`
+}
+
+// StatDelta is one stat moved by one amount, before clamping.
+//
+// It exists because an action stopped being able to move a single stat: drinking
+// raises the beer, cheers him up AND fills his bladder, which is the whole joke
+// and also the reason the relief verb has anything to do. One value type plus
+// one loop that applies a slice of them is the entire mechanism — the design
+// note that predicted this seam also predicted it would be a struct and a
+// function rather than a framework, and it is.
+type StatDelta struct {
+	StatKey string  `json:"stat_key"`
+	Delta   float64 `json:"delta"`
 }
 
 // Action is a verb that moves one stat by a fixed amount.
@@ -107,12 +138,16 @@ type Action struct {
 	Key   string `json:"key"`
 	Label string `json:"label"`
 	Emoji string `json:"emoji"`
-	// StatKey is what it moves; Delta is by how much, signed, before clamping.
-	StatKey string  `json:"stat_key"`
-	Delta   float64 `json:"delta"`
+	// Effects is what it moves, in order, each clamped against its own stat's
+	// bounds. A delta larger than the range is the idiomatic way to say "reset":
+	// relieving himself sends the bladder down by the whole scale and the clamp
+	// makes that exactly its floor.
+	Effects []StatDelta `json:"effects"`
 	// Done is the line shown for a moment after it lands.
 	Done string `json:"done"`
-	// RevivesFatal: allowed on, and undoes, a death. See Service.Act.
+	// RevivesFatal: allowed on, and undoes, a death. Deliberately not true of
+	// every action — a dead Ваня cannot go to the toilet, and that is what makes
+	// the refusal path real rather than theoretical. See Service.Act.
 	RevivesFatal bool `json:"revives_fatal"`
 }
 
@@ -160,26 +195,50 @@ type Config struct {
 // these are chosen for the rhythm this particular group of friends will actually
 // play at, and they are meant to be moved by feel.
 //
-// hp: 3 per hour from 100, so a full Ваня reaches zero in about 33 hours. That
-// makes checking in once a day comfortable and forgetting for a day and a half
-// fatal — and fatal here is one tap to undo, which is deliberate. The research
-// this design rests on is blunt about the ceiling: mildly annoying and cheaply
+// hp barely rots on its own — one point an hour, so perfect care still wilts him
+// over about four days and nobody is ever quite finished. What actually kills him
+// is neglect, expressed as two penalties of six an hour each: an empty beer and a
+// full bladder. Ignore one and he loses seven an hour; ignore both and he loses
+// thirteen, which takes a full Ваня down in under eight hours. That is the whole
+// causal story of the game, and it is legible from the bars alone: the number you
+// cannot press is driven by the two you can.
+//
+// beer: 4 an hour from 60, so a new Ваня is dry in ten hours and starts taking
+// damage there. Drinking puts 40 back.
+//
+// bladder: 5 an hour on its own, plus 25 every drink — which is what stops the
+// two loops being independent chores. Drink to keep him alive, and drinking is
+// what makes him need the toilet.
+//
+// A fresh, entirely untended pet therefore dies at roughly seventeen hours: ten
+// on one point an hour, then seven an hour once the beer runs out. Skip a day and
+// he is gone; and death is one tap to undo, which is deliberate. The research
+// this design rests on is blunt about the ceiling — mildly annoying and cheaply
 // reversible keeps people coming back, irreversible loses them, and a friend
 // group is a place where churn is somebody you will see socially.
 //
-// bladder: 5 per hour, filling, so he is bursting after 20 hours. Nothing
-// relieves it yet — that verb writes a deposit into the shared world and arrives
-// with the world objects — so for now it is a stat that fills and waits, which
-// is honest rather than a placeholder.
+// Every number here is meant to be moved by feel, and moving one is a backend
+// deploy with no migration and no client change.
 const (
-	hpDecayPerHour     = 3.0
+	statMax = 100.0
+
+	// The consequence.
+	hpDecayPerHour = 1.0
+	hpStart        = 65.0
+	// hpPenaltyPerHour is what EACH unmet need adds to that drain.
+	hpPenaltyPerHour = 6.0
+
+	// The needs.
+	beerDrainPerHour   = 4.0
+	beerStart          = 60.0
+	beerEmptyAt        = 20.0
 	bladderFillPerHour = 5.0
-	healDelta          = 35.0
-	statMax            = 100.0
-	// hpStart is below statMax on purpose — see the Start field's comment. It
-	// also means a new pet is about 22 hours from death rather than 33, which is
-	// still comfortably more than a day of not looking.
-	hpStart = 65.0
+	bladderFullAt      = 80.0
+
+	// What the verbs do.
+	drinkBeer    = 40.0
+	drinkHP      = 15.0
+	drinkBladder = 25.0
 )
 
 // catalogue is the single instance. Package-level and read-only after
@@ -195,19 +254,36 @@ var catalogue = Config{
 			Emoji: "❤️",
 			Min:   0,
 			Max:   statMax,
-			// Deliberately BELOW the maximum, and this is the one number here
-			// chosen for how the game feels on the first screen rather than for
-			// pacing. Starting a pet at full health makes the very first press of
-			// the only action a clamped no-op: the player taps «поправить
-			// здоровье», the bar does not move, and the game looks broken on the
-			// one interaction they were invited to try. Meeting дядя Ваня already
-			// a bit rough is also the truer fiction, and it gives the first tap
-			// something to do.
+			// Deliberately BELOW the maximum, so the very first press of a verb
+			// is not a clamped no-op: a bar that does not move on the one
+			// interaction a new player was invited to try reads as a broken game.
+			// Meeting дядя Ваня already a bit rough is the truer fiction anyway.
 			Start:        hpStart,
 			DecayPerHour: hpDecayPerHour,
 			GoodHigh:     true,
 			WarnAt:       30,
 			Fatal:        true,
+			// The two needs, and the reason health is a consequence rather than
+			// a chore of its own. Each threshold is the SAME number as the
+			// driving stat's WarnAt, on purpose: the bar turns amber at exactly
+			// the moment it starts costing him health, so the warning colour
+			// means something instead of being decoration.
+			Penalties: []Penalty{
+				{WhenKey: StatBeer, Threshold: beerEmptyAt, Above: false, RatePerHour: hpPenaltyPerHour},
+				{WhenKey: StatBladder, Threshold: bladderFullAt, Above: true, RatePerHour: hpPenaltyPerHour},
+			},
+		},
+		{
+			Key:          StatBeer,
+			Label:        "пиво",
+			Emoji:        "🍺",
+			Min:          0,
+			Max:          statMax,
+			Start:        beerStart,
+			DecayPerHour: beerDrainPerHour,
+			GoodHigh:     true,
+			WarnAt:       beerEmptyAt,
+			Fatal:        false,
 		},
 		{
 			Key:   StatBladder,
@@ -219,25 +295,40 @@ var catalogue = Config{
 			// Negative: it fills. See Stat.DecayPerHour.
 			DecayPerHour: -bladderFillPerHour,
 			GoodHigh:     false,
-			WarnAt:       70,
+			WarnAt:       bladderFullAt,
 			Fatal:        false,
 		},
 	},
 	Actions: []Action{
 		{
-			Key:   ActionHeal,
-			Label: "поправить здоровье",
-			Emoji: "💊",
-			// The wording is deliberately neutral and is expected to change: the
-			// mechanic the owner specified is «приём веществ вовремя», and this
-			// file is where that call gets made. Changing it is one string and a
-			// backend deploy, with no client change — which is the point.
-			StatKey: StatHP,
-			Delta:   healDelta,
-			Done:    "полегчало",
-			// Also the way back from a death, which is why death is a scare
-			// rather than an ending. See Service.Act.
+			Key:   ActionDrink,
+			Label: "выпить пива",
+			Emoji: "🍺",
+			// Three stats, and the third one is the joke: the drink that keeps
+			// him alive is also what sends him looking for a bush. Without it the
+			// two loops would be unrelated chores rather than one system.
+			Effects: []StatDelta{
+				{StatKey: StatBeer, Delta: drinkBeer},
+				{StatKey: StatHP, Delta: drinkHP},
+				{StatKey: StatBladder, Delta: drinkBladder},
+			},
+			Done: "хорошо пошло",
+			// The way back from a death, which is why death is a scare rather
+			// than an ending — and it is in character that beer is what does it.
 			RevivesFatal: true,
+		},
+		{
+			Key:   ActionRelieve,
+			Label: "покакать",
+			Emoji: "💩",
+			// A delta larger than the whole scale, so the clamp lands it exactly
+			// on the floor. "Reset" needs no mechanism of its own.
+			Effects: []StatDelta{{StatKey: StatBladder, Delta: -statMax}},
+			Done:    "полегчало",
+			// A dead Ваня does not go to the toilet. This is the action that
+			// makes the refusal real rather than theoretical — and it is why the
+			// screen has to say what to do instead.
+			RevivesFatal: false,
 		},
 	},
 	Skins: []Skin{

@@ -60,6 +60,16 @@ type StatValue struct {
 	Key   string    `json:"key"`
 	Value float64   `json:"value"`
 	AsOf  time.Time `json:"as_of"`
+	// RatePerHour is the drain this stat is suffering right now, penalties
+	// included — which is generally NOT the catalogue's own rate, because health
+	// falls faster while a need is unmet.
+	//
+	// Sent so the client can interpolate without owning a second copy of the
+	// coupling: it would otherwise need the thresholds, the onset arithmetic and
+	// every driver's trajectory, i.e. a full reimplementation of decay.go in
+	// TypeScript, kept honest by nothing. It is correct until the next onset,
+	// which is hours away, and every action answers with fresh server state.
+	RatePerHour float64 `json:"rate_per_hour"`
 }
 
 // State is the whole answer to GET /state.
@@ -71,16 +81,4 @@ type State struct {
 	// client can correct for a skewed device clock rather than assuming its own
 	// Date.now() agrees. The server never reads a client's time.
 	ServerNow time.Time `json:"server_now"`
-}
-
-// value returns the decayed value of one stat. A linear scan because there are
-// two of them and will be a handful; a map here would be a second thing to keep
-// in step with the catalogue's ordering for no measurable gain.
-func (st State) value(key string) (float64, bool) {
-	for _, v := range st.Stats {
-		if v.Key == key {
-			return v.Value, true
-		}
-	}
-	return 0, false
 }

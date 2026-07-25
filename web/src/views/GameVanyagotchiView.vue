@@ -306,12 +306,12 @@ async function act(action: VanyagotchiAction): Promise<void> {
     flash.value = action.done;
   } catch (err) {
     if (err instanceof ApiError && err.code === 'pet_dead') {
-      // Currently unreachable, and kept deliberately: every action in the
-      // catalogue can revive, so the server has no way to send this yet. The
-      // first verb that cannot — relieving himself, when that lands — makes it
-      // live, and without this branch that day would greet the player with the
-      // global "something went wrong" modal for a situation the screen is
-      // already explaining in words.
+      // Live now that a verb exists which cannot revive him: a dead Ваня does
+      // not go to the toilet, and the server refuses with a 409. The remedy is
+      // already written on the screen — the line below the bars says to bring
+      // him round — so this clears the stale `done` text and re-reads, rather
+      // than popping the global "something went wrong" modal over a situation
+      // the player is being told how to fix.
       flash.value = '';
       await loadPet();
     } else {
@@ -797,8 +797,10 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-/* Stat bars. Fixed height, and one row per stat: two today, and the row is a
-   grid so a third arrives without a layout decision. */
+/* Stat bars. Fixed height, and one row per stat: three today, and the row is a
+   grid so a fourth arrives without a layout decision. Each row costs about 19px
+   and the plane pays for it, which is measured rather than assumed — the 320x568
+   case in the mobile suite is what holds that. */
 .stats {
   flex: 0 0 auto;
   display: flex;

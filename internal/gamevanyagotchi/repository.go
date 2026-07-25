@@ -29,8 +29,14 @@ type Repository interface {
 	// it at its starting value.
 	SeedStats(ctx context.Context, q db.DBTX, petID string, rows []StatRow) error
 
-	// SetStat writes a stat's value and the instant it was true.
-	SetStat(ctx context.Context, q db.DBTX, petID, statKey string, value float64, asOf time.Time) error
+	// WriteStats upserts every row given, at the instant each carries.
+	//
+	// Plural, and every caller passes EVERY stat. That is the invariant the
+	// coupled decay depends on: hp's drain is a function of the other stats'
+	// trajectories, so all of them must share one as_of or the integration
+	// window has a gap in which a driver's history is unknown. Writing one stat
+	// alone would silently erase damage — see decay.go.
+	WriteStats(ctx context.Context, q db.DBTX, petID string, rows []StatRow) error
 
 	// MarkDied records the moment of death, exactly once. Reports whether this
 	// call was the one that wrote it — so the first read to observe a death is

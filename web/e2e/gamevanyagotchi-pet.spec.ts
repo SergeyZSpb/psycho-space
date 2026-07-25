@@ -25,14 +25,23 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 const TYPE_ROSTER = 'vanyagotchi_roster';
 const TYPE_YOU = 'vanyagotchi_you';
 
-/** The route the SPA calls, spelled out rather than built from a helper. */
+/** The routes the SPA calls, spelled out rather than built from a helper. */
 const CONFIG_PATH = '/api/game-vanyagotchi/config';
 const STATE_PATH = '/api/game-vanyagotchi/state';
-const ACTION_PATH = '/api/game-vanyagotchi/actions/heal';
+const DRINK_PATH = '/api/game-vanyagotchi/actions/drink';
+const RELIEVE_PATH = '/api/game-vanyagotchi/actions/relieve';
 
 // ---------------------------------------------------------------------------
-// Wire fixtures. Local mirrors of internal/gamevanyagotchi/{content,pet}.go.
+// Wire fixtures. Local mirrors of internal/gamevanyagotchi/{content,decay,pet}.go.
 // ---------------------------------------------------------------------------
+
+/** Extra drain one stat suffers while ANOTHER sits in a bad range. */
+interface PenaltyDef {
+  when_key: string;
+  threshold: number;
+  above: boolean;
+  rate_per_hour: number;
+}
 
 interface StatDef {
   key: string;
@@ -46,14 +55,20 @@ interface StatDef {
   good_high: boolean;
   warn_at: number;
   fatal: boolean;
+  penalties?: PenaltyDef[];
+}
+
+/** One stat moved by one amount — an action moves a slice of these. */
+interface EffectDef {
+  stat_key: string;
+  delta: number;
 }
 
 interface ActionDef {
   key: string;
   label: string;
   emoji: string;
-  stat_key: string;
-  delta: number;
+  effects: EffectDef[];
   done: string;
   revives_fatal: boolean;
 }
@@ -78,23 +93,48 @@ interface StateFixture {
     died_at: string | null;
     created_at: string;
   };
-  stats: { key: string; value: number; as_of: string }[];
+  stats: { key: string; value: number; as_of: string; rate_per_hour: number }[];
   alive: boolean;
   server_now: string;
 }
 
-/** The two shipped stats, with the shipped rates. */
+/**
+ * The three shipped stats, with the shipped rates.
+ *
+ * Health is the CONSEQUENCE of the other two rather than a chore of its own: it
+ * barely rots by itself, and what kills him is an empty beer or a full bladder,
+ * six points an hour each. None of that arithmetic is the client's — it is here
+ * because this file mirrors the wire, and because a screen that never receives a
+ * penalty must still show one taking effect through `rate_per_hour`.
+ */
 const HP: StatDef = {
   key: 'hp',
   label: 'здоровье',
   emoji: '❤️',
   min: 0,
   max: 100,
-  start: 100,
-  decay_per_hour: 3,
+  start: 65,
+  decay_per_hour: 1,
   good_high: true,
   warn_at: 30,
   fatal: true,
+  penalties: [
+    { when_key: 'beer', threshold: 20, above: false, rate_per_hour: 6 },
+    { when_key: 'bladder', threshold: 80, above: true, rate_per_hour: 6 },
+  ],
+};
+
+const BEER: StatDef = {
+  key: 'beer',
+  label: 'пиво',
+  emoji: '🍺',
+  min: 0,
+  max: 100,
+  start: 60,
+  decay_per_hour: 4,
+  good_high: true,
+  warn_at: 20,
+  fatal: false,
 };
 
 const BLADDER: StatDef = {
@@ -107,26 +147,42 @@ const BLADDER: StatDef = {
   // Negative because it FILLS. One signed rate, no second code path.
   decay_per_hour: -5,
   good_high: false,
-  warn_at: 70,
+  warn_at: 80,
   fatal: false,
 };
 
-const HEAL: ActionDef = {
-  key: 'heal',
-  label: 'поправить здоровье',
-  emoji: '💊',
-  stat_key: 'hp',
-  delta: 35,
-  done: 'полегчало',
+/** Three stats in one press, and the third one is the joke. */
+const DRINK: ActionDef = {
+  key: 'drink',
+  label: 'выпить пива',
+  emoji: '🍺',
+  effects: [
+    { stat_key: 'beer', delta: 40 },
+    { stat_key: 'hp', delta: 15 },
+    { stat_key: 'bladder', delta: 25 },
+  ],
+  done: 'хорошо пошло',
   revives_fatal: true,
+};
+
+/** The other half of the loop drinking creates — and the verb a corpse is refused. */
+const RELIEVE: ActionDef = {
+  key: 'relieve',
+  label: 'покакать',
+  emoji: '💩',
+  // A delta larger than the whole scale: the clamp is how the catalogue says
+  // "reset", with no mechanism of its own.
+  effects: [{ stat_key: 'bladder', delta: -100 }],
+  done: 'полегчало',
+  revives_fatal: false,
 };
 
 /** The catalogue as shipped today. */
 const CATALOGUE: ConfigFixture = {
   game_key: 'vanyagotchi',
   title: 'Ванягоччи',
-  stats: [HP, BLADDER],
-  actions: [HEAL],
+  stats: [HP, BEER, BLADDER],
+  actions: [DRINK, RELIEVE],
   skins: [
     {
       key: 'vanya',
@@ -149,7 +205,18 @@ interface StateOptions {
   alive?: boolean;
   diedAt?: string | null;
   petId?: string;
+  /**
+   * The drain each stat is under at the moment of the read, penalties folded in.
+   *
+   * Defaults to the catalogue's own rate, which is the uncoupled case; a test
+   * about a Ваня who is actually dying overrides hp with the penalised figure,
+   * because that is what the server would really have sent.
+   */
+  rates?: Record<string, number>;
 }
+
+/** Every stat fixture defined at module scope, so a state can carry a real rate. */
+const DEFS: StatDef[] = [HP, BEER, BLADDER];
 
 /**
  * A state stamped at the moment the request is answered.
@@ -171,7 +238,13 @@ function stateOf(values: Record<string, number>, opts: StateOptions = {}): State
       died_at: opts.diedAt ?? null,
       created_at: now,
     },
-    stats: Object.entries(values).map(([key, value]) => ({ key, value, as_of: now })),
+    stats: Object.entries(values).map(([key, value]) => ({
+      key,
+      value,
+      as_of: now,
+      rate_per_hour:
+        opts.rates?.[key] ?? DEFS.find((d) => d.key === key)?.decay_per_hour ?? 0,
+    })),
     alive: opts.alive ?? true,
     server_now: now,
   };
@@ -181,13 +254,33 @@ function stateOf(values: Record<string, number>, opts: StateOptions = {}): State
 // Stubs.
 // ---------------------------------------------------------------------------
 
+/**
+ * A refused action, as the backend would answer it: a stable machine code and
+ * the status that goes with it. `pet_dead` is a 409 — the request is perfectly
+ * well formed and would have worked on a living Ваня.
+ */
+interface Refusal {
+  status: number;
+  code: string;
+}
+
 /** What the pet endpoints should answer. `'fail'` serves a 500. */
 interface PetStub {
   config?: ConfigFixture | 'fail';
   /** Called per request, so every answer is stamped with a fresh clock. */
   state?: (() => StateFixture) | 'fail';
-  /** What POST /actions/{key} answers with. Defaults to whatever `state` says. */
-  acted?: () => StateFixture;
+  /**
+   * What POST /actions/{key} answers with, given the verb — so one stub can
+   * refuse one action and honour another, which is the whole point now that not
+   * every action can be applied to a corpse. Defaults to whatever `state` says.
+   */
+  acted?: (action: string) => StateFixture | Refusal;
+  /**
+   * Held open, if set, before any action is answered. A test that needs to
+   * observe the in-flight state waits on this rather than on a timeout — the
+   * disabled button is otherwise a state one Vue flush wide.
+   */
+  hold?: Promise<void>;
 }
 
 /** The calls the page actually made, for tests that care how many. */
@@ -247,9 +340,17 @@ async function stubBackend(page: Page, pet: PetStub = {}): Promise<PetCalls> {
     }
     if (path.startsWith('/api/game-vanyagotchi/actions/')) {
       calls.posts.push(path);
-      const answer = pet.acted ?? (pet.state === 'fail' ? undefined : pet.state);
-      if (!answer) return boom();
-      return json(answer());
+      if (pet.hold) await pet.hold;
+      const verb = path.slice(path.lastIndexOf('/') + 1);
+      if (pet.acted) {
+        const answer = pet.acted(verb);
+        if ('code' in answer) {
+          return json({ error: answer.code, trace_id: 'e2e-trace-id' }, answer.status);
+        }
+        return json(answer);
+      }
+      if (pet.state === 'fail' || !pet.state) return boom();
+      return json(pet.state());
     }
     return json({});
   });
@@ -363,6 +464,10 @@ const plane = (page: Page) => page.locator('[data-test="plane"]');
 const dots = (page: Page) => page.locator('[data-test="peer"]');
 const petLine = (page: Page) => page.locator('[data-test="pet-line"]');
 const statValue = (page: Page, key: string) => page.locator(`[data-test="stat-value-${key}"]`);
+const actionBtn = (page: Page, key: string) => page.locator(`[data-test="action-${key}"]`);
+
+/** The death notice — the one line the screen writes rather than the catalogue. */
+const DEATH_LINE = 'Ваня не выдержал. Откачай его.';
 
 /** Loads the game and steps past the intro into the yard. */
 async function enterYard(page: Page): Promise<void> {
@@ -372,39 +477,47 @@ async function enterYard(page: Page): Promise<void> {
 }
 
 test.describe('«Ванягоччи» — the pet on the yard screen', () => {
-  test('the bars, the numbers and the action come from the catalogue', async ({ page }) => {
+  test('the bars, the numbers and both actions come from the catalogue', async ({ page }) => {
     // Nothing on this screen is spelled out in the SPA: the labels, the bounds
-    // and the button's wording all arrive from GET /config, which is what makes
+    // and the buttons' wording all arrive from GET /config, which is what makes
     // "adding a stat is a backend-only change" true rather than aspirational.
     await stubBackend(page, {
       config: CATALOGUE,
-      state: () => stateOf({ hp: 72, bladder: 18 }),
+      state: () => stateOf({ hp: 72, beer: 44, bladder: 18 }),
     });
     await stubSocket(page);
     await enterYard(page);
 
     await expect(page.locator('[data-test="pet-stats"]')).toBeVisible();
+    // Three bars now, and the third is the one that turned health into a
+    // consequence: hp is what beer and the bladder do to him.
+    await expect(page.locator('.stats .stat')).toHaveCount(3);
     await expect(page.locator('[data-test="stat-hp"]')).toBeVisible();
+    await expect(page.locator('[data-test="stat-beer"]')).toBeVisible();
     await expect(page.locator('[data-test="stat-bladder"]')).toBeVisible();
 
     // Rounded, and decayed to now — with `as_of` stamped at the response the
     // decay term is zero, so these are exactly the numbers that were sent.
     await expect(statValue(page, 'hp')).toHaveText('72');
+    await expect(statValue(page, 'beer')).toHaveText('44');
     await expect(statValue(page, 'bladder')).toHaveText('18');
 
-    // The button is labelled from the catalogue, emoji and all.
-    await expect(page.locator('[data-test="action-heal"]')).toContainText('поправить здоровье');
+    // One button per catalogue action, labelled from it, emoji and all — the
+    // row iterates the catalogue rather than naming a verb.
+    await expect(page.locator('.actions .v-btn')).toHaveCount(2);
+    await expect(actionBtn(page, 'drink')).toContainText('выпить пива');
+    await expect(actionBtn(page, 'relieve')).toContainText('покакать');
   });
 
   test('the screen still never scrolls now that the pet panel is on it', async ({ page }) => {
     // The layout rule this game inherited is literal: one flexible child, the
-    // rest fixed, `overflow: hidden`. Four fixed rows now sit under the plane
-    // instead of one, so the plane has to give up the height rather than the
-    // panel being pushed off — which is exactly the regression a pet panel is
-    // most likely to cause.
+    // rest fixed, `overflow: hidden`. The panel below the plane grew a third bar
+    // and a second button, so the plane has to give up the height rather than
+    // the panel being pushed off — which is exactly the regression a growing pet
+    // panel is most likely to cause.
     await stubBackend(page, {
       config: CATALOGUE,
-      state: () => stateOf({ hp: 61, bladder: 44 }),
+      state: () => stateOf({ hp: 61, beer: 33, bladder: 44 }),
     });
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -425,7 +538,8 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
 
     await expectNoOverflow(page, 'vanyagotchi yard with the pet panel');
     await expectNoVerticalScroll(page, 'vanyagotchi yard with the pet panel');
-    await expectOnScreen(page, page.locator('[data-test="action-heal"]'), 'the action button');
+    await expectOnScreen(page, actionBtn(page, 'drink'), 'the drink button');
+    await expectOnScreen(page, actionBtn(page, 'relieve'), 'the relieve button');
     await expectOnScreen(page, page.getByText(/во дворе:/), 'the status row');
   });
 
@@ -434,11 +548,11 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     // fixed rows come closest to eating the plane entirely. Set before `goto`
     // rather than resized afterwards, the same way the sibling spec pins the
     // disclaimer, so the layout is built for this size rather than reflowed into
-    // it.
+    // it. Three bars and two buttons is the tallest the panel has ever been.
     await page.setViewportSize({ width: 320, height: 568 });
     await stubBackend(page, {
       config: CATALOGUE,
-      state: () => stateOf({ hp: 61, bladder: 44 }),
+      state: () => stateOf({ hp: 61, beer: 33, bladder: 44 }),
     });
     await stubSocket(page);
     await enterYard(page);
@@ -446,7 +560,8 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
 
     await expectNoOverflow(page, 'vanyagotchi yard at 320x568');
     await expectNoVerticalScroll(page, 'vanyagotchi yard at 320x568');
-    await expectOnScreen(page, page.locator('[data-test="action-heal"]'), 'the action button');
+    await expectOnScreen(page, actionBtn(page, 'drink'), 'the drink button');
+    await expectOnScreen(page, actionBtn(page, 'relieve'), 'the relieve button');
     await expectOnScreen(page, page.getByText(/во дворе:/), 'the status row');
     // And the plane it is sharing the screen with has not been squeezed to
     // nothing to make room.
@@ -454,60 +569,191 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     expect(box?.height ?? 0, 'the plane collapsed to make room for the panel').toBeGreaterThan(120);
   });
 
-  test('the action is a thumb-sized target', async ({ page }) => {
+  test('both actions are thumb-sized targets', async ({ page }) => {
     await stubBackend(page, {
       config: CATALOGUE,
-      state: () => stateOf({ hp: 61, bladder: 44 }),
+      state: () => stateOf({ hp: 61, beer: 33, bladder: 44 }),
     });
     await stubSocket(page);
     await enterYard(page);
 
     if (isMobile(page)) {
       // Vuetify's default button is 36px tall; the view overrides it precisely
-      // because this floor is enforced rather than requested.
-      await expectTapTarget(page.locator('[data-test="action-heal"]'), 'heal action');
+      // because this floor is enforced rather than requested. Two buttons now
+      // share one row, so the width is the half that could go wrong.
+      await expectTapTarget(actionBtn(page, 'drink'), 'drink action');
+      await expectTapTarget(actionBtn(page, 'relieve'), 'relieve action');
     }
   });
 
-  test('pressing the action posts once and redraws from the answer', async ({ page }) => {
-    // The client sends a VERB and never a value, and the number it then shows is
-    // the server's own recomputed one — not a local guess at what +35 would have
-    // been. Stubbing the POST with an answer the client could not have predicted
-    // is what tells the two apart.
+  test('drinking posts once and moves all three bars from the answer', async ({ page }) => {
+    // The client sends a VERB and never a value, and the numbers it then shows
+    // are the server's own recomputed ones — not a local application of the
+    // catalogue's `effects`. Stubbing the POST with an answer no local sum
+    // produces is what tells the two apart, and drinking is the case where it
+    // matters most: one press moves three stats at once.
     let acted = false;
     const calls = await stubBackend(page, {
       config: CATALOGUE,
-      state: () => stateOf({ hp: acted ? 61 : 26, bladder: 12 }),
+      state: () =>
+        acted
+          ? stateOf({ hp: 61, beer: 88, bladder: 47 })
+          : stateOf({ hp: 26, beer: 4, bladder: 12 }),
       acted: () => {
         acted = true;
-        // Deliberately not 26 + 35: a client doing the arithmetic itself would
-        // still show 61 and pass, so the answer is off by a number no local sum
-        // produces.
-        return stateOf({ hp: 61, bladder: 12 });
+        // Deliberately not 26+15, 4+40, 12+25: a client applying the effects
+        // itself would land on 41/44/37 and a client that trusted the server
+        // lands here, so the two cannot both pass.
+        return stateOf({ hp: 61, beer: 88, bladder: 47 });
       },
     });
     await stubSocket(page);
     await enterYard(page);
     await expect(statValue(page, 'hp')).toHaveText('26');
+    await expect(statValue(page, 'beer')).toHaveText('4');
 
-    await page.locator('[data-test="action-heal"]').click();
+    await actionBtn(page, 'drink').click();
 
     await expect(statValue(page, 'hp')).toHaveText('61');
+    await expect(statValue(page, 'beer')).toHaveText('88');
+    await expect(statValue(page, 'bladder')).toHaveText('47');
     // The line under the bars is the action's own `done` text, straight from the
     // catalogue — another string the SPA does not know.
-    await expect(petLine(page)).toHaveText('полегчало');
-    // Exactly one POST: the button disables itself while a request is in flight,
-    // and a double-fire would be a real bug on a touchscreen.
-    expect(calls.posts).toEqual([ACTION_PATH]);
+    await expect(petLine(page)).toHaveText('хорошо пошло');
+    // Exactly one POST, to the verb that was pressed.
+    expect(calls.posts).toEqual([DRINK_PATH]);
     // The bar followed the number rather than staying where it was. Polled
     // rather than measured once: the fill animates its width over 400 ms, so a
     // single reading taken the instant the number changed catches it part-way
     // along and says nothing about where it was heading.
     await expect
-      .poll(() => barFraction(page, 'hp'), {
-        message: 'the hp bar did not follow its number',
+      .poll(() => barFraction(page, 'beer'), {
+        message: 'the beer bar did not follow its number',
       })
       .toBeGreaterThan(0.5);
+  });
+
+  test('relieving posts to its own verb and empties the bladder', async ({ page }) => {
+    // The second verb, and the proof the row is really iterating the catalogue:
+    // the path is built from the action's own key, so pressing the second button
+    // must reach `/actions/relieve` and nothing else.
+    let acted = false;
+    const calls = await stubBackend(page, {
+      config: CATALOGUE,
+      state: () =>
+        acted ? stateOf({ hp: 70, beer: 50, bladder: 0 }) : stateOf({ hp: 70, beer: 50, bladder: 92 }),
+      acted: () => {
+        acted = true;
+        // Clamped to the floor by the server: the catalogue's −100 is larger
+        // than the whole scale, which is how it says "reset".
+        return stateOf({ hp: 70, beer: 50, bladder: 0 });
+      },
+    });
+    await stubSocket(page);
+    await enterYard(page);
+    await expect(statValue(page, 'bladder')).toHaveText('92');
+    await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(1);
+
+    await actionBtn(page, 'relieve').click();
+
+    await expect(statValue(page, 'bladder')).toHaveText('0');
+    await expect(petLine(page)).toHaveText('полегчало');
+    expect(calls.posts).toEqual([RELIEVE_PATH]);
+    // And the bar stopped reading as trouble, because 0 is the good end of a
+    // stat whose `good_high` is false.
+    await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(0);
+  });
+
+  test('a refused action shows the death line rather than the global error modal', async ({
+    page,
+  }) => {
+    // THIS PATH IS NEWLY REACHABLE. Until relieving himself existed, every verb
+    // in the catalogue could revive, so the server had no way to refuse one and
+    // the branch that handles a 409 was dead code kept on faith. A dead Ваня
+    // does not go to the toilet, so now it is live — and what the player must
+    // see is the screen's own instruction to bring him round, NOT the generic
+    // "something went wrong" modal for a situation the game is already
+    // explaining in words.
+    //
+    // He is alive to begin with and dies while the page is holding a stale
+    // state, which is the honest way this happens: nothing re-reads between
+    // actions, so the first the client hears of it is the refusal.
+    let dead = false;
+    const calls = await stubBackend(page, {
+      config: CATALOGUE,
+      state: () =>
+        dead
+          ? stateOf(
+              { hp: 0, beer: 0, bladder: 96 },
+              // A truthful rate for a Ваня with both needs unmet: 1 of his own
+              // plus 6 for the beer plus 6 for the bladder.
+              { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
+            )
+          : stateOf({ hp: 4, beer: 1, bladder: 96 }, { rates: { hp: 13 } }),
+      acted: (verb) => {
+        if (verb === 'relieve') {
+          dead = true;
+          return { status: 409, code: 'pet_dead' };
+        }
+        return stateOf({ hp: 15, beer: 40, bladder: 96 });
+      },
+    });
+    await stubSocket(page);
+    await enterYard(page);
+
+    // A press that succeeds first, so the line has something on it that the
+    // refusal has to clear — otherwise "the death notice appeared" would be
+    // indistinguishable from "the line never changed".
+    await actionBtn(page, 'drink').click();
+    await expect(petLine(page)).toHaveText('хорошо пошло');
+
+    const statesBefore = calls.states;
+    await actionBtn(page, 'relieve').click();
+
+    // The refusal is handled: the line says what to do about it, and the modal
+    // never opens.
+    await expect(petLine(page)).toHaveText(DEATH_LINE);
+    await expect(page.getByText('Ой, ошибка')).toHaveCount(0);
+    // And it re-read the world rather than merely swapping a string, which is
+    // the only reason the screen now knows he is dead at all.
+    expect(calls.states, 'the refusal did not re-read the state').toBeGreaterThan(statesBefore);
+    expect(calls.posts).toEqual([DRINK_PATH, RELIEVE_PATH]);
+
+    // Still playable: the verb that CAN revive him is still there to press.
+    await expect(actionBtn(page, 'drink')).toBeEnabled();
+  });
+
+  test('an action in flight cannot be fired twice', async ({ page }) => {
+    // A double-fire is a real bug on a touchscreen, and the guard is a flag the
+    // whole row shares. Proved by holding the response open rather than by
+    // racing two clicks: the disabled state is otherwise one Vue flush wide and
+    // an assertion about it would be a coin toss.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls = await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ hp: 40, beer: 30, bladder: 20 }),
+      acted: () => stateOf({ hp: 55, beer: 70, bladder: 45 }),
+      hold: held,
+    });
+    await stubSocket(page);
+    await enterYard(page);
+    await expect(statValue(page, 'hp')).toHaveText('40');
+
+    await actionBtn(page, 'drink').click();
+
+    // Both buttons, not just the pressed one: one request is in flight and the
+    // answer is a whole new world, so relieving mid-drink would be acting on a
+    // state that is already gone.
+    await expect(actionBtn(page, 'drink')).toBeDisabled();
+    await expect(actionBtn(page, 'relieve')).toBeDisabled();
+
+    release();
+    await expect(statValue(page, 'hp')).toHaveText('55');
+    await expect(actionBtn(page, 'drink')).toBeEnabled();
+    expect(calls.posts).toEqual([DRINK_PATH]);
   });
 
   test('a stat in its warning range says so, and one outside does not', async ({ page }) => {
@@ -518,28 +764,32 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await stubBackend(page, {
       config: CATALOGUE,
       // hp 20 < warn_at 30 (good_high) -> trouble.
-      // bladder 10, warn_at 70, good_high false -> comfortably fine.
-      state: () => stateOf({ hp: 20, bladder: 10 }),
+      // beer 55 > warn_at 20 (good_high) -> fine.
+      // bladder 10, warn_at 80, good_high false -> comfortably fine.
+      state: () => stateOf({ hp: 20, beer: 55, bladder: 10 }),
     });
     await stubSocket(page);
     await enterYard(page);
 
     await expect(page.locator('[data-test="stat-hp"][data-trouble="1"]')).toHaveCount(1);
+    await expect(page.locator('[data-test="stat-beer"][data-trouble="1"]')).toHaveCount(0);
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(0);
   });
 
   test('a full bladder is trouble even though a full health bar is not', async ({ page }) => {
     // The other half of the rule above. A single-direction implementation — "low
     // is bad" — passes the test above and fails this one, which is the whole
-    // reason `good_high` is on the wire.
+    // reason `good_high` is on the wire. An empty beer is the same shape as low
+    // health, and is here because it is the OTHER thing that kills him.
     await stubBackend(page, {
       config: CATALOGUE,
-      state: () => stateOf({ hp: 95, bladder: 88 }),
+      state: () => stateOf({ hp: 95, beer: 3, bladder: 88 }),
     });
     await stubSocket(page);
     await enterYard(page);
 
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(1);
+    await expect(page.locator('[data-test="stat-beer"][data-trouble="1"]')).toHaveCount(1);
     await expect(page.locator('[data-test="stat-hp"][data-trouble="1"]')).toHaveCount(0);
   });
 
@@ -552,12 +802,15 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        stateOf({ hp: 0, bladder: 90 }, { alive: false, diedAt: '2026-07-24T03:00:00Z' }),
+        stateOf(
+          { hp: 0, beer: 0, bladder: 90 },
+          { alive: false, diedAt: '2026-07-24T03:00:00Z', rates: { hp: 13 } },
+        ),
     });
     const socket = await stubSocket(page);
     await enterYard(page);
 
-    await expect(petLine(page)).toHaveText('Ваня не выдержал. Откачай его.');
+    await expect(petLine(page)).toHaveText(DEATH_LINE);
 
     await socket.push(JSON.stringify({ t: TYPE_YOU, id: 'me' }));
     await socket.push(roster({ id: 'me', x: 0.5, y: 0.5 }, { id: 'other', x: 0.2, y: 0.2 }));
@@ -574,7 +827,9 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     // THE property of this iteration, and the one worth a test of its own:
     // adding a stat or a verb is meant to be a backend change with no frontend
     // deploy. `mood` and `feed` do not exist anywhere in the Go catalogue or in
-    // the SPA — if either had been hardcoded, nothing below would appear.
+    // the SPA — if either had been hardcoded, nothing below would appear. Note
+    // `feed` moves TWO stats, one of which the catalogue does not define: the
+    // client posts a verb and never applies an effect, so it does not care.
     const MOOD: StatDef = {
       key: 'mood',
       label: 'настроение',
@@ -591,24 +846,28 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
       key: 'feed',
       label: 'накормить',
       emoji: '🥟',
-      stat_key: 'mood',
-      delta: 2,
+      effects: [
+        { stat_key: 'mood', delta: 2 },
+        { stat_key: 'nonexistent', delta: 99 },
+      ],
       done: 'поел',
       revives_fatal: false,
     };
     await stubBackend(page, {
       config: catalogueOf([MOOD], [FEED]),
-      state: () => stateOf({ mood: 7 }),
+      state: () => stateOf({ mood: 7 }, { rates: { mood: MOOD.decay_per_hour } }),
     });
     await stubSocket(page);
     await enterYard(page);
 
     await expect(page.locator('[data-test="stat-mood"]')).toBeVisible();
     await expect(statValue(page, 'mood')).toHaveText('7');
-    await expect(page.locator('[data-test="action-feed"]')).toContainText('накормить');
+    await expect(actionBtn(page, 'feed')).toContainText('накормить');
     // The shipped keys are gone, because the catalogue no longer mentions them.
     await expect(page.locator('[data-test="stat-hp"]')).toHaveCount(0);
-    await expect(page.locator('[data-test="action-heal"]')).toHaveCount(0);
+    await expect(page.locator('[data-test="stat-bladder"]')).toHaveCount(0);
+    await expect(actionBtn(page, 'drink')).toHaveCount(0);
+    await expect(actionBtn(page, 'relieve')).toHaveCount(0);
     // And the bar is scaled against THIS stat's bounds (0..10), not against a
     // hardcoded 0..100: 7 of 10 is most of the track, 7 of 100 would be a sliver.
     await expect
@@ -634,7 +893,7 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
 
     // No bars, no buttons — and no modal.
     await expect(page.locator('[data-test="pet-stats"]')).toHaveCount(0);
-    await expect(page.locator('[data-test="action-heal"]')).toHaveCount(0);
+    await expect(actionBtn(page, 'drink')).toHaveCount(0);
     await expect(page.getByText('Ой, ошибка')).toHaveCount(0);
     // The line is still there, and empty: it is a fixed-height row so the plane
     // above does not resize when text comes and goes.
@@ -644,13 +903,17 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expectNoVerticalScroll(page, 'vanyagotchi yard with no pet');
   });
 
+
   test('the splash still carries both the lore and the disclaimer at 320x568', async ({ page }) => {
     // The disclaimer is a requirement rather than decoration, and the lore line
     // that now sits above it is the one thing on that screen most likely to push
     // it off a short phone — the two prose blocks are the only shrinkable
     // children there, and the disclaimer is deliberately not one of them.
     await page.setViewportSize({ width: 320, height: 568 });
-    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ hp: 100, bladder: 0 }) });
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ hp: 65, beer: 60, bladder: 0 }),
+    });
     await stubSocket(page);
     await page.goto('/app/game-vanyagotchi');
 

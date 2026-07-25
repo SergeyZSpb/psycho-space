@@ -10,7 +10,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **app:** systemd unit `psycho-space` under user `psychospace`; binary `/opt/psycho-space/psycho-space`; env `/etc/psycho-space/app.env`; logs `/var/log/psycho-space/app.log`.
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/gamekhimki/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
-- **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*`, view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows, and moving `as_of` is how you fast-forward. See "Working on «Ванягоччи» (the pet)" below for the queries, including how to kill and revive a pet on demand. Rates and labels are in `content.go`, not the database.
+- **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*`, view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds and labels are in `content.go`, not the database.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, the append-only decision records saying why it is that shape), `../CLAUDE.md` (working rules and gates).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
@@ -201,37 +201,60 @@ ssh psycho "sudo -u postgres psql psychospace -c \"
    WHERE p.account_id = '<uuid>' AND p.deleted_at IS NULL\""
 ```
 
+**Health is a consequence, not a timer, so read the other two bars first.** `hp`
+drains only 1/hour on its own; what kills him is **+6/hour while `beer` ≤ 20** and
+**+6/hour while `bladder` ≥ 80**. So a Ваня losing health fast is a Ваня who is
+dry, bursting, or both — and the arithmetic is worked out from the stored pairs
+at read time, never simulated. `beer` drains 4/hour from 60; `bladder` fills
+5/hour from 0 **and gains 25 every drink**.
+
 **To age a pet without waiting** — the only way to see decay, a death, or the
-revive path on demand — push `as_of` backwards. Health drains 3/hour from 100, so
-34 hours is comfortably dead:
+revive path on demand — push `as_of` backwards. Move **every** row by the same
+amount, or the coupling has a window it cannot reconstruct and the damage will
+not appear:
 
 ```sql
 UPDATE game_vanyagotchi_pet_stats
-   SET as_of = now() - interval '34 hours'
- WHERE pet_id = '<uuid>' AND stat_key = 'hp';
+   SET as_of = now() - interval '20 hours'
+ WHERE pet_id = '<uuid>';
 ```
 
+At twenty hours a fresh pet is dry after ten (beer 60 at 4/hour), so it takes ten
+hours of 1/hour and ten of 7/hour: 65 − 10 − 70, i.e. comfortably dead.
+
 Then load the game (or `curl` `/api/game-vanyagotchi/state`). That request is what
-writes `died_at`, and it writes the **derived** instant — roughly `as_of + 33.3h`,
-not "now" — so a `died_at` equal to the moment you looked means something is wrong
+writes `died_at`, and it writes the **derived** instant — the moment health
+actually reached zero, worked out across the rate change when the beer ran dry,
+not "now". A `died_at` equal to the moment you looked means something is wrong
 with the derivation rather than with your test.
 
-**To bring somebody back**, press the button in the app; it clears `died_at`. Over
-`psql` the equivalent is clearing it *and* re-stamping health, because a pet whose
-`died_at` is NULL with health still at zero simply dies again on the next read:
+**To bring somebody back**, press «выпить пива» in the app; it is the action that
+revives (and «покакать» deliberately is not — a dead Ваня goes nowhere, so it
+answers 409 `pet_dead`). Over `psql` the equivalent is refilling *and* clearing,
+because a pet whose `died_at` is NULL with health still at zero simply dies again
+on the next read — and every row must carry the same `as_of`:
 
 ```sql
-UPDATE game_vanyagotchi_pet_stats SET value = 100, as_of = now()
- WHERE pet_id = '<uuid>' AND stat_key = 'hp';
+UPDATE game_vanyagotchi_pet_stats
+   SET value = CASE stat_key WHEN 'hp' THEN 65 WHEN 'beer' THEN 60 ELSE 0 END,
+       as_of = now(), updated_at = now()
+ WHERE pet_id = '<uuid>';
 UPDATE game_vanyagotchi_pets SET died_at = NULL, updated_at = now() WHERE id = '<uuid>';
 ```
 
-**Rates and labels are not in the database.** They live in
-`internal/gamevanyagotchi/content.go` and ship with the binary, so changing how
-fast health drains, retitling a button, or adding a stat is a backend deploy with
-no migration and no frontend change — and existing pets pick a newly-added stat up
-on their next read. Adding a *stat* is safe that way; nothing backfills, because
-nothing needs to.
+**Never write one stat row on its own.** Health is integrated from its own
+`as_of` against the other stats' trajectories, so all the pairs have to share one
+instant. Re-stamping the bladder alone would erase whatever damage a full bladder
+had already done — nothing errors, the number is just quietly wrong. The app
+enforces this (there is no single-stat write path); a hand-written `UPDATE` does
+not, so include every row.
+
+**Rates, thresholds, penalties and labels are not in the database.** They live in
+`internal/gamevanyagotchi/content.go` and ship with the binary, so retuning how
+fast he dries out, retitling a button, changing what a drink does, or adding a
+whole stat is a backend deploy with **no migration and no frontend change** —
+and existing pets pick a newly-added stat up on their next read. Nothing
+backfills, because nothing needs to.
 
 **Positions are not in the database at all** (yet). A Ваня's place in the yard is
 in-process memory, held for `PositionGrace` (2 minutes) after the last socket

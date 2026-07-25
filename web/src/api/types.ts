@@ -201,6 +201,25 @@ export interface GameKhimkiStats {
 // backend change and this file does not move.
 // ---------------------------------------------------------------------------
 
+/**
+ * Extra drain one stat suffers while ANOTHER sits in a bad range.
+ *
+ * This is the coupling that makes health a consequence of two needs rather than
+ * a chore of its own: an empty beer and a full bladder are what actually kill
+ * him. It is on the wire because it is content — a number somebody will want to
+ * move by feel — and NOT because the client evaluates it. The effective rate a
+ * bar creeps at arrives already computed, as `rate_per_hour` below.
+ */
+export interface VanyagotchiPenalty {
+  /** The driving stat. */
+  when_key: string;
+  /** The condition: at or above `threshold` when `above`, at or below it otherwise. */
+  threshold: number;
+  above: boolean;
+  /** Added to the penalised stat's drain while it applies. */
+  rate_per_hour: number;
+}
+
 /** One thing about a pet that changes with time on its own. */
 export interface VanyagotchiStat {
   key: string;
@@ -211,8 +230,9 @@ export interface VanyagotchiStat {
   start: number;
   /**
    * Signed: positive drains towards `min`, negative fills towards `max`, zero is
-   * a lifetime counter. The client uses it only to keep the bar moving between
-   * fetches — that interpolation is display, never truth.
+   * a lifetime counter. This is the stat's UNCOUPLED rate — what it loses with
+   * every need met — so it is the fallback the bar interpolates at, not the
+   * first choice; see `rate_per_hour` on the value.
    */
   decay_per_hour: number;
   /** Which end of the scale is the happy one. */
@@ -221,18 +241,47 @@ export interface VanyagotchiStat {
   warn_at: number;
   /** Reaching `min` kills him. */
   fatal: boolean;
+  /**
+   * What this stat loses on top of `decay_per_hour` while its drivers are in
+   * trouble. Absent for a stat nothing drives, which is most of them.
+   */
+  penalties?: VanyagotchiPenalty[];
 }
 
-/** A verb that moves one stat by a fixed amount. */
+/**
+ * One stat moved by one amount, before clamping.
+ *
+ * A separate shape because an action stopped being able to move a single stat:
+ * drinking tops him up, cheers him up AND fills his bladder, which is what makes
+ * the second verb have anything to do.
+ */
+export interface VanyagotchiStatDelta {
+  stat_key: string;
+  delta: number;
+}
+
+/** A verb that moves one or more stats by fixed amounts. */
 export interface VanyagotchiAction {
   key: string;
   label: string;
   emoji: string;
-  stat_key: string;
-  delta: number;
+  /**
+   * What it moves, each clamped against its own stat's bounds — a delta larger
+   * than the whole scale is the catalogue's idiom for "reset".
+   *
+   * The client never applies these: it posts the verb and redraws from the state
+   * the server answers with, so there is no local sum that could disagree. They
+   * are here because they are part of the contract and a screen may yet want to
+   * say what a button will do.
+   */
+  effects: VanyagotchiStatDelta[];
   /** Shown for a moment after it lands. */
   done: string;
-  /** Allowed on, and undoes, a death. */
+  /**
+   * Allowed on, and undoes, a death. Deliberately not true of every action — a
+   * dead Ваня cannot go to the toilet — which is what makes the 409 refusal a
+   * path the screen has to handle rather than a theoretical one.
+   */
   revives_fatal: boolean;
 }
 
@@ -278,6 +327,20 @@ export interface VanyagotchiStatValue {
   key: string;
   value: number;
   as_of: string;
+  /**
+   * The drain this stat is suffering RIGHT NOW, penalties included — generally
+   * NOT the catalogue's own `decay_per_hour`, because health falls faster while
+   * a need is unmet.
+   *
+   * Sent so the bar can keep creeping without the browser owning a second copy
+   * of the coupling: reproducing it here would mean the thresholds, the onset
+   * arithmetic and every driver's trajectory, i.e. a transliteration of decay.go
+   * kept honest by nothing.
+   *
+   * Optional because a response that predates it — or a fixture that omits it —
+   * must still draw a bar; the client falls back to the catalogue rate then.
+   */
+  rate_per_hour?: number;
 }
 
 export interface VanyagotchiState {
