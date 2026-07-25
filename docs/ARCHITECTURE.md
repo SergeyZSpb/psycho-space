@@ -10,7 +10,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point.
 - **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change (`CLAUDE.md` → *Task workflow* step 7 makes that a gate).
-- **decisions / constraints:** SPA is embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; migrations are immutable once shipped; no test-only code in production paths.
+- **decisions / constraints:** SPA is embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; migrations are immutable once shipped; no test-only code in production paths; **each game is a self-contained module that shares no DB or service code with any other game** — duplication between games is deliberate, and shared code is platform only (`CLAUDE.md` → *Games are self-contained modules*).
 
 ---
 
@@ -196,9 +196,11 @@ flowchart LR
         ACC["account"]
         SESS["session"]
         WISH["wishlist"]
-        GAME["game"]
         SET["settings"]
         VKP["vk (client + id_token verifier)"]
+        subgraph games["games — self-contained, share nothing with each other"]
+            GAME["game<br/>«Смолтолк в Химках»"]
+        end
     end
 
     WEB["web<br/>go:embed of the built SPA"]
@@ -212,6 +214,8 @@ flowchart LR
 ```
 
 **The rule:** dependencies point inward and downward — handlers know services, services know repositories, repositories know `db.DBTX`. Nothing in `internal/*` imports `httpapi`. Adding a feature means a new `internal/<domain>/` package with those four files, a `NNN_*.sql` migration, wiring in `main.go` + `httpapi.Deps` + routes, and a case in `test/integration/`.
+
+**Games are the exception to the usual instinct to factor things out.** Each game is a self-contained module: its own package, its own `<game>_*` tables, its own routes and views, its own leaderboard code — and **no game imports another, even where the code would be identical.** A game may depend on platform packages (`realtime`, `session`, `account`, `crypto`, `db`, and the `httpapi` plumbing); none of those may know a game exists, which is why the socket is addressed as the game-agnostic `/api/realtime?room=…` and game-specific message types live in the game's own package. The test for the boundary: deleting a game must mean deleting its package, its migration, its routes and its views — and nothing else. See `CLAUDE.md` → *Games are self-contained modules* for the reasoning.
 
 ## 4. Data model
 

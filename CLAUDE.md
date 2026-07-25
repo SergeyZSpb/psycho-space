@@ -57,6 +57,20 @@ One-paragraph orientation, so this file stands alone: a browser hits nginx (TLS,
 
 **Adding a feature:** new package under `internal/<domain>/` (`repository.go` interface + `postgres_repository.go` + `service.go` + `errors.go`), a `NNN_*.sql` migration, wire it into `main.go` DI + `httpapi.Deps` + routes, extend `test/integration/`, and update `docs/ARCHITECTURE.md`.
 
+### Games are self-contained modules — do not share code between them
+
+Each game is its own module, and **duplication between games is deliberate, not debt**. A game owns its Go package, its tables, its routes, and its views; nothing about it is factored into a shared "games" layer, and no game imports another. The test is blunt: **deleting a game must be removing its package, its migration, its routes and its views — and nothing else.** If removing game 2 would break game 1, the boundary is wrong.
+
+That means the obvious reuse opportunities are refused on purpose:
+
+- **No shared game service, repository, or table.** Game 2 does not extend `internal/game/`, and it does not write to `game_runs` or add a key to a shared registry. It gets `internal/<game>/` and its own `<game>_*` tables, even where the schema looks identical to one that already exists.
+- **No shared game UI.** A second game copies the layout it needs into its own view rather than extracting a common shell. A shared shell means one game's layout fix can break another's, and it leaves an orphan behind when a game is deleted.
+- **No shared leaderboard or scoring code.** Generic board-building that serves two games couples their lifecycles for the sake of a few dozen lines.
+
+**What *is* shared is platform, not game:** `internal/realtime` (transport — deliberately game-agnostic, addressed as `/api/realtime?room=…`), `session`, `account`, `crypto`, `db`, `logging`, `observability`, the `httpapi` router and middleware, and on the front end `apiFetch`, the error store, the theme and the app shell. A game may depend on any of these; none of them may know a game exists. Game-specific message types belong to the game's package and are published *through* the hub, never added to it.
+
+_Reasoning:_ these games are jokes for a small group with a short and unpredictable life. The realistic future for any of them is deletion, not extension, and the cost of premature sharing is paid at exactly the wrong moment — when you want something gone and find it welded to something you are keeping. A few duplicated files are far cheaper than that. Do not "clean this up" later; the duplication is the design.
+
 ## Conventions
 
 **Go / service design**
