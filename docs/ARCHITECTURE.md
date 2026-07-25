@@ -5,14 +5,14 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** psycho-space at two altitudes in one file — the structural view (§1–7: logical containers, runtime flows, package layout, data model, deployment) and the numbered decision records that say *why* it has that shape (§8, append-only). `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
-- **status:** current as of the realtime close-reason work (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped and carries a `bye` frame; **no client consumes it yet** and nothing publishes game messages. §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim.
+- **status:** current as of the realtime close-reason work (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped and carries a `bye` frame; **no client consumes it yet** and nothing publishes game messages. Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/game/`, `/api/game/*`, the only paid path) and **«Ванягоччи»** (game 2 — realtime, no LLM on any path, in design and not yet in this repo). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — and ADR-027…029 were appended the same day for decisions that until then lived only in the code, in `CLAUDE.md`, or in `RUNBOOK.md`.
 - **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only).
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `grep -n '^#### ADR-' docs/ARCHITECTURE.md` lists every decision record.
-- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. Numbers are identifiers, not an ordering: take the next global one, wherever the group. Highest record when this was written: **ADR-026** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`.
+- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. Numbers are identifiers, not an ordering: take the next global one, wherever the group. Highest record when this was written: **ADR-029** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`.
 - **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP — §1–7 describe all of it, §8 records the decisions behind it.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff is appended to §8 as a **new** record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
 - **related:** `../CLAUDE.md` (rules), `RUNBOOK.md` (operations — and the owner of the measurements and operational economics, notably the game's per-turn cost, which is re-measured rather than superseded), the owner's local living doc (roadmap, TODO, private operational detail). `docs/DESIGN.md` was merged into §8 here on 2026-07-25 and deleted; `git log -- docs/DESIGN.md` still resolves its history.
-- **decisions / constraints:** SPA is embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; migrations are immutable once shipped; no test-only code in production paths; **each game is a self-contained module that shares no DB or service code with any other game** — duplication between games is deliberate, and shared code is platform only (`CLAUDE.md` → *Games are self-contained modules*). Each of these has a record in §8 carrying its reasoning; do not relitigate one there by editing it.
+- **decisions / constraints:** SPA is embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; migrations are immutable once shipped; no test-only code in production paths; **each game is a self-contained module that shares no DB or service code with any other game** — duplication between games is deliberate, and shared code is platform only (ADR-028; `CLAUDE.md` → *Games are self-contained modules*). Each of these has a record in §8 carrying its reasoning; do not relitigate one there by editing it.
 - **diagram authoring constraint:** the Mermaid blocks here must parse on GitHub, and a `;` anywhere in sequence-diagram message or note text is a **statement separator**, not punctuation — it silently breaks the whole diagram (`Parse error … got 'NEWLINE'`). Use `<br/>` or an em dash instead. Quotes, braces, `=`, and parentheses (including in a `participant X as Name (alias)`) are all safe. Validate a diagram change by rendering it, not by eye: extract each mermaid fence to its own `.mmd` file and run `npx -y @mermaid-js/mermaid-cli@latest -p pconf.json -i b.mmd -o b.svg`, where `pconf.json` is `{"args":["--no-sandbox"]}` (Chrome cannot sandbox in this environment).
 
 ---
@@ -39,7 +39,7 @@ flowchart TB
     end
 
     VK["VK ID<br/>id.vk.ru"]
-    LLM["LLM judge<br/>OpenAI-compatible endpoint"]
+    LLM["LLM judge — «Смолтолк в Химках» only<br/>OpenAI-compatible endpoint"]
 
     SPA -- HTTPS --> NGINX
     NGINX -- "127.0.0.1:8080" --> EMBED
@@ -49,13 +49,13 @@ flowchart TB
     DOM -- "one chat completion per turn (paid)" --> LLM
 ```
 
-**Why one binary.** The SPA is compiled into the executable, so a deploy is a single file plus a restart, and nginx never needs to know about static asset paths. The cost is that a frontend-only change still rebuilds and redeploys the binary — accepted for a single-box, single-maintainer project.
+**Why one binary.** The SPA is compiled into the executable, so a deploy is a single file plus a restart, and nginx never needs to know about static asset paths. See [§8 → ADR-001](#adr-001--the-spa-is-embedded-in-the-go-binary) for why, and for what it costs.
 
 ## 2. Runtime views
 
 ### 2.1 Login — VK ID confidential backend exchange
 
-The authorization code is exchanged **on the server**, so the VK service token never reaches the browser. A session cookie is issued even for `pending` and `blocked` accounts, so the SPA can poll `/api/auth/me` and come alive the moment an admin approves.
+The authorization code is exchanged **on the server**, so the VK service token never reaches the browser. A session cookie is issued even for `pending` and `blocked` accounts: it identifies without authorizing, because `requireAuth` still demands `status == approved`. See [§8 → ADR-007](#adr-007--a-session-cookie-is-issued-even-for-pending-and-blocked-accounts) for why.
 
 ```mermaid
 sequenceDiagram
@@ -100,9 +100,11 @@ sequenceDiagram
     H-->>B: 204 (+ X-Trace-Id)
 ```
 
-Any non-2xx answers `{error: "<stable_code>", trace_id}` — never `err.Error()` — and the SPA shows the trace id in a copyable modal.
+Any non-2xx answers `{error: "<stable_code>", trace_id}` — never `err.Error()` — and the SPA shows the trace id in a copyable modal. See [§8 → ADR-024](#adr-024--errors-carry-a-trace-id-and-never-carry-the-error-text) for why.
 
-### 2.3 A game turn (the only paid path)
+### 2.3 A turn in «Смолтолк в Химках» (the only paid path)
+
+**This flow is specific to «Смолтолк в Химках»** — the LLM-judged dialogue game in `internal/game/`, served under `/api/game/*` — and nothing in it generalises to another game. The second game, «Ванягоччи» (realtime, in design), makes no LLM call on any path: [§8 → ADR-016](#adr-016--no-realtime-message-may-reach-the-llm) forbids a realtime message from reaching the judge at all, so «Смолтолк в Химках» is the only paid path in the system, not merely the first one.
 
 ```mermaid
 sequenceDiagram
@@ -127,7 +129,7 @@ sequenceDiagram
     A->>P: INSERT game_runs (feeds the four record leaderboards)
 ```
 
-The prompt order is load-bearing: the provider caches a matching **prefix**, so anything per-turn placed early would invalidate the cached system prompt for every concurrent player. Full reasoning, measurements and costs: `RUNBOOK.md` → *Working on the game*.
+The prompt order is load-bearing, and so is the shape of the history: static system prompt → each past turn replayed as the JSON the judge returned → one volatile message last. See [§8 → ADR-013](#adr-013--the-prompt-is-laid-out-for-prefix-caching-and-history-is-replayed-as-json) for why. Measurements and per-turn costs: `RUNBOOK.md` → *Working on the game*.
 
 ### 2.4 Realtime connection lifetime
 
@@ -175,7 +177,7 @@ sequenceDiagram
     GH->>S: GET https://psycho-space.ru/healthz (gate)
 ```
 
-A red run means production was not updated — treat it as unfinished work.
+A push to `main` is a deploy, and a red run means production was not updated. See [§8 → ADR-003](#adr-003--push-to-main-deploys-the-gates-are-the-safety-net) for why that is safe without a staging environment.
 
 ## 3. Package structure
 
@@ -218,7 +220,7 @@ flowchart LR
 
 **The rule:** dependencies point inward and downward — handlers know services, services know repositories, repositories know `db.DBTX`. Nothing in `internal/*` imports `httpapi`. Adding a feature means a new `internal/<domain>/` package with those four files, a `NNN_*.sql` migration, wiring in `main.go` + `httpapi.Deps` + routes, and a case in `test/integration/`.
 
-**Games are the exception to the usual instinct to factor things out.** Each game is a self-contained module: its own package, its own `<game>_*` tables, its own routes and views, its own leaderboard code — and **no game imports another, even where the code would be identical.** A game may depend on platform packages (`realtime`, `session`, `account`, `crypto`, `db`, and the `httpapi` plumbing); none of those may know a game exists, which is why the socket is addressed as the game-agnostic `/api/realtime?room=…` and game-specific message types live in the game's own package. The test for the boundary: deleting a game must mean deleting its package, its migration, its routes and its views — and nothing else. See `CLAUDE.md` → *Games are self-contained modules* for the reasoning.
+**Games are the exception to the usual instinct to factor things out.** Each game is a self-contained module: its own package, its own `<game>_*` tables, its own routes and views, its own leaderboard code — and **no game imports another, even where the code would be identical.** A game may depend on platform packages (`realtime`, `session`, `account`, `crypto`, `db`, and the `httpapi` plumbing); none of those may know a game exists, which is why the socket is addressed as the game-agnostic `/api/realtime?room=…` and game-specific message types live in the game's own package. The test for the boundary: deleting a game must mean deleting its package, its migration, its routes and its views — and nothing else. See [§8 → ADR-028](#adr-028--games-are-self-contained-modules) for why, and `CLAUDE.md` → *Games are self-contained modules* for the same rule stated as a working rule.
 
 ## 4. Data model
 
@@ -298,7 +300,9 @@ erDiagram
     }
 ```
 
-`game_assets` and `app_settings` stand apart — neither references an account. Art lives in Postgres rather than in git or the binary, so adding images never grows the repository.
+`game_assets` and `app_settings` stand apart — neither references an account. The art bytes live in Postgres, not in git and not in the binary. See [§8 → ADR-026](#adr-026--game-art-lives-in-postgres-not-in-git-or-the-binary) for why.
+
+Despite their generic names and their `game_key` column, `game_runs` and `game_assets` belong to **«Смолтолк в Химках»**. A second game gets its own `<game>_*` tables rather than rows in these — see [§8 → ADR-028](#adr-028--games-are-self-contained-modules).
 
 ## 5. API map
 
@@ -314,6 +318,8 @@ Everything is under `/api`, authenticated by the session cookie. `GET /healthz` 
 | `admin` | `POST accounts/{id}/promote` · `POST accounts/{id}/demote` · `PUT settings/open-registration` | superadmin only |
 | `realtime` | `GET realtime?room=` — WebSocket upgrade | approved |
 
+The two `game` rows are **«Смолтолк в Химках»**; a second game gets its own route group rather than new keys in this one, while `realtime` is game-agnostic by design ([§8 → ADR-028](#adr-028--games-are-self-contained-modules)).
+
 Anything not matching `/api` or `/healthz` is served the embedded SPA, so client-side routes resolve on a hard refresh.
 
 ## 6. Security view
@@ -326,7 +332,7 @@ Anything not matching `/api` or `/healthz` is served the embedded SPA, so client
 | Authorization | `requireAuth` (status must be `approved`) → `requireAdmin` → `requireSuperadmin` | `internal/httpapi/router.go` |
 | Revocation | Blocking an account deletes its sessions immediately | `internal/account`, `internal/session` |
 | Rate limiting | Per client IP: 30/min login, **5/min `game/attempt`** (paid), 240/min blanket | `internal/httpapi/router.go` |
-| Trusted client IP | `X-Real-IP`, honoured **only** from the loopback proxy; `X-Forwarded-For` is never trusted | `internal/httpapi/middleware.go` — `clientIP` |
+| Trusted client IP | `X-Real-IP`, honoured **only** from the loopback proxy; `X-Forwarded-For` is never trusted — see [§8 → ADR-027](#adr-027--the-client-ip-comes-from-x-real-ip-trusted-only-from-a-loopback-peer) | `internal/httpapi/middleware.go` — `clientIP` |
 | Request size | 1 MiB body cap on every route | `bodyLimit` |
 | Error disclosure | Stable codes + trace id; `err.Error()` never reaches a client | `internal/httpapi/respond.go` |
 | Asset content type | Allowlisted image types + `nosniff` | `internal/httpapi/game.go` — `imageContentType` |
@@ -336,8 +342,6 @@ Anything not matching `/api` or `/healthz` is served the embedded SPA, so client
 | WebSocket message rate | 10/s per connection, burst 20 — the HTTP limiter fires once, at the handshake | `internal/realtime/conn.go` |
 | Connection caps | 3 per account, 200 per process | `internal/realtime/hub.go` |
 | Revocation on a live socket | Blocking an account revokes its sessions and closes its sockets, sending `bye` code 4001. **This in-process kick is the only path that cuts a live socket** — there is no revalidation sweep, so a session that expires on its own, or a block applied straight in the database, leaves the socket open until the peer or the process goes away. The reconnect is still refused by `requireAuth`. | `internal/httpapi/admin.go` → `Hub.KickAccount` |
-
-**On the client IP** — nginx sends `X-Forwarded-For: $proxy_add_x_forwarded_for`, which *appends* the peer to whatever the client sent, so its leftmost entry is attacker-controlled. chi's `middleware.RealIP` trusted exactly that and overwrote `RemoteAddr` with it, which made every per-IP limit forgeable by varying a header — including the one protecting the endpoint that spends money. `clientIP` reads `X-Real-IP` (which nginx overwrites) and only when the request came from loopback.
 
 ## 7. Where things are written down
 
@@ -462,9 +466,11 @@ _Accepted · 2026-07-25_
 
 `app_settings.open_registration` auto-approves new accounts as plain users when on; existing accounts are untouched either way.
 
-### 8.4 The game
+_Reasoning:_ the setting is a row read at login time and it only ever supplies the status of a **brand-new** account — the login upsert's `ON CONFLICT` clause never touches `status` or `role` — so the toggle is reversible in either direction with no migration and no redeploy, and no existing account moves because it flipped.
 
-The game is documented at length in `RUNBOOK.md` → *Working on the game*, because most of what matters there is operational (what a failure looks like in the log, what a turn costs). The decisions worth stating as decisions:
+### 8.4 The games
+
+Records 011–014 and 029 are all about **«Смолтолк в Химках»**, the LLM-judged game; ADR-028 is the rule that governs every game. «Смолтолк в Химках» is documented at length in `RUNBOOK.md` → *Working on the game*, because most of what matters there is operational (what a failure looks like in the log, what a turn costs). The decisions worth stating as decisions:
 
 #### ADR-011 · The judge is an LLM, and there is no mock
 
@@ -495,6 +501,28 @@ _Reasoning, both measured:_ the provider bills a cached prefix at a quarter rate
 _Accepted · 2026-07-25_
 
 The provider's content filter answered substance-use turns with prose instead of JSON, which players saw as an error. `TestContentAvoidsDrugFlavouredPrompts` guards the whole prompt surface against the regression.
+
+#### ADR-028 · Games are self-contained modules
+
+_Accepted · 2026-07-25_
+
+Each game owns its Go package, its `<game>_*` tables, its routes, its views and its leaderboard code, and **no game imports another — not even where the code would be identical.** There is no shared games layer: no common game service, repository or table, no extracted game-UI shell, no generic board building. What is shared is *platform* — `realtime`, `session`, `account`, `crypto`, `db`, `logging`, `observability`, the `httpapi` router and middleware, and on the front end `apiFetch`, the error store, the theme and the app shell — and none of those may know that a game exists. The boundary test is blunt: deleting a game must be deleting its package, its migration, its routes and its views, and nothing else.
+
+_Reasoning:_ these games are jokes for a small group, with a short and unpredictable life. The realistic future of any one of them is deletion, not extension — and premature sharing bills you at exactly the wrong moment, when you want something gone and find it welded to something you are keeping. A few duplicated files are far cheaper than that, so the duplication between games is the design and not debt to be cleaned up later.
+
+_Consequence:_ the WebSocket is addressed as the game-agnostic `/api/realtime?room=…`, and a game's own message types live in that game's package and are published *through* the hub rather than added to it. `CLAUDE.md` → *Games are self-contained modules* carries the same rule as a working rule; that duplication is deliberate too, because that file has to stand on its own.
+
+#### ADR-029 · The judge runs on DeepSeek V4 Flash
+
+_Accepted · 2026-07-25_
+
+«Смолтолк в Химках» judges its turns with `deepseek-v4-flash` over the OpenAI-compatible endpoint (`PSYCHOSPACE_LLM_MODEL` carries the full folder-specific model URI), replacing `yandexgpt-5-lite` — and it runs with **`reasoning_effort: "none"`**.
+
+_Reasoning:_ DeepSeek costs more per turn than the model it replaced, and the difference buys visibly better play — it produced the first winning run seen in any audit. Its content filter is also not the one that pushed the third theme off substance use (ADR-014), so the character can swear in character. Reasoning is off because this model bills `reasoning_content` as output, the dearest rate, and twice it spent the entire completion budget thinking and returned an empty reply — `finish_reason: length`, 1500 completion tokens, zero characters of dialogue, a turn lost and billed in full. Judging is a rule-following task, not a puzzle, so the chain of thought was buying nothing that the failure class cost. (`thinking` and `enable_thinking` are rejected by this endpoint; `reasoning_effort` is the knob it accepts.)
+
+_Consequence:_ the `/api/game/attempt` limit was halved from 10/min to **5/min per client IP**, because a turn costs about twice what it did — and there is still no per-account cap, so one determined player remains the real cost exposure. The salvage path stays even though this model rarely returns malformed JSON, because a bad turn costs a player their move.
+
+Per-turn economics — the price table, the current cost per turn and how it got there — stay in `RUNBOOK.md` → *Working on the game*, to be re-measured as models and prices move rather than superseded here.
 
 ### 8.5 Realtime
 
@@ -597,3 +625,13 @@ _Accepted · 2026-07-25_
 `game_assets` holds the image bytes; the config endpoint advertises an image URL only for keys that actually have a blob, and everything else falls back to an emoji placeholder.
 
 _Reasoning:_ art would otherwise inflate the repository and the binary forever, and partial uploads degrade gracefully instead of producing broken images.
+
+#### ADR-027 · The client IP comes from `X-Real-IP`, trusted only from a loopback peer
+
+_Accepted · 2026-07-25_
+
+`clientIP` supplies the key for every per-IP rate limit. It reads `X-Real-IP`, and **only** when the request's own TCP peer is a loopback address; a request that arrived any other way, or one whose `X-Real-IP` is missing or unparsable, is keyed by that peer address instead. `X-Forwarded-For` is never consulted, and chi's `middleware.RealIP` is deliberately not installed.
+
+_Reasoning:_ nginx passes `X-Forwarded-For: $proxy_add_x_forwarded_for`, which *appends* the peer to whatever the client already sent, so the header's leftmost entry is attacker-controlled. `middleware.RealIP` trusted exactly that entry and overwrote `r.RemoteAddr` with it — which made every per-IP limit forgeable by varying one header per request, the login limiter and the limiter guarding the paid LLM endpoint included. `X-Real-IP` is safe in the same position for two reasons that have to hold together: nginx sets it from `$remote_addr`, overwriting whatever the client sent, and the loopback check means a value that reached the app by any other route is not believed.
+
+_Consequence:_ the limits are only meaningful while the app sits behind that proxy, which is already the deployment (it listens on loopback). Both halves are pinned by tests, because the failure is silent: `TestClientIPTrustsProxyHeaderOnlyFromLoopback` covers the trust rule, and `TestRateLimitNotBypassableByForwardedHeader` drives a client rotating `X-Forwarded-For` and requires it to still be counted as one client.

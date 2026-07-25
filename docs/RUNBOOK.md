@@ -62,6 +62,8 @@ It prints a `psycho_session` cookie value. In the browser (DevTools → Applicat
 
 ### Working on the game («Смолтолк в Химках»)
 
+The model choice itself — DeepSeek V4 Flash, and why `reasoning_effort` is off — is recorded in [ARCHITECTURE.md → ADR-029](ARCHITECTURE.md#adr-029--the-judge-runs-on-deepseek-v4-flash). The measurements, prices and per-turn economics below are this file's to own and to re-measure.
+
 It's an **LLM-judged** character dialogue: convince дядя Ваня (a strange, on-edge drunk who won't let you pass) to let you into your own entrance. To win you must genuinely work through **all three** of his deep themes — longing for a woman/children, his friendship with Тунг Тунг Сахур, and his drinking — before he warms up and lets you through. Each turn the LLM replies in character, judges whether the goal is genuinely reached, picks an **art** to show (his changing mood, or a story/location art with no character — e.g. the passage into the entrance), and generates the **next answer options** (always 4 while playing). The game **requires an LLM** — no mock; unconfigured → `/attempt` returns 503.
 
 > **The third theme is alcohol on purpose — do not make it drugs.** It used to be substance use, and YandexGPT's content filter answered those turns with plain Russian prose instead of the JSON we ask for; the parse failed and the player got an error. The tell in the log is a **`game llm reply not json`** line **~100 ms** after its `game llm request` (real generations take 1–2.5 s). `TestContentAvoidsDrugFlavouredPrompts` guards the prompt material against regressing.
