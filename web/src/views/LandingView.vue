@@ -15,7 +15,7 @@
           <v-card class="pa-6">
             <h2 class="text-h6 mb-2">вход через VK ID</h2>
             <p class="text-body-2 text-medium-emphasis mb-4">
-              логинимся вконтактиком, всё как у взрослых
+              Логинимся через VK ID. Передается только базовая инфа (картинка, имя, фамилия, пол, дата рождения - то же, что видно в вк)
             </p>
 
             <!-- Consent gate: the VK widget mounts ONLY after this is ticked. -->
