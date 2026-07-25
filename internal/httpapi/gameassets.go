@@ -12,8 +12,8 @@ import (
 // game key travels in the path, so a second game needs no new route and no new
 // handler.
 //
-// URLs minted now must keep working after the legacy /api/game/assets/ alias is
-// deleted, so config responses are always built from this constant.
+// The legacy /api/game/assets/ alias it replaced has been deleted, so config
+// responses are always built from this constant and never from a game's own path.
 const GameAssetPath = "/api/game-assets/"
 
 // handleGameAsset serves one art image from the shared blob store. Public (art is

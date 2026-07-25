@@ -120,11 +120,14 @@ func (s *Server) Handler() http.Handler {
 		// from 10 when the model moved to deepseek-v4-flash: a turn costs roughly
 		// twice as much there, so the same money per minute buys half the turns.
 		// A human plays a handful of turns a minute at most; this only bites
-		// someone hammering the endpoint. The limiter is built ONCE, outside the
-		// route builder below, so the alias prefix shares the same token bucket
-		// instead of doubling the cap.
+		// someone hammering the endpoint.
+		//
+		// The pre-rename /api/game/* alias that shared this limiter is gone —
+		// it was registered for exactly one deploy cycle so a cached SPA could
+		// finish its run, and TestGameKhimkiLegacyPathAliasIsGone now pins its
+		// absence. Nothing may be written against that prefix again.
 		gameKhimkiAttemptLimit := s.rateLimit(5, time.Minute)
-		gameKhimkiRoutes := func(r chi.Router) {
+		r.Route("/game-khimki", func(r chi.Router) {
 			// Approved users only. Art is NOT served from here — the blob store
 			// is shared infrastructure at /api/game-assets/, below.
 			r.Group(func(r chi.Router) {
@@ -135,26 +138,6 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/runs/leaderboard", s.handleGameKhimkiLeaderboard)
 				r.Get("/runs/me", s.handleGameKhimkiStats)
 			})
-		}
-		r.Route("/game-khimki", gameKhimkiRoutes)
-
-		// DELETE-ME-NEXT-DEPLOY: /api/game/* is the pre-rename path, kept as an
-		// alias for exactly ONE deploy cycle. A browser that still holds the
-		// previous SPA build in cache calls /api/game/* and would break the moment
-		// this deploys; the alias buys that cache the time to expire. It is a
-		// second registration of the same handlers — deliberately not a redirect
-		// and not behind a config flag, so removing it is a pure deletion.
-		//
-		// To remove (next deploy after this one, no earlier): delete this comment
-		// and the r.Route("/game", …) line below, plus TestGameKhimkiLegacyPathAlias
-		// in test/integration/gamekhimki_test.go which exists to fail if the alias
-		// disappears silently.
-		r.Route("/game", func(r chi.Router) {
-			gameKhimkiRoutes(r)
-			// The pre-rename asset path. Art was served under the game's own
-			// prefix before the blob store was recognised as shared
-			// infrastructure; this is the live path cached clients still call.
-			r.Get("/assets/{game}/{key}", s.handleGameAsset)
 		})
 
 		// Game art — shared infrastructure, NOT a game. The blob store has

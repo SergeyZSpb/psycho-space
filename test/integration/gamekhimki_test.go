@@ -314,31 +314,34 @@ func TestGameKhimkiAssets(t *testing.T) {
 		v, _ := m["image"].(string)
 		img[k] = v
 	}
-	// The advertised URL must be the canonical per-game path, NOT the /api/game/*
-	// alias — a URL minted now has to keep working after the alias is deleted.
+	// The advertised URL must be the shared-infrastructure asset path, never a
+	// game-owned one — the pre-rename /api/game/assets/ alias is deleted.
 	if img["vanya_neutral"] != "/api/game-assets/smalltalk_khimki/vanya_neutral" {
-		t.Fatalf("vanya_neutral image URL = %q; want the canonical /api/game-khimki path", img["vanya_neutral"])
+		t.Fatalf("vanya_neutral image URL = %q; want the canonical /api/game-assets path", img["vanya_neutral"])
 	}
 	if img["vanya_angry"] != "" {
 		t.Fatalf("vanya_angry has no upload, image should be empty, got %q", img["vanya_angry"])
 	}
 }
 
-// TestGameKhimkiLegacyPathAlias pins the pre-rename /api/game/* prefix, which is
-// registered as a second route group so a browser still running the previous SPA
-// build out of cache keeps working across the deploy that renames the paths.
+// TestGameKhimkiLegacyPathAliasIsGone pins the *absence* of the pre-rename
+// /api/game/* prefix. That alias was registered as a second route group for
+// exactly one deploy cycle, so a browser still running the previous SPA build out
+// of cache could finish its run; that cycle is over and the registration was
+// deleted from internal/httpapi/router.go.
 //
-// DELETE-ME-NEXT-DEPLOY: this test exists so that removing the alias is a
-// deliberate act with a failing test, not a silent break. Delete it together with
-// the r.Route("/game", …) registration in internal/httpapi/router.go — one deploy
-// cycle after the rename shipped, no earlier.
-func TestGameKhimkiLegacyPathAlias(t *testing.T) {
+// The test replaces TestGameKhimkiLegacyPathAlias, which pinned the alias while it
+// existed. It asserts 404 rather than 401 on the gated path deliberately: 401
+// would mean the route group is still registered and merely refusing the request,
+// which is the failure mode a re-added alias would produce.
+func TestGameKhimkiLegacyPathAliasIsGone(t *testing.T) {
 	vkSrv := fakeVKDynamic()
 	defer vkSrv.Close()
 	app := httptest.NewServer(buildApp(vkSrv.URL))
 	defer app.Close()
 
-	// A public route on the alias: same asset bytes as the canonical path.
+	// An asset that genuinely exists, so a 404 on the old path can only mean the
+	// route is gone — not that the blob is missing.
 	blob := []byte("\x00fake-webp-alias\x01")
 	if _, err := pool.Exec(context.Background(),
 		`INSERT INTO game_assets (game_key, art_key, content_type, bytes) VALUES ($1,$2,$3,$4)
@@ -348,38 +351,42 @@ func TestGameKhimkiLegacyPathAlias(t *testing.T) {
 	}
 	resp, err := http.Get(app.URL + "/api/game/assets/smalltalk_khimki/hallway_pass")
 	if err != nil {
-		t.Fatalf("get asset via alias: %v", err)
+		t.Fatalf("get asset via the removed alias: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("alias asset status %d; want 200 — the /api/game/* alias is gone", resp.StatusCode)
-	}
-	if got, _ := io.ReadAll(resp.Body); !bytes.Equal(got, blob) {
-		t.Fatalf("alias asset bytes mismatch")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed alias asset status %d; want 404 — /api/game/* must not be registered", resp.StatusCode)
 	}
 
-	// The gated routes are behind the same auth on the alias: anonymous is 401,
-	// approved gets the real payload.
+	// The canonical shared-infrastructure path still serves the same bytes, so
+	// the deletion removed the alias and nothing else.
+	canon, err := http.Get(app.URL + "/api/game-assets/smalltalk_khimki/hallway_pass")
+	if err != nil {
+		t.Fatalf("get asset via the canonical path: %v", err)
+	}
+	defer canon.Body.Close()
+	if canon.StatusCode != http.StatusOK {
+		t.Fatalf("canonical asset status %d; want 200", canon.StatusCode)
+	}
+	if got, _ := io.ReadAll(canon.Body); !bytes.Equal(got, blob) {
+		t.Fatalf("canonical asset bytes mismatch")
+	}
+
+	// A gated route on the old prefix answers 404, not 401: 401 would mean the
+	// route group is still registered and only the auth middleware is refusing.
 	if st, _ := doJSON(t, &http.Client{}, http.MethodGet,
-		app.URL+"/api/game/config?game=smalltalk_khimki", nil); st != http.StatusUnauthorized {
-		t.Fatalf("anon config via alias status %d; want 401", st)
+		app.URL+"/api/game/config?game=smalltalk_khimki", nil); st != http.StatusNotFound {
+		t.Fatalf("anon config on the removed alias status %d; want 404", st)
 	}
 	cli := loginAs(t, app.URL, "3005", "user")
-	st, cfg := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/config?game=smalltalk_khimki", nil)
+	if st, _ := doJSON(t, cli, http.MethodGet,
+		app.URL+"/api/game/config?game=smalltalk_khimki", nil); st != http.StatusNotFound {
+		t.Fatalf("approved config on the removed alias status %d; want 404", st)
+	}
+	// …while the canonical route is unaffected.
+	st, cfg := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-khimki/config?game=smalltalk_khimki", nil)
 	if st != http.StatusOK || cfg["default_character"] == nil {
-		t.Fatalf("config via alias: status %d body %v; want 200 with a default_character", st, cfg)
-	}
-
-	// Writes work too, so a cached SPA can still finish and record a run.
-	if st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/runs",
-		map[string]any{"game_key": "smalltalk_khimki", "character_key": cfg["default_character"],
-			"success": true, "steps": 5}); st != http.StatusCreated {
-		t.Fatalf("submit run via alias status %d; want 201", st)
-	}
-	if st, me := doJSON(t, cli, http.MethodGet,
-		app.URL+"/api/game/runs/me?game=smalltalk_khimki", nil); st != http.StatusOK ||
-		me["plays"].(float64) != 1 {
-		t.Fatalf("stats via alias: status %d body %v; want 200 with plays 1", st, me)
+		t.Fatalf("canonical config: status %d body %v; want 200 with a default_character", st, cfg)
 	}
 }
 
