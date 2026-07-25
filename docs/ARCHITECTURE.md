@@ -11,6 +11,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change (`CLAUDE.md` → *Task workflow* step 7 makes that a gate).
 - **decisions / constraints:** SPA is embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; migrations are immutable once shipped; no test-only code in production paths; **each game is a self-contained module that shares no DB or service code with any other game** — duplication between games is deliberate, and shared code is platform only (`CLAUDE.md` → *Games are self-contained modules*).
+- **diagram authoring constraint:** the Mermaid blocks here must parse on GitHub, and a `;` anywhere in sequence-diagram message or note text is a **statement separator**, not punctuation — it silently breaks the whole diagram (`Parse error … got 'NEWLINE'`). Use `<br/>` or an em dash instead. Quotes, braces, `=`, and parentheses (including in a `participant X as Name (alias)`) are all safe. Validate a diagram change by rendering it, not by eye: extract each mermaid fence to its own `.mmd` file and run `npx -y @mermaid-js/mermaid-cli@latest -p pconf.json -i b.mmd -o b.svg`, where `pconf.json` is `{"args":["--no-sandbox"]}` (Chrome cannot sandbox in this environment).
 
 ---
 
@@ -74,7 +75,7 @@ sequenceDiagram
     V-->>A: profile (name, sex, birthday, avatar, user_id)
     A->>P: upsert by blind index HMAC-SHA256(vk_user_id)<br/>profile fields AES-256-GCM encrypted
     A->>P: INSERT session (token_hash = HMAC(token))
-    A-->>B: Set-Cookie httpOnly; Secure; SameSite=Strict<br/>+ {status, account}
+    A-->>B: Set-Cookie httpOnly<br/>Secure<br/>SameSite=Strict<br/>+ {status, account}
     Note over A: VK tokens are discarded here — never stored
 ```
 
@@ -142,7 +143,7 @@ sequenceDiagram
     Note over A: requireAuth (approved only) → origin check → 101
     A->>H: Register(conn, room) — caps checked here
     loop while connected
-        H-->>B: broadcast (non-blocking; a slow client is dropped, never waited on)
+        H-->>B: broadcast (non-blocking — a slow client is dropped, never waited on)
         B->>A: frames (≤4 KiB, ≤10/s)
     end
     Note over A,H: SIGTERM → cancel hub ctx → hub asks each conn to close
