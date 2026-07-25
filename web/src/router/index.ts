@@ -51,6 +51,11 @@ const routes: RouteRecordRaw[] = [
       // path is in people's history and on their home screens.
       { path: 'game', redirect: { name: 'game-khimki' } },
       {
+        path: 'game-vanyagotchi',
+        name: 'game-vanyagotchi',
+        component: () => import('../views/GameVanyagotchiView.vue'),
+      },
+      {
         path: 'admin',
         name: 'admin',
         component: () => import('../views/AdminView.vue'),

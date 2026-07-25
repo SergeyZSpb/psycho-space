@@ -9,6 +9,12 @@
           value="game-khimki"
         />
         <v-list-item
+          :to="{ name: 'game-vanyagotchi' }"
+          prepend-icon="mdi-account-group-outline"
+          title="Ванягоччи"
+          value="game-vanyagotchi"
+        />
+        <v-list-item
           :to="{ name: 'wishlist' }"
           prepend-icon="mdi-lightbulb-on-outline"
           title="Вишлист"
