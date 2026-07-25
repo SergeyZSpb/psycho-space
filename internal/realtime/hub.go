@@ -39,7 +39,8 @@ const (
 )
 
 // Defaults chosen for a small allowlisted group, not for scale. Each has a
-// stated trigger for revisiting in the design doc.
+// stated trigger for revisiting in the decision records (docs/ARCHITECTURE.md
+// section 8).
 const (
 	// defaultSendBuffer is how many messages may be queued for one client
 	// before it is considered behind.

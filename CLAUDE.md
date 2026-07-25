@@ -4,7 +4,7 @@ Self-contained working rules for this repository. Any developer (with or without
 
 **Canonical living doc:** `~/Desktop/psycho-space/psycho-space.md` — the **root index**: project state, phased rollout, the owner's TODO list, and a link to each topic plan (dated `YYYYMMDD_<slug>.md` files in the same folder). Read it first; keep it current as work lands (every file there opens with an `## LLM Continuation Context` block for fast hand-off). That folder holds everything project-local and uncommitted — the living doc set, the game-art source images in `vanya_assets/`, and the operator's private detail (server host, hardened SSH port), none of which may ever enter this repository. If the folder isn't on your machine, ask the owner.
 
-**In-repo documentation:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (structure, Mermaid) · [`docs/DESIGN.md`](docs/DESIGN.md) (why) · [`docs/RUNBOOK.md`](docs/RUNBOOK.md) (operations & debugging).
+**In-repo documentation:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (structure + numbered decision records, Mermaid) · [`docs/RUNBOOK.md`](docs/RUNBOOK.md) (operations & debugging).
 
 ## Working with Claude — chat tone
 
@@ -44,14 +44,14 @@ web/         Vue SPA source (built to internal/web/dist, embedded at compile tim
 test/integration/  //go:build integration — testcontainers-go + fake VK server
 scripts/     bootstrap.sh, harden-finalize.sh, e2e-stack.sh, ci-test-summary.sh
 deploy/      systemd unit, nginx conf, psycho-deploy + make-superadmin helpers
-docs/        ARCHITECTURE.md · DESIGN.md · RUNBOOK.md
+docs/        ARCHITECTURE.md · RUNBOOK.md
 ```
 
 ## Architecture — see `docs/ARCHITECTURE.md`
 
-The structural view lives in **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** (Mermaid, renders on GitHub): the logical container diagram, runtime sequences for login / a gated request / a game turn / the deploy, the package dependency graph, the ER model, and the security view. Read it before changing anything structural — and **update it in the same change** when you add a domain package, a route group, a table, or a runtime flow.
+The structural view lives in **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** (Mermaid, renders on GitHub): the logical container diagram, runtime sequences for login / a gated request / a game turn / the deploy, the package dependency graph, the ER model, the security view, and — in §8 — the numbered decision records. Read it before changing anything structural — and **update it in the same change** when you add a domain package, a route group, a table, or a runtime flow.
 
-The reasoning behind those choices — why sessions are server-side, why the SPA is embedded, why there are two Playwright suites — is in **[`docs/DESIGN.md`](docs/DESIGN.md)**. Operational procedure is in **[`docs/RUNBOOK.md`](docs/RUNBOOK.md)**.
+The reasoning behind those choices — why sessions are server-side, why the SPA is embedded, why there are two Playwright suites — is in **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §8**, as numbered decision records. **Records are immutable:** a decision that is revisited gets a **new** record that supersedes or amends the old one, never an edit to what the old one decided or why. Operational procedure is in **[`docs/RUNBOOK.md`](docs/RUNBOOK.md)**.
 
 One-paragraph orientation, so this file stands alone: a browser hits nginx (TLS, security headers), which proxies to a single Go binary on `127.0.0.1:8080` serving both the embedded Vue SPA and `/api`; the binary talks to a local PostgreSQL through pgx. Login is VK ID with the code exchanged on the backend; access is allowlist-gated (`pending` → `approved` by an admin); every non-2xx returns `{error, trace_id}` and sets `X-Trace-Id`.
 
@@ -238,7 +238,7 @@ Applies to each work item — and separately to **each iteration** of a larger o
    - **Read the job output, don't just accept the green tick.** Open the run's **job summary** and check the test + coverage table each workflow publishes: per-suite pass/fail/skip counts and coverage percentages. Confirm the numbers moved the way your change should have moved them — a suite that silently ran **zero** tests is green and worthless, and coverage that fell where you added code means the test you wrote isn't exercising it. `gh run view <run-id>` lists the jobs; `gh run view <run-id> --log-failed` gets straight to a failure.
    - **Check no secrets were printed:** `./scripts/ci-check-secrets.sh <run-id>` (zero-arg = latest run). **The logs of this repository are public.** See *Never print a secret in CI* below.
    - **Verify the behaviour in production** — the health check plus whatever you actually changed.
-7. **Write back — the docs are part of the change, not a follow-up.** In the same commit: `docs/ARCHITECTURE.md` if you touched the structure (a package, a route group, a table, a runtime flow); `docs/DESIGN.md` if you made a decision whose reasoning is not recoverable from the diff; `docs/RUNBOOK.md` if you worked out an operational or debugging procedure, or if you changed behaviour it describes; this file if a convention changed; and the living doc for durable project state. Each doc's `## LLM Continuation Context` block is updated with it — a stale block is worse than none. Docs that contradict the code are a defect owned by the change that caused them.
+7. **Write back — the docs are part of the change, not a follow-up.** In the same commit: `docs/ARCHITECTURE.md` if you touched the structure (a package, a route group, a table, a runtime flow); a **new numbered record** appended to `docs/ARCHITECTURE.md` §8 if you made a decision whose reasoning is not recoverable from the diff — a revisited decision gets a record that supersedes or amends the old one, never by editing an existing record; `docs/RUNBOOK.md` if you worked out an operational or debugging procedure, or if you changed behaviour it describes; this file if a convention changed; and the living doc for durable project state. Each doc's `## LLM Continuation Context` block is updated with it — a stale block is worse than none. Docs that contradict the code are a defect owned by the change that caused them.
 
 **CI vs deploy:** `main` = `deploy.yml` (lint · unit · web · e2e · integration · full-stack e2e, then auto-deploy over SSH) — the normal path. Both workflows publish a test + coverage summary to the run's job summary and upload the Playwright videos. Any non-`main` branch/PR = `ci.yml` (same tests, no deploy) — only if you deliberately want to stage something before it deploys.
 
@@ -255,7 +255,7 @@ Close a work item with a compact checklist — mark each **✅ done · ⏭️ sk
 | CI job output read — test counts + coverage checked, not just the green tick | |
 | CI logs scanned for leaked secrets (`./scripts/ci-check-secrets.sh`) | |
 | Behaviour verified in production | |
-| Docs synced — `ARCHITECTURE.md` / `DESIGN.md` / `RUNBOOK.md` as applicable, each with its continuation block | |
+| Docs synced — `ARCHITECTURE.md` (structure + any new §8 record) / `RUNBOOK.md` as applicable, each with its continuation block | |
 | Living doc current to as-built; LLM-continuation block updated | |
 | Secrets/PII posture respected — nothing sensitive committed | |
 

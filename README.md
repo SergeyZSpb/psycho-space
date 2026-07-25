@@ -6,7 +6,7 @@ A small Russian-language landing page + allowlist-gated community app. Login via
 
 One Go binary (with the Vue SPA compiled into it) + PostgreSQL + nginx on a single Ubuntu box. Push to `main` deploys it.
 
-> **Where things are written down:** [`CLAUDE.md`](./CLAUDE.md) — working rules, conventions, the environment and secrets you need, and the task protocol · [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the structure, as Mermaid diagrams · [`docs/DESIGN.md`](./docs/DESIGN.md) — why it is built this way · [`docs/RUNBOOK.md`](./docs/RUNBOOK.md) — operating and debugging it. The owner's living doc (roadmap, TODO, private operational detail) is local and uncommitted, at `~/Desktop/psycho-space/psycho-space.md`.
+> **Where things are written down:** [`CLAUDE.md`](./CLAUDE.md) — working rules, conventions, the environment and secrets you need, and the task protocol · [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the structure as Mermaid diagrams, and §8 the numbered decision records saying why it is built this way · [`docs/RUNBOOK.md`](./docs/RUNBOOK.md) — operating and debugging it. The owner's living doc (roadmap, TODO, private operational detail) is local and uncommitted, at `~/Desktop/psycho-space/psycho-space.md`.
 
 ## Quick start (local)
 
@@ -83,4 +83,4 @@ Server provisioning is a separate one-time manual step (`scripts/bootstrap.sh`),
 
 ## Security posture
 
-It is a small app, but it handles real personal data under Russian personal-data law (152-ФЗ): profile fields are encrypted at rest, looked up through an HMAC blind index rather than in plaintext, and consent is captured before anything is processed. Secrets live only in GitHub Actions environment secrets and in a root-only file on the server — never in this repository, and never in a log. See [`CLAUDE.md`](./CLAUDE.md) and [`docs/DESIGN.md`](./docs/DESIGN.md).
+It is a small app, but it handles real personal data under Russian personal-data law (152-ФЗ): profile fields are encrypted at rest, looked up through an HMAC blind index rather than in plaintext, and consent is captured before anything is processed. Secrets live only in GitHub Actions environment secrets and in a root-only file on the server — never in this repository, and never in a log. See [`CLAUDE.md`](./CLAUDE.md) and [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
