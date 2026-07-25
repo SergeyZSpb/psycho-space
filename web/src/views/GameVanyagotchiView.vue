@@ -39,7 +39,9 @@
           :key="id"
           :ref="(el) => setPeerEl(id, el as Element | null)"
           class="peer"
+          :class="{ 'peer--you': id === store.youId }"
           data-test="peer"
+          :data-you="id === store.youId ? '1' : undefined"
           :data-peer="id"
           :style="{ background: peerColour(id) }"
         />
@@ -84,6 +86,9 @@ import { applyFrame, isRenderablePosition, tapToPosition } from '../lib/vanyagot
 /** Server wire types, mirrored from internal/gamevanyagotchi/message.go. */
 const TYPE_ROSTER = 'vanyagotchi_roster';
 const TYPE_MOVE = 'vanyagotchi_move';
+/** Asks the server which entity we are; it unicasts a `you` back. */
+const TYPE_HELLO = 'vanyagotchi_hello';
+const TYPE_YOU = 'vanyagotchi_you';
 
 type Phase = 'intro' | 'play';
 const phase = ref<Phase>('intro');
@@ -109,6 +114,8 @@ const statusLabel = computed(() => {
     case 'open':
       return 'на связи';
     case 'closed':
+      return `${closedLabel(store.closeDetail?.code)} — переподключаемся`;
+    case 'terminal':
       return closedLabel(store.closeDetail?.code);
     default:
       return 'не подключено';
@@ -175,6 +182,10 @@ function setPeerEl(id: string, el: Element | null) {
 }
 
 function onFrame(frame: RealtimeFrame) {
+  if (frame.t === TYPE_YOU) {
+    if (typeof frame.id === 'string' && frame.id) store.setYou(frame.id);
+    return;
+  }
   if (frame.t !== TYPE_ROSTER) return;
   const peers = Array.isArray(frame.peers) ? frame.peers : [];
 
@@ -196,7 +207,12 @@ function onFrame(frame: RealtimeFrame) {
 
 function onStatus(status: ConnectionStatus, detail?: Parameters<typeof store.setStatus>[1]) {
   store.setStatus(status, detail);
-  if (status === 'closed' || status === 'idle') {
+  if (status === 'open') {
+    // Every time, not just the first: a reconnect is a new connection and the
+    // pseudonym that identifies us is derived per connection lifetime.
+    client.send({ t: TYPE_HELLO });
+  }
+  if (status === 'closed' || status === 'idle' || status === 'terminal') {
     // Leaving the dots on a dead socket would show a world that is no longer
     // being updated as though it were live.
     store.clearRoster();
@@ -362,6 +378,17 @@ onBeforeUnmount(() => {
 .peer--instant {
   transition: none;
 }
+/* Your own Ваня. Marked by a second ring rather than by colour, because the
+   colour is already carrying identity — hashed from the id so everybody's dot
+   looks the same on every screen — and overriding it here would make you the
+   one player who cannot see what colour you are to everyone else. */
+.peer--you {
+  border-color: #fff;
+  box-shadow:
+    0 0 0 3px rgba(0, 0, 0, 0.45),
+    0 2px 8px rgba(0, 0, 0, 0.5);
+  z-index: 1;
+}
 
 .hud {
   flex: 0 0 auto;
@@ -384,6 +411,9 @@ onBeforeUnmount(() => {
   color: rgb(var(--v-theme-success));
 }
 .hud-status--closed {
+  color: rgb(var(--v-theme-warning));
+}
+.hud-status--terminal {
   color: rgb(var(--v-theme-error));
 }
 

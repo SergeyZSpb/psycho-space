@@ -52,10 +52,30 @@ export const useGameVanyagotchiStore = defineStore('gameVanyagotchi', () => {
    */
   const peerIds = shallowRef<readonly string[]>([]);
 
+  /**
+   * Which entity is this player's own Ваня.
+   *
+   * It has to be told to us: the id on the wire is a per-account pseudonym the
+   * server derives, deliberately not the account id, so nothing the client
+   * already knows can be compared against it. The server unicasts it in reply
+   * to a hello, and it changes on every reconnect — the derivation key lives and
+   * dies with the server process, exactly like presence itself.
+   */
+  const youId = ref<string | undefined>(undefined);
+
   function setStatus(next: ConnectionStatus, detail?: CloseDetail) {
     status.value = next;
-    if (next === 'closed') closeDetail.value = detail;
+    if (next === 'closed' || next === 'terminal') closeDetail.value = detail;
     if (next === 'connecting' || next === 'open') closeDetail.value = undefined;
+    // A pseudonym belongs to one connection's lifetime. Keeping it across a
+    // reconnect would mark the wrong dot as "you" — or, worse, mark nobody and
+    // leave the player unable to find themselves.
+    if (next !== 'open') youId.value = undefined;
+  }
+
+  /** Records the server's answer to our hello. */
+  function setYou(id: string) {
+    youId.value = id;
   }
 
   /**
@@ -75,5 +95,5 @@ export const useGameVanyagotchiStore = defineStore('gameVanyagotchi', () => {
     peerIds.value = Object.freeze([]);
   }
 
-  return { status, closeDetail, peerIds, setStatus, applyRoster, clearRoster };
+  return { status, closeDetail, peerIds, youId, setStatus, setYou, applyRoster, clearRoster };
 });

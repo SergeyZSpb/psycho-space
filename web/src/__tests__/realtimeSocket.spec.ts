@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BASE_DELAY_MS, HIDDEN_CLOSE_MS } from '../realtime/backoff';
 import {
   IDLE_GRACE_MS,
   byeDetail,
@@ -40,11 +41,29 @@ class FakeSocket {
   }
 }
 
-/** Builds a client whose transport and clock the test owns. */
-function harness() {
+/** Lets the async close path (which may await an auth probe) settle. */
+async function flush() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+interface HarnessOptions {
+  /** What the auth probe answers when a handshake never opened. */
+  authStatus?: number;
+  hidden?: boolean;
+  /** Jitter draw. 1 = the full computed delay, which keeps assertions readable. */
+  random?: number;
+}
+
+/** Builds a client whose transport, clock, jitter and page state the test owns. */
+function harness(options: HarnessOptions = {}) {
   const opened: FakeSocket[] = [];
-  const timers = new Map<number, () => void>();
+  const timers = new Map<number, { fn: () => void; ms: number }>();
   let nextTimer = 1;
+  let hidden = options.hidden ?? false;
+  let authStatus = options.authStatus ?? 200;
+  const wakeListeners = new Set<() => void>();
 
   const deps: RealtimeDeps = {
     open: (url) => {
@@ -53,26 +72,42 @@ function harness() {
       return s as unknown as WebSocket;
     },
     origin: () => 'https://psycho-space.ru',
-    setTimeout: (fn) => {
+    setTimeout: (fn, ms) => {
       const id = nextTimer++;
-      timers.set(id, fn);
+      timers.set(id, { fn, ms });
       return id;
     },
     clearTimeout: (id) => {
       timers.delete(id);
+    },
+    random: () => options.random ?? 1,
+    hidden: () => hidden,
+    probeAuth: async () => authStatus,
+    onWake: (fn) => {
+      wakeListeners.add(fn);
+      return () => wakeListeners.delete(fn);
     },
   };
 
   return {
     client: createRealtimeClient('yard', deps),
     opened,
-    /** Fires every pending timer, standing in for the grace period elapsing. */
+    /** Fires every pending timer, standing in for time passing. */
     runTimers() {
       const pending = [...timers.values()];
       timers.clear();
-      for (const fn of pending) fn();
+      for (const t of pending) t.fn();
     },
     pendingTimers: () => timers.size,
+    /** The delays currently scheduled, so a test can assert the backoff. */
+    delays: () => [...timers.values()].map((t) => t.ms),
+    setHidden(value: boolean) {
+      hidden = value;
+      for (const fn of wakeListeners) fn();
+    },
+    setAuthStatus(value: number) {
+      authStatus = value;
+    },
   };
 }
 
@@ -303,5 +338,202 @@ describe('the realtime client', () => {
     // section, short enough not to hold one of the three per-account slots.
     expect(IDLE_GRACE_MS).toBeGreaterThanOrEqual(5_000);
     expect(IDLE_GRACE_MS).toBeLessThanOrEqual(30_000);
+  });
+});
+
+describe('reconnecting', () => {
+  // The service restarts several times a day, so losing the socket is the
+  // normal case rather than an error path. These pin the policy end to end,
+  // through the client rather than only through the pure helpers.
+
+  it('comes back after an ordinary drop', async () => {
+    const h = harness();
+    h.client.subscribe({ frames: vi.fn() });
+    h.opened[0].open();
+
+    h.opened[0].close();
+    await flush();
+
+    expect(h.delays()).toEqual([BASE_DELAY_MS.normal]);
+    h.runTimers();
+    expect(h.opened).toHaveLength(2);
+  });
+
+  it('comes back sooner when the server said it was restarting', async () => {
+    const h = harness();
+    h.client.subscribe({ frames: vi.fn() });
+    h.opened[0].open();
+
+    h.opened[0].deliver({ t: 'bye', code: 1001, reason: 'restart' });
+    h.opened[0].close();
+    await flush();
+
+    expect(h.delays()).toEqual([BASE_DELAY_MS.prompt]);
+    expect(BASE_DELAY_MS.prompt).toBeLessThan(BASE_DELAY_MS.normal);
+  });
+
+  it('backs off harder when the server asked it to go away', async () => {
+    const h = harness();
+    h.client.subscribe({ frames: vi.fn() });
+    h.opened[0].open();
+
+    h.opened[0].deliver({ t: 'bye', code: 1013, reason: 'too many connections' });
+    h.opened[0].close();
+    await flush();
+
+    expect(h.delays()).toEqual([BASE_DELAY_MS.slow]);
+  });
+
+  it('stops for good when the session was revoked', async () => {
+    // The whole point of close code 4001. Reconnecting here would be a blocked
+    // account's browser hammering the handshake until the tab is closed.
+    const h = harness();
+    const status = vi.fn();
+    h.client.subscribe({ frames: vi.fn(), status });
+    h.opened[0].open();
+
+    h.opened[0].deliver({ t: 'bye', code: 4001, reason: 'unauthorized' });
+    h.opened[0].close();
+    await flush();
+
+    expect(h.client.getStatus()).toBe('terminal');
+    expect(h.pendingTimers()).toBe(0);
+    h.runTimers();
+    expect(h.opened).toHaveLength(1);
+    expect(status).toHaveBeenLastCalledWith('terminal', { code: 4001, reason: 'unauthorized' });
+  });
+
+  it('stops for good when a handshake is refused for auth', async () => {
+    // A browser CANNOT see why a handshake failed: a 401 arrives as an error
+    // and a 1006 close, indistinguishable from the Wi-Fi dropping. Asking the
+    // REST API — which shares the cookie — is the only way to tell.
+    const h = harness({ authStatus: 401 });
+    h.client.subscribe({ frames: vi.fn() });
+
+    h.opened[0].close(); // never opened
+    await flush();
+
+    expect(h.client.getStatus()).toBe('terminal');
+    expect(h.pendingTimers()).toBe(0);
+  });
+
+  it('keeps trying when a failed handshake was not an auth problem', async () => {
+    // The server was restarting, so the handshake failed but the session is
+    // fine. Treating this as terminal would strand every player on every deploy.
+    const h = harness({ authStatus: 200 });
+    h.client.subscribe({ frames: vi.fn() });
+
+    h.opened[0].close();
+    await flush();
+
+    expect(h.client.getStatus()).toBe('closed');
+    expect(h.delays()).toEqual([BASE_DELAY_MS.normal]);
+  });
+
+  it('keeps trying when the probe itself cannot answer', async () => {
+    // Offline: the probe rejects. "I could not ask" is not "you are logged out",
+    // and treating it as terminal would make a tunnel make the app unusable.
+    const h = harness();
+    h.setAuthStatus(0);
+    h.client.subscribe({ frames: vi.fn() });
+
+    h.opened[0].close();
+    await flush();
+
+    expect(h.client.getStatus()).toBe('closed');
+    expect(h.pendingTimers()).toBe(1);
+  });
+
+  it('grows the delay across consecutive failures and forgives it on success', async () => {
+    const h = harness();
+    h.client.subscribe({ frames: vi.fn() });
+
+    h.opened[0].open();
+    h.opened[0].close();
+    await flush();
+    expect(h.delays()).toEqual([BASE_DELAY_MS.normal]);
+
+    h.runTimers();
+    h.opened[1].close(); // this one never opened; the probe says 200
+    await flush();
+    expect(h.delays()).toEqual([BASE_DELAY_MS.normal * 2]);
+
+    h.runTimers();
+    h.opened[2].open(); // a good connection
+    expect(h.client.getAttempt()).toBe(0);
+
+    h.opened[2].close();
+    await flush();
+    expect(h.delays()).toEqual([BASE_DELAY_MS.normal]);
+  });
+
+  it('does not reconnect while the tab is hidden', async () => {
+    // Reconnecting into a backgrounded tab spends a connection slot on a page
+    // nobody is looking at, and iOS is likely to kill it again immediately.
+    const h = harness({ hidden: true });
+    h.client.subscribe({ frames: vi.fn() });
+
+    h.opened[0].close();
+    await flush();
+
+    expect(h.pendingTimers()).toBe(0);
+    expect(h.opened).toHaveLength(1);
+  });
+
+  it('reconnects at once when the tab comes back, without serving out a backoff', async () => {
+    const h = harness();
+    h.client.subscribe({ frames: vi.fn() });
+    h.opened[0].open();
+    h.opened[0].close();
+    await flush();
+
+    h.setHidden(true); // a pending retry now belongs to a tab nobody can see
+    h.setHidden(false);
+
+    // Straight back, and the attempt counter reset: the delay protects the
+    // server from a herd, it is not a punishment for switching tabs.
+    expect(h.opened).toHaveLength(2);
+    expect(h.client.getAttempt()).toBe(0);
+  });
+
+  it('closes a socket that has been hidden too long', () => {
+    const h = harness();
+    h.client.subscribe({ frames: vi.fn() });
+    h.opened[0].open();
+
+    h.setHidden(true);
+    expect(h.delays()).toEqual([HIDDEN_CLOSE_MS]);
+    h.runTimers();
+
+    expect(h.opened[0].closed).toBe(1);
+    expect(h.client.getStatus()).toBe('closed');
+  });
+
+  it('does not reconnect once nobody is watching', async () => {
+    const h = harness();
+    const leave = h.client.subscribe({ frames: vi.fn() });
+    h.opened[0].open();
+
+    leave();
+    h.runTimers(); // grace period elapses, socket closes
+    await flush();
+
+    expect(h.client.getStatus()).toBe('idle');
+    expect(h.opened).toHaveLength(1);
+  });
+
+  it('tells a subscriber that arrives after a revocation that it is terminal', async () => {
+    // Otherwise a screen mounted after the fact would show "connecting" forever.
+    const h = harness();
+    h.client.subscribe({ frames: vi.fn() });
+    h.opened[0].open();
+    h.opened[0].deliver({ t: 'bye', code: 4001, reason: 'unauthorized' });
+    h.opened[0].close();
+    await flush();
+
+    const status = vi.fn();
+    h.client.subscribe({ frames: vi.fn(), status });
+    expect(status).toHaveBeenCalledWith('terminal', { code: 4001, reason: 'unauthorized' });
+    expect(h.opened).toHaveLength(1); // and it did NOT try to open another
   });
 });

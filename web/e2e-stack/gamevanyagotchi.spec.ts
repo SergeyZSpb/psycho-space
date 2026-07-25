@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { loginAs } from './fixtures';
 
@@ -135,5 +138,116 @@ test('the yard survives leaving the route and coming back', async ({ browser, ba
     await expect(page.getByText('на связи')).toBeVisible();
   } finally {
     await context.close();
+  }
+});
+
+/**
+ * Takes the server away and gives it back, exactly as a deploy does.
+ *
+ * Blocks until the replacement answers `/healthz`; roughly a second, since
+ * nothing is rebuilt. Returns the new pid, which is what proves a restart
+ * actually happened rather than the health check having been answered by the
+ * process that was on its way out.
+ */
+function restartServer(): string {
+  const script = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    'scripts',
+    'e2e-stack-restart.sh',
+  );
+  return execFileSync('bash', [script], { encoding: 'utf8', timeout: 90_000 }).trim();
+}
+
+test('two open pages survive a restart of the binary', async ({ browser, baseURL }) => {
+  // The reason this test exists: every production deploy is a restart of exactly
+  // this shape, it happens several times a day, and until now nothing proved
+  // that a page which was open across one ever came back. It is also the only
+  // test in the suite that exercises the reconnect path end to end — the stubbed
+  // suite fakes the socket, so it would pass against a client that gave up.
+  test.setTimeout(120_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const ctxA = await browser.newContext(PHONE);
+  const ctxB = await browser.newContext(PHONE);
+  try {
+    await loginAs(ctxA, PLAYER_A);
+    await loginAs(ctxB, PLAYER_B);
+    const pageA = await enterYard(ctxA, base);
+    const pageB = await enterYard(ctxB, base);
+    await expect(dots(pageA)).toHaveCount(2);
+    await expect(dots(pageB)).toHaveCount(2);
+
+    const before = await pageA.locator('[data-test="peer"]').count();
+    expect(before).toBe(2);
+
+    restartServer();
+
+    // Neither page was touched, and neither was reloaded. They have to notice
+    // and recover on their own — including asking who they are again, since the
+    // pseudonym is derived from a key that died with the old process.
+    await expect(pageA.getByText('на связи')).toBeVisible({ timeout: 60_000 });
+    await expect(pageB.getByText('на связи')).toBeVisible({ timeout: 60_000 });
+    await expect(dots(pageA)).toHaveCount(2, { timeout: 30_000 });
+    await expect(dots(pageB)).toHaveCount(2, { timeout: 30_000 });
+
+    // Still in the yard, never bounced back to the intro.
+    await expect(pageA.getByRole('button', { name: 'Во двор' })).toHaveCount(0);
+
+    // And the socket is genuinely live again rather than merely labelled so: a
+    // move made after the restart has to cross to the other player.
+    const box = await pageA.locator('[data-test="plane"]').boundingBox();
+    await pageA.mouse.click(
+      (box?.x ?? 0) + (box?.width ?? 0) * 0.8,
+      (box?.y ?? 0) + (box?.height ?? 0) * 0.5,
+    );
+    await expect
+      .poll(async () => (await xs(pageB)).some((x) => Math.abs(x - 0.8) < 0.06), {
+        message: 'a move made after the restart never reached the other player',
+        timeout: 30_000,
+      })
+      .toBe(true);
+  } finally {
+    await ctxA.close();
+    await ctxB.close();
+  }
+});
+
+test('the same account on two devices is ONE Ваня', async ({ browser, baseURL }) => {
+  // The bug this fixes, reproduced the way it was found: sign in twice and you
+  // used to get two dots. One account is one Ваня, wherever it is connected
+  // from, and a move from either device moves that one.
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const phone = await browser.newContext(PHONE);
+  const laptop = await browser.newContext(PHONE);
+  try {
+    await loginAs(phone, PLAYER_A);
+    await loginAs(laptop, PLAYER_A); // the SAME account
+    const pagePhone = await enterYard(phone, base);
+    const pageLaptop = await enterYard(laptop, base);
+
+    await expect(dots(pagePhone)).toHaveCount(1);
+    await expect(dots(pageLaptop)).toHaveCount(1);
+    await expect(pagePhone.getByText('во дворе: 1')).toBeVisible();
+
+    // A move from the laptop moves the Ваня the phone is watching.
+    const box = await pageLaptop.locator('[data-test="plane"]').boundingBox();
+    await pageLaptop.mouse.click(
+      (box?.x ?? 0) + (box?.width ?? 0) * 0.2,
+      (box?.y ?? 0) + (box?.height ?? 0) * 0.5,
+    );
+    await expect
+      .poll(async () => (await xs(pagePhone)).some((x) => Math.abs(x - 0.2) < 0.06), {
+        message: "the phone never saw the laptop's move",
+        timeout: 15_000,
+      })
+      .toBe(true);
+
+    // And each device knows which entity is its own.
+    await expect(pagePhone.locator('[data-test="peer"][data-you="1"]')).toHaveCount(1);
+    await expect(pageLaptop.locator('[data-test="peer"][data-you="1"]')).toHaveCount(1);
+  } finally {
+    await phone.close();
+    await laptop.close();
   }
 });

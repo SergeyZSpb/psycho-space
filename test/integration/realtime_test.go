@@ -104,8 +104,9 @@ func waitRegistered(t *testing.T, hub *realtime.Hub, frames <-chan []byte) {
 }
 
 // expectBye requires a bye frame carrying wantCode to arrive, skipping any
-// leftover readiness probes.
-func expectBye(t *testing.T, frames <-chan []byte, wantCode int) {
+// leftover readiness probes, and hands it back so a caller can also inspect the
+// reason.
+func expectBye(t *testing.T, frames <-chan []byte, wantCode int) realtime.Bye {
 	t.Helper()
 	for {
 		select {
@@ -120,7 +121,7 @@ func expectBye(t *testing.T, frames <-chan []byte, wantCode int) {
 			if b.Code != wantCode {
 				t.Fatalf("bye code = %d, want %d (reason %q)", b.Code, wantCode, b.Reason)
 			}
-			return
+			return b
 		case <-time.After(3 * time.Second):
 			t.Fatalf("no bye frame arrived (wanted code %d)", wantCode)
 		}

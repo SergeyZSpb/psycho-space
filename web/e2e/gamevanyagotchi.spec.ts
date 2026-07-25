@@ -16,6 +16,8 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
  *  wire-format change should fail this test rather than silently follow along. */
 const TYPE_ROSTER = 'vanyagotchi_roster';
 const TYPE_MOVE = 'vanyagotchi_move';
+const TYPE_HELLO = 'vanyagotchi_hello';
+const TYPE_YOU = 'vanyagotchi_you';
 
 /** Mirrored from src/lib/vanyagotchiPlane.ts, for the same reason. */
 const X_PROPERTY = '--x';
@@ -39,6 +41,10 @@ interface SocketHarness {
   push: (payload: string) => Promise<void>;
   /** Drops the connection, optionally saying why first. */
   drop: (bye?: { code: number; reason: string }) => Promise<void>;
+  /** How many times the page has opened a socket — reconnects included. */
+  connections: () => number;
+  /** Waits until the page has opened at least n sockets. */
+  waitForConnections: (n: number) => Promise<void>;
 }
 
 /**
@@ -49,13 +55,15 @@ interface SocketHarness {
 async function stubSocket(page: Page): Promise<SocketHarness> {
   const sent: Record<string, unknown>[] = [];
   let ws: { send: (m: string) => void; close: (o?: { code?: number }) => void } | undefined;
+  let count = 0;
   let resolveReady: () => void;
-  const ready = new Promise<void>((r) => {
+  let ready = new Promise<void>((r) => {
     resolveReady = r;
   });
 
   await page.routeWebSocket('**/api/realtime*', (route) => {
     ws = route;
+    count += 1;
     route.onMessage((message) => {
       const text = typeof message === 'string' ? message : message.toString();
       try {
@@ -69,6 +77,14 @@ async function stubSocket(page: Page): Promise<SocketHarness> {
 
   return {
     sent,
+    connections: () => count,
+    async waitForConnections(n: number) {
+      const deadline = Date.now() + 15_000;
+      while (count < n) {
+        if (Date.now() > deadline) throw new Error(`only ${count} of ${n} connections opened`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    },
     async push(payload: string) {
       await ready;
       ws?.send(payload);
@@ -76,7 +92,14 @@ async function stubSocket(page: Page): Promise<SocketHarness> {
     async drop(bye) {
       await ready;
       if (bye) ws?.send(JSON.stringify({ t: 'bye', ...bye }));
-      ws?.close({ code: 1006 });
+      const dying = ws;
+      // The next connection gets its own readiness gate, so a push after a
+      // reconnect waits for the NEW socket rather than racing the dead one.
+      ready = new Promise<void>((r) => {
+        resolveReady = r;
+      });
+      ws = undefined;
+      dying?.close({ code: 1006 });
     },
   };
 }
@@ -272,9 +295,9 @@ test.describe('«Ванягоччи» — the shared plane', () => {
       (box?.y ?? 0) + (box?.height ?? 0) * 0.75,
     );
 
-    await expect.poll(() => socket.sent.length).toBe(1);
-    const move = socket.sent[0];
-    expect(move.t).toBe(TYPE_MOVE);
+    // Exactly one move — the hello sent on open is not one of them.
+    await expect.poll(() => socket.sent.filter((m) => m.t === TYPE_MOVE).length).toBe(1);
+    const move = socket.sent.filter((m) => m.t === TYPE_MOVE)[0];
     expect(move.x as number).toBeCloseTo(0.25, 1);
     expect(move.y as number).toBeCloseTo(0.75, 1);
 
@@ -364,5 +387,82 @@ test.describe('«Ванягоччи» — the shared plane', () => {
     if (isMobile(page)) {
       await expectTapTarget(link, 'Ванягоччи nav link');
     }
+  });
+});
+
+test.describe('«Ванягоччи» — surviving a restart', () => {
+  test('the player can tell which Ваня is theirs', async ({ page }) => {
+    // The id on the wire is a per-account pseudonym the server derives, not
+    // anything the client already knows, so the only way to find yourself is to
+    // ask. The client says hello on every open and the server answers.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await expect.poll(() => socket.sent.some((m) => m.t === TYPE_HELLO)).toBe(true);
+
+    await socket.push(JSON.stringify({ t: TYPE_YOU, id: 'me' }));
+    await socket.push(roster({ id: 'me', x: 0.3, y: 0.3 }, { id: 'other', x: 0.7, y: 0.7 }));
+
+    await expect(dots(page)).toHaveCount(2);
+    await expect(page.locator('[data-test="peer"][data-you="1"]')).toHaveCount(1);
+    await expect(page.locator('[data-peer="me"][data-you="1"]')).toHaveCount(1);
+  });
+
+  test('a reconnect does not throw the player back to the intro', async ({ page }) => {
+    // Losing the socket is the normal case — the service restarts several times
+    // a day. Being bounced back to a splash screen with a "Во двор" button every
+    // time would be worse than the disconnect.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'peer-a', x: 0.4, y: 0.4 }));
+    await expect(dots(page)).toHaveCount(1);
+
+    await socket.drop({ code: 1001, reason: 'restart' });
+
+    // Still in the yard, with the plane on screen and the intro CTA gone.
+    await expect(page.locator('[data-test="plane"]')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Во двор' })).toHaveCount(0);
+    await expect(page.getByText(/переподключаемся/)).toBeVisible();
+
+    // And it really does come back, without anybody clicking anything.
+    await socket.waitForConnections(2);
+    await socket.push(roster({ id: 'peer-a', x: 0.6, y: 0.6 }));
+    await expect(dots(page)).toHaveCount(1);
+    await expect(page.getByText('на связи')).toBeVisible();
+  });
+
+  test('it says hello again after reconnecting, because the pseudonym changed', async ({
+    page,
+  }) => {
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await expect.poll(() => socket.sent.filter((m) => m.t === TYPE_HELLO).length).toBe(1);
+
+    await socket.drop({ code: 1001, reason: 'restart' });
+    await socket.waitForConnections(2);
+
+    await expect
+      .poll(() => socket.sent.filter((m) => m.t === TYPE_HELLO).length, { timeout: 15_000 })
+      .toBe(2);
+  });
+
+  test('a revoked session stops for good instead of hammering the handshake', async ({ page }) => {
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'peer-a', x: 0.5, y: 0.5 }));
+    await expect(dots(page)).toHaveCount(1);
+
+    await socket.drop({ code: 4001, reason: 'unauthorized' });
+
+    await expect(page.getByText('доступ отозван')).toBeVisible();
+    await expect(dots(page)).toHaveCount(0);
+    // The whole point: no retry. A blocked account must not sit there
+    // reconnecting until the tab is closed.
+    await page.waitForTimeout(3_000);
+    expect(socket.connections()).toBe(1);
   });
 });

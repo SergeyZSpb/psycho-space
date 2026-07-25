@@ -15,9 +15,15 @@
 // one is ever wanted it goes through that HTTP endpoint. Written here because it
 // is the sort of rule that erodes silently (ADR-016).
 //
-// What exists so far is the wire protocol only: presence on a shared plane, and
-// a move. There is no pet, no database table and no decay yet — Phase 1 proves
-// the transport end to end before anything durable rides on it.
+// What exists so far is the wire protocol only: presence on a shared plane, a
+// move, and a handshake that tells a client which entity is its own. There is no
+// pet, no database table and no decay yet — Phase 1 proves the transport end to
+// end before anything durable rides on it.
+//
+// One account is one entity. The plane is populated per ACCOUNT rather than per
+// connection, so a person signed in on a phone and a laptop is one Ваня that
+// either device can move, and the roster names it by a per-process pseudonym
+// rather than by an account id (see Peer and (*Service).pseudonym).
 package gamevanyagotchi
 
 import "math"
@@ -31,9 +37,11 @@ type Point struct {
 	Y float64 `json:"y"`
 }
 
-// spawn is where a connection is drawn before it has ever moved: the middle of
-// the plane. Phase 2 replaces this with the current location's entry point from
-// the content catalogue.
+// spawn is where an account is drawn before it has ever moved: the middle of
+// the plane. Per account rather than per connection — signing in on a second
+// device joins the Ваня already standing in the yard instead of putting a fresh
+// one at the spawn. Phase 2 replaces this with the current location's entry
+// point from the content catalogue.
 var spawn = Point{X: 0.5, Y: 0.5}
 
 // clampUnit forces v into 0..1 and reports whether it was a usable number at

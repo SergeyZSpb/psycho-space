@@ -123,6 +123,26 @@ func (c *Conn) Close(code int, reason string) {
 	})
 }
 
+// Refuse tells a peer why its connection is not being accepted, then drops the
+// socket. It is the counterpart to Close for the window before Serve runs.
+//
+// That window exists because the hub's caps are checked AFTER the upgrade: by
+// the time Register can say no, the 101 has already been sent and there is no
+// HTTP status left to carry a reason. Without this the peer would see a socket
+// that opened and then went quiet, which is indistinguishable from a network
+// drop — and a person who needs to close another tab would have no way to learn
+// that from a client that cannot tell the two apart.
+//
+// It writes on the calling goroutine instead of handing the frame to the write
+// pump, because there is no write pump: Serve was never called and never will
+// be, so a queued close request would sit in the channel unread. That is also
+// what makes writing here safe — nothing else can be writing to this socket yet,
+// which is the invariant writePump otherwise owns.
+func (c *Conn) Refuse(ctx context.Context, code int, reason string) {
+	c.writeBye(ctx, closeReason{code: code, reason: reason})
+	c.hardClose()
+}
+
 // hardClose drops the socket without a handshake. Idempotent, and safe to call
 // from any goroutine: every caller is on a path that must not block.
 func (c *Conn) hardClose() {
@@ -215,7 +235,7 @@ func (c *Conn) readPump(ctx context.Context) {
 		if !limiter.Allow() {
 			slog.WarnContext(ctx, "realtime rate limit exceeded",
 				"conn_id", c.id, "account_id", c.accountID)
-			c.Close(CloseTryAgainLater, "rate limited")
+			c.Close(CloseTryAgainLater, ReasonRateLimited)
 			return
 		}
 		if c.handler == nil || typ != websocket.MessageText {

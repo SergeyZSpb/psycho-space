@@ -77,9 +77,15 @@ type Sink interface {
 // to, or close, somebody's socket.
 //
 // The identity is the CONNECTION, not the account. Three tabs are three members,
-// and the id is a per-connection UUID that means nothing after the socket goes
-// away — which is the right lifetime for presence, and keeps a durable
-// account identifier off the wire when a roster is broadcast to peers.
+// and ConnID is a per-connection UUID that means nothing after the socket goes
+// away — the right lifetime for presence, and the id to use for anything
+// addressed at one socket (Hub.PublishTo).
+//
+// AccountID is the durable one, and what a service does with it is that
+// service's decision: collapsing an account's connections into one entity needs
+// it, and putting it on a frame that is broadcast to other people would hand out
+// a cross-session identifier. Nothing here forces either — the hub carries bytes
+// and decides nothing.
 type Member struct {
 	ConnID    string
 	AccountID string
@@ -124,6 +130,11 @@ type publishCmd struct {
 	msg  []byte
 }
 
+type publishToCmd struct {
+	connID string
+	msg    []byte
+}
+
 type kickCmd struct {
 	accountID string
 	code      int
@@ -137,6 +148,7 @@ type Hub struct {
 	register   chan registerCmd
 	unregister chan Sink
 	publish    chan publishCmd
+	publishTo  chan publishToCmd
 	kick       chan kickCmd
 	members    chan membersCmd
 
@@ -154,6 +166,7 @@ func NewHub() *Hub {
 		register:      make(chan registerCmd),
 		unregister:    make(chan Sink),
 		publish:       make(chan publishCmd, 64),
+		publishTo:     make(chan publishToCmd), // unbuffered on purpose — see PublishTo
 		kick:          make(chan kickCmd, 8),
 		members:       make(chan membersCmd),
 		maxPerAccount: defaultMaxPerAccount,
@@ -195,6 +208,26 @@ func (h *Hub) Run(ctx context.Context) {
 		}
 	}
 
+	// deliver hands one message to one client without ever blocking, and applies
+	// the backpressure policy when the client will not take it. Both the
+	// broadcast and the unicast path go through it, so "this client is behind"
+	// has one meaning in this hub rather than two that can drift apart.
+	deliver := func(s Sink, c *client, msg []byte) {
+		if c.sink.TrySend(msg) {
+			c.overflows = 0
+			return
+		}
+		// Never block on a slow client: one phone on a bad connection must not
+		// freeze the room for everyone. Presence is broadcast as idempotent full
+		// state, so a dropped frame followed by the next one leaves the client
+		// correct rather than corrupt.
+		c.overflows++
+		if c.overflows >= maxOverflowsBeforeEvict {
+			remove(s)
+			s.Close(CloseTryAgainLater, ReasonSlowConsumer)
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -226,18 +259,20 @@ func (h *Hub) Run(ctx context.Context) {
 
 		case cmd := <-h.publish:
 			for s, c := range rooms[cmd.room] {
-				if c.sink.TrySend(cmd.msg) {
-					c.overflows = 0
-					continue
-				}
-				// Never block on a slow client: one phone on a bad connection
-				// must not freeze the room for everyone. Presence is broadcast
-				// as idempotent full state, so a dropped frame followed by the
-				// next one leaves the client correct rather than corrupt.
-				c.overflows++
-				if c.overflows >= maxOverflowsBeforeEvict {
-					remove(s)
-					s.Close(CloseTryAgainLater, "slow consumer")
+				deliver(s, c, cmd.msg)
+			}
+
+		case cmd := <-h.publishTo:
+			// A linear scan rather than a fourth map keyed by connection id. The
+			// client set is bounded by maxTotal, a unicast is rare — a client
+			// sends one handshake per socket, not one per tick — and every extra
+			// index is one more thing `remove` has to keep in step, which is the
+			// class of bug this goroutine's sole ownership exists to rule out.
+			// An id nobody holds simply matches nothing.
+			for s, c := range clients {
+				if s.ID() == cmd.connID {
+					deliver(s, c, cmd.msg)
+					break
 				}
 			}
 
@@ -296,6 +331,34 @@ func (h *Hub) Unregister(s Sink) {
 func (h *Hub) Publish(ctx context.Context, room string, msg []byte) error {
 	select {
 	case h.publish <- publishCmd{room: room, msg: msg}:
+		return nil
+	case <-h.done:
+		return ErrHubClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// PublishTo sends a message to one connection and to nobody else. It does not
+// block on a slow client, exactly as Publish does not.
+//
+// An unknown connection id is a silent no-op rather than an error. The only
+// caller that can name a connection is one holding a Member, and between the
+// frame that produced that Member and the reply being composed the socket may
+// already have gone — a race that is ordinary rather than a failure worth
+// reporting, and one no caller could do anything useful about.
+//
+// It stays game-agnostic like the rest of this package: it carries bytes to a
+// connection the caller already knows about and never looks inside them.
+//
+// The command channel is deliberately UNBUFFERED, unlike publish. A buffered one
+// would go on accepting sends after shutdown — select would see both a writable
+// channel and a closed done channel and pick between them at random — so a
+// caller could not reliably tell "queued" from "the hub is gone". The cost is
+// waiting for the hub goroutine, which never blocks on anything.
+func (h *Hub) PublishTo(ctx context.Context, connID string, msg []byte) error {
+	select {
+	case h.publishTo <- publishToCmd{connID: connID, msg: msg}:
 		return nil
 	case <-h.done:
 		return ErrHubClosed

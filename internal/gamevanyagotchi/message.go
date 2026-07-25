@@ -22,6 +22,13 @@ const (
 	// statement: the server validates it, clamps it, and the position only
 	// becomes real when it appears in the next roster.
 	TypeMove = "vanyagotchi_move"
+	// TypeHello is a client asking which entity in the roster is itself. It
+	// carries no fields, and could not usefully carry any: the answer depends on
+	// the connection the frame arrived on, and nothing a payload claimed about
+	// identity would be trusted.
+	TypeHello = "vanyagotchi_hello"
+	// TypeYou is the unicast answer to TypeHello — see You.
+	TypeYou = "vanyagotchi_you"
 )
 
 // Roster is the whole plane, every tick.
@@ -37,22 +44,40 @@ type Roster struct {
 	Peers []Peer `json:"peers"`
 }
 
-// Peer is one entity on the plane.
+// Peer is one entity on the plane: one ACCOUNT, not one connection. Signing in
+// on a phone and on a laptop puts one Ваня in the yard, standing in one place,
+// and a move from either device moves that one.
 //
-// ID is the CONNECTION id, not the account: two tabs are two dots, and the id
-// dies with the socket. That is the right lifetime for presence, and it keeps a
-// durable per-person identifier off a frame that is broadcast to everybody else
-// in the room. Nothing here is personal data, which is why the roster can be
-// fanned out without any redaction step.
+// ID is a per-process PSEUDONYM of the account and never accounts.id. The roster
+// is fanned out to everybody in the room, so whatever sits in this field is a
+// handle every other player can record and correlate; the account id would make
+// that handle durable and cross-session, which is precisely what this project's
+// data posture declines to broadcast (CLAUDE.md → *Security & personal data*).
+// (*Service).pseudonym carries the derivation and why its key lives and dies
+// with the process. Nothing here is personal data, which is why the roster can
+// be published with no redaction step.
 //
-// There is no "you" marker: the client renders every entity the same way, so it
-// does not need to know which one it is. When a screen wants to highlight the
-// player's own dot, that is the moment to decide how — and the cheapest answer
-// is likely a unicast frame at registration rather than a field here.
+// There is no "you" flag, and there should not be: this frame goes to everybody,
+// so a per-recipient field would have to be rendered per recipient. A client
+// learns which entity is its own by sending TypeHello once and keeping the id
+// from the TypeYou reply.
 type Peer struct {
 	ID string  `json:"id"`
 	X  float64 `json:"x"`
 	Y  float64 `json:"y"`
+}
+
+// You tells one client which entity in the roster is its own. It is the answer
+// to TypeHello and goes to that connection alone.
+//
+// ID is the same pseudonym the roster uses for that account, so the client
+// matches it against Peer.ID by equality and needs to understand nothing about
+// how it was derived. It is stable for the life of the process and identical on
+// every device that account is signed in on — which is what makes "highlight
+// me" work on the second device without a second handshake protocol.
+type You struct {
+	T  string `json:"t"`
+	ID string `json:"id"`
 }
 
 // move is the inbound frame. Pointers on the coordinates so that a payload which

@@ -9,17 +9,28 @@
 //
 // Connection lifetime follows a SUBSCRIPTION REFCOUNT with a grace period, not
 // the route: the last unsubscribe starts a timer rather than closing, so
-// yard → wishlist → yard reuses the socket it already had. Only a real absence
-// closes it.
+// yard → wishlist → yard reuses the socket it already had.
 //
-// What deliberately is NOT here yet: reconnect. Backoff, the deliberate close
-// after a spell hidden, resync on visibilitychange/pageshow, and treating an
-// HTTP 401/403 at the handshake as terminal are the next iteration's work. This
-// one reports its state honestly and stops; the state machine below is the seam
-// that work hooks into.
+// It also survives a deploy. The service restarts several times a day, and every
+// socket dies at the same instant; reconnecting is therefore the normal case
+// rather than an error path, and the policy for it lives in ./backoff.ts.
 
-/** What the connection is doing, as far as anything outside here needs to know. */
-export type ConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed';
+import {
+  CLOSE_UNAUTHORIZED,
+  HIDDEN_CLOSE_MS,
+  policyForClose,
+  reconnectDelay,
+  type ReconnectPolicy,
+} from './backoff';
+
+/**
+ * What the connection is doing.
+ *
+ * `terminal` is the one that never recovers on its own: the session is gone, so
+ * every future handshake would be refused and retrying would mean a blocked
+ * account's browser hammering the server for as long as the tab stays open.
+ */
+export type ConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'terminal';
 
 /** Every frame is a JSON object carrying a "t" discriminator. */
 export interface RealtimeFrame {
@@ -32,8 +43,7 @@ export interface RealtimeFrame {
  *
  * The reason arrives as an ordinary `bye` FRAME, not as a WebSocket close code:
  * a browser reports 1006 for every disconnect, so `CloseEvent.code` cannot carry
- * it. See the server's docs/ARCHITECTURE.md ADR-018. `code` here is therefore
- * the one from that frame, and it is absent when the socket simply dropped.
+ * it. See the server's docs/ARCHITECTURE.md ADR-018.
  */
 export interface CloseDetail {
   /** 1001 planned restart · 1013 evicted or over a cap · 4001 session revoked. */
@@ -102,6 +112,22 @@ export interface RealtimeDeps {
   origin: () => string;
   setTimeout: (fn: () => void, ms: number) => number;
   clearTimeout: (handle: number) => void;
+  /** Jitter source. Injected so a test can pin the draw. */
+  random: () => number;
+  /** Is the page currently hidden? */
+  hidden: () => boolean;
+  /**
+   * Asks the HTTP API whether we are still allowed in, returning the status.
+   *
+   * This exists because **a browser cannot see why a handshake failed.** A
+   * WebSocket that is refused with 401 or 403 fires `error` and then `close`
+   * with 1006 and no status attached — indistinguishable from the Wi-Fi
+   * dropping. The session cookie is the same credential the REST API uses, so
+   * asking it is the only way to tell "you are logged out" from "try again".
+   */
+  probeAuth: () => Promise<number>;
+  /** Subscribes to visibility/bfcache events. Returns an unsubscribe. */
+  onWake: (fn: () => void) => () => void;
 }
 
 interface Subscription {
@@ -123,22 +149,40 @@ export function createRealtimeClient(room: string, deps: RealtimeDeps) {
   let status: ConnectionStatus = 'idle';
   let lastClose: CloseDetail | undefined;
   let idleTimer: number | undefined;
+  let retryTimer: number | undefined;
+  let hiddenTimer: number | undefined;
+  let attempt = 0;
+  let everOpened = false;
+  let stopWake: (() => void) | undefined;
 
   function setStatus(next: ConnectionStatus, detail?: CloseDetail) {
     status = next;
     for (const sub of subscribers) sub.status?.(next, detail);
   }
 
+  function clearTimer(handle: number | undefined) {
+    if (handle !== undefined) deps.clearTimeout(handle);
+  }
+
   function cancelIdleClose() {
-    if (idleTimer !== undefined) {
-      deps.clearTimeout(idleTimer);
-      idleTimer = undefined;
-    }
+    clearTimer(idleTimer);
+    idleTimer = undefined;
+  }
+
+  function cancelRetry() {
+    clearTimer(retryTimer);
+    retryTimer = undefined;
+  }
+
+  function cancelHiddenClose() {
+    clearTimer(hiddenTimer);
+    hiddenTimer = undefined;
   }
 
   function connect() {
-    if (socket) return;
-    lastClose = undefined;
+    if (socket || status === 'terminal') return;
+    cancelRetry();
+    everOpened = false;
     setStatus('connecting');
     const ws = deps.open(realtimeURL(deps.origin(), room));
     socket = ws;
@@ -151,6 +195,9 @@ export function createRealtimeClient(room: string, deps: RealtimeDeps) {
         ws.close();
         return;
       }
+      everOpened = true;
+      attempt = 0; // a good connection forgives the whole backoff history
+      lastClose = undefined;
       setStatus('open');
     };
 
@@ -158,9 +205,8 @@ export function createRealtimeClient(room: string, deps: RealtimeDeps) {
       if (socket !== ws) return;
       const frame = parseFrame(event.data);
       if (!frame) return;
-      // The server's last word before it drops the socket. Recorded, not acted
-      // on: the close itself follows immediately, and what to do about each code
-      // is the reconnect iteration's business.
+      // The server's last word before it drops the socket. Recorded here and
+      // acted on in the close handler, because the close always follows.
       const bye = byeDetail(frame);
       if (bye) {
         lastClose = bye;
@@ -172,7 +218,9 @@ export function createRealtimeClient(room: string, deps: RealtimeDeps) {
     const finish = () => {
       if (socket !== ws) return;
       socket = null;
-      setStatus('closed', lastClose);
+      const detail = lastClose;
+      setStatus('closed', detail);
+      void afterClose(detail, everOpened);
     };
     ws.onclose = finish;
     // An error is always followed by a close, so this exists only to make sure
@@ -180,15 +228,75 @@ export function createRealtimeClient(room: string, deps: RealtimeDeps) {
     ws.onerror = finish;
   }
 
-  function disconnect() {
+  /** Decides what happens next, once the socket is definitely gone. */
+  async function afterClose(detail: CloseDetail | undefined, hadOpened: boolean) {
+    if (subscribers.size === 0) return; // nobody is watching; stay down
+
+    let policy: ReconnectPolicy = policyForClose(detail?.code);
+
+    // A handshake that never opened may have been refused for auth, and the
+    // WebSocket API will not say. Ask the REST API, which shares the cookie.
+    if (policy !== 'terminal' && !hadOpened) {
+      const code = await deps.probeAuth().catch(() => 0);
+      if (code === 401 || code === 403) {
+        policy = 'terminal';
+        detail = { code: CLOSE_UNAUTHORIZED, reason: 'unauthorized' };
+      }
+    }
+
+    if (policy === 'terminal') {
+      setStatus('terminal', detail);
+      return;
+    }
+    if (subscribers.size === 0 || deps.hidden()) return;
+
+    const delay = reconnectDelay(policy, attempt, deps.random);
+    attempt += 1;
+    retryTimer = deps.setTimeout(() => {
+      retryTimer = undefined;
+      if (subscribers.size > 0 && !deps.hidden()) connect();
+    }, delay);
+  }
+
+  function disconnect(next: ConnectionStatus = 'idle') {
     cancelIdleClose();
+    cancelRetry();
     const ws = socket;
     socket = null;
     if (ws) {
       // Detached first, so the handlers above see socket !== ws and go quiet.
       ws.close();
     }
-    setStatus('idle');
+    if (status !== 'terminal') setStatus(next);
+  }
+
+  /**
+   * Reacts to the page being hidden or coming back.
+   *
+   * iOS kills a backgrounded socket regardless of what we do, so a tab left
+   * hidden is holding a connection that is probably already dead from the
+   * server's point of view. Closing it deliberately after a spell makes the
+   * return cheap and predictable instead of leaving a zombie to be discovered.
+   */
+  function handleWake() {
+    if (status === 'terminal' || subscribers.size === 0) return;
+    if (deps.hidden()) {
+      cancelHiddenClose();
+      hiddenTimer = deps.setTimeout(() => {
+        hiddenTimer = undefined;
+        if (deps.hidden() && subscribers.size > 0) disconnect('closed');
+      }, HIDDEN_CLOSE_MS);
+      return;
+    }
+    cancelHiddenClose();
+    // Back on screen. Reconnect at once rather than serving out a backoff that
+    // was counting down while nobody was looking, and reset the attempt count:
+    // the delay is meant to protect the server from a herd, not to punish
+    // somebody for switching tabs.
+    if (!socket) {
+      attempt = 0;
+      connect();
+    }
   }
 
   /**
@@ -199,8 +307,9 @@ export function createRealtimeClient(room: string, deps: RealtimeDeps) {
   function subscribe(sub: Subscription): () => void {
     subscribers.add(sub);
     cancelIdleClose();
+    if (!stopWake) stopWake = deps.onWake(handleWake);
     connect();
-    sub.status?.(status, status === 'closed' ? lastClose : undefined);
+    sub.status?.(status, status === 'closed' || status === 'terminal' ? lastClose : undefined);
 
     let released = false;
     return () => {
@@ -209,9 +318,15 @@ export function createRealtimeClient(room: string, deps: RealtimeDeps) {
       subscribers.delete(sub);
       if (subscribers.size > 0) return;
       cancelIdleClose();
+      cancelRetry();
       idleTimer = deps.setTimeout(() => {
         idleTimer = undefined;
-        if (subscribers.size === 0) disconnect();
+        if (subscribers.size === 0) {
+          cancelHiddenClose();
+          stopWake?.();
+          stopWake = undefined;
+          disconnect();
+        }
       }, IDLE_GRACE_MS);
     };
   }
@@ -235,6 +350,8 @@ export function createRealtimeClient(room: string, deps: RealtimeDeps) {
     getStatus: () => status,
     /** Why the socket last went away, if the server said. */
     getLastClose: () => lastClose,
+    /** How many reconnects have been attempted since the last good connection. */
+    getAttempt: () => attempt,
     /** Closes immediately, ignoring the grace period. For teardown. */
     disconnect,
     /** How many holders the connection has. Exposed for assertions. */
@@ -261,6 +378,27 @@ export function realtimeClient(): RealtimeClient {
       origin: () => window.location.origin,
       setTimeout: (fn, ms) => window.setTimeout(fn, ms),
       clearTimeout: (handle) => window.clearTimeout(handle),
+      random: () => Math.random(),
+      hidden: () => document.visibilityState === 'hidden',
+      probeAuth: async () => {
+        try {
+          const res = await fetch('/api/auth/me', { credentials: 'include' });
+          return res.status;
+        } catch {
+          return 0; // offline: not an auth answer, so not terminal
+        }
+      },
+      // Both events, deliberately. A bfcache restore fires `pageshow` and may
+      // NOT fire `visibilitychange` — notably on iOS, which is also the platform
+      // most likely to have killed the socket while the tab was away.
+      onWake: (fn) => {
+        document.addEventListener('visibilitychange', fn);
+        window.addEventListener('pageshow', fn);
+        return () => {
+          document.removeEventListener('visibilitychange', fn);
+          window.removeEventListener('pageshow', fn);
+        };
+      },
     });
   }
   return shared;

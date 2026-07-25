@@ -11,6 +11,29 @@ const (
 	TypeBye = "bye"
 )
 
+// The reasons that travel with CloseTryAgainLater. Three distinct situations
+// share that one code, so the reason string is the only thing separating them —
+// and they call for different behaviour: a slow consumer should reconnect and
+// expect the same treatment if its network has not improved, a rate-limited
+// client should send less, and a client over the per-account cap should say so
+// to the person rather than retry, because retrying cannot succeed until a tab
+// somewhere else is closed.
+//
+// They are constants because a client branches on the exact text; changing one
+// is a wire-protocol change, not a wording change.
+const (
+	// ReasonSlowConsumer: the client fell too far behind the broadcast and was
+	// evicted rather than allowed to stall the room.
+	ReasonSlowConsumer = "slow consumer"
+	// ReasonRateLimited: the client sent frames faster than the socket allows.
+	ReasonRateLimited = "rate limited"
+	// ReasonTooManyConnections: the account, or the process, is already at its
+	// connection cap. This one is delivered before the connection is ever
+	// registered — the caps are checked after the 101, so there is no HTTP
+	// status left to carry it (see Conn.Refuse).
+	ReasonTooManyConnections = "too many connections"
+)
+
 // Bye is the final frame a server-initiated close sends before the socket goes
 // away.
 //

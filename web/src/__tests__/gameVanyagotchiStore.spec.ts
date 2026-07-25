@@ -75,3 +75,38 @@ describe('the «Ванягоччи» store', () => {
     expect(store.closeDetail).toBeUndefined();
   });
 });
+
+describe('the "you" marker', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it('records the pseudonym the server answered with', () => {
+    const store = useGameVanyagotchiStore();
+    store.setStatus('open');
+    store.setYou('abc123');
+    expect(store.youId).toBe('abc123');
+  });
+
+  it('forgets it the moment the socket is not open', () => {
+    // The pseudonym is derived per connection lifetime, so carrying it across a
+    // reconnect would mark the wrong dot as "you" — or mark nobody, leaving the
+    // player unable to find themselves on a crowded plane.
+    const store = useGameVanyagotchiStore();
+    store.setStatus('open');
+    store.setYou('abc123');
+
+    store.setStatus('closed', { code: 1001 });
+    expect(store.youId).toBeUndefined();
+  });
+
+  it('is gone on a terminal close too, and keeps the reason', () => {
+    const store = useGameVanyagotchiStore();
+    store.setStatus('open');
+    store.setYou('abc123');
+
+    store.setStatus('terminal', { code: 4001, reason: 'unauthorized' });
+    expect(store.youId).toBeUndefined();
+    expect(store.closeDetail).toEqual({ code: 4001, reason: 'unauthorized' });
+  });
+});

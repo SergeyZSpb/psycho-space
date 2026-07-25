@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -63,9 +64,21 @@ func (s *Server) handleRealtime(w http.ResponseWriter, r *http.Request) {
 
 	conn := realtime.NewConn(uuid.NewString(), acc.ID, room, ws, s.d.RealtimeHandler)
 	if err := s.d.Realtime.Register(r.Context(), conn, room); err != nil {
-		conn.Close(realtime.CloseTryAgainLater, "cannot register")
+		// Registration runs after the 101, so a refusal cannot be an HTTP status
+		// — it has to go out on the socket, and Refuse is what delivers it since
+		// no write pump exists yet.
+		//
+		// Hitting the connection cap gets its own reason rather than the generic
+		// one. It is the only refusal here a person can act on ("close another
+		// tab"), and a client that is told nothing specific cannot tell it from
+		// an eviction, a restart, or the network going away.
+		reason := "cannot register"
+		if errors.Is(err, realtime.ErrTooManyConnections) {
+			reason = realtime.ReasonTooManyConnections
+		}
+		conn.Refuse(r.Context(), realtime.CloseTryAgainLater, reason)
 		slog.WarnContext(r.Context(), "realtime: register refused",
-			"err", err, "account_id", acc.ID, "room", room)
+			"err", err, "account_id", acc.ID, "room", room, "reason", reason)
 		return
 	}
 
