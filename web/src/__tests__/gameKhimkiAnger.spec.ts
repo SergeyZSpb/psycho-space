@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { angerColor, angerLabel, angerRatio } from '../lib/anger';
+import { angerColor, angerLabel, angerRatio } from '../lib/gameKhimkiAnger';
 
 const MAX = 100;
 

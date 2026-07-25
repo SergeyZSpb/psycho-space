@@ -185,37 +185,37 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
-import { gameApi } from '../api/endpoints';
+import { gameKhimkiApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import { useErrorStore } from '../stores/error';
-import { BOARDS, boardMeta } from '../lib/gameBoards';
-import { angerColor, angerLabel } from '../lib/anger';
-import { recordExchange } from '../lib/transcript';
-import { creditsDuration, shouldRoll } from '../lib/credits';
+import { BOARDS, boardMeta } from '../lib/gameKhimkiBoards';
+import { angerColor, angerLabel } from '../lib/gameKhimkiAnger';
+import { recordExchange } from '../lib/gameKhimkiTranscript';
+import { creditsDuration, shouldRoll } from '../lib/gameKhimkiCredits';
 import type {
-  GameArt,
-  GameBoardKey,
-  GameBoards,
-  GameCharacter,
-  GameConfig,
-  GameExchange,
-  GameStats,
+  GameKhimkiArt,
+  GameKhimkiBoardKey,
+  GameKhimkiBoards,
+  GameKhimkiCharacter,
+  GameKhimkiConfig,
+  GameKhimkiExchange,
+  GameKhimkiStats,
 } from '../api/types';
 
 const GAME = 'smalltalk_khimki';
-const FALLBACK_ART: GameArt = { key: '', emoji: '🧑', gradient: 'linear-gradient(160deg, #333, #111)' };
+const FALLBACK_ART: GameKhimkiArt = { key: '', emoji: '🧑', gradient: 'linear-gradient(160deg, #333, #111)' };
 
 const errorStore = useErrorStore();
 
 type Phase = 'loading' | 'intro' | 'play' | 'ending';
 const phase = ref<Phase>('loading');
 
-const config = ref<GameConfig | null>(null);
-const stats = ref<GameStats | null>(null);
-const boards = ref<GameBoards | null>(null);
-const board = ref<GameBoardKey>('longest_win'); // selected record board (tab)
+const config = ref<GameKhimkiConfig | null>(null);
+const stats = ref<GameKhimkiStats | null>(null);
+const boards = ref<GameKhimkiBoards | null>(null);
+const board = ref<GameKhimkiBoardKey>('longest_win'); // selected record board (tab)
 
-const transcript = ref<GameExchange[]>([]);
+const transcript = ref<GameKhimkiExchange[]>([]);
 const steps = ref(0);
 const currentArtKey = ref('');
 const reply = ref('');
@@ -230,7 +230,7 @@ const anger = ref(0);
 // which themes remain would play the game for them.
 const themesDone = ref<string[]>([]);
 const busy = ref(false);
-// Rolling state for a verse that outgrows its box (see lib/credits.ts).
+// Rolling state for a verse that outgrows its box (see lib/gameKhimkiCredits.ts).
 const verseBox = ref<HTMLElement | null>(null);
 const verseFirst = ref<HTMLElement | null>(null);
 const verseRolls = ref(false);
@@ -251,22 +251,22 @@ watch(reply, async () => {
 });
 const rateLimited = ref(false);
 
-const character = computed<GameCharacter | null>(() => {
+const character = computed<GameKhimkiCharacter | null>(() => {
   const c = config.value;
   if (!c) return null;
   return c.characters.find((ch) => ch.key === c.default_character) ?? c.characters[0] ?? null;
 });
 // Art catalog resolved from the backend config (adding arts needs no client change).
-const artMap = computed<Record<string, GameArt>>(() =>
+const artMap = computed<Record<string, GameKhimkiArt>>(() =>
   Object.fromEntries((character.value?.arts ?? []).map((a) => [a.key, a])),
 );
-const currentArt = computed<GameArt>(() => artMap.value[currentArtKey.value] ?? FALLBACK_ART);
-const splashArt = computed<GameArt>(() => character.value?.arts[0] ?? FALLBACK_ART);
+const currentArt = computed<GameKhimkiArt>(() => artMap.value[currentArtKey.value] ?? FALLBACK_ART);
+const splashArt = computed<GameKhimkiArt>(() => character.value?.arts[0] ?? FALLBACK_ART);
 
 // Art image URL if the backend provided one and it hasn't failed to load;
 // otherwise "" so we fall back to the emoji placeholder.
 const failedArts = ref<string[]>([]);
-function artImg(a: GameArt): string {
+function artImg(a: GameKhimkiArt): string {
   return a.image && !failedArts.value.includes(a.key) ? a.image : '';
 }
 const bestLabel = computed(() =>
@@ -293,14 +293,14 @@ const currentBoard = computed(() => boardMeta(board.value));
 const boardEntries = computed(() => boards.value?.[board.value] ?? []);
 
 async function refreshBoard() {
-  const [lb, st] = await Promise.all([gameApi.leaderboard(GAME), gameApi.stats(GAME)]);
+  const [lb, st] = await Promise.all([gameKhimkiApi.leaderboard(GAME), gameKhimkiApi.stats(GAME)]);
   boards.value = lb.boards;
   stats.value = st;
 }
 
 onMounted(async () => {
   try {
-    config.value = await gameApi.config(GAME);
+    config.value = await gameKhimkiApi.config(GAME);
     await refreshBoard();
     phase.value = 'intro';
   } catch (err) {
@@ -331,7 +331,7 @@ async function turn(choice: string) {
   busy.value = true;
   rateLimited.value = false;
   try {
-    const res = await gameApi.attempt(
+    const res = await gameKhimkiApi.attempt(
       GAME,
       ch.key,
       transcript.value,
@@ -384,7 +384,7 @@ async function finish(won: boolean) {
   board.value = won ? 'longest_win' : 'longest_loss';
   phase.value = 'ending';
   try {
-    await gameApi.submitRun(GAME, ch.key, won, steps.value);
+    await gameKhimkiApi.submitRun(GAME, ch.key, won, steps.value);
     await refreshBoard();
   } catch (err) {
     errorStore.report(err);

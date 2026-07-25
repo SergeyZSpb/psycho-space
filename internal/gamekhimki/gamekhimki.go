@@ -1,7 +1,15 @@
-// Package game owns the mini-games section: character dialogues driven by an AI
-// judge, plus recorded results (game_runs) for a leaderboard.
+// Package gamekhimki owns one game — «Смолтолк в Химках» — end to end: the
+// character dialogues driven by an AI judge, plus recorded results
+// (game_khimki_runs) for a leaderboard.
 //
-// The first game is "smalltalk_khimki": you must convince a character (default:
+// One package per game is deliberate. Every game is a self-contained module
+// named gamekhimki / game_khimki_* / /api/game-khimki across code, routes and
+// tables, so removing a game is `git grep -il gamekhimki` and nothing else.
+// Shared infrastructure (realtime, session, account, crypto, db, httpapi) is
+// pointedly NOT prefixed — the absence of the prefix is what marks a package
+// game-agnostic.
+//
+// The game key is "smalltalk_khimki": you must convince a character (default:
 // сосед дядя Ваня at the подъезд) to let you pass, choosing answer options turn
 // by turn. Each turn the Evaluator (an OpenAI-compatible LLM — Yandex Cloud /
 // DeepSeek; see llm.go) replies in character, judges whether the goal is reached
@@ -13,7 +21,7 @@
 // config (see content.go), editable without touching the frontend; a default
 // character is selected per game. Answer options are NOT authored — the LLM
 // generates them.
-package game
+package gamekhimki
 
 import (
 	"errors"
@@ -165,17 +173,17 @@ type PlayerStats struct {
 
 // Errors.
 var (
-	ErrUnknownGame      = errors.New("game: unknown game key")
-	ErrUnknownCharacter = errors.New("game: unknown character")
-	ErrStepsRange       = errors.New("game: steps out of range")
-	ErrAssetNotFound    = errors.New("game: asset not found")
+	ErrUnknownGame      = errors.New("gamekhimki: unknown game key")
+	ErrUnknownCharacter = errors.New("gamekhimki: unknown character")
+	ErrStepsRange       = errors.New("gamekhimki: steps out of range")
+	ErrAssetNotFound    = errors.New("gamekhimki: asset not found")
 
 	// ErrLLMUnparsable means the model answered HTTP 200 but with something we
 	// cannot use as a turn — in practice its content filter replying in plain
 	// prose instead of the JSON we ask for. It is a property of the dialogue,
 	// not an outage: the same input fails again, so the player must say
 	// something else. Callers map it to 4xx, not 5xx.
-	ErrLLMUnparsable = errors.New("game: llm reply was not usable JSON")
+	ErrLLMUnparsable = errors.New("gamekhimki: llm reply was not usable JSON")
 )
 
 // KnownGame reports whether key names a game we serve.

@@ -4,7 +4,7 @@ import {
   CREDITS_SPEED_PX_PER_SEC,
   creditsDuration,
   shouldRoll,
-} from '../lib/credits';
+} from '../lib/gameKhimkiCredits';
 
 describe('post-credits roll for an over-tall verse', () => {
   it('rolls only when the verse genuinely overflows', () => {

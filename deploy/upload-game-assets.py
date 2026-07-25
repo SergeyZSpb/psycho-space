@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload game art into the Postgres `game_assets` blob table.
+"""Upload «Смолтолк в Химках» art into the Postgres `game_assets` blob table.
 
 Converts each image in a directory to WebP (quality 82) and prints one
 `INSERT … ON CONFLICT` statement per file (base64-encoded) to stdout. Pipe it to
@@ -14,11 +14,17 @@ a psql — prod over SSH, or a local DB:
         | psql "postgres://psychospace:psychospace@localhost:5432/psychospace"
 
 The art_key is the filename without extension and must match an art key in
-internal/game/content.go. Re-running upserts. Requires Pillow (pip install pillow).
+internal/gamekhimki/content.go. Re-running upserts. Requires Pillow (pip install
+pillow).
+
+This uploader is specific to game «Смолтолк в Химках»: table and default game_key
+both belong to that game. A second game gets its own uploader (or a table
+argument), because each game owns its own storage.
 
 Usage: upload-game-assets.py [dir] [game_key]
   dir       default ~/Desktop/psycho-space/vanya_assets
-  game_key  default smalltalk_khimki
+  game_key  default smalltalk_khimki (a game_key VALUE — unchanged by the
+            game_assets -> game_assets table rename)
 """
 
 import base64

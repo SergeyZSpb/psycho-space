@@ -1,4 +1,4 @@
-package game
+package gamekhimki
 
 import (
 	"context"
@@ -34,14 +34,6 @@ func (f *fakeRepo) StatsFor(_ context.Context, _ db.DBTX, _, _ string) (PlayerSt
 	return PlayerStats{}, nil
 }
 
-func (f *fakeRepo) AssetBytes(_ context.Context, _ db.DBTX, _, _ string) ([]byte, string, error) {
-	return nil, "", ErrAssetNotFound
-}
-
-func (f *fakeRepo) AssetKeys(_ context.Context, _ db.DBTX, _ string) ([]string, error) {
-	return nil, nil
-}
-
 // stubEval is a test double for the LLM judge, so service-level tests don't do I/O.
 type stubEval struct {
 	res           TurnResult
@@ -62,7 +54,7 @@ func (s *stubEval) Judge(_ context.Context, _ Character, transcript []Exchange, 
 	return s.res, s.err
 }
 
-func newSvc(repo Repository, eval Evaluator) *Service { return NewService(nil, repo, eval) }
+func newSvc(repo Repository, eval Evaluator) *Service { return NewService(nil, repo, eval, nil) }
 
 func defaultChar(t *testing.T) Character {
 	t.Helper()

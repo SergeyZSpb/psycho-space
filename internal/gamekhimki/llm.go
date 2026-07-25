@@ -1,4 +1,4 @@
-package game
+package gamekhimki
 
 import (
 	"bytes"
@@ -192,7 +192,7 @@ func (f *flexInt) UnmarshalJSON(b []byte) error {
 	}
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return fmt.Errorf("game: %q is not a number", s)
+		return fmt.Errorf("gamekhimki: %q is not a number", s)
 	}
 	*f = flexInt(v)
 	return nil
@@ -210,7 +210,7 @@ func (f *flexBool) UnmarshalJSON(b []byte) error {
 	case "false", "", "null":
 		*f = false
 	default:
-		return fmt.Errorf("game: %q is not a bool", s)
+		return fmt.Errorf("gamekhimki: %q is not a bool", s)
 	}
 	return nil
 }
@@ -268,21 +268,21 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 	start := time.Now()
 	resp, err := e.http.Do(req)
 	if err != nil {
-		return TurnResult{}, fmt.Errorf("game: llm request: %w", err)
+		return TurnResult{}, fmt.Errorf("gamekhimki: llm request: %w", err)
 	}
 	defer resp.Body.Close()
 	elapsed := time.Since(start)
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return TurnResult{}, fmt.Errorf("game: llm http %d: %s", resp.StatusCode, snippet(body))
+		return TurnResult{}, fmt.Errorf("gamekhimki: llm http %d: %s", resp.StatusCode, snippet(body))
 	}
 
 	var cr chatResponse
 	if err := json.Unmarshal(body, &cr); err != nil {
-		return TurnResult{}, fmt.Errorf("game: decode llm response: %w", err)
+		return TurnResult{}, fmt.Errorf("gamekhimki: decode llm response: %w", err)
 	}
 	if len(cr.Choices) == 0 {
-		return TurnResult{}, fmt.Errorf("game: llm returned no choices: %s", snippet(body))
+		return TurnResult{}, fmt.Errorf("gamekhimki: llm returned no choices: %s", snippet(body))
 	}
 
 	var jr judgeReply
@@ -323,10 +323,10 @@ func (e *openAIEvaluator) Judge(ctx context.Context, ch Character, transcript []
 			// the next reader sees "unexpected end of JSON input" and hunts a
 			// formatting bug that isn't there.
 			return TurnResult{}, fmt.Errorf(
-				"game: llm reply truncated at max_tokens=%d (finish_reason=length, %d completion tokens): %w",
+				"gamekhimki: llm reply truncated at max_tokens=%d (finish_reason=length, %d completion tokens): %w",
 				maxCompletionTokens, cr.Usage.CompletionTokens, ErrLLMUnparsable)
 		}
-		return TurnResult{}, fmt.Errorf("game: llm content not valid JSON (%q): %w: %w",
+		return TurnResult{}, fmt.Errorf("gamekhimki: llm content not valid JSON (%q): %w: %w",
 			snippet([]byte(content)), ErrLLMUnparsable, err)
 	}
 

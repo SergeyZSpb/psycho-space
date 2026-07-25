@@ -1,6 +1,6 @@
 # psycho-space — Project Rules (CLAUDE.md)
 
-Self-contained working rules for this repository. Any developer (with or without Claude) should be able to pick up the project from this file alone. This project is standalone and unrelated to any employer.
+Working rules for this repository — the *what*. The reasoning behind the shape of the system lives in `docs/ARCHITECTURE.md` (§1–7 the structure, §8 the numbered decision records), and this file points there rather than restating it, so a rule and its rationale cannot drift apart. This project is standalone and unrelated to any employer.
 
 **Canonical living doc:** `~/Desktop/psycho-space/psycho-space.md` — the **root index**: project state, phased rollout, the owner's TODO list, and a link to each topic plan (dated `YYYYMMDD_<slug>.md` files in the same folder). Read it first; keep it current as work lands (every file there opens with an `## LLM Continuation Context` block for fast hand-off). That folder holds everything project-local and uncommitted — the living doc set, the game-art source images in `vanya_assets/`, and the operator's private detail (server host, hardened SSH port), none of which may ever enter this repository. If the folder isn't on your machine, ask the owner.
 
@@ -29,12 +29,12 @@ internal/
   db/        pgxpool, DBTX interface, embedded-SQL migrator
   logging/   slog JSON → stdout (+ rotated file when LOG_DIR set)
   observability/  OpenTelemetry tracing (generated always, export opt-in)
-  httpapi/   chi router, middleware, auth/wishlist/game/admin handlers
+  httpapi/   chi router, middleware, auth/wishlist/gamekhimki/admin handlers
   session/   server-side opaque sessions
   account/   accounts: upsert-by-blind-index, allowlist status + role tier
   vk/        VK ID client (ExchangeCode + UserInfo) + optional id_token verifier
   wishlist/  items, comments, votes (upvote toggle on both)
-  game/      LLM-judged dialogue: content/persona, judge, runs, art blobs
+  gamekhimki/  «Смолтолк в Химках» — LLM-judged dialogue: content/persona, judge, runs, art blobs
   settings/  app_settings key/value (open registration)
   web/       go:embed of the built SPA (dir gitignored except .gitkeep)
 migrations/  NNN_*.sql, embedded, auto-applied, immutable once shipped
@@ -57,19 +57,24 @@ One-paragraph orientation, so this file stands alone: a browser hits nginx (TLS,
 
 **Adding a feature:** new package under `internal/<domain>/` (`repository.go` interface + `postgres_repository.go` + `service.go` + `errors.go`), a `NNN_*.sql` migration, wire it into `main.go` DI + `httpapi.Deps` + routes, extend `test/integration/`, and update `docs/ARCHITECTURE.md`.
 
-### Games are self-contained modules — do not share code between them
+### Games are self-contained modules
 
-Each game is its own module, and **duplication between games is deliberate, not debt**. A game owns its Go package, its tables, its routes, and its views; nothing about it is factored into a shared "games" layer, and no game imports another. The test is blunt: **deleting a game must be removing its package, its migration, its routes and its views — and nothing else.** If removing game 2 would break game 1, the boundary is wrong.
+Each game is its own module: its own package, tables, routes and views. **No game shares DB or service code with another, and duplication between games is deliberate rather than debt.** The boundary test: *deleting a game must be removing its package, its migration, its routes and its views — and nothing else.*
 
-That means the obvious reuse opportunities are refused on purpose:
+**Naming — every game module is `Game<Name>`, at every layer:**
 
-- **No shared game service, repository, or table.** Game 2 does not extend `internal/game/`, and it does not write to `game_runs` or add a key to a shared registry. It gets `internal/<game>/` and its own `<game>_*` tables, even where the schema looks identical to one that already exists.
-- **No shared game UI.** A second game copies the layout it needs into its own view rather than extracting a common shell. A shared shell means one game's layout fix can break another's, and it leaves an orphan behind when a game is deleted.
-- **No shared leaderboard or scoring code.** Generic board-building that serves two games couples their lifecycles for the sake of a few dozen lines.
+| Game | Package | Tables | Routes | View at |
+|---|---|---|---|---|
+| «Смолтолк в Химках» | `internal/gamekhimki/` | `game_khimki_runs` | `/api/game-khimki/*` | `GameKhimkiView.vue` at `/app/game-khimki` |
+| «Ванягоччи» | `internal/gamevanyagotchi/` | `game_vanyagotchi_*` | `/api/game-vanyagotchi/*` | `GameVanyagotchiView.vue` at `/app/game-vanyagotchi` |
 
-**What *is* shared is platform, not game:** `internal/realtime` (transport — deliberately game-agnostic, addressed as `/api/realtime?room=…`), `session`, `account`, `crypto`, `db`, `logging`, `observability`, the `httpapi` router and middleware, and on the front end `apiFetch`, the error store, the theme and the app shell. A game may depend on any of these; none of them may know a game exists. Game-specific message types belong to the game's package and are published *through* the hub, never added to it.
+- **Shared infrastructure is never prefixed** — `realtime`, `gameassets`, `session`, `account`, `crypto`, `db`, `logging`, `observability`, `httpapi`. A game may depend on these; none of them may know a game exists.
+- **Inside a game's own package, types keep plain names** (`gamekhimki.Service`, never `gamekhimki.GameKhimkiService` — the linter rejects the stutter).
+- **`wishlist` and `settings` are non-game sections** — neither games nor infrastructure. Unprefixed; this rule does not reach them.
+- **Where the line falls:** does it encode a rule of *this* game, or is it a capability any game would want? Rules are per-game (runs, scores, pets, tuning constants); capabilities are shared (the art blob store, the realtime transport).
+- **`game_key` column *values* are data, not names** — they do not move with a rename.
 
-_Reasoning:_ these games are jokes for a small group with a short and unpredictable life. The realistic future for any of them is deletion, not extension, and the cost of premature sharing is paid at exactly the wrong moment — when you want something gone and find it welded to something you are keeping. A few duplicated files are far cheaper than that. Do not "clean this up" later; the duplication is the design.
+**Reasoning for all of the above lives in `docs/ARCHITECTURE.md` §8 — [ADR-028](docs/ARCHITECTURE.md) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared).** Read those before arguing with this rule; they are settled and are not to be relitigated by editing them.
 
 ## Conventions
 
@@ -153,7 +158,7 @@ Nothing secret is in the repository, so a fresh clone cannot run the whole thing
 - `PSYCHOSPACE_ENV=dev`, `PSYCHOSPACE_HTTP_ADDR`, `PSYCHOSPACE_BASE_URL`, `PSYCHOSPACE_DATABASE_URL` — point at the compose Postgres (`./dev.sh db-up`).
 - `PSYCHOSPACE_ENC_KEY`, `PSYCHOSPACE_HMAC_KEY`, `PSYCHOSPACE_SESSION_KEY` — three **different** base64 32-byte values (`openssl rand -base64 32`). Startup fails fast if any is missing or the wrong length; there are no defaults on purpose. Local values are throwaway — they are not the production keys and must never be.
 - `PSYCHOSPACE_VK_*` — optional locally. VK ID is IP-allowlisted to the production host and its redirect URI is the production domain, so **the real login cannot run on a workstation**. Use `./dev.sh seed` instead; it mints an approved account and prints its session cookie.
-- `PSYCHOSPACE_LLM_BASE_URL` / `_API_KEY` / `_MODEL` — needed only to play the game locally. **Every turn costs real money**, so leave them blank unless you are working on the game; unset, `/api/game/attempt` answers 503 and everything else works.
+- `PSYCHOSPACE_LLM_BASE_URL` / `_API_KEY` / `_MODEL` — needed only to play the game locally. **Every turn costs real money**, so leave them blank unless you are working on the game; unset, `/api/game-khimki/attempt` answers 503 and everything else works.
 - `PSYCHOSPACE_LOG_DIR`, `PSYCHOSPACE_SESSION_TTL`, `PSYCHOSPACE_OTLP_ENDPOINT` — optional.
 
 The full-stack e2e suite needs none of this: `scripts/e2e-stack.sh` generates throwaway keys per run and starts its own database.
@@ -228,7 +233,7 @@ Any work item bigger than a single commit is planned as a **sequence of iteratio
 ## Task workflow
 
 Applies to each work item — and separately to **each iteration** of a larger one (see above):
-1. **Ground it** — read the living doc + this file. For anything non-trivial, write or refresh the plan in the living doc *before* coding, and keep its `## LLM Continuation Context` block (`status`/`next`/`done`) accurate.
+1. **Ground it — read `docs/ARCHITECTURE.md` before writing code, not after.** Both altitudes: §1–7 for the structure you are about to change (the package layout, the runtime flow, the ER model, the API map), and **§8 for the decision records that already govern it.** A decision recorded in §8 is settled: build on it, and if you believe it is wrong, say so and get a new record — never quietly implement against it, and never edit the existing one. This step is what stops a change from re-deriving, contradicting, or silently reversing a decision that was already paid for; several §8 records exist because something was learned the expensive way. Then read the living doc + this file, and for anything non-trivial write or refresh the plan in the living doc *before* coding, keeping its `## LLM Continuation Context` block (`status`/`next`/`done`) accurate.
 2. **Branch** — `<type>-short-slug` off an up-to-date `main`; implement in small, reviewable slices.
 3. **Extend the test base** — unit tests for the changed logic **and** a testcontainers integration test when there's an end-to-end path (see *Tests are a deliverable*).
 4. **Gate** — `./dev.sh pre-commit` must pass (build → lint → unit → web → e2e → integration → full-stack e2e). Never `--no-verify`; fix the cause.
@@ -248,7 +253,7 @@ Close a work item with a compact checklist — mark each **✅ done · ⏭️ sk
 
 | Gate | Status |
 |------|--------|
-| Requirements grounded (living doc read) | |
+| Requirements grounded — `docs/ARCHITECTURE.md` §1–7 + §8 records read *before* coding, living doc read | |
 | Test base extended — unit + integration (or stated reason) | |
 | `./dev.sh pre-commit` green | |
 | Pushed to `main` → **auto-deploy watched to green** *(or noted as an owner action)* | |

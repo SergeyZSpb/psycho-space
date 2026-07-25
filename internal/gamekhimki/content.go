@@ -1,4 +1,4 @@
-package game
+package gamekhimki
 
 // Game + Character content, served to the SPA as config. Defined here in Go
 // today (one source of truth, editable without touching the frontend); a later

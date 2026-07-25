@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { recordExchange } from '../lib/transcript';
-import type { GameTurnResult } from '../api/types';
+import { recordExchange } from '../lib/gameKhimkiTranscript';
+import type { GameKhimkiTurnResult } from '../api/types';
 
-function turn(over: Partial<GameTurnResult> = {}): GameTurnResult {
+function turn(over: Partial<GameKhimkiTurnResult> = {}): GameKhimkiTurnResult {
   return {
     reply: 'ну чё',
     art: 'vanya_angry',

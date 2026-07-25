@@ -126,7 +126,7 @@ test.describe('approved user', () => {
     // The stack deliberately leaves the judge unconfigured — a real call costs
     // money. The contract under test is that it degrades cleanly.
     await page.goto('/app/wishlist');
-    const res = await page.request.post('/api/game/attempt', {
+    const res = await page.request.post('/api/game-khimki/attempt', {
       data: { game_key: 'smalltalk_khimki', character_key: 'vanya', transcript: [], choice: '', anger: 40 },
     });
     expect(res.status()).toBe(503);

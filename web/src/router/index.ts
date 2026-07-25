@@ -35,17 +35,21 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/AppShell.vue'),
     meta: { requiresApproved: true },
     children: [
-      { path: '', redirect: { name: 'game' } },
+      { path: '', redirect: { name: 'game-khimki' } },
       {
         path: 'wishlist',
         name: 'wishlist',
         component: () => import('../views/WishlistView.vue'),
       },
       {
-        path: 'game',
-        name: 'game',
-        component: () => import('../views/GameView.vue'),
+        path: 'game-khimki',
+        name: 'game-khimki',
+        component: () => import('../views/GameKhimkiView.vue'),
       },
+      // The game lived at /app/game until it was renamed for the per-game
+      // naming rule. This redirect is permanent, not a migration aid: the old
+      // path is in people's history and on their home screens.
+      { path: 'game', redirect: { name: 'game-khimki' } },
       {
         path: 'admin',
         name: 'admin',
@@ -80,19 +84,19 @@ router.beforeEach(async (to) => {
     if (!auth.isApproved) return { name: 'pending' };
   }
   if (requiresAdmin && !auth.isAdmin) {
-    return { name: 'game' };
+    return { name: 'game-khimki' };
   }
 
   // /pending — must have a session (pending users now have one). Approved users
   // don't belong here; a signed-out user has no handle to show.
   if (to.name === 'pending') {
     if (!auth.isAuthed) return { name: 'landing' };
-    if (auth.isApproved) return { name: 'game' };
+    if (auth.isApproved) return { name: 'game-khimki' };
   }
 
   // Landing — route a signed-in user by status: approved -> app, else pending.
   if (to.name === 'landing' && auth.isAuthed) {
-    return auth.isApproved ? { name: 'game' } : { name: 'pending' };
+    return auth.isApproved ? { name: 'game-khimki' } : { name: 'pending' };
   }
 
   return true;

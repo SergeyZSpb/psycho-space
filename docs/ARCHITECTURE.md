@@ -5,14 +5,15 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** psycho-space at two altitudes in one file — the structural view (§1–7: logical containers, runtime flows, package layout, data model, deployment) and the numbered decision records that say *why* it has that shape (§8, append-only). `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
-- **status:** current as of the realtime close-reason work (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped and carries a `bye` frame; **no client consumes it yet** and nothing publishes game messages. Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/game/`, `/api/game/*`, the only paid path) and **«Ванягоччи»** (game 2 — realtime, no LLM on any path, in design and not yet in this repo). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — and ADR-027…029 were appended the same day for decisions that until then lived only in the code, in `CLAUDE.md`, or in `RUNBOOK.md`.
+- **status:** current as of the `Game<Name>` rename (2026-07-25). One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped and carries a `bye` frame; **no client consumes it yet** and nothing publishes game messages. Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (game 2 — `internal/gamevanyagotchi/`, realtime, no LLM on any path, in design and not yet in this repo). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — and ADR-027…031 were appended the same day for decisions that until then lived only in the code, in `CLAUDE.md`, or in `RUNBOOK.md`.
+- **rename in flight (2026-07-25):** game 1 moved off generic `game` naming onto the `Game<Name>` convention (ADR-030) — package `internal/game/` → `internal/gamekhimki/` (types inside keep plain names, so `gamekhimki.Service`), table `game_runs` → `game_khimki_runs` via `migrations/007_game_khimki_rename.sql` (**`game_assets` deliberately NOT renamed** — the blob store is shared infrastructure, ADR-031), routes `/api/game/*` → `/api/game-khimki/*` (old prefix kept as an alias for exactly **one** deploy cycle, then deleted), SPA `GameView.vue` → `GameKhimkiView.vue` and `/app/game` → `/app/game-khimki` with a permanent redirect. `game_key` **values** are untouched (`smalltalk_khimki`) — data, not names, and the art blobs are keyed on them. Sections 1–7 below describe the post-rename state.
 - **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only).
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `grep -n '^#### ADR-' docs/ARCHITECTURE.md` lists every decision record.
-- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. Numbers are identifiers, not an ordering: take the next global one, wherever the group. Highest record when this was written: **ADR-029** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`.
+- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. Numbers are identifiers, not an ordering: take the next global one, wherever the group. Highest record when this was written: **ADR-031** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`.
 - **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP — §1–7 describe all of it, §8 records the decisions behind it.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff is appended to §8 as a **new** record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
 - **related:** `../CLAUDE.md` (rules), `RUNBOOK.md` (operations — and the owner of the measurements and operational economics, notably the game's per-turn cost, which is re-measured rather than superseded), the owner's local living doc (roadmap, TODO, private operational detail). `docs/DESIGN.md` was merged into §8 here on 2026-07-25 and deleted; `git log -- docs/DESIGN.md` still resolves its history.
-- **decisions / constraints:** SPA is embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; migrations are immutable once shipped; no test-only code in production paths; **each game is a self-contained module that shares no DB or service code with any other game** — duplication between games is deliberate, and shared code is platform only (ADR-028; `CLAUDE.md` → *Games are self-contained modules*). Each of these has a record in §8 carrying its reasoning; do not relitigate one there by editing it.
+- **decisions / constraints:** SPA is embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; migrations are immutable once shipped; no test-only code in production paths; **each game is a self-contained module that shares no DB or service code with any other game** — duplication between games is deliberate, and shared code is platform only (ADR-028; `CLAUDE.md` → *Games are self-contained modules*); **every game module is named `Game<Name>` at every layer** and platform packages are deliberately unprefixed (ADR-030) — with the boundary drawn at rule-versus-mechanism, so a game owns its state but not generic capabilities like the art blob store (ADR-031). Each of these has a record in §8 carrying its reasoning; do not relitigate one there by editing it.
 - **diagram authoring constraint:** the Mermaid blocks here must parse on GitHub, and a `;` anywhere in sequence-diagram message or note text is a **statement separator**, not punctuation — it silently breaks the whole diagram (`Parse error … got 'NEWLINE'`). Use `<br/>` or an em dash instead. Quotes, braces, `=`, and parentheses (including in a `participant X as Name (alias)`) are all safe. Validate a diagram change by rendering it, not by eye: extract each mermaid fence to its own `.mmd` file and run `npx -y @mermaid-js/mermaid-cli@latest -p pconf.json -i b.mmd -o b.svg`, where `pconf.json` is `{"args":["--no-sandbox"]}` (Chrome cannot sandbox in this environment).
 
 ---
@@ -32,7 +33,7 @@ flowchart TB
         subgraph bin["psycho-space — one Go binary (systemd)"]
             EMBED["embedded SPA<br/>go:embed internal/web/dist"]
             API["chi router /api<br/>middleware · handlers"]
-            DOM["domain services<br/>account · session · wishlist · game · settings"]
+            DOM["domain services<br/>account · session · wishlist · settings<br/>gamekhimki (a game) · gameassets (shared)"]
             REPO["repositories (pgx)"]
         end
         PG[("PostgreSQL 16<br/>localhost")]
@@ -104,7 +105,7 @@ Any non-2xx answers `{error: "<stable_code>", trace_id}` — never `err.Error()`
 
 ### 2.3 A turn in «Смолтолк в Химках» (the only paid path)
 
-**This flow is specific to «Смолтолк в Химках»** — the LLM-judged dialogue game in `internal/game/`, served under `/api/game/*` — and nothing in it generalises to another game. The second game, «Ванягоччи» (realtime, in design), makes no LLM call on any path: [§8 → ADR-016](#adr-016--no-realtime-message-may-reach-the-llm) forbids a realtime message from reaching the judge at all, so «Смолтолк в Химках» is the only paid path in the system, not merely the first one.
+**This flow is specific to «Смолтолк в Химках»** — the LLM-judged dialogue game in `internal/gamekhimki/`, served under `/api/game-khimki/*` — and nothing in it generalises to another game. The second game, «Ванягоччи» (realtime, in design), makes no LLM call on any path: [§8 → ADR-016](#adr-016--no-realtime-message-may-reach-the-llm) forbids a realtime message from reaching the judge at all, so «Смолтолк в Химках» is the only paid path in the system, not merely the first one.
 
 ```mermaid
 sequenceDiagram
@@ -114,7 +115,7 @@ sequenceDiagram
     participant L as LLM judge
     participant P as PostgreSQL
 
-    B->>A: POST /api/game/attempt {transcript, choice, anger, themes_done}
+    B->>A: POST /api/game-khimki/attempt {transcript, choice, anger, themes_done}
     Note over A: rate limit 5/min per client IP — every call costs money
     A->>A: build prompt: static system → history (replayed as JSON) → one volatile message last
     A->>L: chat completion (reasoning_effort: none, max_tokens 1500)
@@ -125,8 +126,8 @@ sequenceDiagram
     else
         A-->>B: judged turn
     end
-    B->>A: POST /api/game/runs {success, steps}
-    A->>P: INSERT game_runs (feeds the four record leaderboards)
+    B->>A: POST /api/game-khimki/runs {success, steps}
+    A->>P: INSERT game_khimki_runs (feeds the four record leaderboards)
 ```
 
 The prompt order is load-bearing, and so is the shape of the history: static system prompt → each past turn replayed as the JSON the judge returned → one volatile message last. See [§8 → ADR-013](#adr-013--the-prompt-is-laid-out-for-prefix-caching-and-history-is-replayed-as-json) for why. Measurements and per-turn costs: `RUNBOOK.md` → *Working on the game*.
@@ -204,7 +205,7 @@ flowchart LR
         SET["settings"]
         VKP["vk (client + id_token verifier)"]
         subgraph games["games — self-contained, share nothing with each other"]
-            GAME["game<br/>«Смолтолк в Химках»"]
+            GAME["gamekhimki<br/>«Смолтолк в Химках»"]
         end
     end
 
@@ -220,7 +221,9 @@ flowchart LR
 
 **The rule:** dependencies point inward and downward — handlers know services, services know repositories, repositories know `db.DBTX`. Nothing in `internal/*` imports `httpapi`. Adding a feature means a new `internal/<domain>/` package with those four files, a `NNN_*.sql` migration, wiring in `main.go` + `httpapi.Deps` + routes, and a case in `test/integration/`.
 
-**Games are the exception to the usual instinct to factor things out.** Each game is a self-contained module: its own package, its own `<game>_*` tables, its own routes and views, its own leaderboard code — and **no game imports another, even where the code would be identical.** A game may depend on platform packages (`realtime`, `session`, `account`, `crypto`, `db`, and the `httpapi` plumbing); none of those may know a game exists, which is why the socket is addressed as the game-agnostic `/api/realtime?room=…` and game-specific message types live in the game's own package. The test for the boundary: deleting a game must mean deleting its package, its migration, its routes and its views — and nothing else. See [§8 → ADR-028](#adr-028--games-are-self-contained-modules) for why, and `CLAUDE.md` → *Games are self-contained modules* for the same rule stated as a working rule.
+**Games are the exception to the usual instinct to factor things out.** Each game is a self-contained module: its own package, its own `game_<name>_*` tables, its own routes and views, its own leaderboard code — and **no game imports another, even where the code would be identical.** A game may depend on platform packages (`realtime`, `session`, `account`, `crypto`, `db`, and the `httpapi` plumbing); none of those may know a game exists, which is why the socket is addressed as the game-agnostic `/api/realtime?room=…` and game-specific message types live in the game's own package. The test for the boundary: deleting a game must mean deleting its package, its migration, its routes and its views — and nothing else. See [§8 → ADR-028](#adr-028--games-are-self-contained-modules) for why, and `CLAUDE.md` → *Games are self-contained modules* for the same rule stated as a working rule.
+
+**And each game's name is spelled out at every layer**, which is what makes that boundary test executable rather than a judgement call: package `internal/game<name>/`, tables `game_<name>_*`, routes `/api/game-<name>/*`, view `Game<Name>View.vue` at `/app/game-<name>` — so `git grep -il game<name>` enumerates the whole module. «Смолтолк в Химках» is `gamekhimki`; «Ванягоччи» will be `gamevanyagotchi`. Platform packages stay unprefixed on purpose, because the missing prefix is the signal that they are game-agnostic. See [§8 → ADR-030](#adr-030--game-modules-are-named-gamename).
 
 ## 4. Data model
 
@@ -233,7 +236,7 @@ erDiagram
     accounts ||--o{ wishlist_votes : "casts"
     accounts ||--o{ wishlist_comments : "authors"
     accounts ||--o{ wishlist_comment_votes : "casts"
-    accounts ||--o{ game_runs : "plays"
+    accounts ||--o{ game_khimki_runs : "plays"
     wishlist_items ||--o{ wishlist_votes : "receives"
     wishlist_items ||--o{ wishlist_comments : "has"
     wishlist_comments ||--o{ wishlist_comment_votes : "receives"
@@ -280,7 +283,7 @@ erDiagram
         uuid comment_id FK
         uuid account_id FK
     }
-    game_runs {
+    game_khimki_runs {
         uuid id PK
         uuid account_id FK
         text game_key
@@ -300,9 +303,9 @@ erDiagram
     }
 ```
 
-`game_assets` and `app_settings` stand apart — neither references an account. The art bytes live in Postgres, not in git and not in the binary. See [§8 → ADR-026](#adr-026--game-art-lives-in-postgres-not-in-git-or-the-binary) for why.
+`game_assets` and `app_settings` stand apart — neither references an account. The art bytes live in Postgres, not in git and not in the binary. See [§8 → ADR-026](#adr-026--game-art-lives-in-postgres-not-in-git-or-the-binary) for why (that record predates the rename and names the table `game_assets`; [ADR-030](#adr-030--game-modules-are-named-gamename) is the amendment).
 
-Despite their generic names and their `game_key` column, `game_runs` and `game_assets` belong to **«Смолтолк в Химках»**. A second game gets its own `<game>_*` tables rather than rows in these — see [§8 → ADR-028](#adr-028--games-are-self-contained-modules).
+`game_khimki_runs` and `game_assets` belong to **«Смолтолк в Химках»**, and now say so — they were `game_runs` and `game_assets` until `migrations/007_game_khimki_rename.sql`. A second game gets its own `game_<name>_*` tables rather than rows in these — see [§8 → ADR-028](#adr-028--games-are-self-contained-modules) and [ADR-030](#adr-030--game-modules-are-named-gamename). Their `game_key` **values** did not move with the tables: the column still reads `smalltalk_khimki`, because it is data rather than a name and the art blobs are keyed on it.
 
 ## 5. API map
 
@@ -312,13 +315,15 @@ Everything is under `/api`, authenticated by the session cookie. `GET /healthz` 
 |---|---|---|
 | `auth` | `GET vk/state` · `POST vk/callback` · `GET me` · `POST logout` | public (30/min per IP on the VK pair) |
 | `wishlist` | `GET/POST items` · `DELETE items/{id}` · `POST/DELETE items/{id}/vote` · `GET/POST items/{id}/comments` · `DELETE comments/{id}` · `POST/DELETE comments/{id}/vote` | approved |
-| `game` | `GET assets/{game}/{key}` | **public** (art, cacheable) |
-| `game` | `GET config` · `POST attempt` (5/min per IP — paid) · `POST runs` · `GET runs/leaderboard` · `GET runs/me` | approved |
+| `game-khimki` | `GET assets/{game}/{key}` | **public** (art, cacheable) |
+| `game-khimki` | `GET config` · `POST attempt` (5/min per IP — paid) · `POST runs` · `GET runs/leaderboard` · `GET runs/me` | approved |
 | `admin` | `GET accounts?status=` · `POST accounts/{id}/approve` · `POST accounts/{id}/block` · `GET settings` | admin+ |
 | `admin` | `POST accounts/{id}/promote` · `POST accounts/{id}/demote` · `PUT settings/open-registration` | superadmin only |
 | `realtime` | `GET realtime?room=` — WebSocket upgrade | approved |
 
-The two `game` rows are **«Смолтолк в Химках»**; a second game gets its own route group rather than new keys in this one, while `realtime` is game-agnostic by design ([§8 → ADR-028](#adr-028--games-are-self-contained-modules)).
+The two `game-khimki` rows are **«Смолтолк в Химках»**; a second game gets its own `/api/game-<name>/*` group rather than new keys in this one, while `realtime` is game-agnostic by design ([§8 → ADR-028](#adr-028--games-are-self-contained-modules), [ADR-030](#adr-030--game-modules-are-named-gamename)).
+
+**`/api/game/*` still answers, as an alias on the same handlers, for exactly one deploy cycle.** The old prefix is kept only so that a browser holding the previous SPA build in cache does not break mid-run; it is deleted in the next deploy. It is marked `DELETE-ME-NEXT-DEPLOY` in `internal/httpapi/router.go`, and `TestGameKhimkiLegacyPathAlias` in `test/integration/gamekhimki_test.go` exists to fail when the alias is removed, so the deletion cannot be forgotten silently. Nothing new may be written against it. On the client side `/app/game` redirects permanently to `/app/game-khimki`.
 
 Anything not matching `/api` or `/healthz` is served the embedded SPA, so client-side routes resolve on a hard refresh.
 
@@ -331,11 +336,11 @@ Anything not matching `/api` or `/healthz` is served the embedded SPA, so client
 | Sessions | 32-byte `crypto/rand` token; only its HMAC is stored; `httpOnly; Secure; SameSite=Strict` | `internal/session` |
 | Authorization | `requireAuth` (status must be `approved`) → `requireAdmin` → `requireSuperadmin` | `internal/httpapi/router.go` |
 | Revocation | Blocking an account deletes its sessions immediately | `internal/account`, `internal/session` |
-| Rate limiting | Per client IP: 30/min login, **5/min `game/attempt`** (paid), 240/min blanket | `internal/httpapi/router.go` |
+| Rate limiting | Per client IP: 30/min login, **5/min `game-khimki/attempt`** (paid, and the `game/attempt` alias shares the same limiter), 240/min blanket | `internal/httpapi/router.go` |
 | Trusted client IP | `X-Real-IP`, honoured **only** from the loopback proxy; `X-Forwarded-For` is never trusted — see [§8 → ADR-027](#adr-027--the-client-ip-comes-from-x-real-ip-trusted-only-from-a-loopback-peer) | `internal/httpapi/middleware.go` — `clientIP` |
 | Request size | 1 MiB body cap on every route | `bodyLimit` |
 | Error disclosure | Stable codes + trace id; `err.Error()` never reaches a client | `internal/httpapi/respond.go` |
-| Asset content type | Allowlisted image types + `nosniff` | `internal/httpapi/game.go` — `imageContentType` |
+| Asset content type | Allowlisted image types + `nosniff` | `internal/httpapi/gamekhimki.go` — `imageContentType` |
 | Consent (152-ФЗ) | Checkbox gates the VK widget; `consent_at` + `consent_version` persisted | SPA + `accounts` |
 | WebSocket origin | Validated at upgrade (library default; never `InsecureSkipVerify`) — the same-origin policy does **not** apply to WebSocket | `internal/httpapi/realtime.go` |
 | WebSocket frame size | `SetReadLimit(4096)` — the 1 MiB `bodyLimit` wraps `r.Body` and the hijack bypasses it | `internal/realtime/conn.go` |
@@ -470,7 +475,7 @@ _Reasoning:_ the setting is a row read at login time and it only ever supplies t
 
 ### 8.4 The games
 
-Records 011–014 and 029 are all about **«Смолтолк в Химках»**, the LLM-judged game; ADR-028 is the rule that governs every game. «Смолтолк в Химках» is documented at length in `RUNBOOK.md` → *Working on the game*, because most of what matters there is operational (what a failure looks like in the log, what a turn costs). The decisions worth stating as decisions:
+Records 011–014 and 029 are all about **«Смолтолк в Химках»**, the LLM-judged game; ADR-028 and ADR-030 are the rules that govern every game — the first says a game shares nothing with another game, the second says how a game module is named so that the first is checkable with a grep. «Смолтолк в Химках» is documented at length in `RUNBOOK.md` → *Working on the game*, because most of what matters there is operational (what a failure looks like in the log, what a turn costs). The decisions worth stating as decisions:
 
 #### ADR-011 · The judge is an LLM, and there is no mock
 
@@ -514,7 +519,7 @@ _Consequence:_ the WebSocket is addressed as the game-agnostic `/api/realtime?ro
 
 #### ADR-029 · The judge runs on DeepSeek V4 Flash
 
-_Accepted · 2026-07-25_
+_Accepted · 2026-07-25 · amended by [ADR-030](#adr-030--game-modules-are-named-gamename) — the endpoint is now `/api/game-khimki/attempt`_
 
 «Смолтолк в Химках» judges its turns with `deepseek-v4-flash` over the OpenAI-compatible endpoint (`PSYCHOSPACE_LLM_MODEL` carries the full folder-specific model URI), replacing `yandexgpt-5-lite` — and it runs with **`reasoning_effort: "none"`**.
 
@@ -523,6 +528,36 @@ _Reasoning:_ DeepSeek costs more per turn than the model it replaced, and the di
 _Consequence:_ the `/api/game/attempt` limit was halved from 10/min to **5/min per client IP**, because a turn costs about twice what it did — and there is still no per-account cap, so one determined player remains the real cost exposure. The salvage path stays even though this model rarely returns malformed JSON, because a bad turn costs a player their move.
 
 Per-turn economics — the price table, the current cost per turn and how it got there — stay in `RUNBOOK.md` → *Working on the game*, to be re-measured as models and prices move rather than superseded here.
+
+#### ADR-030 · Game modules are named `Game<Name>`
+
+_Accepted · 2026-07-25 · amends ADR-029_
+
+Every game module carries its own name at every layer: package `internal/game<name>/`, tables `game_<name>_*`, routes `/api/game-<name>/*`, view `Game<Name>View.vue` served at `/app/game-<name>`, and any exported identifier that names the game from outside its package. Game 1 moved onto the convention from generic `game` naming in this change — `internal/gamekhimki/`, `game_khimki_runs` (`migrations/007_game_khimki_rename.sql`), `/api/game-khimki/*`, `GameKhimkiView.vue` at `/app/game-khimki` — and game 2 is `gamevanyagotchi` throughout. **Shared infrastructure is deliberately not prefixed:** `realtime`, `session`, `account`, `crypto`, `db`, `logging`, `observability`, `httpapi`.
+
+_Reasoning:_ ADR-028 makes deleting a game the design centre, and its boundary test — "removing a game is removing its package, its migration, its routes and its views, and nothing else" — was a judgement call that required knowing the codebase. Spelling the name out at every layer turns that test into a command: `git grep -il game<name>` enumerates the module, across Go, SQL, routes and the SPA, for someone who has never read it. The check also runs in the other direction, which is the more valuable half: if that list ever contains a file another game needs, the boundary is *already* broken and the grep has just said so. Generic `game` naming could not do either — it matched the platform, the other game, and the word "game" in prose.
+
+The unprefixed platform names are load-bearing, not an omission. The *absence* of a game's name is the signal that a module is game-agnostic, which is why the socket is addressed `/api/realtime?room=…` rather than per-game and why game-specific message types live in the game's package rather than in `realtime` (ADR-028, ADR-016). Prefixing one of those would be a lie, and dropping the prefix from a game module would erase the signal. `wishlist` and `settings` are a third class — non-game **sections**, neither games nor platform — and stay unprefixed too; this convention is about game modules, not about every domain package.
+
+_The one exception is inside a game's own package,_ where Go convention wins: `GameKhimkiService` in package `gamekhimki` stutters, `revive` flags it, and the linter is mandatory. Types inside a game package therefore keep plain names and read as `gamekhimki.Service` at the call site, where the package qualifier already carries the prefix. The prefix belongs to the package and to every layer outside it.
+
+_Consequence:_ `game_key` **values** did not move with the table — `smalltalk_khimki` is data, already unambiguous, and the art blobs are keyed on it. `/api/game/*` is kept as an alias for exactly one deploy cycle so a stale SPA does not break mid-run, and `/app/game` redirects permanently. One earlier record names an identifier this rename retired and is amended rather than edited: ADR-029's `/api/game/attempt` is now `/api/game-khimki/attempt`. That decision stands exactly as written — only the name changed.
+
+_What this rule does **not** reach_ is the asset blob store, which is shared infrastructure rather than any game's property — see ADR-031. Only the game's own *state* moved namespace.
+
+#### ADR-031 · Game asset storage is shared infrastructure, not a game's property
+
+_Accepted · 2026-07-25_
+
+Art blobs live in one unprefixed `game_assets` table, read through one unprefixed package (`internal/gameassets`) and served from one game-agnostic route (`GET /api/game-assets/{game}/{key}`). A game supplies its own `game_key` and nothing else. Migration 007 therefore renamed `game_runs` to `game_khimki_runs` but deliberately left `game_assets` alone.
+
+_Reasoning:_ ADR-028 refuses shared code between games, and the first pass at ADR-030 applied that to the asset table too — which was wrong, and the schema had already said so: `game_assets` has carried a `game_key` discriminator since migration 006, so it was always a multi-game store. Making it per-game would have thrown that away and duplicated the blob query, the content-type allowlist and the caching handler once per game.
+
+The line ADR-028 was missing, and which this record supplies, is **rule versus mechanism**. A game's *state* is a rule of that game — its runs, its scores, its pet, its world objects — and sharing it couples two games' lifecycles, which is exactly what ADR-028 forbids. Storing bytes under a key and serving them with a validated content type is a *mechanism* any game needs and none of them defines. The test to apply at the next boundary decision: **does it encode a rule of this game, or is it a capability any game would want?** Assets are a capability. A decay rate is a rule.
+
+_Consequence:_ adding art for a new character, NPC or location is an upload against an existing table — no migration, no new route, no serving code, and no schema change per game. The dependency runs one way only: `gamekhimki` declares a narrow `AssetPresence` interface that the shared service satisfies, so a game depends on infrastructure and infrastructure never learns a game exists (ADR-028). The store being shared is also why its content-type allowlist matters more than it looks: it is one control protecting every game's origin at once.
+
+_Note the asymmetry is deliberate and will read as inconsistent at a glance:_ two tables created in adjacent migrations, one renamed per-game and one not. The reason is above, and the distinction is worth more than the symmetry.
 
 ### 8.5 Realtime
 

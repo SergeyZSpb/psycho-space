@@ -1,4 +1,4 @@
-import type { GameExchange, GameTurnResult } from '../api/types';
+import type { GameKhimkiExchange, GameKhimkiTurnResult } from '../api/types';
 
 // The transcript is the conversation the client carries between turns (the
 // backend is stateless per turn). Each entry records what the player said, how
@@ -14,7 +14,7 @@ import type { GameExchange, GameTurnResult } from '../api/types';
  * model reads is a series of correctly-formatted examples of its own output. Drop
  * a field here and the example teaches the model to drop it too.
  */
-export function recordExchange(choice: string, res: GameTurnResult): GameExchange {
+export function recordExchange(choice: string, res: GameKhimkiTurnResult): GameKhimkiExchange {
   return {
     choice,
     reply: res.reply,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BOARDS, boardMeta } from '../lib/gameBoards';
+import { BOARDS, boardMeta } from '../lib/gameKhimkiBoards';
 
 describe('game record boards', () => {
   it('covers exactly the four boards the backend serves, in display order', () => {

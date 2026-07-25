@@ -7,12 +7,12 @@ import type {
   AdminAccount,
   AccountStatus,
   AdminSettings,
-  GameBoards,
-  GameConfig,
-  GameExchange,
-  GameRun,
-  GameStats,
-  GameTurnResult,
+  GameKhimkiBoards,
+  GameKhimkiConfig,
+  GameKhimkiExchange,
+  GameKhimkiRun,
+  GameKhimkiStats,
+  GameKhimkiTurnResult,
   LoginResult,
   WishlistComment,
   WishlistItem,
@@ -78,10 +78,10 @@ export const wishlistApi = {
     apiFetch<void>(`/api/wishlist/comments/${commentId}/vote`, { method: 'DELETE' }),
 };
 
-export const gameApi = {
+export const gameKhimkiApi = {
   // Backend-served game config (characters, options, assets). No persona prompts
   // or answer keys — those stay server-side.
-  config: (game: string) => apiFetch<GameConfig>(`/api/game/config?game=${game}`),
+  config: (game: string) => apiFetch<GameKhimkiConfig>(`/api/game-khimki/config?game=${game}`),
 
   // Judge one dialogue turn via the LLM. `transcript` is the conversation so
   // far; `choice` is the player's latest line ("" on the opening turn); `anger`
@@ -90,12 +90,12 @@ export const gameApi = {
   attempt: (
     game: string,
     character: string,
-    transcript: GameExchange[],
+    transcript: GameKhimkiExchange[],
     choice: string,
     anger: number,
     themesDone: string[],
   ) =>
-    apiFetch<GameTurnResult>('/api/game/attempt', {
+    apiFetch<GameKhimkiTurnResult>('/api/game-khimki/attempt', {
       method: 'POST',
       body: {
         game_key: game,
@@ -109,15 +109,15 @@ export const gameApi = {
 
   // Record a finished play-through (goal reached or step budget spent).
   submitRun: (game: string, character: string, success: boolean, steps: number) =>
-    apiFetch<GameRun>('/api/game/runs', {
+    apiFetch<GameKhimkiRun>('/api/game-khimki/runs', {
       method: 'POST',
       body: { game_key: game, character_key: character, success, steps },
     }),
 
   leaderboard: (game: string, limit = 20) =>
-    apiFetch<{ boards: GameBoards }>(`/api/game/runs/leaderboard?game=${game}&limit=${limit}`),
+    apiFetch<{ boards: GameKhimkiBoards }>(`/api/game-khimki/runs/leaderboard?game=${game}&limit=${limit}`),
 
-  stats: (game: string) => apiFetch<GameStats>(`/api/game/runs/me?game=${game}`),
+  stats: (game: string) => apiFetch<GameKhimkiStats>(`/api/game-khimki/runs/me?game=${game}`),
 };
 
 export const adminApi = {

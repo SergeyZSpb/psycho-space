@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestGameFlow(t *testing.T) {
+func TestGameKhimkiFlow(t *testing.T) {
 	vkSrv := fakeVKDynamic()
 	defer vkSrv.Close()
 	app := httptest.NewServer(buildApp(vkSrv.URL)) // LLM wired to the fake server
@@ -20,12 +20,12 @@ func TestGameFlow(t *testing.T) {
 	cli := loginAs(t, app.URL, "3001", "user")
 
 	// Unauthenticated access is gated.
-	if st, _ := doJSON(t, &http.Client{}, http.MethodGet, app.URL+"/api/game/config?game=smalltalk_khimki", nil); st != http.StatusUnauthorized {
+	if st, _ := doJSON(t, &http.Client{}, http.MethodGet, app.URL+"/api/game-khimki/config?game=smalltalk_khimki", nil); st != http.StatusUnauthorized {
 		t.Fatalf("anon config status %d; want 401", st)
 	}
 
 	// Config: characters + default character (no answer options — LLM-generated).
-	st, cfg := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/config?game=smalltalk_khimki", nil)
+	st, cfg := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-khimki/config?game=smalltalk_khimki", nil)
 	if st != http.StatusOK {
 		t.Fatalf("config status %d body %v", st, cfg)
 	}
@@ -33,7 +33,7 @@ func TestGameFlow(t *testing.T) {
 	if charKey == "" || cfg["characters"] == nil {
 		t.Fatalf("config missing default_character/characters: %v", cfg)
 	}
-	if st, _ := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/config?game=nope", nil); st != http.StatusNotFound {
+	if st, _ := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-khimki/config?game=nope", nil); st != http.StatusNotFound {
 		t.Fatalf("unknown game config status %d; want 404", st)
 	}
 
@@ -44,7 +44,7 @@ func TestGameFlow(t *testing.T) {
 	}
 
 	attempt := func(transcript []map[string]string, choice string) (int, map[string]any) {
-		return doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", map[string]any{
+		return doJSON(t, cli, http.MethodPost, app.URL+"/api/game-khimki/attempt", map[string]any{
 			"game_key": "smalltalk_khimki", "character_key": charKey, "transcript": transcript, "choice": choice,
 		})
 	}
@@ -96,7 +96,7 @@ func TestGameFlow(t *testing.T) {
 	cli2 := loginAs(t, app2.URL, "3001", "user") // same account, fresh session
 	attempt2 := func(body map[string]any) (int, map[string]any) {
 		body["game_key"], body["character_key"] = "smalltalk_khimki", charKey
-		return doJSON(t, cli2, http.MethodPost, app2.URL+"/api/game/attempt", body)
+		return doJSON(t, cli2, http.MethodPost, app2.URL+"/api/game-khimki/attempt", body)
 	}
 
 	// Options the judge already offered travel back in the transcript and reach the
@@ -118,7 +118,7 @@ func TestGameFlow(t *testing.T) {
 	// The transcript engages the alcohol theme twice, which is what the backend now
 	// requires before it believes the judge's claim that the theme is open — an
 	// unsupported claim is dropped (the judge marked a theme on turn one in prod).
-	st, rCalm := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", map[string]any{
+	st, rCalm := doJSON(t, cli, http.MethodPost, app.URL+"/api/game-khimki/attempt", map[string]any{
 		"game_key": "smalltalk_khimki", "character_key": charKey, "choice": "теплеет", "anger": 60,
 		"transcript": []map[string]any{
 			{"choice": "может, пора завязать пить?", "reply": "не могу без бутылки", "anger": 60},
@@ -192,7 +192,7 @@ func TestGameFlow(t *testing.T) {
 	app3 := httptest.NewServer(buildApp(vkSrv.URL))
 	defer app3.Close()
 	cli3 := loginAs(t, app3.URL, "3001", "user")
-	if st, _ := doJSON(t, cli3, http.MethodPost, app3.URL+"/api/game/attempt",
+	if st, _ := doJSON(t, cli3, http.MethodPost, app3.URL+"/api/game-khimki/attempt",
 		map[string]any{"game_key": "smalltalk_khimki", "character_key": "nobody", "transcript": []any{}, "choice": "x"}); st != http.StatusNotFound {
 		t.Fatalf("unknown character attempt status %d; want 404", st)
 	}
@@ -202,7 +202,7 @@ func TestGameFlow(t *testing.T) {
 		success bool
 		steps   int
 	}{{true, 3}, {true, 14}, {false, 6}, {false, 21}} {
-		if st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/runs",
+		if st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game-khimki/runs",
 			map[string]any{"game_key": "smalltalk_khimki", "character_key": charKey,
 				"success": run.success, "steps": run.steps}); st != http.StatusCreated {
 			t.Fatalf("submit run %+v status %d", run, st)
@@ -211,7 +211,7 @@ func TestGameFlow(t *testing.T) {
 
 	// The leaderboard is four record boards over SINGLE runs, each row carrying
 	// the record steps plus the player's tally.
-	st, lb := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/runs/leaderboard?game=smalltalk_khimki", nil)
+	st, lb := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-khimki/runs/leaderboard?game=smalltalk_khimki", nil)
 	if st != http.StatusOK {
 		t.Fatalf("leaderboard status %d", st)
 	}
@@ -245,7 +245,7 @@ func TestGameFlow(t *testing.T) {
 	}
 
 	// My stats: 2 successes, 4 plays, best (fewest steps in a win) 3.
-	st, me := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/runs/me?game=smalltalk_khimki", nil)
+	st, me := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-khimki/runs/me?game=smalltalk_khimki", nil)
 	if st != http.StatusOK {
 		t.Fatalf("stats status %d", st)
 	}
@@ -257,15 +257,15 @@ func TestGameFlow(t *testing.T) {
 	appNoLLM := httptest.NewServer(buildAppCfg(vkSrv.URL, ""))
 	defer appNoLLM.Close()
 	cliNoLLM := loginAs(t, appNoLLM.URL, "3002", "user")
-	if st, _ := doJSON(t, cliNoLLM, http.MethodPost, appNoLLM.URL+"/api/game/attempt",
+	if st, _ := doJSON(t, cliNoLLM, http.MethodPost, appNoLLM.URL+"/api/game-khimki/attempt",
 		map[string]any{"game_key": "smalltalk_khimki", "character_key": charKey, "transcript": []any{}, "choice": "x"}); st != http.StatusServiceUnavailable {
 		t.Fatalf("no-LLM attempt status %d; want 503", st)
 	}
 }
 
-// TestGameAssets covers the DB blob store: an uploaded art is served publicly
+// TestGameKhimkiAssets covers the DB blob store: an uploaded art is served publicly
 // and advertised in the config; missing arts 404 and keep no image URL.
-func TestGameAssets(t *testing.T) {
+func TestGameKhimkiAssets(t *testing.T) {
 	vkSrv := fakeVKDynamic()
 	defer vkSrv.Close()
 	app := httptest.NewServer(buildApp(vkSrv.URL))
@@ -281,7 +281,7 @@ func TestGameAssets(t *testing.T) {
 	}
 
 	// Public fetch (no auth), correct type + bytes.
-	resp, err := http.Get(app.URL + "/api/game/assets/smalltalk_khimki/vanya_neutral")
+	resp, err := http.Get(app.URL + "/api/game-assets/smalltalk_khimki/vanya_neutral")
 	if err != nil {
 		t.Fatalf("get asset: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestGameAssets(t *testing.T) {
 	}
 
 	// Unknown art -> 404.
-	r, err := http.Get(app.URL + "/api/game/assets/smalltalk_khimki/nope")
+	r, err := http.Get(app.URL + "/api/game-assets/smalltalk_khimki/nope")
 	if err != nil {
 		t.Fatalf("get unknown asset: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestGameAssets(t *testing.T) {
 
 	// Config advertises an image URL only for the uploaded art.
 	cli := loginAs(t, app.URL, "3004", "user")
-	_, cfg := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/config?game=smalltalk_khimki", nil)
+	_, cfg := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-khimki/config?game=smalltalk_khimki", nil)
 	arts := cfg["characters"].([]any)[0].(map[string]any)["arts"].([]any)
 	img := map[string]string{}
 	for _, a := range arts {
@@ -314,16 +314,77 @@ func TestGameAssets(t *testing.T) {
 		v, _ := m["image"].(string)
 		img[k] = v
 	}
-	if img["vanya_neutral"] == "" {
-		t.Fatalf("vanya_neutral should carry an image URL: %v", img)
+	// The advertised URL must be the canonical per-game path, NOT the /api/game/*
+	// alias — a URL minted now has to keep working after the alias is deleted.
+	if img["vanya_neutral"] != "/api/game-assets/smalltalk_khimki/vanya_neutral" {
+		t.Fatalf("vanya_neutral image URL = %q; want the canonical /api/game-khimki path", img["vanya_neutral"])
 	}
 	if img["vanya_angry"] != "" {
 		t.Fatalf("vanya_angry has no upload, image should be empty, got %q", img["vanya_angry"])
 	}
 }
 
-// TestGameAttemptRateLimit checks the per-IP 10/min cap on the (paid) judge call.
-func TestGameAttemptRateLimit(t *testing.T) {
+// TestGameKhimkiLegacyPathAlias pins the pre-rename /api/game/* prefix, which is
+// registered as a second route group so a browser still running the previous SPA
+// build out of cache keeps working across the deploy that renames the paths.
+//
+// DELETE-ME-NEXT-DEPLOY: this test exists so that removing the alias is a
+// deliberate act with a failing test, not a silent break. Delete it together with
+// the r.Route("/game", …) registration in internal/httpapi/router.go — one deploy
+// cycle after the rename shipped, no earlier.
+func TestGameKhimkiLegacyPathAlias(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	app := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app.Close()
+
+	// A public route on the alias: same asset bytes as the canonical path.
+	blob := []byte("\x00fake-webp-alias\x01")
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO game_assets (game_key, art_key, content_type, bytes) VALUES ($1,$2,$3,$4)
+		 ON CONFLICT (game_key, art_key) DO UPDATE SET bytes = EXCLUDED.bytes`,
+		"smalltalk_khimki", "hallway_pass", "image/webp", blob); err != nil {
+		t.Fatalf("insert asset: %v", err)
+	}
+	resp, err := http.Get(app.URL + "/api/game/assets/smalltalk_khimki/hallway_pass")
+	if err != nil {
+		t.Fatalf("get asset via alias: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("alias asset status %d; want 200 — the /api/game/* alias is gone", resp.StatusCode)
+	}
+	if got, _ := io.ReadAll(resp.Body); !bytes.Equal(got, blob) {
+		t.Fatalf("alias asset bytes mismatch")
+	}
+
+	// The gated routes are behind the same auth on the alias: anonymous is 401,
+	// approved gets the real payload.
+	if st, _ := doJSON(t, &http.Client{}, http.MethodGet,
+		app.URL+"/api/game/config?game=smalltalk_khimki", nil); st != http.StatusUnauthorized {
+		t.Fatalf("anon config via alias status %d; want 401", st)
+	}
+	cli := loginAs(t, app.URL, "3005", "user")
+	st, cfg := doJSON(t, cli, http.MethodGet, app.URL+"/api/game/config?game=smalltalk_khimki", nil)
+	if st != http.StatusOK || cfg["default_character"] == nil {
+		t.Fatalf("config via alias: status %d body %v; want 200 with a default_character", st, cfg)
+	}
+
+	// Writes work too, so a cached SPA can still finish and record a run.
+	if st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/runs",
+		map[string]any{"game_key": "smalltalk_khimki", "character_key": cfg["default_character"],
+			"success": true, "steps": 5}); st != http.StatusCreated {
+		t.Fatalf("submit run via alias status %d; want 201", st)
+	}
+	if st, me := doJSON(t, cli, http.MethodGet,
+		app.URL+"/api/game/runs/me?game=smalltalk_khimki", nil); st != http.StatusOK ||
+		me["plays"].(float64) != 1 {
+		t.Fatalf("stats via alias: status %d body %v; want 200 with plays 1", st, me)
+	}
+}
+
+// TestGameKhimkiAttemptRateLimit checks the per-IP 10/min cap on the (paid) judge call.
+func TestGameKhimkiAttemptRateLimit(t *testing.T) {
 	vkSrv := fakeVKDynamic()
 	defer vkSrv.Close()
 	app := httptest.NewServer(buildApp(vkSrv.URL)) // fresh app -> fresh limiter
@@ -336,7 +397,7 @@ func TestGameAttemptRateLimit(t *testing.T) {
 	}
 	got429 := false
 	for i := 0; i < 12; i++ { // limit is 10/min; the 11th+ should be blocked
-		st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game/attempt", body)
+		st, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/game-khimki/attempt", body)
 		if st == http.StatusTooManyRequests {
 			got429 = true
 			break

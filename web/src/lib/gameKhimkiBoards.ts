@@ -1,11 +1,11 @@
-import type { GameBoardKey } from '../api/types';
+import type { GameKhimkiBoardKey } from '../api/types';
 
 // Display metadata for the four record boards. Tab labels stay short enough for
 // four tabs to fit at 360px; the caption carries the full meaning, and the empty
 // state differs per board because "nobody has won yet" and "nobody has lost yet"
 // are very different news.
 export interface BoardMeta {
-  key: GameBoardKey;
+  key: GameKhimkiBoardKey;
   /** Short tab label — must survive four-across at 360px. */
   tab: string;
   /** Full explanation shown under the tabs for the selected board. */

@@ -22,7 +22,8 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
 	"github.com/SergeyZSpb/psycho-space/internal/db"
-	"github.com/SergeyZSpb/psycho-space/internal/game"
+	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
+	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
 	"github.com/SergeyZSpb/psycho-space/internal/realtime"
@@ -219,6 +220,7 @@ func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.H
 		BaseURL: "http://localhost", // origin allowlist for the socket
 		VK:      config.VK{AppID: "app-1", ServiceToken: "svc", RedirectURI: vkRedirect, BaseURL: vkBaseURL},
 	}
+	gameAssets := gameassets.NewService(pool, gameassets.NewPostgresRepository())
 	h := httpapi.NewServer(httpapi.Deps{
 		Config:      cfg,
 		Pool:        pool,
@@ -227,7 +229,8 @@ func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.H
 		Accounts:    newAccountService(),
 		Sessions:    sessions,
 		Wishlist:    wishlist.NewService(pool, wishlist.NewPostgresRepository()),
-		Game:        game.NewService(pool, game.NewPostgresRepository(), game.NewOpenAIEvaluator(cfg.LLM)),
+		GameKhimki:  gamekhimki.NewService(pool, gamekhimki.NewPostgresRepository(), gamekhimki.NewOpenAIEvaluator(cfg.LLM), gameAssets),
+		GameAssets:  gameAssets,
 		Settings:    settings.NewService(pool),
 		Realtime:    hub,
 		RealtimeCtx: ctx,
@@ -236,7 +239,7 @@ func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.H
 }
 
 // buildAppCfg builds the app with an optional LLM endpoint. Pass llmURL="" to
-// leave the game judge unconfigured (so /api/game/attempt returns 503).
+// leave the game judge unconfigured (so /api/game-khimki/attempt returns 503).
 func buildAppCfg(vkBaseURL, llmURL string) http.Handler {
 	sessions := session.NewManager(pool, key(3), time.Hour, false)
 	vkClient := vk.New(vkBaseURL, "app-1", "svc", vkRedirect)
@@ -247,16 +250,18 @@ func buildAppCfg(vkBaseURL, llmURL string) http.Handler {
 	if llmURL != "" {
 		cfg.LLM = config.LLM{BaseURL: llmURL, APIKey: "test", Model: "test-model"}
 	}
+	gameAssets := gameassets.NewService(pool, gameassets.NewPostgresRepository())
 	h := httpapi.NewServer(httpapi.Deps{
-		Config:   cfg,
-		Pool:     pool,
-		WebFS:    fstest.MapFS{"index.html": {Data: []byte("<html>psycho</html>")}},
-		VK:       vkClient,
-		Accounts: newAccountService(),
-		Sessions: sessions,
-		Wishlist: wishlist.NewService(pool, wishlist.NewPostgresRepository()),
-		Game:     game.NewService(pool, game.NewPostgresRepository(), game.NewOpenAIEvaluator(cfg.LLM)),
-		Settings: settings.NewService(pool),
+		Config:     cfg,
+		Pool:       pool,
+		WebFS:      fstest.MapFS{"index.html": {Data: []byte("<html>psycho</html>")}},
+		VK:         vkClient,
+		Accounts:   newAccountService(),
+		Sessions:   sessions,
+		Wishlist:   wishlist.NewService(pool, wishlist.NewPostgresRepository()),
+		GameKhimki: gamekhimki.NewService(pool, gamekhimki.NewPostgresRepository(), gamekhimki.NewOpenAIEvaluator(cfg.LLM), gameAssets),
+		GameAssets: gameAssets,
+		Settings:   settings.NewService(pool),
 	}).Handler()
 	return observability.WrapHandler(h, "http.server")
 }
@@ -264,6 +269,8 @@ func buildAppCfg(vkBaseURL, llmURL string) http.Handler {
 // buildAppNoVK builds the app with VK intentionally unconfigured.
 func buildAppNoVK() http.Handler {
 	sessions := session.NewManager(pool, key(3), time.Hour, false)
+	// No game and no asset store here on purpose: this harness only exercises the
+	// VK-unconfigured paths.
 	h := httpapi.NewServer(httpapi.Deps{
 		Config:   config.Config{Env: "dev"}, // VK empty → not configured
 		Pool:     pool,

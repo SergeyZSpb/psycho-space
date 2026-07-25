@@ -1,11 +1,9 @@
-package game
+package gamekhimki
 
 import (
 	"context"
-	"errors"
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
-	"github.com/jackc/pgx/v5"
 )
 
 // PostgresRepository is the pgx-backed Repository.
@@ -17,7 +15,7 @@ func NewPostgresRepository() *PostgresRepository { return &PostgresRepository{} 
 func (PostgresRepository) RecordRun(ctx context.Context, q db.DBTX, accountID, gameKey, characterKey string, success bool, steps int) (Run, error) {
 	var run Run
 	err := q.QueryRow(ctx,
-		`INSERT INTO game_runs (account_id, game_key, character_key, success, steps)
+		`INSERT INTO game_khimki_runs (account_id, game_key, character_key, success, steps)
 		 VALUES ($1::uuid, $2, $3, $4, $5)
 		 RETURNING id::text, account_id::text, game_key, character_key, success, steps, created_at`,
 		accountID, gameKey, characterKey, success, steps,
@@ -39,7 +37,7 @@ func (PostgresRepository) Records(ctx context.Context, q db.DBTX, gameKey string
 		       min(steps) FILTER (WHERE success)          AS shortest_win,
 		       max(steps) FILTER (WHERE NOT success)      AS longest_loss,
 		       min(steps) FILTER (WHERE NOT success)      AS shortest_loss
-		FROM game_runs
+		FROM game_khimki_runs
 		WHERE game_key = $1 AND deleted_at IS NULL
 		GROUP BY account_id`, gameKey)
 	if err != nil {
@@ -58,43 +56,13 @@ func (PostgresRepository) Records(ctx context.Context, q db.DBTX, gameKey string
 	return out, rows.Err()
 }
 
-func (PostgresRepository) AssetBytes(ctx context.Context, q db.DBTX, gameKey, artKey string) ([]byte, string, error) {
-	var b []byte
-	var ct string
-	err := q.QueryRow(ctx,
-		`SELECT bytes, content_type FROM game_assets WHERE game_key = $1 AND art_key = $2`,
-		gameKey, artKey,
-	).Scan(&b, &ct)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, "", ErrAssetNotFound
-	}
-	return b, ct, err
-}
-
-func (PostgresRepository) AssetKeys(ctx context.Context, q db.DBTX, gameKey string) ([]string, error) {
-	rows, err := q.Query(ctx, `SELECT art_key FROM game_assets WHERE game_key = $1`, gameKey)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var k string
-		if err := rows.Scan(&k); err != nil {
-			return nil, err
-		}
-		out = append(out, k)
-	}
-	return out, rows.Err()
-}
-
 func (PostgresRepository) StatsFor(ctx context.Context, q db.DBTX, gameKey, accountID string) (PlayerStats, error) {
 	var st PlayerStats
 	err := q.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE success),
 		       count(*),
 		       COALESCE(min(steps) FILTER (WHERE success), 0)
-		FROM game_runs
+		FROM game_khimki_runs
 		WHERE game_key = $1 AND account_id = $2::uuid AND deleted_at IS NULL`,
 		gameKey, accountID,
 	).Scan(&st.Successes, &st.Plays, &st.BestSteps)

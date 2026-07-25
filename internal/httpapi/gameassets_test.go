@@ -3,8 +3,8 @@ package httpapi
 import "testing"
 
 // TestImageContentTypeRejectsActiveContent pins the asset content-type
-// allowlist. game_assets.content_type is a plain column, so anything able to
-// write that table must not be able to make the app serve HTML (or any other
+// allowlist. game_assets.content_type is a plain column, so anything able
+// to write that table must not be able to make the app serve HTML (or any other
 // active content) from its own origin.
 func TestImageContentTypeRejectsActiveContent(t *testing.T) {
 	tests := []struct {

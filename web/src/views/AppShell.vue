@@ -3,10 +3,10 @@
     <v-navigation-drawer v-model="drawer" :permanent="mdAndUp" :temporary="!mdAndUp">
       <v-list nav density="comfortable">
         <v-list-item
-          :to="{ name: 'game' }"
+          :to="{ name: 'game-khimki' }"
           prepend-icon="mdi-controller-classic-outline"
           title="Смолтолк в Химках"
-          value="game"
+          value="game-khimki"
         />
         <v-list-item
           :to="{ name: 'wishlist' }"

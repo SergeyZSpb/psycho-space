@@ -1,4 +1,4 @@
-package game
+package gamekhimki
 
 import (
 	"context"
@@ -17,14 +17,18 @@ const maxLeaderboardLimit = 100
 // Service is the game business logic: serve content, judge dialogue turns,
 // record runs, read the leaderboard.
 type Service struct {
-	q    db.DBTX
-	repo Repository
-	eval Evaluator
+	q      db.DBTX
+	repo   Repository
+	eval   Evaluator
+	assets AssetPresence
 }
 
-// NewService wires the game service with an evaluator (the LLM judge).
-func NewService(q db.DBTX, repo Repository, eval Evaluator) *Service {
-	return &Service{q: q, repo: repo, eval: eval}
+// NewService wires the game service with an evaluator (the LLM judge) and the
+// shared asset store. assets may be nil — the game then advertises no images and
+// every art falls back to its placeholder, which is exactly the behaviour when
+// nothing has been uploaded yet.
+func NewService(q db.DBTX, repo Repository, eval Evaluator, assets AssetPresence) *Service {
+	return &Service{q: q, repo: repo, eval: eval, assets: assets}
 }
 
 // Content returns the game config (characters, assets). Server-side persona
@@ -138,20 +142,18 @@ func (s *Service) Stats(ctx context.Context, gameKey, accountID string) (PlayerS
 	return s.repo.StatsFor(ctx, s.q, gameKey, accountID)
 }
 
-// Asset returns an art image's bytes + content type (from the DB blob store).
-func (s *Service) Asset(ctx context.Context, gameKey, artKey string) ([]byte, string, error) {
-	return s.repo.AssetBytes(ctx, s.q, gameKey, artKey)
-}
-
-// AssetKeys returns the set of art keys that have an uploaded image for a game.
-func (s *Service) AssetKeys(ctx context.Context, gameKey string) (map[string]bool, error) {
-	keys, err := s.repo.AssetKeys(ctx, s.q, gameKey)
-	if err != nil {
-		return nil, err
+// PresentArtKeys reports which of this game's art keys have an uploaded image,
+// so the config advertises an image URL only for those and the rest fall back to
+// the emoji placeholder. Art is therefore never a hard dependency: the game is
+// playable with none uploaded.
+//
+// The blobs themselves live in shared infrastructure (internal/gameassets), not
+// in this package — storing and serving bytes is a mechanism every game needs,
+// whereas which keys this game expects is a rule of this game and lives in its
+// catalogue.
+func (s *Service) PresentArtKeys(ctx context.Context, gameKey string) (map[string]bool, error) {
+	if s.assets == nil {
+		return nil, nil
 	}
-	set := make(map[string]bool, len(keys))
-	for _, k := range keys {
-		set[k] = true
-	}
-	return set, nil
+	return s.assets.PresentKeys(ctx, gameKey)
 }

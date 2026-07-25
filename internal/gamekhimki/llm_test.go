@@ -1,4 +1,4 @@
-package game
+package gamekhimki
 
 import (
 	"context"

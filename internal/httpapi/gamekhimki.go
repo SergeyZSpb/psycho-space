@@ -6,19 +6,17 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
-	"github.com/SergeyZSpb/psycho-space/internal/game"
-	"github.com/go-chi/chi/v5"
+	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
 )
 
-// handleGameConfig serves a game's config (characters, options, assets). Persona
-// prompts and answer keys are hidden by the game package's json tags.
-func (s *Server) handleGameConfig(w http.ResponseWriter, r *http.Request) {
-	g, err := s.d.Game.Content(r.URL.Query().Get("game"))
+// handleGameKhimkiConfig serves the game's config (characters, options, assets).
+// Persona prompts and answer keys are hidden by the gamekhimki package's json tags.
+func (s *Server) handleGameKhimkiConfig(w http.ResponseWriter, r *http.Request) {
+	g, err := s.d.GameKhimki.Content(r.URL.Query().Get("game"))
 	if err != nil {
-		if errors.Is(err, game.ErrUnknownGame) {
+		if errors.Is(err, gamekhimki.ErrUnknownGame) {
 			writeError(w, r, http.StatusNotFound, "unknown_game")
 			return
 		}
@@ -27,72 +25,33 @@ func (s *Server) handleGameConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	// Point arts at their uploaded image (if any); arts without an image keep an
 	// empty Image and the client renders the emoji placeholder.
-	present, err := s.d.Game.AssetKeys(r.Context(), g.GameKey)
+	present, err := s.d.GameKhimki.PresentArtKeys(r.Context(), g.GameKey)
 	if err != nil {
-		slog.WarnContext(r.Context(), "game asset keys lookup failed", "err", err)
+		slog.WarnContext(r.Context(), "game-khimki asset keys lookup failed", "err", err)
 		present = nil
 	}
 	for ci := range g.Characters {
 		for ai := range g.Characters[ci].Arts {
 			if k := g.Characters[ci].Arts[ai].Key; present[k] {
-				g.Characters[ci].Arts[ai].Image = "/api/game/assets/" + g.GameKey + "/" + k
+				g.Characters[ci].Arts[ai].Image = GameAssetPath + g.GameKey + "/" + k
 			}
 		}
 	}
 	writeJSON(w, http.StatusOK, g)
 }
 
-// handleGameAsset serves an art image from the DB blob store. Public (art isn't
-// sensitive) and cacheable; the client downloads on demand.
-func (s *Server) handleGameAsset(w http.ResponseWriter, r *http.Request) {
-	b, ct, err := s.d.Game.Asset(r.Context(), chi.URLParam(r, "game"), chi.URLParam(r, "key"))
-	if err != nil {
-		writeError(w, r, http.StatusNotFound, "asset_not_found")
-		return
-	}
-	w.Header().Set("Content-Type", imageContentType(ct))
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	w.WriteHeader(http.StatusOK)
-	//nolint:gosec // G705: the bytes are an opaque image blob, not a rendered
-	// document — the response is pinned to an allowlisted image content type
-	// (imageContentType) and sent with X-Content-Type-Options: nosniff.
-	_, _ = w.Write(b)
-}
-
-// imageContentType constrains a stored asset's content type to image types.
-// The value is a plain column in game_assets, so anything able to write that
-// table could otherwise have the app serve active content (text/html) from its
-// own origin. Anything unrecognised is served as an opaque download instead.
-func imageContentType(ct string) string {
-	switch strings.ToLower(strings.TrimSpace(ct)) {
-	case "image/webp":
-		return "image/webp"
-	case "image/png":
-		return "image/png"
-	case "image/jpeg", "image/jpg":
-		return "image/jpeg"
-	case "image/gif":
-		return "image/gif"
-	case "image/avif":
-		return "image/avif"
-	default:
-		return "application/octet-stream"
-	}
-}
-
-// handleGameAttempt judges one dialogue turn via the LLM. Requires a configured
+// handleGameKhimkiAttempt judges one dialogue turn via the LLM. Requires a configured
 // LLM endpoint (config.LLM); otherwise 503, like VK.
-func (s *Server) handleGameAttempt(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGameKhimkiAttempt(w http.ResponseWriter, r *http.Request) {
 	if !s.d.Config.LLM.Enabled() {
 		writeError(w, r, http.StatusServiceUnavailable, "llm_not_configured")
 		return
 	}
 	var req struct {
-		GameKey      string          `json:"game_key"`
-		CharacterKey string          `json:"character_key"`
-		Transcript   []game.Exchange `json:"transcript"` // conversation so far
-		Choice       string          `json:"choice"`     // player's latest line ("" = opening turn)
+		GameKey      string                `json:"game_key"`
+		CharacterKey string                `json:"character_key"`
+		Transcript   []gamekhimki.Exchange `json:"transcript"` // conversation so far
+		Choice       string                `json:"choice"`     // player's latest line ("" = opening turn)
 		// Anger is the tension carried over from the previous turn. A pointer so
 		// an omitted field starts the scale where the character starts, rather
 		// than at the calmest possible value.
@@ -106,18 +65,18 @@ func (s *Server) handleGameAttempt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "bad_request")
 		return
 	}
-	anger := game.StartAnger
+	anger := gamekhimki.StartAnger
 	if req.Anger != nil {
 		anger = *req.Anger
 	}
-	res, err := s.d.Game.Judge(r.Context(), req.GameKey, req.CharacterKey, req.Transcript, req.Choice, anger, req.ThemesDone)
+	res, err := s.d.GameKhimki.Judge(r.Context(), req.GameKey, req.CharacterKey, req.Transcript, req.Choice, anger, req.ThemesDone)
 	if err != nil {
 		switch {
-		case errors.Is(err, game.ErrUnknownGame):
+		case errors.Is(err, gamekhimki.ErrUnknownGame):
 			writeError(w, r, http.StatusNotFound, "unknown_game")
-		case errors.Is(err, game.ErrUnknownCharacter):
+		case errors.Is(err, gamekhimki.ErrUnknownCharacter):
 			writeError(w, r, http.StatusNotFound, "unknown_character")
-		case errors.Is(err, game.ErrLLMUnparsable):
+		case errors.Is(err, gamekhimki.ErrLLMUnparsable):
 			// The model answered, but with something we can't turn into a move
 			// (usually its content filter replying in prose). Nothing is broken
 			// server-side and a retry of the same line fails the same way, so
@@ -126,7 +85,7 @@ func (s *Server) handleGameAttempt(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusUnprocessableEntity, "llm_unparsable")
 		default:
 			// LLM/network failure — the judge is a hard dependency here.
-			slog.ErrorContext(r.Context(), "game judge failed", "err", err)
+			slog.ErrorContext(r.Context(), "game-khimki judge failed", "err", err)
 			writeError(w, r, http.StatusBadGateway, "llm_error")
 		}
 		return
@@ -134,8 +93,8 @@ func (s *Server) handleGameAttempt(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-// handleGameSubmitRun records a finished play-through (goal reached or budget spent).
-func (s *Server) handleGameSubmitRun(w http.ResponseWriter, r *http.Request) {
+// handleGameKhimkiSubmitRun records a finished play-through (goal reached or budget spent).
+func (s *Server) handleGameKhimkiSubmitRun(w http.ResponseWriter, r *http.Request) {
 	viewer, _ := accountFromContext(r.Context())
 	var req struct {
 		GameKey      string `json:"game_key"`
@@ -147,14 +106,14 @@ func (s *Server) handleGameSubmitRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "bad_request")
 		return
 	}
-	run, err := s.d.Game.SubmitRun(r.Context(), viewer.ID, req.GameKey, req.CharacterKey, req.Success, req.Steps)
+	run, err := s.d.GameKhimki.SubmitRun(r.Context(), viewer.ID, req.GameKey, req.CharacterKey, req.Success, req.Steps)
 	if err != nil {
 		switch {
-		case errors.Is(err, game.ErrUnknownGame):
+		case errors.Is(err, gamekhimki.ErrUnknownGame):
 			writeError(w, r, http.StatusNotFound, "unknown_game")
-		case errors.Is(err, game.ErrUnknownCharacter):
+		case errors.Is(err, gamekhimki.ErrUnknownCharacter):
 			writeError(w, r, http.StatusNotFound, "unknown_character")
-		case errors.Is(err, game.ErrStepsRange):
+		case errors.Is(err, gamekhimki.ErrStepsRange):
 			writeError(w, r, http.StatusUnprocessableEntity, "steps_range")
 		default:
 			writeError(w, r, http.StatusInternalServerError, "internal")
@@ -171,16 +130,16 @@ func (s *Server) handleGameSubmitRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGameLeaderboard returns the four record boards for a game (longest and
+// handleGameKhimkiLeaderboard returns the four record boards for a game (longest and
 // shortest winning dialogue, longest and shortest losing one), each row enriched
 // with display info. Accounts are decrypted once and reused across boards.
-func (s *Server) handleGameLeaderboard(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGameKhimkiLeaderboard(w http.ResponseWriter, r *http.Request) {
 	viewer, _ := accountFromContext(r.Context())
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 
-	boards, err := s.d.Game.Leaderboard(r.Context(), r.URL.Query().Get("game"), limit)
+	boards, err := s.d.GameKhimki.Leaderboard(r.Context(), r.URL.Query().Get("game"), limit)
 	if err != nil {
-		if errors.Is(err, game.ErrUnknownGame) {
+		if errors.Is(err, gamekhimki.ErrUnknownGame) {
 			writeError(w, r, http.StatusNotFound, "unknown_game")
 			return
 		}
@@ -199,8 +158,8 @@ func (s *Server) handleGameLeaderboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := make(map[string]any, len(game.RecordBoards))
-	for _, board := range game.RecordBoards {
+	out := make(map[string]any, len(gamekhimki.RecordBoards))
+	for _, board := range gamekhimki.RecordBoards {
 		rows := make([]map[string]any, 0, len(boards[board]))
 		for _, e := range boards[board] {
 			player := map[string]any{"display_name": "", "avatar_url": "", "vk_url": ""}
@@ -221,12 +180,12 @@ func (s *Server) handleGameLeaderboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"boards": out})
 }
 
-// handleGameStats returns the current player's summary for a game.
-func (s *Server) handleGameStats(w http.ResponseWriter, r *http.Request) {
+// handleGameKhimkiStats returns the current player's summary for a game.
+func (s *Server) handleGameKhimkiStats(w http.ResponseWriter, r *http.Request) {
 	viewer, _ := accountFromContext(r.Context())
-	st, err := s.d.Game.Stats(r.Context(), r.URL.Query().Get("game"), viewer.ID)
+	st, err := s.d.GameKhimki.Stats(r.Context(), r.URL.Query().Get("game"), viewer.ID)
 	if err != nil {
-		if errors.Is(err, game.ErrUnknownGame) {
+		if errors.Is(err, gamekhimki.ErrUnknownGame) {
 			writeError(w, r, http.StatusNotFound, "unknown_game")
 			return
 		}

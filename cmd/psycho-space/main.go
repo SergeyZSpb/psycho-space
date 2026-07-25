@@ -17,7 +17,8 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
 	"github.com/SergeyZSpb/psycho-space/internal/db"
-	"github.com/SergeyZSpb/psycho-space/internal/game"
+	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
+	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/logging"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
@@ -72,11 +73,16 @@ func main() {
 	accounts := account.NewService(pool, account.NewPostgresRepository(), enc, bi)
 	sessions := session.NewManager(pool, cfg.SessionKey, cfg.SessionTTL, cfg.CookieSecure())
 	wishlistSvc := wishlist.NewService(pool, wishlist.NewPostgresRepository())
-	// Game AI judge: OpenAI-compatible LLM (Yandex Cloud / DeepSeek). When not
-	// configured, the game's /attempt endpoint returns 503 (see handler).
-	gameEval := game.NewOpenAIEvaluator(cfg.LLM)
-	slog.Info("game evaluator", "llm_configured", cfg.LLM.Enabled(), "model", cfg.LLM.Model)
-	gameSvc := game.NewService(pool, game.NewPostgresRepository(), gameEval)
+	// «Смолтолк в Химках» AI judge: OpenAI-compatible LLM (Yandex Cloud /
+	// DeepSeek). When not configured, the game's /attempt endpoint returns 503
+	// (see handler). Each game is wired separately — nothing here is shared.
+	gameKhimkiEval := gamekhimki.NewOpenAIEvaluator(cfg.LLM)
+	slog.Info("game-khimki evaluator", "llm_configured", cfg.LLM.Enabled(), "model", cfg.LLM.Model)
+	// Art blobs are shared infrastructure, not a game: one store serves every
+	// game, scoped by game_key. The game is handed it as a narrow interface so
+	// the dependency points at infrastructure and never back.
+	gameAssetsSvc := gameassets.NewService(pool, gameassets.NewPostgresRepository())
+	gameKhimkiSvc := gamekhimki.NewService(pool, gamekhimki.NewPostgresRepository(), gameKhimkiEval, gameAssetsSvc)
 	settingsSvc := settings.NewService(pool)
 
 	// The realtime hub outlives any single request. Its context is what every
@@ -105,7 +111,8 @@ func main() {
 		Accounts:   accounts,
 		Sessions:   sessions,
 		Wishlist:   wishlistSvc,
-		Game:       gameSvc,
+		GameKhimki: gameKhimkiSvc,
+		GameAssets: gameAssetsSvc,
 		Settings:   settingsSvc,
 		VKVerifier: vkVerifier,
 

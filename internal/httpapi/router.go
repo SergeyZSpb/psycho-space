@@ -9,7 +9,8 @@ import (
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/config"
-	"github.com/SergeyZSpb/psycho-space/internal/game"
+	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
+	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
 	"github.com/SergeyZSpb/psycho-space/internal/realtime"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/settings"
@@ -31,7 +32,11 @@ type Deps struct {
 	Accounts   *account.Service
 	Sessions   *session.Manager
 	Wishlist   *wishlist.Service
-	Game       *game.Service
+	GameKhimki *gamekhimki.Service
+	// GameAssets is the shared art blob store — infrastructure, not a game, so
+	// every game's art is served through this one dependency. nil disables the
+	// asset route, which is the correct behaviour before anything is uploaded.
+	GameAssets *gameassets.Service
 	Settings   *settings.Service
 	VKVerifier *vk.IDTokenVerifier // nil = id_token verification disabled
 	// Realtime is the WebSocket hub; nil disables the endpoint. RealtimeCtx is
@@ -106,28 +111,58 @@ func (s *Server) Handler() http.Handler {
 			r.Delete("/comments/{id}/vote", s.handleCommentUnvote)
 		})
 
-		// Game — approved users only. Dialog content is backend config; runs
-		// (outcomes) feed the leaderboard.
-		r.Route("/game", func(r chi.Router) {
-			// Art images are public (not sensitive) and cacheable — the client
-			// downloads them on demand.
-			r.Get("/assets/{game}/{key}", s.handleGameAsset)
-
-			// Everything else is approved-only.
+		// Game «Смолтолк в Химках» — approved users only. Dialog content is
+		// backend config; runs (outcomes) feed the leaderboard. Each game owns
+		// its own path segment (/api/game-<name>), so a second game adds a
+		// sibling route group and nothing here changes.
+		//
+		// The judge calls the (paid) LLM, so it is capped tightly per IP. Halved
+		// from 10 when the model moved to deepseek-v4-flash: a turn costs roughly
+		// twice as much there, so the same money per minute buys half the turns.
+		// A human plays a handful of turns a minute at most; this only bites
+		// someone hammering the endpoint. The limiter is built ONCE, outside the
+		// route builder below, so the alias prefix shares the same token bucket
+		// instead of doubling the cap.
+		gameKhimkiAttemptLimit := s.rateLimit(5, time.Minute)
+		gameKhimkiRoutes := func(r chi.Router) {
+			// Approved users only. Art is NOT served from here — the blob store
+			// is shared infrastructure at /api/game-assets/, below.
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireAuth)
-				r.Get("/config", s.handleGameConfig)
-				// The judge calls the (paid) LLM, so cap it tightly per IP. Halved
-				// from 10 when the model moved to deepseek-v4-flash: a turn costs
-				// roughly twice as much there, so the same money per minute buys
-				// half the turns. A human plays a handful of turns a minute at
-				// most; this only bites someone hammering the endpoint.
-				r.With(s.rateLimit(5, time.Minute)).Post("/attempt", s.handleGameAttempt)
-				r.Post("/runs", s.handleGameSubmitRun)
-				r.Get("/runs/leaderboard", s.handleGameLeaderboard)
-				r.Get("/runs/me", s.handleGameStats)
+				r.Get("/config", s.handleGameKhimkiConfig)
+				r.With(gameKhimkiAttemptLimit).Post("/attempt", s.handleGameKhimkiAttempt)
+				r.Post("/runs", s.handleGameKhimkiSubmitRun)
+				r.Get("/runs/leaderboard", s.handleGameKhimkiLeaderboard)
+				r.Get("/runs/me", s.handleGameKhimkiStats)
 			})
+		}
+		r.Route("/game-khimki", gameKhimkiRoutes)
+
+		// DELETE-ME-NEXT-DEPLOY: /api/game/* is the pre-rename path, kept as an
+		// alias for exactly ONE deploy cycle. A browser that still holds the
+		// previous SPA build in cache calls /api/game/* and would break the moment
+		// this deploys; the alias buys that cache the time to expire. It is a
+		// second registration of the same handlers — deliberately not a redirect
+		// and not behind a config flag, so removing it is a pure deletion.
+		//
+		// To remove (next deploy after this one, no earlier): delete this comment
+		// and the r.Route("/game", …) line below, plus TestGameKhimkiLegacyPathAlias
+		// in test/integration/gamekhimki_test.go which exists to fail if the alias
+		// disappears silently.
+		r.Route("/game", func(r chi.Router) {
+			gameKhimkiRoutes(r)
+			// The pre-rename asset path. Art was served under the game's own
+			// prefix before the blob store was recognised as shared
+			// infrastructure; this is the live path cached clients still call.
+			r.Get("/assets/{game}/{key}", s.handleGameAsset)
 		})
+
+		// Game art — shared infrastructure, NOT a game. The blob store has
+		// carried a game_key discriminator since it was created, so it was
+		// always multi-game: one route and one handler serve every game, and a
+		// new game adds neither. Public (art is not sensitive) and cacheable.
+		// Its unprefixed name is the signal that it is game-agnostic.
+		r.Get("/game-assets/{game}/{key}", s.handleGameAsset)
 
 		// Realtime — approved users only. One socket per connection; the
 		// handshake spends one token of the blanket limiter above and the

@@ -1,4 +1,4 @@
-package game
+package gamekhimki
 
 import (
 	"context"
@@ -17,8 +17,12 @@ type Repository interface {
 	Records(ctx context.Context, q db.DBTX, gameKey string) ([]PlayerRecords, error)
 	// StatsFor returns a single player's summary for a game.
 	StatsFor(ctx context.Context, q db.DBTX, gameKey, accountID string) (PlayerStats, error)
-	// AssetBytes returns an art image's bytes + content type, or ErrAssetNotFound.
-	AssetBytes(ctx context.Context, q db.DBTX, gameKey, artKey string) ([]byte, string, error)
-	// AssetKeys returns the art keys that have an uploaded image for a game.
-	AssetKeys(ctx context.Context, q db.DBTX, gameKey string) ([]string, error)
+}
+
+// AssetPresence reports which art keys have an uploaded image. It is declared
+// here, and satisfied by the shared gameassets service, so the dependency points
+// from this game at infrastructure and never the other way — and so a test can
+// substitute it without a database.
+type AssetPresence interface {
+	PresentKeys(ctx context.Context, gameKey string) (map[string]bool, error)
 }

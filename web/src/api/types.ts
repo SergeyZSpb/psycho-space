@@ -78,25 +78,25 @@ export interface LoginResult {
 // LLM-generated. Assets resolve from the backend art catalog (no client update
 // to add arts).
 
-// GameArt is one showable asset with its render descriptor. `image` (a URL)
+// GameKhimkiArt is one showable asset with its render descriptor. `image` (a URL)
 // wins when present; otherwise render `emoji` over `gradient`.
-export interface GameArt {
+export interface GameKhimkiArt {
   key: string;
   emoji: string;
   gradient: string;
   image?: string;
 }
 
-export interface GameCharacter {
+export interface GameKhimkiCharacter {
   key: string;
   name: string;
   goal: string; // high-level, user-facing (no spoilers)
   greeting: string; // static opening line
   opening_options: string[]; // static first answer options
-  arts: GameArt[]; // asset catalog the judge chooses from
+  arts: GameKhimkiArt[]; // asset catalog the judge chooses from
 }
 
-export interface GameConfig {
+export interface GameKhimkiConfig {
   game_key: string;
   title: string;
   intro: string;
@@ -108,11 +108,11 @@ export interface GameConfig {
   max_anger: number;
   anger_lose_at: number;
   start_anger: number;
-  characters: GameCharacter[];
+  characters: GameKhimkiCharacter[];
 }
 
 // One completed turn in the conversation, sent back as context each turn.
-export interface GameExchange {
+export interface GameKhimkiExchange {
   choice: string;
   reply: string;
   /**
@@ -137,7 +137,7 @@ export interface GameExchange {
 // character's art catalog. `options` are the next answer choices (labels) —
 // always 4 while playing; empty ends the dialogue, either won (`achieved`) or
 // lost (`game_over` — the character snapped and threw a punch).
-export interface GameTurnResult {
+export interface GameKhimkiTurnResult {
   reply: string;
   art: string;
   achieved: boolean;
@@ -153,7 +153,7 @@ export interface GameTurnResult {
   options: string[];
 }
 
-export interface GameRun {
+export interface GameKhimkiRun {
   id: string;
   game_key: string;
   character_key: string;
@@ -162,7 +162,7 @@ export interface GameRun {
   created_at: string;
 }
 
-export interface GamePlayer {
+export interface GameKhimkiPlayer {
   display_name: string;
   avatar_url: string;
   vk_url: string;
@@ -171,10 +171,10 @@ export interface GamePlayer {
 // The leaderboard is four record boards, each ranking players by their best (or
 // worst) SINGLE run rather than by an aggregate. A player only appears on a
 // board they hold a record on — no wins yet means no place on either win board.
-export type GameBoardKey = 'longest_win' | 'shortest_win' | 'longest_loss' | 'shortest_loss';
+export type GameKhimkiBoardKey = 'longest_win' | 'shortest_win' | 'longest_loss' | 'shortest_loss';
 
-export interface GameRecordEntry {
-  player: GamePlayer;
+export interface GameKhimkiRecordEntry {
+  player: GameKhimkiPlayer;
   /** Steps of the single run that earned this place on this board. */
   steps: number;
   /** The player's overall tally for the game, shown alongside the record. */
@@ -184,9 +184,9 @@ export interface GameRecordEntry {
   mine: boolean;
 }
 
-export type GameBoards = Record<GameBoardKey, GameRecordEntry[]>;
+export type GameKhimkiBoards = Record<GameKhimkiBoardKey, GameKhimkiRecordEntry[]>;
 
-export interface GameStats {
+export interface GameKhimkiStats {
   successes: number;
   plays: number;
   best_steps: number;
