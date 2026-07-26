@@ -150,6 +150,22 @@ Every task that touches CI runs `./scripts/ci-check-secrets.sh` against the run 
 - **Push directly to `main`** (single maintainer). `main` auto-deploys, so every push goes to prod — the mandatory pre-commit gate + the deploy job's full test suite are the safety net. Feature branches + PRs are optional (use one only when you want to stage/review something before it deploys).
 - **Pre-commit hook is mandatory and never bypassed** (`--no-verify` is forbidden). It runs `./dev.sh pre-commit` = build → lint → unit → web → **e2e** → integration → **full-stack e2e**. `dev.sh` self-heals `core.hooksPath` on every run. If a check fails, fix the cause — never skip. Docker must be running (the integration and full-stack suites need it).
 
+**No legacy code — the codebase carries one way of doing each thing**
+
+When a change supersedes something, **the superseded thing goes in the same commit**. Not next week, not behind a flag, not "once the client has moved". A codebase that carries both the old and the new way of doing something is one where every reader has to work out which is live, and every future change has to be made twice or made wrong.
+
+What this forbids, concretely:
+
+- **A superseded implementation kept alongside its replacement** — a `fooLegacy`, an `//nolint:unused` corpse, a commented-out block "for reference". Git has the reference.
+- **A compatibility alias or shim with no live caller.** The `/api/game/*` route was kept for exactly one deploy cycle with the reason and the expiry written down, then deleted and its absence pinned by a test. That is the only acceptable shape: a stated reason, a stated expiry, and a test that fails when the expiry passes.
+- **A dead flag, unused config key, or parameter nothing sets.** An option with one value is not an option.
+- **A second path to the same outcome** — an HTTP endpoint and a socket frame doing the same job, two functions computing the same number. Pick one, and if a second genuinely must exist for a while, it is a thin adapter onto the first rather than a copy of it.
+- **A test asserting behaviour that no longer exists**, or a fixture for a shape nothing produces.
+
+**A migration that cannot be finished in one commit is planned as a sequence that each end green**, with the removal named as its own step and done — not left as the step nobody comes back for. If a change lands the new way and cannot yet delete the old, that is stated in the end-of-task report as an explicit debt with what unblocks it, so it is a decision rather than a drift.
+
+The exception is genuinely immutable history: `migrations/` are forward-only and never edited, and `docs/adrs/` records are rewritten rather than accumulated. Those are records of what happened, not code anybody executes.
+
 **Tests are a deliverable**
 - Every code-touching change **extends the test base**: unit tests for the changed logic **and**, when applicable, an integration or e2e test proving the behaviour end-to-end. Running the existing suite green is necessary but not sufficient.
 - A behaviour change landing with no test delta is incomplete. Docs/config/mechanical changes may skip tests — state the reason.
@@ -289,6 +305,7 @@ Close a work item with a compact checklist — mark each **✅ done · ⏭️ sk
 | Docs synced — `ARCHITECTURE.md` (structure + any new or rewritten record in `docs/adrs/`) / `RUNBOOK.md` as applicable, each with its continuation block | |
 | Game rules changed? — the game's splash-screen cheatsheet updated with them | |
 | Living doc current to as-built; LLM-continuation block updated | |
+| No legacy left behind — every superseded path, shim, flag or fixture deleted in the same commit (or the debt named) | |
 | Secrets/PII posture respected — nothing sensitive committed | |
 
 Then close with a structured **end-of-task report** — sections in this order, each tight bullets rather than prose. This is the receipt the user reviews after letting the work run unsupervised, so it has to let them reconstruct *what changed, where it landed, and what was decided for them* at a glance. Omit a section only when it is genuinely empty, and then say "none" rather than dropping the heading.
@@ -298,8 +315,9 @@ Then close with a structured **end-of-task report** — sections in this order, 
 3. **CI + deploy** — the run, its conclusion, the test counts and coverage from its summary, the secret scan result, and what was verified in production.
 4. **Working-tree status** — branch, and whether anything is left staged, unstaged, or untracked. Anything left dirty is called out with why.
 5. **Push status** — what was committed and what was pushed, naming the ref. Make it unambiguous whether anything landed on `main`.
-6. **Judgement calls made without being asked** — every decision the user did not direct: design choices, trade-offs, assumptions filled in for missing requirements, scope added or dropped. This is the review surface; when in doubt, list it. "None" only if the task was fully specified.
-7. **The Definition-of-Done table above**, filled in.
+6. **Legacy removed** — what this change superseded and deleted, named. If anything superseded is still in the tree, say what, why it could not go yet, and what unblocks its removal. "None" when the change added something new rather than replacing anything.
+7. **Judgement calls made without being asked** — every decision the user did not direct: design choices, trade-offs, assumptions filled in for missing requirements, scope added or dropped. This is the review surface; when in doubt, list it. "None" only if the task was fully specified.
+8. **The Definition-of-Done table above**, filled in.
 
 ## Deploy
 
