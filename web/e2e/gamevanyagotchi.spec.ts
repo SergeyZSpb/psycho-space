@@ -76,8 +76,23 @@ const SAY_MAX_PLANE_FRACTION = 0.34;
 /** The longest line a balloon will show, in code points. Mirrored from SAY_MAX. */
 const SAY_MAX = 24;
 
-/** What the server says when he gives up part way. Mirrored from `tiredSay`. */
-const TIRED_SAY = 'устал';
+/**
+ * A line for the fake server in this file to put over somebody's head.
+ *
+ * FIXTURE TEXT, and mirrored from nothing. Nothing here talks to Go — the test
+ * *is* the server — so this string only ever travels from a frame this file
+ * writes to the DOM this file then reads, and its value is arbitrary: any
+ * non-empty line the client can be asked to draw would do. It deliberately does
+ * NOT track `tiredSays` or `idleSays` in internal/gamevanyagotchi/content.go,
+ * and nobody should make it: the client is kind-agnostic about a balloon (it
+ * draws `say`, whoever said it and whyever), so a suite that pinned this to a
+ * server pool would be asserting a coupling the product does not have.
+ *
+ * The suites that must agree with the server's own words are the Go tests, which
+ * own the pools, and the full-stack suite, which reads what the real server put
+ * on the wire.
+ */
+const SAY_FIXTURE = 'устал';
 
 /**
  * Which band an entity at this height belongs to. Mirrored from `bandFor`.
@@ -1147,9 +1162,9 @@ test.describe('«Ванягоччи» — a yard of people rather than a field o
 test.describe('«Ванягоччи» — the yard is no longer a list of the people in it', () => {
   // A roster entry used to mean "a player who is here", so counting the entries
   // counted the players. It does not any more: the same list now carries the
-  // yard's two regulars, who have no accounts, and everybody who is ASLEEP in
-  // it, who has an account but is not here. Both are entities to draw and
-  // neither is somebody you can talk to.
+  // yard's regulars, who have no accounts, and everybody who is ASLEEP in it,
+  // who has an account but is not here. Both are entities to draw and neither is
+  // somebody you can talk to.
   //
   // So the head count moved onto the wire as `here`, counted by the server. That
   // is not a convenience: deriving it in the browser would mean the browser
@@ -1165,7 +1180,14 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     await enterYard(page);
 
     // Five entities, two of whom are people: one other player, one Ваня asleep
-    // where his owner left him, and the two regulars.
+    // where his owner left him, and a couple of regulars.
+    //
+    // HOW MANY regulars is arbitrary and deliberately not a mirror of the real
+    // cast — the point of the fixture is that the frame contains entities that
+    // are not people, and two is enough to make it. The client is kind-agnostic,
+    // so casting a third on the server changes nothing here; that the count on
+    // screen follows the SERVER's cast rather than a number written down is
+    // asserted in the full-stack suite, against the served catalogue.
     await socket.push(
       rosterHere(
         2,
@@ -1198,6 +1220,10 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     const socket = await stubSocket(page);
     await enterYard(page);
 
+    // Background scenery for the count, and a fixture rather than a mirror: how
+    // many regulars the real yard has is the server's business and is asserted
+    // against the served catalogue in the full-stack suite. What matters here is
+    // only that some of the entities in the frame are not people.
     const cast = [
       { id: 'npc-sahur', x: 0.6, y: 0.3, art: 'npc_sahur', pose: 'fine' },
       { id: 'npc-ballerina', x: 0.7, y: 0.9, art: 'npc_ballerina', pose: 'fine' },
@@ -1339,13 +1365,28 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
       document.querySelector('[data-peer="walker"]')?.setAttribute('data-marked', '1');
     });
 
-    await socket.push(roster({ ...SAME, say: TIRED_SAY }));
+    await socket.push(roster({ ...SAME, say: SAY_FIXTURE }));
 
     await expect(sayBubble(page, 'walker')).toBeVisible();
-    await expect(sayBubble(page, 'walker')).toHaveText(TIRED_SAY);
+    await expect(sayBubble(page, 'walker')).toHaveText(SAY_FIXTURE);
     await expect(page.locator('[data-peer="walker"][data-marked="1"]')).toHaveCount(1);
     // The position tier was not disturbed by the appearance change.
     expect(await peerPosition(page, 'walker')).toEqual({ x: '0.5', y: '0.5' });
+
+    // A DIFFERENT line on an otherwise identical frame replaces the first one.
+    //
+    // Absent → present is not the whole of it any more. The server draws its
+    // lines from pools rather than from one constant, so the same Ваня standing
+    // in the same spot can say two different things, and the appearance guard
+    // that keeps 299 frames in 300 from re-rendering compares field by field.
+    // A guard that treated `say` as a boolean — or diffed it only against
+    // absence — would leave the first line frozen over his head while the server
+    // had moved on, and every other assertion in this file would still pass.
+    const SECOND_LINE = 'пивка бы';
+    expect(SECOND_LINE, 'the two fixture lines are the same string').not.toBe(SAY_FIXTURE);
+    await socket.push(roster({ ...SAME, say: SECOND_LINE }));
+    await expect(sayBubble(page, 'walker')).toHaveText(SECOND_LINE);
+    await expect(page.locator('[data-peer="walker"][data-marked="1"]')).toHaveCount(1);
 
     // And it goes when the server stops saying it — absent, not empty, so there
     // is no stray box left sitting over his head.
@@ -1377,8 +1418,8 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
 
     await socket.push(
       roster(
-        { id: 'middle', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine', say: TIRED_SAY },
-        { id: 'high', x: 0.5, y: 0.03, art: 'vanya', pose: 'fine', say: TIRED_SAY },
+        { id: 'middle', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine', say: SAY_FIXTURE },
+        { id: 'high', x: 0.5, y: 0.03, art: 'vanya', pose: 'fine', say: SAY_FIXTURE },
         { id: 'wordy', x: 0.5, y: 0.6, art: 'vanya', pose: 'fine', say: LONG },
         // Deliberately ON the edge. A balloon is centred on its dot, so this one
         // hangs half its width off the plane and is left clipped on purpose —
@@ -1491,7 +1532,7 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     await enterYard(page);
 
     await socket.push(
-      roster({ id: 'me', x: 0.5, y: 0.5, art: 'vanya', label: 'Ваня', pose: 'fine', say: TIRED_SAY }),
+      roster({ id: 'me', x: 0.5, y: 0.5, art: 'vanya', label: 'Ваня', pose: 'fine', say: SAY_FIXTURE }),
     );
     await expect(sayBubble(page, 'me')).toBeVisible();
 

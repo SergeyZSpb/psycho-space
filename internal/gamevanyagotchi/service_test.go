@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -303,6 +304,15 @@ func standingAt(t *testing.T, got Peer, want Point, what string) {
 	}
 }
 
+// isTiredLine reports whether a balloon is one of the giving-up complaints.
+//
+// Tests assert on the CATEGORY rather than on a particular string: which line a
+// given Ваня uses is a hash, so pinning one would be pinning the hash, and the
+// pool is content that is expected to grow.
+func isTiredLine(say string) bool {
+	return slices.Contains(tiredSays, say)
+}
+
 // npcID is the handle the plane publishes one of the yard's regulars under. The
 // prefix is the server's own convention; it is asserted against the wire in
 // TestTheYardsRegularsAreInEveryFrame and derived from here everywhere else.
@@ -540,27 +550,31 @@ func TestGivingUpIsDecidedOnceAndShownToEverybody(t *testing.T) {
 
 	// What the yard sees: still walking, then sitting and saying so, then sitting
 	// and over it. He never reaches the place he was tapped towards.
+	// The expectation is about the COMPLAINT, not about silence. Once he has his
+	// breath back he is standing about, and a Ваня standing about is entitled to
+	// mutter something unrelated — so the assertion after the window is that the
+	// giving-up line is gone, not that his mouth is shut.
 	for _, tc := range []struct {
-		name string
-		when time.Time
-		want Point
-		say  string
-		why  string
+		name  string
+		when  time.Time
+		want  Point
+		tired bool
+		why   string
 	}{
 		{
-			name: "on the way", when: atProgress(w, w.stopAt/2), want: lerp(w.from, w.to, w.stopAt/2), say: "",
-			why: "the walk up to the point he gives up is a walk like any other",
+			name: "on the way", when: atProgress(w, w.stopAt/2), want: lerp(w.from, w.to, w.stopAt/2),
+			why: "the walk up to the point he gives up is a walk like any other, and a walker says nothing at all",
 		},
 		{
-			name: "the moment he sits down", when: w.stoppedAt().Add(time.Millisecond), want: sat, say: tiredSay,
-			why: "a speed cap alone reads as a tax; a Ваня who sits down halfway across the yard and says he is tired IS the game",
+			name: "the moment he sits down", when: w.stoppedAt().Add(time.Millisecond), want: sat, tired: true,
+			why: "a speed cap alone reads as a tax; a Ваня who sits down halfway across the yard and says his leg is falling off IS the game",
 		},
 		{
-			name: "once he has got his breath back", when: w.stoppedAt().Add(tiredFor), want: sat, say: "",
+			name: "once he has got his breath back", when: w.stoppedAt().Add(tiredFor), want: sat,
 			why: "the line is derived from the clock, so it needs no timer and no cleanup — it simply stops being true",
 		},
 		{
-			name: "an hour later", when: w.stoppedAt().Add(time.Hour), want: sat, say: "",
+			name: "an hour later", when: w.stoppedAt().Add(time.Hour), want: sat,
 			why: "he stays where he sat down until somebody asks him to go somewhere else",
 		},
 	} {
@@ -574,8 +588,16 @@ func TestGivingUpIsDecidedOnceAndShownToEverybody(t *testing.T) {
 				t.Fatalf("the tired player is not in the frame: %+v", frames[len(frames)-1])
 			}
 			standingAt(t, p, tc.want, tc.name+" — "+tc.why)
-			if p.Say != tc.say {
-				t.Fatalf("%s he says %q; want %q — %s", tc.name, p.Say, tc.say, tc.why)
+			switch {
+			case tc.tired && p.Say != w.say:
+				t.Fatalf("%s he says %q; want the complaint carried on the walk, %q — %s",
+					tc.name, p.Say, w.say, tc.why)
+			case tc.tired && !isTiredLine(p.Say):
+				t.Fatalf("%s he says %q, which is not one of the giving-up lines — %s", tc.name, p.Say, tc.why)
+			case tc.name == "on the way" && p.Say != "":
+				t.Fatalf("on the way he says %q; a Ваня mid-walk says nothing — %s", p.Say, tc.why)
+			case !tc.tired && isTiredLine(p.Say):
+				t.Fatalf("%s he is still complaining (%q) — %s", tc.name, p.Say, tc.why)
 			}
 			// And the frame that carries it is the one everybody in the room gets,
 			// which is what makes them all watch the same man sit down.
@@ -2219,5 +2241,383 @@ func TestAnEmptyYardPublishesNothingHoweverManyAreAsleepInIt(t *testing.T) {
 	svc.mu.Unlock()
 	if !kept {
 		t.Fatal("the sleeper was forgotten, so the assertion above is about an empty yard rather than about an unwatched one")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The yard has a voice.
+//
+// Two kinds of balloon, and they are decided in two different places for the
+// same reason: one event gets one answer, and everybody has to get the same one.
+// A giving-up line is chosen with the walk, at accept time, and carried on it.
+// An idle remark is chosen by hashing (account, slot) — a pure function of
+// absolute time, so it needs no timer, stores nothing, expires by arithmetic,
+// and two people watching the same Ваня read the same words at the same moment.
+// ---------------------------------------------------------------------------
+
+// muttering is the first instant at or after `from` at which this account is
+// saying something to itself, and what it says.
+//
+// A search rather than a fixture, because the phrase key is minted from
+// crypto/rand per process: which slots produce a remark cannot be known from
+// outside, only found. At idleChance a run of a few hundred silent slots is
+// already beyond improbable, so the cap is a bug detector rather than a limit.
+func muttering(t *testing.T, svc *Service, accountID string, from time.Time) (time.Time, string) {
+	t.Helper()
+	const slots = 2000
+	for i := 0; i < slots; i++ {
+		when := from.Add(time.Duration(i) * idlePeriod)
+		if say := svc.idleSay(accountID, when); say != "" {
+			return when, say
+		}
+	}
+	t.Fatalf("%d consecutive slots produced no remark at a chance of %v; the muttering is unreachable rather than merely quiet",
+		slots, idleChance)
+	return time.Time{}, ""
+}
+
+// slotStart is an instant aligned to the start of an idle slot, an hour into the
+// world. Alignment matters: every assertion below is about WHERE in a slot an
+// instant falls, so a base at some arbitrary offset would make "past the window"
+// mean something different each run.
+func slotStart(t *testing.T) time.Time {
+	t.Helper()
+	base := worldEpoch.Add(time.Hour)
+	if (base.Sub(worldEpoch))%idlePeriod != 0 {
+		t.Fatalf("the base instant is not slot-aligned; idlePeriod %v no longer divides an hour and these tests measure from the wrong place", idlePeriod)
+	}
+	return base
+}
+
+// TestAВаняStandingAboutTalksToHimself is the ambient noise, and the whole point
+// of it: a yard is mostly people doing nothing, so without this it is a still
+// life. The remark has to reach the frame, come from the pool, and be the same
+// one the arithmetic says it is.
+func TestAВаняStandingAboutTalksToHimself(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	base := slotStart(t)
+	if err := svc.broadcast(context.Background(), base); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	// He has never walked anywhere, which is the case that matters: this is what
+	// almost everybody in the yard is doing almost all of the time.
+	when, say := muttering(t, svc, accountOf("a"), base)
+
+	if err := svc.broadcast(context.Background(), when); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	p, ok := peerOf(svc, frames[len(frames)-1], accountOf("a"))
+	if !ok {
+		t.Fatalf("the muttering player is not in the frame: %+v", frames[len(frames)-1])
+	}
+	if p.Say != say {
+		t.Fatalf("the frame carries %q but the arithmetic says %q; the balloon in the yard is not the one the server decided on", p.Say, say)
+	}
+	if !slices.Contains(idleSays, p.Say) {
+		t.Fatalf("he says %q, which is in neither pool; a line reaching the yard from outside the catalogue is content nobody wrote", p.Say)
+	}
+	if isTiredLine(p.Say) {
+		t.Fatalf("a Ваня who has not walked anywhere says %q, which is a complaint about walking", p.Say)
+	}
+}
+
+// TestTheMutteringStopsWithoutAnythingStoppingIt pins the shape that makes it
+// free: the remark is up for the first idleSayFor of its slot and then is not,
+// and nothing anywhere had to remember to remove it.
+func TestTheMutteringStopsWithoutAnythingStoppingIt(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+	acct := accountOf("a")
+
+	base := slotStart(t)
+	when, say := muttering(t, svc, acct, base)
+
+	for _, tc := range []struct {
+		name string
+		when time.Time
+		want string
+		why  string
+	}{
+		{
+			name: "the moment it starts", when: when, want: say,
+			why: "the slot's remark is up from its first instant",
+		},
+		{
+			name: "the last instant it is up", when: when.Add(idleSayFor - time.Millisecond), want: say,
+			why: "the same slot is the same remark throughout — it must not riffle through the pool at 5 Hz while it is shown",
+		},
+		{
+			name: "the instant the window closes", when: when.Add(idleSayFor), want: "",
+			why: "it expires by arithmetic, so there is no timer to fire and nothing to clean up",
+		},
+		{
+			name: "later in the same slot", when: when.Add(idlePeriod - time.Millisecond), want: "",
+			why: "at most one remark per slot, however often the frame is drawn",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := svc.idleSay(acct, tc.when); got != tc.want {
+				t.Fatalf("he says %q; want %q — %s", got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestEverybodyHearsTheSameMutteringAtTheSameMoment is the property that makes
+// this shared rather than decorative. Two clients are two evaluations of the
+// same function, so the words and their timing agree without a message being
+// sent to say so — which is exactly why the client is never allowed to pick one.
+func TestEverybodyHearsTheSameMutteringAtTheSameMoment(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"), member("watching"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	base := slotStart(t)
+	when, say := muttering(t, svc, accountOf("a"), base)
+
+	// Drawn twice at the same instant, as two clients reading one broadcast are.
+	for i := 0; i < 2; i++ {
+		if err := svc.broadcast(context.Background(), when); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+	}
+	frames := tr.frames()
+	first, ok := peerOf(svc, frames[len(frames)-2], accountOf("a"))
+	if !ok {
+		t.Fatal("the muttering player is missing from the first of the two frames")
+	}
+	second, ok := peerOf(svc, frames[len(frames)-1], accountOf("a"))
+	if !ok {
+		t.Fatal("the muttering player is missing from the second of the two frames")
+	}
+	if first.Say != say || second.Say != say {
+		t.Fatalf("the same instant produced %q and %q; want %q both times — a remark that differs between two readings of one moment is one the clients would disagree about",
+			first.Say, second.Say, say)
+	}
+}
+
+// TestOnlyAВаняWhoIsStandingStillSaysAnything is the gate, and each case is a
+// separate reason.
+func TestOnlyAВаняWhoIsStandingStillSaysAnything(t *testing.T) {
+	base := slotStart(t)
+
+	t.Run("a walker keeps his breath", func(t *testing.T) {
+		tr := &fakeTransport{}
+		tr.setMembers(member("a"))
+		svc := NewService(tr, testRoom, nil, nil)
+		acct := accountOf("a")
+
+		// An instant at which he WOULD be muttering if he were standing there,
+		// so this proves the walk suppresses it rather than that the slot is a
+		// quiet one.
+		when, say := muttering(t, svc, acct, base)
+		if err := svc.broadcast(context.Background(), when); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+		// A short hop, so it can never be refused and turn into a complaint.
+		w := tap(t, svc, member("a"), Point{X: spawn.X + 0.2, Y: spawn.Y})
+		mid := partWayThrough(w)
+		if svc.idleSay(acct, mid) == "" {
+			t.Skip("the instant half way along this walk is a quiet slot, so there is nothing to suppress")
+		}
+		if err := svc.broadcast(context.Background(), mid); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+		frames := tr.frames()
+		p, ok := peerOf(svc, frames[len(frames)-1], acct)
+		if !ok {
+			t.Fatal("the walker is not in the frame")
+		}
+		if p.Say != "" {
+			t.Fatalf("mid-walk he says %q (the slot's line is %q); a Ваня narrating his own journey reads as a status message, and the joke is that this is not one",
+				p.Say, say)
+		}
+	})
+
+	t.Run("a dead Ваня has nothing to add", func(t *testing.T) {
+		tr := &fakeTransport{}
+		tr.setMembers(member("a"))
+		svc := NewService(tr, testRoom, nil, nil)
+		acct := accountOf("a")
+
+		died := base.Add(-time.Hour)
+		svc.remember(acct, Pet{SkinKey: SkinVanya, DiedAt: &died}, nil)
+
+		when, say := muttering(t, svc, acct, base)
+		if err := svc.broadcast(context.Background(), when); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+		frames := tr.frames()
+		p, ok := peerOf(svc, frames[len(frames)-1], acct)
+		if !ok {
+			t.Fatal("the dead player is not in the frame")
+		}
+		if p.Pose != PoseDead {
+			t.Fatalf("pose is %q; this test asserts nothing unless he is actually dead", p.Pose)
+		}
+		if p.Say != "" {
+			t.Fatalf("a dead Ваня says %q (the slot's line is %q)", p.Say, say)
+		}
+	})
+
+	t.Run("a sleeper sleeps", func(t *testing.T) {
+		tr := &fakeTransport{}
+		tr.setMembers(member("a"))
+		svc := NewService(tr, testRoom, nil, nil)
+		acct := accountOf("a")
+
+		if err := svc.broadcast(context.Background(), base); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+		standAt(svc, acct, Point{X: 0.3, Y: 0.6})
+		// He leaves, but somebody stays: an empty room publishes no frame at
+		// all, so without a watcher the assertion below would read the last
+		// frame from when he was still standing here awake.
+		tr.setMembers(member("watching"))
+
+		// Past the grace, so he is lying in the yard rather than merely absent —
+		// and at an instant his slot would otherwise have him talking.
+		when, say := muttering(t, svc, acct, base.Add(PositionGrace+idlePeriod))
+		if err := svc.broadcast(context.Background(), when); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+		frames := tr.frames()
+		p, ok := peerOf(svc, frames[len(frames)-1], acct)
+		if !ok {
+			t.Fatalf("the sleeper is not in the frame: %+v", frames[len(frames)-1])
+		}
+		if p.Pose != PoseAsleep {
+			t.Fatalf("pose is %q; this test asserts nothing unless he is asleep", p.Pose)
+		}
+		if p.Say != "" {
+			t.Fatalf("a sleeping Ваня says %q (the slot's line is %q); he is not awake to say it", p.Say, say)
+		}
+	})
+
+	t.Run("the regulars are silent", func(t *testing.T) {
+		tr := &fakeTransport{}
+		tr.setMembers(member("a"))
+		svc := NewService(tr, testRoom, nil, nil)
+
+		// A SWEEP rather than one instant, and that is the whole strength of
+		// this case. Checking a single moment caught a talking NPC only about
+		// half the time — a quarter chance per character per slot — so it passed
+		// against a service deliberately broken to give the cast balloons.
+		// Across this many slots every plausible key speaks dozens of times,
+		// whichever handle an accidental implementation happened to hash.
+		const slots = 150
+		for i := 0; i < slots; i++ {
+			when := base.Add(time.Duration(i) * idlePeriod)
+			if err := svc.broadcast(context.Background(), when); err != nil {
+				t.Fatalf("broadcast: %v", err)
+			}
+			frames := tr.frames()
+			last := frames[len(frames)-1]
+			for _, npc := range catalogue.NPCs {
+				p, ok := peerByID(last, npcID(npc.Key))
+				if !ok {
+					t.Fatalf("%q is not in the frame", npc.Key)
+				}
+				if p.Say != "" {
+					t.Fatalf("%q says %q at slot %d; the muttering is the players' and giving it to the cast would make the yard a chatroom",
+						npc.Key, p.Say, i)
+				}
+			}
+		}
+		// And the sweep really did cover slots in which somebody talks, or a
+		// silent cast proves nothing.
+		talking := 0
+		for i := 0; i < slots; i++ {
+			if svc.idleSay(accountOf("a"), base.Add(time.Duration(i)*idlePeriod)) != "" {
+				talking++
+			}
+		}
+		if talking == 0 {
+			t.Fatalf("none of the %d swept slots produces a remark even for a player, so the silence above is not evidence of anything", slots)
+		}
+	})
+}
+
+// TestTheComplaintIsChosenOnceAndCarriedOnTheWalk. The alternative — choosing it
+// when the frame is built — would riffle through ten lines at 5 Hz for the four
+// seconds he sat there, and two clients drawing the same moment could disagree.
+func TestTheComplaintIsChosenOnceAndCarriedOnTheWalk(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	w := tapUntilHeGivesUp(t, svc, member("a"), Point{X: 1, Y: 1})
+	if !isTiredLine(w.say) {
+		t.Fatalf("the walk carries %q, which is not one of the giving-up lines", w.say)
+	}
+
+	// Every tick of the window he is sitting there says the same thing.
+	sat := w.stoppedAt()
+	for _, d := range []time.Duration{time.Millisecond, tiredFor / 4, tiredFor / 2, tiredFor - time.Millisecond} {
+		when := sat.Add(d)
+		if err := svc.broadcast(context.Background(), when); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+		frames := tr.frames()
+		p, ok := peerOf(svc, frames[len(frames)-1], accountOf("a"))
+		if !ok {
+			t.Fatal("the tired player is not in the frame")
+		}
+		if p.Say != w.say {
+			t.Fatalf("%v after sitting down he says %q; want the line chosen with the walk, %q", d, p.Say, w.say)
+		}
+	}
+}
+
+// TestTheTwoPoolsAreDisjoint. Several tests read "he said a tired line" as
+// evidence that he got tired, which is only sound while no line is in both
+// pools. A single word landing in both would make those tests quietly stop
+// discriminating instead of failing.
+func TestTheTwoPoolsAreDisjoint(t *testing.T) {
+	if len(tiredSays) == 0 || len(idleSays) == 0 {
+		t.Fatal("a pool is empty, so every balloon assertion in this package is vacuous")
+	}
+	for _, tired := range tiredSays {
+		if slices.Contains(idleSays, tired) {
+			t.Fatalf("%q is in both pools; a balloon can no longer distinguish a Ваня who gave up walking from one standing about", tired)
+		}
+	}
+	for _, pool := range [][]string{tiredSays, idleSays} {
+		seen := make(map[string]bool, len(pool))
+		for _, line := range pool {
+			if seen[line] {
+				t.Fatalf("%q appears twice in one pool, so it is twice as likely as every other line for no stated reason", line)
+			}
+			seen[line] = true
+		}
+	}
+}
+
+// TestPickingALineCannotRunOffTheEndOfThePool. The draw is a float in a CLOSED
+// interval, so exactly 1.0 is a value it can take — and int(1.0 × len) is one
+// past the last line.
+func TestPickingALineCannotRunOffTheEndOfThePool(t *testing.T) {
+	pool := []string{"a", "b", "c"}
+	for _, at := range []float64{0, 0.333, 0.5, 0.999, 1} {
+		got := pickPhrase(pool, at)
+		if !slices.Contains(pool, got) {
+			t.Fatalf("a draw of %v picked %q, which is not in the pool", at, got)
+		}
+	}
+	if got := pickPhrase(nil, 0.5); got != "" {
+		t.Fatalf("an empty pool produced %q; want silence rather than a panic or a placeholder", got)
+	}
+	// Every line is reachable, or the pool is smaller than it looks.
+	seen := make(map[string]bool, len(pool))
+	for i := 0; i <= 1000; i++ {
+		seen[pickPhrase(pool, float64(i)/1000)] = true
+	}
+	if len(seen) != len(pool) {
+		t.Fatalf("an even sweep of the draw reached %d of %d lines; some are unreachable", len(seen), len(pool))
 	}
 }

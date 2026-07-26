@@ -60,7 +60,7 @@ async function enterYardWith(
 /**
  * Everything the plane is drawing — which STOPPED being the people in the yard.
  *
- * The roster now also carries the two regulars, who have no accounts, and
+ * The roster now also carries the yard's regulars, who have no accounts, and
  * everybody who is asleep in it, who has an account but is not here. So a count
  * of these is a count of things on screen and nothing more; the locators below
  * are how a test says which kind it means, and `here` is how it counts people.
@@ -214,8 +214,75 @@ async function tapAt(page: Page, x: number, y: number): Promise<void> {
  */
 const NEVER_TIRES_WITHIN = 0.45;
 
-/** What he says when he gives up. Mirrored from `tiredSay`. */
-const TIRED_SAY = 'устал';
+/**
+ * Everything he might say when he gives up part way. Mirrored from `tiredSays`
+ * in internal/gamevanyagotchi/content.go.
+ *
+ * Mirrored rather than read back, which is the exception here and is worth
+ * justifying. The pool is not served anywhere: `/api/game-vanyagotchi/config`
+ * publishes stats, actions, skins, the cast and the locations, and no lines at
+ * all — a phrase reaches a client only inside a roster frame, one at a time, as
+ * a thing somebody has just said. So there is nothing to read the pool back
+ * from, and the alternatives are both worse. Asserting one fixed word stopped
+ * being true when the pool replaced the single constant; asserting merely that
+ * he said SOMETHING is vacuous, and now actively wrong — see below.
+ *
+ * The cost of the mirror is bounded and visible: add a line on the server
+ * without adding it here and the give-up test fails the first time the server
+ * picks it, which is a loud, correct failure rather than a silent one.
+ */
+const TIRED_SAYS = [
+  'устал',
+  'нога отваливается',
+  'спина болит',
+  'перекур',
+  'чёт я сдох',
+  'дыхалки нет',
+  'ноги не идут',
+  'колено щёлкает',
+  'надо было такси',
+  'я не спортсмен',
+];
+
+/**
+ * Everything a Ваня STANDING STILL might mutter to himself. Mirrored from
+ * `idleSays` in the same file, for the same reason and at the same cost.
+ *
+ * This pool is why "he said something" is no longer evidence of anything. A
+ * balloon over a Ваня's head used to mean exactly one thing — he had given up on
+ * a walk — and it now also means he has been standing outside for a while and
+ * has an opinion about it. The two are told apart by WHICH POOL the line came
+ * from and by nothing else, so both pools have to be written down here for
+ * either assertion to mean what it says.
+ */
+const IDLE_SAYS = [
+  'где ключи',
+  'я вообще норм',
+  'кто взял мою зажигалку',
+  'так, где я',
+  'пивка бы',
+  'мамка звонила',
+  'курить хочется',
+  'да я в порядке',
+  'чё стоим',
+  'вроде дождь собирается',
+  'я на пять минут вышел',
+  'кладмен мудак',
+  'зачем я вышел',
+  'телефон сел',
+  'холодно чёт',
+];
+
+/**
+ * Lines that are in BOTH pools, which must be none.
+ *
+ * The load-bearing guard under every "which pool was that line from" assertion
+ * in this file. If a line ever appears in both, membership stops distinguishing
+ * a Ваня who gave up from a Ваня who is bored, and the give-up test below would
+ * go on passing while proving nothing. Asserted where the reasoning is used
+ * rather than at import time, so the failure names the test it invalidates.
+ */
+const POOL_OVERLAP = TIRED_SAYS.filter((line) => IDLE_SAYS.includes(line));
 
 /**
  * Waits until your own Ваня has either reached a point or stopped moving.
@@ -284,6 +351,29 @@ interface Step {
 }
 
 /**
+ * One line, WHOSE head it appeared over, and WHEN.
+ *
+ * It used to be the text alone, which was enough while a balloon could only mean
+ * one thing. Two things changed it. A line is now either a give-up or idle
+ * muttering, so an assertion has to be able to say whose it was — a Ваня
+ * standing about saying he fancies a beer is not evidence that anybody got
+ * tired. And idle muttering is SHARED, so proving that needs two recordings of
+ * the same balloon to be recognisable as the same balloon, which takes an id and
+ * an instant.
+ *
+ * `at` is the page's own `Date.now()` at the moment the DOM grew the balloon.
+ * Both browsers in a two-player test run on this machine off this clock, so two
+ * timestamps are directly comparable — and recording it in the page removes the
+ * race entirely: the test never has to be quick enough to catch a balloon that
+ * is only up for four seconds.
+ */
+interface Said {
+  id: string;
+  text: string;
+  at: number;
+}
+
+/**
  * Records every position the plane is ever told to draw, from before the app
  * boots.
  *
@@ -300,19 +390,27 @@ interface Step {
 async function recordTrail(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const steps: Step[] = [];
-    const said: string[] = [];
+    const said: Said[] = [];
     (window as unknown as { __trail: Step[] }).__trail = steps;
-    (window as unknown as { __said: string[] }).__said = said;
+    (window as unknown as { __said: Said[] }).__said = said;
     new MutationObserver((records) => {
       for (const record of records) {
         // A line over somebody's head is on the wire for a few seconds and then
-        // gone, so catching it by polling is a coin toss. Recorded on arrival.
+        // gone, so catching it by polling is a coin toss. Recorded on arrival,
+        // with whose head it is over: the balloon is a child of its entity's
+        // dot, so the id is the nearest `data-peer` above it.
         for (const node of record.addedNodes) {
           if (!(node instanceof HTMLElement)) continue;
           const bubble = node.matches?.('[data-test="peer-say"]')
             ? node
             : node.querySelector?.('[data-test="peer-say"]');
-          if (bubble) said.push(bubble.textContent ?? '');
+          if (bubble) {
+            said.push({
+              id: bubble.closest('[data-peer]')?.getAttribute('data-peer') ?? '',
+              text: bubble.textContent ?? '',
+              at: Date.now(),
+            });
+          }
         }
         const el = record.target;
         if (!(el instanceof HTMLElement)) continue;
@@ -347,16 +445,16 @@ function trail(page: Page): Promise<Step[]> {
   return page.evaluate(() => (window as unknown as { __trail: Step[] }).__trail ?? []);
 }
 
-/** Every line anybody has been seen to say. */
-function saidSoFar(page: Page): Promise<string[]> {
-  return page.evaluate(() => (window as unknown as { __said: string[] }).__said ?? []);
+/** Every line anybody has been seen to say, with whose head it was over. */
+function saidSoFar(page: Page): Promise<Said[]> {
+  return page.evaluate(() => (window as unknown as { __said: Said[] }).__said ?? []);
 }
 
 /** Forgets the recording, so the next assertion is about one journey. */
 async function forgetTrail(page: Page): Promise<void> {
   await page.evaluate(() => {
     (window as unknown as { __trail: Step[] }).__trail.length = 0;
-    (window as unknown as { __said: string[] }).__said.length = 0;
+    (window as unknown as { __said: Said[] }).__said.length = 0;
   });
 }
 
@@ -403,9 +501,12 @@ test('two players share one plane, and a move crosses between them', async ({
     await expect(pageA.getByText('во дворе: 2')).toBeVisible();
     // And the yard's regulars are there alongside them, on both screens — which
     // is also what says the count above is the server's own rather than a tally
-    // of everything drawn.
-    await expect(npcDots(pageA)).toHaveCount(2);
-    await expect(npcDots(pageB)).toHaveCount(2);
+    // of everything drawn. How many there are comes from the server; casting a
+    // new one must not be an edit to this file.
+    const cast = await npcCount(pageA);
+    expect(cast, 'the server serves no cast at all').toBeGreaterThan(0);
+    await expect(npcDots(pageA)).toHaveCount(cast);
+    await expect(npcDots(pageB)).toHaveCount(cast);
 
     // A walks a quarter across. Nothing local happens; the position is only real
     // once the server has clamped it and sent it back to everybody.
@@ -530,10 +631,11 @@ test('two open pages survive a restart of the binary', async ({ browser, baseURL
     await expect(pageB.getByText('на связи')).toBeVisible({ timeout: 60_000 });
     await expect(playerDots(pageA)).toHaveCount(2, { timeout: 30_000 });
     await expect(playerDots(pageB)).toHaveCount(2, { timeout: 30_000 });
-    // The regulars came back with the world. They are evaluated closed-form from
-    // a FIXED world epoch rather than from process start, so a deploy does not
-    // teleport the cast — which is only observable across a restart.
-    await expect(npcDots(pageA)).toHaveCount(2, { timeout: 30_000 });
+    // The regulars came back with the world — all of them, however many the
+    // catalogue holds today. They are evaluated closed-form from a FIXED world
+    // epoch rather than from process start, so a deploy does not teleport the
+    // cast — which is only observable across a restart.
+    await expect(npcDots(pageA)).toHaveCount(await npcCount(pageA), { timeout: 30_000 });
 
     // Still in the yard, never bounced back to the intro.
     await expect(pageA.getByRole('button', { name: 'Во двор' })).toHaveCount(0);
@@ -769,6 +871,19 @@ async function catalogue(page: Page): Promise<{ skins: WireSkin[]; npcs?: WireNP
 }
 
 /**
+ * How many regulars the server actually has, asked of the server.
+ *
+ * No test writes the number down. Casting a new character is a content change —
+ * a catalogue entry and an art key, no client, no migration, no route — and the
+ * whole point of that is that it costs nothing to do. A suite that hardcodes the
+ * size of the cast turns it into a suite-wide edit, and the edit is invisible
+ * until CI goes red for a reason that has nothing to do with the change.
+ */
+async function npcCount(page: Page): Promise<number> {
+  return ((await catalogue(page)).npcs ?? []).length;
+}
+
+/**
  * The cap a name is cut to before it is drawn, in code points. Mirrored from
  * `LABEL_MAX` in src/lib/vanyagotchiPlane.ts.
  *
@@ -847,9 +962,9 @@ test('the yard has regulars, and both players see the same ones', async ({ brows
       }
     }
 
-    // THE point of the head count. Five entities are drawn and two of them are
-    // people, and the number on screen is two — on both screens. Counting the
-    // plane would say five, which is the bug the field exists to foreclose.
+    // THE point of the head count. Two of everything drawn are people, and the
+    // number on screen is two — on both screens. Counting the plane would say
+    // two plus the whole cast, which is the bug the field exists to foreclose.
     await expect(playerDots(pageA)).toHaveCount(2);
     await expect(pageA.getByText('во дворе: 2')).toBeVisible();
     await expect(pageB.getByText('во дворе: 2')).toBeVisible();
@@ -1062,10 +1177,37 @@ test('a tap is a walk across the yard, not a teleport', async ({ browser, baseUR
       // And he said so. Recorded on arrival in the DOM rather than polled for:
       // the line is on the wire for a few seconds only, so catching it by
       // sampling would be a coin toss.
+      //
+      // What is asserted is that ONE OF THE GIVING-UP LINES appeared over HIS
+      // OWN head. Both halves are load-bearing, and the reason is the balloon
+      // stopped meaning one thing.
+      //
+      // A Ваня who is standing still now mutters to himself out of a second,
+      // separate pool. So "he said something" would be satisfied by a Ваня
+      // remarking that he fancies a beer, which is not evidence that anybody got
+      // tired — and the window for exactly that is real rather than theoretical:
+      // giving up stops counting as giving up after `tiredFor`, at which point
+      // he is standing still and entitled to mutter, while `settleNear` may
+      // still be confirming that he has stopped. Membership of `tiredSays` is
+      // what tells the two apart, and it only tells them apart while the pools
+      // are disjoint — which is what the guard immediately below is for.
+      //
+      // A single fixed word is what this used to assert, and it is now wrong:
+      // which line he uses is decided by the same hash that decided he would sit
+      // down, so it is unpredictable from here by design.
       expect(
-        await saidSoFar(page),
-        'he stopped short of where he was sent without a word about it',
-      ).toContain(TIRED_SAY);
+        POOL_OVERLAP,
+        'a line is in both phrase pools, so "he said one of the giving-up lines" no longer ' +
+          'distinguishes a Ваня who gave up from one who is merely bored',
+      ).toHaveLength(0);
+      const heard = (await saidSoFar(page)).filter((line) => line.id === me);
+      const complaints = heard.filter((line) => TIRED_SAYS.includes(line.text));
+      expect(
+        complaints.length,
+        'he stopped short of where he was sent without a word about it — over his own head ' +
+          `this journey we saw ${JSON.stringify(heard.map((line) => line.text))}, and none of ` +
+          'it is one of the giving-up lines',
+      ).toBeGreaterThan(0);
     }
   } finally {
     await context.close();
@@ -1154,13 +1296,186 @@ test('a Ваня whose owner has gone is asleep in the yard where he stood', asy
 
     // He is emphatically NOT one of the people in the yard, which is the whole
     // reason the head count stopped being the length of the roster: A is alone
-    // in a yard with four things drawn in it.
+    // in a yard with the sleeper and the whole cast drawn in it.
     expect(await here(pageA), 'a sleeper was counted as somebody who is here').toBe(1);
     await expect(pageA.getByText('во дворе: 1')).toBeVisible();
     // And the regulars are still there alongside him.
-    await expect(npcDots(pageA)).toHaveCount(2);
+    await expect(npcDots(pageA)).toHaveCount(await npcCount(pageA));
   } finally {
     await ctxA.close();
     await ctxB.close().catch(() => undefined);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Idle chatter.
+//
+// The yard is mostly people doing nothing, so a Ваня standing still is now
+// allowed an opinion about it. Time is cut into twelve-second slots from the
+// world's fixed epoch; hashing (account, slot) decides whether that slot
+// produces a remark and which one, and it is shown for the first four seconds.
+// Nothing is stored, nothing is scheduled, and every process computes the same
+// answer — which is the property this suite exists to check and no unit test
+// can: two browsers, two accounts, two sockets, one set of words.
+// ---------------------------------------------------------------------------
+
+/**
+ * How far apart two sightings of a balloon may be and still be the same slot.
+ *
+ * Reasoned from `idlePeriod` (12 s) and `idleSayFor` (4 s) in content.go: a
+ * slot's talking window is four seconds long and the next one opens eight
+ * seconds after this one shuts, so two sightings less than eight seconds apart
+ * cannot straddle a slot boundary. Five is that with room to spare.
+ *
+ * Used to decide which two recordings are of the SAME balloon, never to make
+ * anything pass. Both pages are told by the same broadcast and in practice
+ * record a few hundred milliseconds apart; the slack is there so the pairing
+ * cannot be defeated by a slow tick, not because simultaneity is being claimed.
+ */
+const SAME_SLOT_MS = 5_000;
+
+/**
+ * How long to wait for somebody to say something. Twelve and a half slots.
+ *
+ * A given Ваня speaks in a quarter of his slots, so with two of them standing
+ * about the chance that a slot produces nothing at all is about 0.56 — and the
+ * chance of a whole run of them producing nothing is that to the twelfth, which
+ * is a thousand to one. Generous on purpose: the alternative to waiting is a
+ * flaky test, and this one is only reached once per suite.
+ */
+const CHATTER_TIMEOUT_MS = 150_000;
+
+test('a Ваня standing still mutters, and both screens hear the same words', async ({
+  browser,
+  baseURL,
+}) => {
+  // THE claim, and the only one worth two browsers: the words are the SERVER's.
+  //
+  // Nothing here proves it by being clever — it proves it by the words being
+  // unguessable. The phrase pool is not served anywhere: the config publishes
+  // stats, actions, skins, the cast and the locations, and no lines at all. So a
+  // client cannot know a single one of the fifteen except by being handed it in
+  // a roster frame, and two independently-launched browsers cannot agree on a
+  // line neither of them could have invented. Together with the balloon being
+  // over the SAME entity on both screens, that is idle chatter being computed
+  // once, on the server, for everybody.
+  //
+  // Standing still is the precondition rather than an accident: a walking Ваня
+  // says nothing at all, and a Ваня who has given up draws from a different pool
+  // — which is why the line is asserted to be one of the IDLE ones rather than
+  // merely to be a line.
+  test.setTimeout(240_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const ctxA = await browser.newContext(PHONE);
+  const ctxB = await browser.newContext(PHONE);
+  try {
+    // The guard the pool-membership assertion at the end rests on. Stated here
+    // as well as in the give-up test because both tests are only meaningful
+    // while a line belongs to exactly one pool.
+    expect(
+      POOL_OVERLAP,
+      'a line is in both phrase pools, so "he said one of the idle lines" no longer ' +
+        'distinguishes a Ваня who is bored from one who has just given up on a walk',
+    ).toHaveLength(0);
+
+    await loginAs(ctxA, PLAYER_A);
+    await loginAs(ctxB, PLAYER_B);
+    // Recording from before boot, on BOTH pages. A remark is up for four seconds
+    // in twelve, so polling the DOM for one is a coin toss that has to be won
+    // twice at once; a recorder installed ahead of the app catches every balloon
+    // with an id and an instant, and the pairing below is then arithmetic rather
+    // than a race.
+    const pageA = await enterYardWith(ctxA, base, recordTrail);
+    const pageB = await enterYardWith(ctxB, base, recordTrail);
+    await expect(playerDots(pageA)).toHaveCount(2, { timeout: 15_000 });
+    await expect(playerDots(pageB)).toHaveCount(2, { timeout: 15_000 });
+
+    // Both are alive, because a DEAD Ваня never says anything and an earlier
+    // file may well have left one that way. A beer is the game's own way of
+    // fixing that, over the real route — the same thing the sleeper test does
+    // above, and for the same reason.
+    for (const [page, who] of [
+      [pageA, 'A'],
+      [pageB, 'B'],
+    ] as const) {
+      const revived = await page.request.post('/api/game-vanyagotchi/actions/drink');
+      expect(revived.status(), `POST drink for ${who}`).toBe(200);
+    }
+    await expect(
+      playerDots(pageA).locator('[data-test="peer-face"][data-condition="dead"]'),
+      'somebody in the yard is dead, and a dead Ваня has nothing to add',
+    ).toHaveCount(0, { timeout: 15_000 });
+
+    // NOBODY TAPS. That is deliberate, and it is the stronger version of this
+    // test rather than the lazier one.
+    //
+    // Two reasons. It is what almost every Ваня in the yard is doing almost all
+    // of the time — standing where he was left, having walked nowhere this
+    // process — so it is the case the feature actually has to serve. And it is
+    // the case that was BROKEN when this test was first written: "standing
+    // still" is the server's `arrived`, a property of a JOURNEY, and somebody
+    // holding a zero-length placement reported neither walking nor arrived, so
+    // the muttering reached nobody. An earlier draft of this test worked around
+    // it with a short hop each. The server was fixed instead
+    // (`walk.progress` now treats a journey of no length as complete), and the
+    // hop was removed so that a regression puts this test red rather than
+    // quietly walking around the hole again.
+    //
+    // It also removes the last way a give-up line could enter the recording:
+    // nobody walked, so nobody can have given up, so every balloon below is
+    // unambiguously idle muttering.
+
+    // Wait for one balloon that BOTH pages saw over the same entity within the
+    // same slot. Matched on the id and the instant rather than read at one
+    // moment from both screens: a four-second window read twice in sequence is a
+    // race nobody needs to run, and what the claim is actually about is the slot
+    // — the same remark, not the same millisecond.
+    const deadline = Date.now() + CHATTER_TIMEOUT_MS;
+    let shared: { id: string; onA: string; onB: string } | undefined;
+    while (!shared && Date.now() < deadline) {
+      const [heardByA, heardByB] = await Promise.all([saidSoFar(pageA), saidSoFar(pageB)]);
+      for (const mine of heardByA) {
+        const theirs = heardByB.find(
+          (line) => line.id === mine.id && Math.abs(line.at - mine.at) < SAME_SLOT_MS,
+        );
+        if (theirs) {
+          shared = { id: mine.id, onA: mine.text, onB: theirs.text };
+          break;
+        }
+      }
+      if (!shared) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    expect(
+      shared,
+      `nobody in the yard said a word on both screens in ${CHATTER_TIMEOUT_MS / 1000}s — ` +
+        `A heard ${JSON.stringify((await saidSoFar(pageA)).map((line) => line.text))} and ` +
+        `B heard ${JSON.stringify((await saidSoFar(pageB)).map((line) => line.text))}`,
+    ).toBeDefined();
+    const seen = shared as { id: string; onA: string; onB: string };
+
+    // It was over a PLAYER. The regulars are drawn by the same code path and are
+    // deliberately silent — they have no account to hash, and giving them lines
+    // would make the yard's ambient noise come from the scenery.
+    expect(seen.id, 'a regular said something; the cast does not talk').not.toMatch(/^npc-/);
+
+    // THE assertion. Two browsers, one set of words.
+    expect(
+      seen.onB,
+      `A saw ${seen.id} say «${seen.onA}» and B saw the same Ваня say «${seen.onB}» — ` +
+        'the line is being decided per client rather than once by the server',
+    ).toBe(seen.onA);
+
+    // And it is idle muttering rather than anything else a balloon can be. The
+    // pool is not served to anybody, so a client that agreed with another client
+    // on a line from it could only have been told the line.
+    expect(
+      IDLE_SAYS,
+      `${seen.id} said «${seen.onA}», which is not in the idle pool and is not anything ` +
+        'this test can account for — nobody tapped at all, so nobody can have given up on a walk',
+    ).toContain(seen.onA);
+  } finally {
+    await ctxA.close();
+    await ctxB.close();
   }
 });

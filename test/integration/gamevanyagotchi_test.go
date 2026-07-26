@@ -1407,3 +1407,73 @@ func TestVanyagotchiATapIsAJourneyAcrossTheYard(t *testing.T) {
 		}
 	}
 }
+
+// TestVanyagotchiAВаняStandingAboutMuttersOverTheWire proves the yard has a
+// voice, end to end, over a real socket.
+//
+// The muttering is the ambient noise that stops a yard being a still life, and
+// it is worth an integration test for one reason: it is derived from the clock
+// rather than sent, so every layer between the arithmetic and the browser has to
+// carry it without anybody publishing an event. Nothing here asks for a remark
+// and nothing schedules one — the test simply drives the world's clock forward
+// and reads what the server draws.
+//
+// This connection NEVER taps. That is what makes the assertion unambiguous
+// without mirroring a phrase list into this package: the only other thing that
+// puts words over a Ваня's head is the complaint he makes when he gives up on a
+// walk, and he cannot give up on a walk he was never sent on.
+func TestVanyagotchiAВаняStandingAboutMuttersOverTheWire(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, _, tick := buildAppRealtimeGame(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	cli := loginAs(t, app.URL, "7312", "user")
+	conn, _, err := dialRealtime(t, app.URL, cookieHeader(t, cli, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	frames := readFrames(t, conn)
+	waitRegistered(t, hub, frames)
+
+	// A real clock, because whether he is talking is a function of it — and then
+	// walked forward in steps small enough to land inside the window a remark is
+	// shown for, whatever that window's exact length is. Deliberately NOT the
+	// server's slot length: mirroring it here would be a second copy of a
+	// constant, and stepping finely finds the window without knowing it.
+	base := time.Now().UTC()
+	const (
+		step  = 2 * time.Second
+		ticks = 400
+	)
+
+	var heard string
+	for i := 0; i < ticks && heard == ""; i++ {
+		r := expectRosterAt(t, tick, frames, base.Add(time.Duration(i)*step))
+		for _, p := range peopleIn(r) {
+			if p.Say != "" {
+				heard = p.Say
+			}
+		}
+	}
+	if heard == "" {
+		t.Fatalf("across %v of the world's clock nobody standing in the yard said anything; the muttering never reaches the wire",
+			time.Duration(ticks)*step)
+	}
+
+	// And the regulars stayed out of it. They are furniture, and furniture that
+	// talked would turn the yard into a chatroom.
+	npcs := regulars()
+	r := expectRosterAt(t, tick, frames, base)
+	for id := range npcs {
+		p, ok := peerByID(r, id)
+		if !ok {
+			t.Fatalf("%q is not in the roster", id)
+		}
+		if p.Say != "" {
+			t.Fatalf("the regular %q says %q", id, p.Say)
+		}
+	}
+}

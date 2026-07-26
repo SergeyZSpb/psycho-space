@@ -297,7 +297,14 @@ const (
 	tiredFrom = 0.45
 	// tiredChance is the probability of giving up on a tap right across the
 	// yard, scaling down to nothing at tiredFrom.
-	tiredChance = 0.35
+	//
+	// Raised from 0.35 on the owner's instruction to make him give up more
+	// often. It is deliberately the only knob turned for that: lowering
+	// tiredFrom would have done it too, but tiredFrom is the guarantee that a
+	// short hop ALWAYS works, which is what stops a Ваня ever being stuck — and
+	// several tests depend on being able to move somebody reliably by staying
+	// inside it. Frequency is a probability, not a threshold.
+	tiredChance = 0.7
 	// tiredEarliest / tiredLatest bound where he stops, as a fraction of the
 	// journey. Never so early that the tap looks ignored, never so late that
 	// giving up is indistinguishable from arriving.
@@ -316,12 +323,79 @@ var worldEpoch = time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
 // whatever the numbers around it become.
 var maxDistance = distance(Point{X: 0, Y: 0}, Point{X: 1, Y: 1})
 
-// tiredSay is what he announces when he gives up part way.
+// tiredSays is what he announces when he gives up part way.
 //
 // It converts a limitation into content, which is the whole point: a speed cap
 // alone reads as a tax, whereas a Ваня who sits down halfway across the yard and
-// says he is tired IS the game. Same mechanical effect, opposite feeling.
-const tiredSay = "устал"
+// says his leg is falling off IS the game. Same mechanical effect, opposite
+// feeling — and a pool rather than one line, because the joke was wearing out
+// after the third time anybody read the same word.
+//
+// Which line a given giving-up uses is decided once, with the walk, and carried
+// on it. Not re-picked per tick, which would flicker through the whole list
+// while he sat there, and not picked by the client, which would show two people
+// different words for the same event.
+var tiredSays = []string{
+	"устал",
+	"нога отваливается",
+	"спина болит",
+	"перекур",
+	"чёт я сдох",
+	"дыхалки нет",
+	"ноги не идут",
+	"колено щёлкает",
+	"надо было такси",
+	"я не спортсмен",
+}
+
+// idleSays is what a Ваня mutters to himself while standing about.
+//
+// The yard is mostly people doing nothing — that is what a yard is — so without
+// this it is a still life. The lines are the point: not status, not feedback on
+// anything the player did, just the ambient noise of somebody who has been
+// standing outside for a while.
+var idleSays = []string{
+	"где ключи",
+	"я вообще норм",
+	"кто взял мою зажигалку",
+	"так, где я",
+	"пивка бы",
+	"мамка звонила",
+	"курить хочется",
+	"да я в порядке",
+	"чё стоим",
+	"вроде дождь собирается",
+	"я на пять минут вышел",
+	"кладмен мудак",
+	"зачем я вышел",
+	"телефон сел",
+	"холодно чёт",
+}
+
+// How the idle muttering is timed, and why there is no timer.
+//
+// Time is cut into fixed slots measured from worldEpoch. Within one slot an
+// account either says something or does not, decided by hashing (account, slot),
+// and the line is shown for the first idleSayFor of it. That is the same
+// discipline as everything else that moves here — a pure function of absolute
+// time (ADR-042) — and it buys three things a scheduler would not. Nothing is
+// stored, so a balloon costs no memory and cannot leak. Nothing expires, so
+// nothing has to be cleaned up: the slot simply ends. And every client computes
+// the identical answer, so two people watching the same Ваня see the same words
+// appear and disappear together, without a message being sent to say so.
+const (
+	// idlePeriod is one slot: at most one remark per account per slot.
+	idlePeriod = 12 * time.Second
+	// idleSayFor is how long the remark stays up, at the start of its slot.
+	// Long enough to read at a glance, short enough that the yard is quiet more
+	// often than it is talking.
+	idleSayFor = 4 * time.Second
+	// idleChance is how often a slot produces anything at all. At a quarter, a
+	// given Ваня speaks about once a minute — a murmur rather than a chorus,
+	// which matters because thirty sleepers do not talk but a dozen present
+	// players might.
+	idleChance = 0.25
+)
 
 // sleeperLimit is how many absent Ваняs the yard renders lying about.
 //
@@ -446,13 +520,20 @@ var catalogue = Config{
 			Emoji:    "🩰",
 			Gradient: "linear-gradient(160deg, #d8b08c, #6b4a2f)",
 		},
+		{
+			Key:      "npc_67man",
+			Label:    "Сиксти Севен Мэн",
+			Emoji:    "🏀",
+			Gradient: "linear-gradient(160deg, #e0762b, #6d2f0c)",
+		},
 	},
 	Locations: []Location{
 		{Key: LocationYard, Label: "двор", Entry: spawn},
 	},
-	// The yard's regulars. Two of them, moving two different ways, which is
-	// exactly what earns the pattern table its existence — one would have been a
-	// function and a map with a single key.
+	// The yard's regulars. Three of them across two ways of moving, which is
+	// exactly what the pattern table exists for: the third arrived as a
+	// catalogue entry and nothing else — no code, no migration, no client
+	// change — because he reuses a pattern that was already written.
 	NPCs: []NPC{
 		{
 			Key:     "sahur",
@@ -484,6 +565,21 @@ var catalogue = Config{
 					{X: 0.16, Y: 0.86},
 				},
 				Phase: 0.25,
+			},
+		},
+		{
+			Key:     "67man",
+			Label:   "Сиксти Севен Мэн",
+			Art:     "npc_67man",
+			Pattern: PatternWander,
+			// The bottom-right corner, on a shorter cycle than Сахур and half a
+			// turn out of phase with him, so the two wanderers never read as the
+			// same animation played twice.
+			Params: MotionParams{
+				Home:   Point{X: 0.72, Y: 0.72},
+				Spread: Point{X: 0.22, Y: 0.18},
+				Period: 61 * time.Second,
+				Phase:  0.5,
 			},
 		},
 	},

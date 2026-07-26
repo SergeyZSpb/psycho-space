@@ -499,12 +499,21 @@ func (s *Service) place(members []realtime.Member, now time.Time) ([]Peer, int) 
 		at := p.walk.at(now)
 		pose := d.pose(now)
 		say := ""
-		if pose != PoseDead && p.walk.gaveUp(now) {
+		switch {
+		case pose == PoseDead:
+			// A dead Ваня has nothing to add.
+		case p.walk.gaveUp(now):
 			// Decided once, at accept time, and broadcast — so everybody watches
-			// him give up in the same spot at the same moment. A client-side roll
-			// would desynchronise the world, and a client-side anything here
-			// would be forgeable.
-			say = tiredSay
+			// him give up in the same spot at the same moment, saying the same
+			// thing. A client-side roll would desynchronise the world, and a
+			// client-side anything here would be forgeable.
+			say = p.walk.say
+		case p.walk.arrived(now):
+			// Standing about, so he is entitled to mutter. Only when he is
+			// STILL: a Ваня narrating his own walk would read as a status
+			// message, and the joke is that this is not one — he is just
+			// somebody who has been in a yard too long.
+			say = s.idleSay(m.AccountID, now)
 		}
 		peers = append(peers, Peer{
 			ID:    s.pseudonym(m.AccountID),
@@ -636,21 +645,79 @@ func (s *Service) planWalk(accountID string, from, to Point, now time.Time) walk
 	// Probability rises with how much is being asked of him, from nothing at
 	// tiredFrom to tiredChance across the whole yard.
 	reach := (dist - tiredFrom) / (maxDistance - tiredFrom)
-	roll, pick := s.rolls(accountID, to, now)
+	roll, pick, phrase := s.rolls(accountID, to, now)
 	if roll >= tiredChance*reach {
 		return w
 	}
 	w.stopAt = tiredEarliest + pick*(tiredLatest-tiredEarliest)
+	w.say = pickPhrase(tiredSays, phrase)
 	return w
 }
 
-// rolls turns (who, where, when) into two independent numbers in 0..1.
-func (s *Service) rolls(accountID string, to Point, now time.Time) (float64, float64) {
+// rolls turns (who, where, when) into three independent numbers in 0..1.
+func (s *Service) rolls(accountID string, to Point, now time.Time) (float64, float64, float64) {
 	seed := fmt.Sprintf("%s|%v|%v|%d", accountID, to.X, to.Y, now.UnixNano())
-	sum := crypto.HMACSHA256(s.pseudonymKey, []byte(seed))
+	return unitTriple(crypto.HMACSHA256(s.pseudonymKey, []byte(seed)))
+}
+
+// idleSay is what he is muttering to himself right now, if anything.
+//
+// Closed-form, like everything else that moves here (ADR-042): time is cut into
+// fixed slots from worldEpoch, hashing (account, slot) decides whether this one
+// produces a remark and which, and it is shown for the first idleSayFor of the
+// slot. So there is no timer, nothing stored, nothing to expire and nothing to
+// clean up — and every process computes the same answer, which is what makes
+// two people watching the same Ваня see the same words at the same moment.
+//
+// The account is the ONLY identity in the hash. Not the pseudonym, which is the
+// same thing one HMAC later, and not the connection: a second tab must not put
+// a second, differently-worded balloon over the same head.
+func (s *Service) idleSay(accountID string, now time.Time) string {
+	if len(idleSays) == 0 {
+		return ""
+	}
+	since := now.Sub(worldEpoch)
+	if since < 0 {
+		// Before the world began. Reachable only from a test with a clock in the
+		// past, and silence is the honest answer rather than a negative slot.
+		return ""
+	}
+	slot := int64(since / idlePeriod)
+	if since-time.Duration(slot)*idlePeriod >= idleSayFor {
+		// Past the talking part of this slot. He has said his piece, or was
+		// never going to.
+		return ""
+	}
+	seed := fmt.Sprintf("idle|%s|%d", accountID, slot)
+	roll, phrase, _ := unitTriple(crypto.HMACSHA256(s.pseudonymKey, []byte(seed)))
+	if roll >= idleChance {
+		return ""
+	}
+	return pickPhrase(idleSays, phrase)
+}
+
+// unitTriple reads three independent numbers in 0..1 out of one HMAC.
+//
+// One hash rather than three: the sum is 32 bytes and each draw needs four, so
+// taking disjoint windows of it is as independent as hashing three times and
+// costs a third as much.
+func unitTriple(sum []byte) (float64, float64, float64) {
 	a := binary.BigEndian.Uint32(sum[0:4])
 	b := binary.BigEndian.Uint32(sum[4:8])
-	return float64(a) / float64(math.MaxUint32), float64(b) / float64(math.MaxUint32)
+	c := binary.BigEndian.Uint32(sum[8:12])
+	const max = float64(math.MaxUint32)
+	return float64(a) / max, float64(b) / max, float64(c) / max
+}
+
+// pickPhrase chooses a line from a pool by a number in 0..1.
+//
+// The modulo is not decoration: a draw of exactly 1.0 is possible, and without
+// it the index would be one past the end.
+func pickPhrase(pool []string, at float64) string {
+	if len(pool) == 0 {
+		return ""
+	}
+	return pool[int(at*float64(len(pool)))%len(pool)]
 }
 
 // enqueueSave hands a departure to the writer without ever blocking.

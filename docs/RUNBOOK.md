@@ -10,7 +10,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **app:** systemd unit `psycho-space` under user `psychospace`; binary `/opt/psycho-space/psycho-space`; env `/etc/psycho-space/app.env`; logs `/var/log/psycho-space/app.log`.
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/gamekhimki/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
-- **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*`, view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds and labels are in `content.go`, not the database.
+- **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*`, view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and both phrase pools are in `content.go`, not the database — so retuning, renaming, adding an NPC or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from two disjoint pools and mean different things: `tiredSays` means he gave up on a walk, `idleSays` means he is just standing about. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, the append-only decision records saying why it is that shape), `../CLAUDE.md` (working rules and gates).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
@@ -275,18 +275,38 @@ starts at his location's entry point from the catalogue.
 
 **Not everything in the yard is a person.** A roster frame carries three kinds of
 entity and the client cannot tell them apart on purpose: connected players, the
-**NPCs** (evaluated closed-form on the tick from `content.go` — no rows, no
-accounts, nothing stored), and **sleepers** — players whose owner is away, drawn
-lying where they last stood. Only the first kind is counted, and the frame
-carries that count explicitly as `here`. So «во дворе: 1» beside eight figures on
-screen is correct, not a bug.
+**NPCs** (three of them, evaluated closed-form on the tick from `content.go` — no
+rows, no accounts, nothing stored), and **sleepers** — players whose owner is
+away, drawn lying where they last stood. Only the first kind is counted, and the
+frame carries that count explicitly as `here`. So «во дворе: 1» beside eight
+figures on screen is correct, not a bug. The cast is a catalogue list: `curl` the
+config to see who is currently in it rather than trusting a number written here.
 
 **A Ваня who will not move where you tapped is probably tired.** A tap is a
 *walk* now, not a teleport: about a fifth of the plane per second, and for a long
-tap the server may decide at accept time that he gives up part way and says
-«устал». That decision is made once, server-side, and broadcast — so everybody
-sees him sit down in the same spot. Re-tapping starts a new walk from where he
-sat, so nothing is ever stuck. Short hops never fail.
+tap the server may decide at accept time that he gives up part way and complains
+— «нога отваливается», «спина болит», one of ten lines. That decision is made
+once, server-side, and broadcast, so everybody sees him sit down in the same spot
+saying the same thing. Re-tapping starts a new walk from where he sat, so nothing
+is ever stuck. **Short hops never fail** — under `tiredFrom` (0.45 of the plane)
+he always arrives, which is also how a test moves somebody reliably. Giving up is
+common on purpose: `tiredChance` is 0.7 across the whole yard.
+
+**Balloons come from two pools and mean two different things.** A line from
+`tiredSays` means he gave up on a walk. A line from `idleSays` — «где ключи»,
+«пивка бы» — means he is merely standing about, and is ambient noise rather than
+feedback on anything. The pools are disjoint and a unit test keeps them that way,
+so the line alone tells you which happened. Neither pool is served to the client:
+if you see one in a browser, the server put it there.
+
+**Idle muttering has no timer, so there is nothing to inspect.** Time is cut into
+12-second slots from `worldEpoch`, hashing (account, slot) decides whether that
+slot produces a remark and which, and it is shown for the first 4 seconds. So a
+given Ваня speaks roughly once a minute, every client computes the identical
+answer, and nothing is stored. Two consequences when debugging: **the phrase key
+is per-process**, so a restart changes who says what and when — the same property
+the tiredness roll has — and a Ваня who is walking, dead or asleep is silent by
+design, so silence in those states is not a fault.
 
 **The yard's appearance comes from an in-memory cache, not from a query.** The
 5 Hz broadcast never touches Postgres: each account's skin, name and stat pairs

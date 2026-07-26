@@ -189,6 +189,13 @@ type walk struct {
 	// (*Service).planWalk — so that everybody watches him give up in the same
 	// spot at the same moment.
 	stopAt float64
+	// say is the complaint he makes when he gives up, empty when he arrives.
+	//
+	// Carried on the walk rather than picked when the frame is built, for the
+	// same reason stopAt is: it is one event, so it gets one answer. Re-picking
+	// it per tick would riffle through the whole phrase pool at 5 Hz while he
+	// sat there catching his breath.
+	say string
 }
 
 // standing is a walk that is already over: he is simply here.
@@ -203,9 +210,18 @@ func (w walk) at(now time.Time) Point {
 
 // progress is how far along the journey he is, 0..1, capped by stopAt.
 func (w walk) progress(now time.Time) float64 {
-	dist := distance(w.from, w.to)
-	if dist <= 0 || w.stopAt <= 0 {
+	if w.stopAt <= 0 {
 		return 0
+	}
+	dist := distance(w.from, w.to)
+	if dist <= 0 {
+		// A journey of no length is already over, so it is complete rather than
+		// unstarted. This used to return 0, which made `arrived` false for
+		// anybody merely standing still — harmless while gaveUp was arrived's
+		// only caller, because gaveUp checks stopAt < 1 first, and a real bug
+		// the moment anything asked "is he still?": the idle chatter went to
+		// nobody, since a Ваня who has not yet walked has exactly this walk.
+		return w.stopAt
 	}
 	elapsed := now.Sub(w.startedAt).Seconds()
 	if elapsed <= 0 {

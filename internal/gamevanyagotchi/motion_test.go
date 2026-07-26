@@ -666,11 +666,15 @@ func TestAJourneyToWhereHeAlreadyStandsDividesByNothing(t *testing.T) {
 			}
 		})
 	}
-	// NOTE for whoever reads this next: arrived() is false for a zero-length walk
-	// with stopAt 1, because progress is defined as 0 there and 0 >= 1 is false.
-	// It has no consequence today — gaveUp is arrived's only caller and it is
-	// gated on stopAt < 1 first — so it is deliberately not asserted either way
-	// rather than being pinned as if it were intended.
+	// The note that used to sit here said arrived() was false for a zero-length
+	// walk, that gaveUp was its only caller and checked stopAt < 1 first, and so
+	// it had no consequence and was deliberately left unpinned. It acquired one:
+	// the idle chatter asks "is he standing still?", which is arrived(), and a
+	// Ваня who has not walked yet has exactly this walk — so the muttering went
+	// to nobody. It is pinned now.
+	if w := standing(here); !w.arrived(walkStart.Add(time.Hour)) {
+		t.Fatal("somebody standing still has not arrived; anything that asks whether he is STILL gets a wrong answer, which is how the idle chatter reached nobody")
+	}
 }
 
 // TestTheGeometryUnderneathAgreesAboutThePlane covers the three helpers every
