@@ -94,4 +94,23 @@ type Repository interface {
 
 	// Revive clears the death.
 	Revive(ctx context.Context, q db.DBTX, petID string) error
+
+	// InsertWorldObject puts one durable thing on the plane.
+	//
+	// `singleton` comes from the CATALOGUE rather than from a predicate naming
+	// a kind, which is what lets the "at most one active of this kind" index
+	// express itself without a content key ever entering an immutable
+	// migration. The insert is `ON CONFLICT DO NOTHING` against that partial
+	// index, so a kind that may only have one active row cannot get two however
+	// many callers race — and a kind that may have many is unaffected, because
+	// it does not participate in the index at all.
+	InsertWorldObject(ctx context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, expires *time.Time) error
+
+	// LiveWorldObjects reads what is standing in a location right now, newest
+	// first and capped.
+	//
+	// Expired rows are filtered HERE rather than deleted anywhere: nothing
+	// sweeps, because a sweeper would be the background timer this design does
+	// not have. The cap is what bounds the frame the caller is about to build.
+	LiveWorldObjects(ctx context.Context, q db.DBTX, locationKey string, limit int) ([]WorldObject, error)
 }

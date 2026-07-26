@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { loginAs, stack, type SeededAccount, type SeededKind } from './fixtures';
-import { psql, uuid } from './vanyagotchi-db';
+import { forgetWorldObjects, psql, uuid } from './vanyagotchi-db';
 
 // «Ванягоччи» — the pet, against the real stack: the real Go binary, the real
 // catalogue, and a real PostgreSQL. Nothing is stubbed.
@@ -25,6 +25,14 @@ import { psql, uuid } from './vanyagotchi-db';
 // platform, not a game's property — the same reason the sibling gives.
 
 /** The two accounts the stack seeds as *approved*; anything else is refused. */
+// A clean yard before every test. Objects are durable, shared and drawn as
+// ordinary entities, so a deposit one test leaves behind is an extra thing on
+// the plane that the next test's counts have no idea about — and it lasts ten
+// minutes, which is longer than the whole suite.
+test.beforeEach(() => {
+  forgetWorldObjects();
+});
+
 const PLAYER_A: SeededKind = 'user';
 const PLAYER_B: SeededKind = 'superadmin';
 

@@ -1340,6 +1340,12 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
   // holding an opinion about which entity is a real person, and a character
   // added on the server would then silently inflate the count on every client
   // that had not been redeployed.
+  //
+  // The same list now also carries THINGS — what people leave standing on the
+  // ground — and they are excluded from `here` for the identical reason and by
+  // the identical mechanism (`props` in world.go runs after the count is taken).
+  // A deposit that inflated «во дворе» would have the yard reporting more people
+  // than are in it every time somebody went behind a bush.
 
   test('the head count is the one the server sent, not the number of things on the plane', async ({
     page,
@@ -1451,6 +1457,85 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
       ),
     );
     await expect(page.getByText('во дворе: 1')).toBeVisible();
+  });
+
+  test('a thing somebody left behind is drawn like anybody else and counted like nobody', async ({
+    page,
+  }) => {
+    // THE TEST THAT PROVES THE CLIENT STAYED KIND-AGNOSTIC, and the reason it is
+    // worth one of its own: «покакать» now leaves a deposit standing where the
+    // server thinks you were, and the browser gained NO code for it. A world
+    // object reaches this page as an ordinary roster entry — an id, a position,
+    // an art key and a pose — with nothing anywhere on the wire saying it is a
+    // thing rather than a person. So this pushes one at a client that has never
+    // heard of world objects and asserts it is drawn, placed and forgotten by
+    // exactly the machinery that draws, places and forgets a Ваня.
+    //
+    // A client carrying a `kind` field, or a `switch` over kinds, would pass none
+    // of this by accident: it would have to be taught the kind first, and that is
+    // precisely the deploy coupling the entity frame is bought to avoid. This is
+    // the same shape as the assertions about an art key the catalogue does not
+    // describe, one suite down, and for the same reason.
+    await stubBackend(page);
+    const faces = await stubFaces(page, []);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    // Two people and one deposit, with the head count the server would really
+    // have sent: two. `obj-` and twelve characters is the id the server mints —
+    // the same length a player's pseudonym uses — and it is a fixture here rather
+    // than a mirror, because nothing in this client parses an id.
+    const DEPOSIT = { id: 'obj-a1b2c3d4e5f6', x: 0.35, y: 0.8, art: 'obj_relief', pose: 'fine' };
+    const PEOPLE = [
+      { id: 'me', x: 0.5, y: 0.5, art: 'vanya', label: 'я', pose: 'fine' },
+      { id: 'neighbour', x: 0.2, y: 0.3, art: 'vanya', label: 'сосед', pose: 'fine' },
+    ];
+    await socket.push(rosterHere(2, ...PEOPLE, DEPOSIT));
+
+    // Drawn, like everything else in the frame.
+    await expect(dots(page)).toHaveCount(3);
+    // And NOT counted: three things on the plane, two people in the yard.
+    await expect(page.getByText('во дворе: 2')).toBeVisible();
+    await expect(page.getByText('во дворе: 3')).toHaveCount(0);
+    await expect(plane(page)).toHaveAttribute('aria-label', 'Двор, во дворе 2');
+
+    // Its art went through the ordinary catalogue resolution and landed on the
+    // placeholder, because this suite's stub answers the catalogue with an empty
+    // object — no skins, so no sprite and no emoji for ANY key. What the
+    // assertion means is that a glyph was resolved and drawn here by the same
+    // path that draws a Ваня, rather than the entity being skipped for carrying
+    // an art key this client has never seen.
+    await expect(face(page, DEPOSIT.id)).toHaveText(UNKNOWN_ART);
+    // Nameless, because the frame carries no label — and «undefined» under a
+    // deposit is exactly what a caption invented for it would look like.
+    await expect(nameTag(page, DEPOSIT.id)).toHaveCount(0);
+
+    // Placed like any other entity: its own coordinates on the same two custom
+    // properties, and the depth band its height earns it. A thing lying at the
+    // front of the yard is drawn as near as a person standing there.
+    expect(await peerPosition(page, DEPOSIT.id)).toEqual({
+      x: String(DEPOSIT.x),
+      y: String(DEPOSIT.y),
+    });
+    const depth = await peerDepth(page, DEPOSIT.id);
+    expect(depth.band, `y=${DEPOSIT.y} landed in band ${depth.band}`).toBe(bandFor(DEPOSIT.y));
+    expect(depth.depth).toBeCloseTo(DEPTH_SCALES[bandFor(DEPOSIT.y)], 3);
+    expect(depth.zIndex).toBe(String(bandFor(DEPOSIT.y)));
+
+    // It was even asked for a FACE, which is the sharpest evidence there is that
+    // this client cannot tell it from a person: nothing here knows that a deposit
+    // has no VK photograph, so it asks like it asks about everything it draws and
+    // takes the 404 as «draw the catalogue art».
+    await expect.poll(() => faces.asked).toContain(DEPOSIT.id);
+
+    // And it goes when the server stops sending it, which is the whole of what
+    // this client does about a ten-minute lifetime: expiry is decided server-side
+    // and arrives as an absence, so there is no timer here to get wrong and no
+    // second implementation of the TTL to disagree with the one in world.go.
+    await socket.push(rosterHere(2, ...PEOPLE));
+    await expect(dots(page)).toHaveCount(2);
+    await expect(page.locator(`[data-peer="${DEPOSIT.id}"]`)).toHaveCount(0);
+    await expect(page.getByText('во дворе: 2')).toBeVisible();
   });
 
   test('a sleeping Ваня reads as dormant rather than as somebody standing still', async ({

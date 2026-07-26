@@ -1,6 +1,7 @@
 import type {
   VanyagotchiAction,
   VanyagotchiConfig,
+  VanyagotchiObjectKind,
   VanyagotchiStat,
   VanyagotchiStatDelta,
 } from '../api/types';
@@ -78,7 +79,14 @@ export interface RuleAction {
    * for an action that starts him over — the values every stat lands back on.
    */
   effects: string;
-  /** Whether it works on a dead Ваня — the one thing an action row must warn about. */
+  /**
+   * What else pressing it means: what it leaves standing in the yard for
+   * everybody to walk past, and whether it works on a dead Ваня.
+   *
+   * Ordered consequence-then-condition — what the press DOES to the world, then
+   * the one state the server refuses it in — because the first is why a player
+   * would press it and the second is why he sometimes cannot.
+   */
   notes: string[];
 }
 
@@ -120,13 +128,18 @@ export function buildRules(config: VanyagotchiConfig | null | undefined): Vanyag
   // of drinking, and a player who does not know it will press the wrong button
   // at the one moment the game asks him to press a particular one.
   const revivers = actions.filter((action) => action.revives_fatal).length;
+  // What a verb leaves standing in the yard, by kind key. A verb names the kind
+  // and the kind carries how long one of them lasts, so both halves of «оставляет
+  // кое-что на 10 минут» come off the served catalogue rather than out of this
+  // file — see `leavesNote` for why the two hops are worth making.
+  const objectKinds = new Map(named(config?.object_kinds).map((kind) => [kind.key, kind]));
   // Whether anything in this catalogue starts him over at all — see `counterRow`
   // for why a tally only claims to survive a reset when a reset exists.
   const resettable = actions.some((action) => action.starts_over);
   return {
     stats: bars.map((stat) => statRow(stat, byKey)),
     counters: counters.map((stat) => counterRow(stat, resettable)),
-    actions: actions.map((action) => actionRow(action, bars, byKey, revivers)),
+    actions: actions.map((action) => actionRow(action, bars, byKey, objectKinds, revivers)),
   };
 }
 
@@ -207,8 +220,17 @@ function actionRow(
   def: VanyagotchiAction,
   bars: VanyagotchiStat[],
   byKey: Map<string, VanyagotchiStat>,
+  objectKinds: Map<string, VanyagotchiObjectKind>,
   revivers: number,
 ): RuleAction {
+  const notes: string[] = [];
+  const leaves = leavesNote(def, objectKinds);
+  if (leaves) notes.push(leaves);
+  // `revives_fatal` says both things at once: the action that carries it is the
+  // way back from a death, and the ones that do not are refused with a 409 while
+  // he is dead. Which is why every action row ends with one or the other rather
+  // than only the cheerful half.
+  notes.push(reviveNote(def, revivers));
   return {
     key: def.key,
     emoji: def.emoji || '',
@@ -219,12 +241,83 @@ function actionRow(
     // would come out as an empty string, i.e. as a button the cheatsheet claims
     // moves nothing, on the one verb the player most needs explained.
     effects: def.starts_over ? resetText(bars) : effectsText(def, byKey),
-    // `revives_fatal` says both things at once: the action that carries it is
-    // the way back from a death, and the ones that do not are refused with a
-    // 409 while he is dead. Which is why every action row says one or the other
-    // rather than only the cheerful half.
-    notes: [reviveNote(def, revivers)],
+    notes,
   };
+}
+
+/**
+ * What pressing this leaves standing in the yard, or nothing when it leaves
+ * nothing.
+ *
+ * DERIVED IN TWO HOPS, and both of them are the point. The verb carries a kind
+ * KEY (`leaves`); the kind carries what it is called and how long one lasts
+ * (`lifetime_seconds`); both live in internal/gamevanyagotchi/content.go. So
+ * teaching a verb to leave something behind, naming the thing, or retuning the
+ * ten minutes are all backend edits that this sentence follows on its own. A
+ * hand-typed «остаётся на 10 минут» would be wrong the first afternoon somebody
+ * shortened the lifetime, and nothing would ever compare the two.
+ *
+ * A KEY THE CATALOGUE DOES NOT DESCRIBE YIELDS NO NOTE, rather than a vague one.
+ * A client older than the server can be told about a verb that leaves a kind it
+ * has never heard of, and saying nothing is honest where «оставляет что-то»
+ * would be a guess dressed up as a rule.
+ */
+function leavesNote(
+  def: VanyagotchiAction,
+  objectKinds: Map<string, VanyagotchiObjectKind>,
+): string | null {
+  if (!def.leaves) return null;
+  const kind = objectKinds.get(def.leaves);
+  if (!kind) return null;
+  // Named only when the catalogue names it. A deposit is deliberately unnamed —
+  // a caption over it would be one more thing to draw on a small screen — so the
+  // noun is the one part of this sentence the config cannot supply, and it is
+  // vague on purpose rather than by omission.
+  const what = kind.label ? `«${kind.label}»` : 'кое-что';
+  return `оставляет ${what} на земле: ${visibility(kind.lifetime_seconds)}`;
+}
+
+/**
+ * How long the thing stays there, as the catalogue states it.
+ *
+ * Three answers rather than one, because the field carries three meanings: a
+ * positive lifetime is seconds, ZERO is the catalogue's word for "forever" (such
+ * a row is never filtered out on read), and anything else — absent, negative, a
+ * NaN — is a catalogue this client cannot read, where the honest line claims no
+ * duration at all rather than promising eternity by accident.
+ */
+function visibility(seconds: number): string {
+  if (seconds === 0) return 'видно всем, и оно уже никуда не денется';
+  if (!Number.isFinite(seconds) || seconds < 0) return 'видно всем';
+  return `видно всем ${duration(seconds)}`;
+}
+
+/** «10 минут», «1 минуту», «30 секунд» — an accusative span, as «видно всем …» needs. */
+function duration(seconds: number): string {
+  if (seconds < 60) {
+    // At least one, so a lifetime of half a second reads as a moment rather than
+    // as «0 секунд», which a player would read as "it does not happen".
+    const secs = Math.max(1, Math.round(seconds));
+    return `${secs} ${plural(secs, 'секунду', 'секунды', 'секунд')}`;
+  }
+  const mins = Math.round(seconds / 60);
+  return `${mins} ${plural(mins, 'минуту', 'минуты', 'минут')}`;
+}
+
+/**
+ * Russian numeral agreement: three forms, and the one part of this sentence that
+ * a naive `${n} минут` gets visibly wrong. «1 минут» and «2 минут» are both
+ * broken, and a lifetime retuned to a minute or two is exactly the change most
+ * likely to happen — the whole reason the line is derived is that such a retune
+ * must not need an edit here. The teens are the exception the modulo carves out.
+ */
+function plural(n: number, one: string, few: string, many: string): string {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  const mod10 = n % 10;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
 }
 
 /**
@@ -323,8 +416,14 @@ function signed(value: number): string {
  *      `tiredFrom`, `tiredChance` and `tiredSays` in content.go, all deliberately
  *      server-side so no second implementation of the motion can appear here;
  *   3. the idle muttering — `idleChance` / `idlePeriod` / `idleSays`, same;
- *   4. who else is in the yard — the sleepers (`sleeperLimit`) and the NPC
- *      regulars, both of which the client draws without knowing what they are.
+ *   4. who — and WHAT — else is in the yard: the sleepers (`sleeperLimit`), the
+ *      NPC regulars, and the things people leave lying on the ground, none of
+ *      which the client can tell apart from a player. The part that has to be
+ *      said by hand is that the leavings are NOT people: `props` in world.go
+ *      appends them after the «во дворе» head count is taken, so they are
+ *      excluded from it, and that exclusion appears nowhere in the catalogue.
+ *      What one of them is and how long it lasts is derived instead, one section
+ *      up, off the verb that leaves it.
  *
  * If one of those numbers or behaviours moves, this text is what goes wrong. Keep
  * it honest, keep it short, and resist adding anything here that the config
@@ -336,4 +435,5 @@ export const YARD_PROSE: readonly string[] = [
   'Тапни по двору — Ваня пойдёт туда пешком, примерно пятая часть двора в секунду. С дальнего тапа может сесть на полпути и сообщить, что нога отваливается. Короткий шаг доходит всегда, а новый тап всегда отменяет старый, так что застрять нельзя.',
   'Стоит без дела — бормочет себе под нос.',
   'Остальные во дворе — живые люди. Кто ушёл, тот лежит спит там, где стоял. А пара местных вообще ничьи.',
+  'Не всё во дворе — люди. Что кто-то оставил на земле, то там и лежит: видно всем, но в счётчике народу не числится.',
 ];

@@ -310,6 +310,21 @@ export interface VanyagotchiAction {
    * must say what a reset does rather than that the verb moves nothing.
    */
   starts_over: boolean;
+  /**
+   * The world-object kind this verb leaves standing where he is, or absent for a
+   * verb that leaves nothing behind.
+   *
+   * A catalogue KEY, and it is read in exactly one place: the splash cheatsheet
+   * looks it up in `object_kinds` to say what pressing the button puts in the
+   * yard and for how long. Nothing else in the client consults it, and above all
+   * nothing renders from it — the thing itself arrives in the roster as an
+   * ordinary entity carrying an `art` key, so drawing one needs no notion here of
+   * what a world object even is.
+   *
+   * Optional because it is `omitempty` on the wire: most verbs leave nothing, and
+   * a server that predates the field sends none at all.
+   */
+  leaves?: string;
 }
 
 /** One look for a pet. `image` (a URL) wins when set; otherwise emoji over gradient. */
@@ -343,6 +358,30 @@ export interface VanyagotchiNPC {
   art: string;
 }
 
+/**
+ * A kind of durable thing that can stand on the plane: a deposit somebody left
+ * this afternoon, a lost key or a crate of beer later.
+ *
+ * Served for ONE purpose — so the splash cheatsheet can say what a verb leaves
+ * behind and for how long, from the catalogue rather than from a sentence typed
+ * into the SPA. NOTHING DRAWS FROM THIS LIST, and that is the whole shape of the
+ * feature: an object reaches the screen as an ordinary roster entity whose `art`
+ * is resolved against `skins` exactly as a pet's or an NPC's is, so the yard
+ * holds no kind key, no `switch` over kinds and no idea that world objects
+ * exist. Which is why a new kind of thing on the ground is a backend-only
+ * change, and why there is deliberately no `kind` field on a roster entry for
+ * this to be matched against.
+ */
+export interface VanyagotchiObjectKind {
+  key: string;
+  /** A catalogue art key, resolved exactly as a pet's skin is. */
+  art: string;
+  /** What it is called. Absent for a thing nobody needs named. */
+  label?: string;
+  /** How long one of them lasts. Zero means forever. */
+  lifetime_seconds: number;
+}
+
 export interface VanyagotchiLocation {
   key: string;
   label: string;
@@ -362,6 +401,12 @@ export interface VanyagotchiConfig {
    * and it can, because the roster is self-describing.
    */
   npcs?: VanyagotchiNPC[];
+  /**
+   * What a durable thing standing in the yard can be. Optional for the same
+   * reason `npcs` is: a server that predates the field — or a fixture that omits
+   * it — must still draw a yard and still teach the rules it does know about.
+   */
+  object_kinds?: VanyagotchiObjectKind[];
   locations: VanyagotchiLocation[];
   default_skin: string;
   default_location: string;

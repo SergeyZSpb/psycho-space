@@ -3,7 +3,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { loginAs, type SeededAccount } from './fixtures';
-import { psql, uuid } from './vanyagotchi-db';
+import { forgetWorldObjects, psql, uuid } from './vanyagotchi-db';
+
+// A clean yard before every test. Objects are durable, shared and drawn as
+// ordinary entities, so a deposit one test leaves behind is an extra thing on
+// the plane that the next test's counts have no idea about — and it lasts ten
+// minutes, which is longer than the whole suite.
+test.beforeEach(() => {
+  forgetWorldObjects();
+});
 
 // «Ванягоччи» against the real stack: two browsers, two seeded accounts, one Go
 // binary, one real WebSocket each. Nothing is stubbed — a pass here means the

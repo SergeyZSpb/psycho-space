@@ -126,6 +126,10 @@ type Service struct {
 	// by the same lock as pos, because every tick reads both together and a
 	// second lock would buy nothing but an ordering rule to get wrong.
 	display map[string]display
+	// world is what is STANDING in the yard — see world.go. Under the same lock
+	// for the same reason, and refreshed at the same human-paced moments: the
+	// tick reads it and never fills it.
+	world []WorldObject
 
 	// lastTick is the instant of the most recent broadcast, and it is THE clock
 	// this game measures walks against.
@@ -513,6 +517,9 @@ func (s *Service) broadcast(ctx context.Context, now time.Time) error {
 	// Appended AFTER the people so that the roster reads as "the yard, then its
 	// furniture", and so the count above cannot accidentally include them.
 	peers = append(peers, s.cast(now)...)
+	// And whatever is lying about. After the count for the same reason the cast
+	// is: a deposit is not somebody who is in the yard.
+	peers = append(peers, s.props(now)...)
 
 	frame, err := json.Marshal(Roster{T: TypeRoster, Peers: peers, Here: here})
 	if err != nil {
@@ -983,14 +990,53 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 	// transaction is taken when the handle supports one and skipped when it does
 	// not. That is not a silent downgrade in production: the composition root
 	// always passes the pool.
+	// What the verbs LEAVE BEHIND in the world, decided before the transaction
+	// so the statement below stays a list of writes rather than a place where
+	// rules live. Nothing here reads the world — a deposit is unconditional, and
+	// the first verb that is not (arriving at the crate) will do its checking
+	// above this line, beside the catalogue checks, where a refusal still costs
+	// no rows.
+	leavings := worldLeavings(verbs)
+
 	if err := s.inTx(ctx, func(q db.DBTX) error {
 		if err := s.repo.WriteStats(ctx, q, before.Pet.ID, rowsAt(after)); err != nil {
 			return err
 		}
-		_, err := s.repo.AppendEvents(ctx, q, before.Pet.ID, verbs, at)
-		return err
+		if _, err := s.repo.AppendEvents(ctx, q, before.Pet.ID, verbs, at); err != nil {
+			return err
+		}
+		// In the SAME transaction as the stats and the events. A deposit that
+		// survived a rolled-back batch would be a thing in the world that no
+		// event explains and no snapshot accounts for — and this is already the
+		// one place in the game where a multi-statement atomic write exists, so
+		// it costs nothing to be honest here.
+		for _, kind := range leavings {
+			def, ok := ObjectKindByKey(kind)
+			if !ok {
+				continue
+			}
+			var expires *time.Time
+			if def.Lifetime > 0 {
+				until := at.Add(def.Lifetime)
+				expires = &until
+			}
+			// AT THE POSITION THE SERVER ALREADY BELIEVES. The client sends a
+			// verb and never a coordinate — there is nothing in the frame to
+			// forge — so where he is standing is the yard's opinion rather than
+			// his own.
+			if err := s.repo.InsertWorldObject(ctx, q, kind, before.Pet.LocationKey, s.standing(accountID, at), accountID, def.Singleton, expires); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		return State{}, err
+	}
+	if len(leavings) > 0 {
+		// The world changed, so the cache the tick renders from is refreshed —
+		// here, on the verb's own goroutine, which is human-paced. The tick
+		// still reads nothing.
+		s.loadWorld(ctx)
 	}
 	// Only the CLEARING belongs here: a death is recorded by the read path, and
 	// only a verb can undo one.

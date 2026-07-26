@@ -307,3 +307,65 @@ func (PostgresRepository) Events(ctx context.Context, q db.DBTX, petID string) (
 	}
 	return out, rows.Err()
 }
+
+// InsertWorldObject puts one durable thing on the plane.
+//
+// The conflict target is deliberately UNNAMED, for the same reason EnsurePet's
+// is: the arbiter is a PARTIAL unique index — one active row per singleton kind
+// — and the bare form accepts any arbiter, whereas naming `(kind)` would also
+// require repeating that predicate for inference to succeed. A non-singleton
+// kind does not participate in the index at all, so the same statement inserts
+// every deposit and refuses a second key.
+func (PostgresRepository) InsertWorldObject(ctx context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, expires *time.Time) error {
+	var ownerArg any
+	if owner != "" {
+		ownerArg = owner
+	}
+	_, err := q.Exec(ctx,
+		`INSERT INTO game_vanyagotchi_world_objects
+		     (kind, location_key, x, y, singleton, owner_account_id, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6::uuid, $7)
+		 ON CONFLICT DO NOTHING`,
+		kind, locationKey, at.X, at.Y, singleton, ownerArg, expires,
+	)
+	return err
+}
+
+// LiveWorldObjects reads what is standing in a location right now.
+//
+// `now()` is the database's, and that is the honest clock for a row whose
+// expiry the database wrote — but the caller filters again against the tick's
+// instant when it renders, because a cached object has to disappear from every
+// screen at the same moment without anybody asking here.
+//
+// Newest first so the cap keeps what somebody just did rather than what has
+// been lying around longest, which is the ordering a player would expect if the
+// yard ever filled up.
+func (PostgresRepository) LiveWorldObjects(ctx context.Context, q db.DBTX, locationKey string, limit int) ([]WorldObject, error) {
+	rows, err := q.Query(ctx,
+		`SELECT id::text, kind, x, y, expires_at
+		   FROM game_vanyagotchi_world_objects
+		  WHERE location_key = $1
+		    AND deleted_at IS NULL
+		    AND exhausted_at IS NULL
+		    AND spawns_at <= now()
+		    AND (expires_at IS NULL OR expires_at > now())
+		  ORDER BY created_at DESC
+		  LIMIT $2`,
+		locationKey, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []WorldObject
+	for rows.Next() {
+		var o WorldObject
+		if err := rows.Scan(&o.ID, &o.Kind, &o.At.X, &o.At.Y, &o.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}

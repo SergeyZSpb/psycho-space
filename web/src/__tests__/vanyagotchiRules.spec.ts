@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type {
   VanyagotchiAction,
   VanyagotchiConfig,
+  VanyagotchiObjectKind,
   VanyagotchiStat,
 } from '../api/types';
 import { YARD_PROSE, buildRules } from '../lib/vanyagotchiRules';
@@ -58,6 +59,30 @@ const action = (over: Partial<VanyagotchiAction> = {}): VanyagotchiAction => ({
   starts_over: false,
   ...over,
 });
+
+/**
+ * A durable thing a verb can leave standing in the yard, shaped as the shipped
+ * one is: unnamed, because a caption over a deposit would be one more thing to
+ * draw, and gone after ten minutes.
+ */
+const objectKind = (over: Partial<VanyagotchiObjectKind> = {}): VanyagotchiObjectKind => ({
+  key: 'relief',
+  art: 'obj_relief',
+  lifetime_seconds: 600,
+  ...over,
+});
+
+/** The verb that leaves one behind: «покакать», with the catalogue's own key. */
+const relieve = (over: Partial<VanyagotchiAction> = {}): VanyagotchiAction =>
+  action({
+    key: 'relieve',
+    label: 'покакать',
+    emoji: '💩',
+    effects: [{ stat_key: 'bladder', delta: -100 }],
+    done: 'полегчало',
+    leaves: 'relief',
+    ...over,
+  });
 
 /** The verb that is the way back from a death: no effects at all, just a reset. */
 const revive = (over: Partial<VanyagotchiAction> = {}): VanyagotchiAction =>
@@ -244,6 +269,113 @@ describe('buildRules — actions', () => {
     );
     expect(rules.actions[0]?.notes).toEqual(['поднимает мёртвого']);
     expect(rules.actions[1]?.notes).toEqual(['поднимает мёртвого']);
+  });
+});
+
+describe('buildRules — a verb that leaves something standing in the yard', () => {
+  // «Покакать» stopped being a private matter: it puts a deposit on the ground
+  // where the server thinks you are, everybody in the yard walks past it, and it
+  // is gone ten minutes later. That is a rule a player has to be told, and it is
+  // derived rather than typed — the verb carries the kind key and the kind
+  // carries the lifetime, both out of internal/gamevanyagotchi/content.go.
+  const withRelief = (over: Partial<VanyagotchiObjectKind> = {}) =>
+    config({ actions: [relieve()], object_kinds: [objectKind(over)] });
+
+  it('says what the verb leaves and how long it lasts', () => {
+    const [row] = buildRules(withRelief()).actions;
+    expect(row?.notes[0]).toBe('оставляет кое-что на земле: видно всем 10 минут');
+  });
+
+  // THE assertion this derivation exists for. The ten minutes is a constant in
+  // content.go, so shortening it is a backend deploy — and the screen that
+  // teaches the rule has to move with it rather than keep promising ten.
+  it('follows a retuned lifetime, so the sentence cannot go stale', () => {
+    expect(buildRules(withRelief({ lifetime_seconds: 120 })).actions[0]?.notes[0]).toBe(
+      'оставляет кое-что на земле: видно всем 2 минуты',
+    );
+    expect(buildRules(withRelief({ lifetime_seconds: 3600 })).actions[0]?.notes[0]).toBe(
+      'оставляет кое-что на земле: видно всем 60 минут',
+    );
+    expect(buildRules(withRelief({ lifetime_seconds: 600 })).actions[0]?.notes[0]).not.toContain(
+      '2 минуты',
+    );
+  });
+
+  // Russian agrees the noun with the numeral, so a lifetime retuned to a minute
+  // or two is the case a naive `${n} минут` gets visibly wrong — «1 минут» —
+  // exactly when the derivation is doing its job.
+  it.each<[number, string]>([
+    [60, 'видно всем 1 минуту'],
+    [120, 'видно всем 2 минуты'],
+    [660, 'видно всем 11 минут'],
+    [1260, 'видно всем 21 минуту'],
+    [30, 'видно всем 30 секунд'],
+    [1, 'видно всем 1 секунду'],
+    [3, 'видно всем 3 секунды'],
+  ])('agrees the unit with the number: %d seconds', (seconds, expected) => {
+    expect(buildRules(withRelief({ lifetime_seconds: seconds })).actions[0]?.notes[0]).toContain(
+      expected,
+    );
+  });
+
+  // A deposit is deliberately unnamed and a lost key would not be, so the noun
+  // is the one part of the sentence the catalogue may or may not supply.
+  it('names the thing when the catalogue names it', () => {
+    const [row] = buildRules(withRelief({ label: 'связка ключей' })).actions;
+    expect(row?.notes[0]).toBe('оставляет «связка ключей» на земле: видно всем 10 минут');
+  });
+
+  // Zero is the catalogue's word for forever — such a row is never filtered out
+  // on read — so the line must not print «видно всем 0 секунд», which says the
+  // opposite of what the server does.
+  it('reads a lifetime of nought as forever rather than as no time at all', () => {
+    const [row] = buildRules(withRelief({ lifetime_seconds: 0 })).actions;
+    expect(row?.notes[0]).toBe('оставляет кое-что на земле: видно всем, и оно уже никуда не денется');
+  });
+
+  // The warning about a corpse is still the last thing said, and the two notes
+  // are ordered consequence-then-condition.
+  it('keeps the death warning underneath it', () => {
+    const [row] = buildRules(withRelief()).actions;
+    expect(row?.notes).toEqual([
+      'оставляет кое-что на земле: видно всем 10 минут',
+      'мёртвому нельзя',
+    ]);
+  });
+
+  it('says nothing about leavings for a verb that leaves none', () => {
+    const rules = buildRules(
+      config({ actions: [action({ key: 'drink' })], object_kinds: [objectKind()] }),
+    );
+    expect(rules.actions[0]?.notes).toEqual(['мёртвому нельзя']);
+  });
+
+  // A client older than the server can be handed a verb that leaves a kind it
+  // has never heard of. Saying nothing is honest; «оставляет что-то» would be a
+  // guess dressed up as a rule, and a player would go looking for it.
+  it('stays quiet about a kind the catalogue does not describe', () => {
+    const rules = buildRules(config({ actions: [relieve({ leaves: 'ghost' })], object_kinds: [] }));
+    expect(rules.actions[0]?.notes).toEqual(['мёртвому нельзя']);
+  });
+
+  it('survives a catalogue with no object kinds at all', () => {
+    const rules = buildRules(config({ actions: [relieve()] }));
+    expect(rules.actions[0]?.notes).toEqual(['мёртвому нельзя']);
+  });
+
+  // Same tolerance the rest of the derivation has: a config fetch is allowed to
+  // fail or to arrive from a server halfway through a deploy, and none of those
+  // shapes may throw on the one screen a player has to get past to play.
+  it.each<[string, VanyagotchiObjectKind[]]>([
+    ['a list that is not an array', 'nope' as unknown as VanyagotchiObjectKind[]],
+    ['an entry with no key', [{} as VanyagotchiObjectKind]],
+    ['a null entry', [null as unknown as VanyagotchiObjectKind]],
+    ['a kind with no lifetime at all', [{ key: 'relief', art: 'x' } as VanyagotchiObjectKind]],
+  ])('degrades rather than throwing on %s', (_name, kinds) => {
+    const rules = buildRules(config({ actions: [relieve()], object_kinds: kinds }));
+    expect(rules.actions[0]?.notes.at(-1)).toBe('мёртвому нельзя');
+    // Whatever it says, it never claims a duration it was not given.
+    expect(rules.actions[0]?.notes.join(' ')).not.toMatch(/\d/);
   });
 });
 

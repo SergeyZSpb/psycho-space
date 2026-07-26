@@ -53,3 +53,20 @@ export function uuid(value: string): string {
   );
   return value;
 }
+
+/**
+ * Empties the yard of everything anybody left lying in it.
+ *
+ * Needed because a world object is a DURABLE, SHARED row and this suite shares
+ * one database: a deposit outlives the test that produced it, lasts ten minutes,
+ * and — since objects reach the plane as ordinary entities — is counted by every
+ * later assertion about how many things are on it. `forgetPet` cannot cover
+ * this, because a deposit belongs to the world rather than to the pet that left
+ * it, and survives the pet being deleted.
+ *
+ * Called before each test rather than after, so a run that fails half way still
+ * leaves the next one a clean yard.
+ */
+export function forgetWorldObjects(): void {
+  psql('DELETE FROM game_vanyagotchi_world_objects');
+}

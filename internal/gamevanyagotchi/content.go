@@ -82,6 +82,16 @@ const (
 	ActionRevive = "revive"
 )
 
+// World-object kinds.
+const (
+	// KindRelief is what a Ваня leaves behind him. Player-created, many live at
+	// once, and gone after a while — which is why it is the kind that earns the
+	// TTL and NOT the singleton invariant: deposits are never exhausted, so an
+	// "at most one active" index keyed on kind alone would have forbidden a
+	// second player from relieving himself.
+	KindRelief = "relief"
+)
+
 // Skin and location keys.
 const (
 	// SkinVanya is the only pet skin: he is дядя Ваня, which is the joke.
@@ -200,6 +210,13 @@ type Action struct {
 	// counter is exempt — see the loop in apply — because a lifetime total that
 	// death reset would not be a lifetime total.
 	StartsOver bool `json:"starts_over"`
+	// Leaves is the world-object kind this verb puts on the ground where he is
+	// standing, or empty for a verb that leaves nothing.
+	//
+	// A catalogue key rather than a case in the service, so "this verb leaves
+	// something behind" is content like every other axis of this game — and so
+	// the sentence in the rules cheatsheet can be derived rather than typed.
+	Leaves string `json:"leaves,omitempty"`
 }
 
 // Skin is one look for a pet: an art key resolved against the shared blob store,
@@ -212,6 +229,38 @@ type Skin struct {
 	Emoji    string `json:"emoji"`
 	Gradient string `json:"gradient"`
 	Image    string `json:"image,omitempty"`
+}
+
+// ObjectKind is a kind of durable thing that can stand on the plane.
+//
+// The catalogue half of `game_vanyagotchi_world_objects.kind`: the row carries
+// the key and the invariants, this carries what the key MEANS. Adding a kind is
+// therefore an entry here — no migration, and no client deploy either, because
+// the browser resolves `Art` against the config exactly as it does for a pet or
+// an NPC and never learns that object kinds exist.
+type ObjectKind struct {
+	Key string `json:"key"`
+	// Art is a catalogue art key, resolved client-side like any other.
+	Art string `json:"art"`
+	// Label is what it is called. Empty for a thing nobody needs named — a
+	// deposit on the ground is self-explanatory and a caption would only be one
+	// more thing to draw.
+	Label string `json:"label,omitempty"`
+	// Lifetime is how long one lasts. Zero means forever.
+	//
+	// Filtered on READ rather than swept, exactly as `sessions.expires_at`
+	// already is: rows accumulate and are ignored, because a sweeper would be
+	// the background timer this design does not have.
+	Lifetime time.Duration `json:"-"`
+	// LifetimeSeconds is Lifetime on the wire, because a Go duration marshals as
+	// a nanosecond count that no client should have to know how to read.
+	LifetimeSeconds float64 `json:"lifetime_seconds"`
+	// Singleton: at most one of this kind may be active in the whole world.
+	//
+	// Written into the row at insert time so the partial unique index can
+	// express the invariant WITHOUT naming a kind in DDL — which is what keeps
+	// "a new singleton kind" a catalogue edit rather than a migration.
+	Singleton bool `json:"-"`
 }
 
 // Location is a place a pet can be. Only двор exists today; лес, лифт, кусты and
@@ -265,6 +314,10 @@ type Config struct {
 	// implementation in TypeScript.
 	NPCs      []NPC      `json:"npcs"`
 	Locations []Location `json:"locations"`
+	// ObjectKinds is what a durable thing standing on the plane can be. Served
+	// so the client can resolve an object's art the same way it resolves a pet's
+	// — it holds no kind key of its own.
+	ObjectKinds []ObjectKind `json:"object_kinds"`
 	// DefaultSkin and DefaultLocation are what a new pet is created with.
 	DefaultSkin     string `json:"default_skin"`
 	DefaultLocation string `json:"default_location"`
@@ -324,6 +377,15 @@ const (
 	// far away is unreachable by a friend group pressing a button once a second
 	// for a lifetime. It exists so the clamp has something to clamp to.
 	counterMax = 1_000_000.0
+
+	// How long a deposit stays on the ground.
+	//
+	// Long enough that somebody else walks past it and short enough that the
+	// yard is not a sewer by evening. It also BOUNDS THE WIRE: every live
+	// deposit is an entity in a frame sent five times a second to everybody, so
+	// the lifetime is what stops the roster growing without limit — see
+	// worldLimit for the hard cap behind it.
+	reliefLifetime = 10 * time.Minute
 
 	// What the verbs do.
 	drinkBeer    = 40.0
@@ -601,6 +663,8 @@ var catalogue = Config{
 				{StatKey: StatShitsTaken, Delta: 1},
 			},
 			Done: "полегчало",
+			// And it stays where he left it, for everybody to walk past.
+			Leaves: KindRelief,
 			// A dead Ваня does not go to the toilet.
 			RevivesFatal: false,
 		},
@@ -626,6 +690,20 @@ var catalogue = Config{
 			Label:    "дядя Ваня",
 			Emoji:    "🫃",
 			Gradient: "linear-gradient(160deg, #6b4a2f, #2f4a6b)",
+		},
+		// A WORLD OBJECT'S ART LIVES HERE TOO, for exactly the reason the NPCs'
+		// does: the client resolves whatever art key an entity carries against
+		// this one list and has no idea which entities are people. Missing it is
+		// not an error, but it is worse than it sounds — the placeholder is a
+		// PERSON-shaped silhouette, so a deposit with no entry would draw as
+		// somebody standing there rather than as something lying on the ground.
+		{
+			Key:   "obj_relief",
+			Label: "куча",
+			Emoji: "💩",
+			// Muddier and flatter than a person's, so it reads as ground rather
+			// than as somebody in a coat.
+			Gradient: "linear-gradient(160deg, #5a4632, #3a2f22)",
 		},
 		// The NPCs' art lives in the SAME list as the pets', because to the
 		// client there is no such thing as an NPC: it resolves whatever art key
@@ -657,6 +735,21 @@ var catalogue = Config{
 			Gradient: "linear-gradient(160deg, #e0762b, #6d2f0c)",
 		},
 	},
+	ObjectKinds: []ObjectKind{
+		{
+			Key: KindRelief,
+			Art: "obj_relief",
+			// Deliberately unnamed: a caption over it would be one more thing on
+			// a small screen, and nobody needs telling what it is.
+			Lifetime:        reliefLifetime,
+			LifetimeSeconds: reliefLifetime.Seconds(),
+			// NOT a singleton. Many are live at once and none is ever exhausted,
+			// which is precisely why migration 008's index is predicated on this
+			// flag rather than on `exhausted_at IS NULL` alone.
+			Singleton: false,
+		},
+	},
+
 	Locations: []Location{
 		{Key: LocationYard, Label: "двор", Entry: spawn},
 	},
@@ -731,7 +824,22 @@ func Content() Config {
 	c.Skins = append([]Skin(nil), catalogue.Skins...)
 	c.Locations = append([]Location(nil), catalogue.Locations...)
 	c.NPCs = append([]NPC(nil), catalogue.NPCs...)
+	c.ObjectKinds = append([]ObjectKind(nil), catalogue.ObjectKinds...)
 	return c
+}
+
+// ObjectKindByKey looks a world-object kind up in the catalogue.
+//
+// A row whose kind has left the catalogue is unrenderable and is skipped on
+// read — the correct failure for a value only content can define, and the same
+// rule a stored stat key the catalogue no longer defines already follows.
+func ObjectKindByKey(key string) (ObjectKind, bool) {
+	for _, k := range catalogue.ObjectKinds {
+		if k.Key == key {
+			return k, true
+		}
+	}
+	return ObjectKind{}, false
 }
 
 // StatByKey looks a stat up in the catalogue.

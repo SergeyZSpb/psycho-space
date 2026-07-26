@@ -10,6 +10,7 @@ import (
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/realtime"
+	"github.com/jackc/pgx/v5"
 )
 
 // The durable half, driven against an in-memory repository.
@@ -72,12 +73,12 @@ type fakeRepo struct {
 	markDiedCalls int
 	died          []time.Time
 
-	// mu guards positions and sleepReads ALONE, and that narrowness is the point
-	// rather than an oversight. Every other field here is touched only from the
-	// pet path, which is one goroutine per test; a position is the one thing
-	// production writes from a goroutine of its own — the writer Service.Run
-	// starts — so it is the one field a test could ever see appended to
-	// concurrently.
+	// mu guards positions, sleepReads and the world fields below, and that
+	// narrowness is the point rather than an oversight. Everything above is
+	// touched only from the pet path, which is one goroutine per test. These are
+	// the ones production reaches from a goroutine of its own: a position is
+	// written by the writer Service.Run starts, and the yard and the world are
+	// read when a client says hello, which is a connection's own goroutine.
 	mu sync.Mutex
 	// positions records every SavePosition call, in order. A departure leaves no
 	// other trace, so this is what "he was written down where he was standing"
@@ -95,6 +96,34 @@ type fakeRepo struct {
 	// sleepErr fails the query, so a test can prove the load is retried rather
 	// than spending its one chance on a database blip.
 	sleepErr error
+
+	// inserted records every InsertWorldObject call, in order and exactly as it
+	// was made. A deposit leaves no other trace on this side — nothing reads it
+	// back within the action that wrote it — so the call itself IS the behaviour
+	// under test: what kind, where, whose, and how long it lasts.
+	inserted []insertedObject
+	// insertErr fails the insert. It is what lets a test prove the deposit, the
+	// stats and the events are one atomic write: the batch is refused at the last
+	// statement of the transaction, and everything the first two wrote has to
+	// come back out with it.
+	insertErr error
+	// objects is what LiveWorldObjects answers with: the yard as the database
+	// knows it, which belongs to nobody in particular.
+	objects []WorldObject
+	// worldReads counts calls to LiveWorldObjects, and worldLimits keeps the cap
+	// each one was given.
+	//
+	// The count is the assertion, not a detail: the tick renders the world from
+	// memory and must never read it, so "how many times was this asked" is the
+	// only place that rule can be broken visibly. The limit matters for the same
+	// reason it exists — it is what bounds a frame — and a read that quietly
+	// stopped passing it would look identical in every frame until the yard
+	// filled up.
+	worldReads  int
+	worldLimits []int
+	// worldErr fails the read, so a test can prove a world that cannot be loaded
+	// costs the plane its props rather than its frame.
+	worldErr error
 }
 
 // savedPosition is one SavePosition call, exactly as it was made.
@@ -102,6 +131,16 @@ type savedPosition struct {
 	accountID string
 	at        Point
 	seen      time.Time
+}
+
+// insertedObject is one InsertWorldObject call, exactly as it was made.
+type insertedObject struct {
+	kind        string
+	locationKey string
+	at          Point
+	owner       string
+	singleton   bool
+	expires     *time.Time
 }
 
 var _ Repository = (*fakeRepo)(nil)
@@ -191,6 +230,173 @@ func (f *fakeRepo) saved() []savedPosition {
 	return append([]savedPosition(nil), f.positions...)
 }
 
+// InsertWorldObject records a deposit. Nothing on this side reads it back — the
+// verb that leaves something behind does not then look at it — so the call
+// itself IS the behaviour under test.
+//
+// The `ON CONFLICT DO NOTHING` that makes a second live singleton a no-op is
+// deliberately NOT mirrored. That invariant belongs to a partial unique index
+// this fake has no equivalent of, it is proved against a real PostgreSQL in
+// test/integration, and a copy of it here would be a second, weaker statement of
+// a rule that lives in migration 008 — one that could agree with itself while
+// the index was wrong.
+func (f *fakeRepo) InsertWorldObject(_ context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, expires *time.Time) error {
+	f.journal(q)
+	// COPIED rather than aliased, like every other value this fake keeps: the
+	// caller owns the instant it took the address of, and a test comparing what
+	// was inserted against what the service later held would otherwise be
+	// comparing a pointer with itself.
+	var until *time.Time
+	if expires != nil {
+		when := *expires
+		until = &when
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inserted = append(f.inserted, insertedObject{
+		kind: kind, locationKey: locationKey, at: at, owner: owner, singleton: singleton, expires: until,
+	})
+	return f.insertErr
+}
+
+// LiveWorldObjects answers with the yard, capped exactly as the query's LIMIT
+// caps it.
+//
+// Two of the SQL's filters are deliberately absent. The location predicate has
+// nothing to match on — a WorldObject as the game reads it back does not carry
+// one, because a read is always "this location" — and, more importantly, the
+// EXPIRY IS NOT FILTERED HERE. The query's `expires_at > now()` is the
+// database's own clock, and the tests this fake serves need the opposite case:
+// a cache that legitimately holds a row whose expiry has since passed, which is
+// precisely the state props exists to render correctly without asking anybody.
+func (f *fakeRepo) LiveWorldObjects(_ context.Context, _ db.DBTX, _ string, limit int) ([]WorldObject, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.worldReads++
+	f.worldLimits = append(f.worldLimits, limit)
+	if f.worldErr != nil {
+		return nil, f.worldErr
+	}
+	out := make([]WorldObject, 0, len(f.objects))
+	for _, o := range f.objects {
+		if len(out) == limit {
+			break
+		}
+		out = append(out, o)
+	}
+	return out, nil
+}
+
+// worldObjectReads is how many times the world has been read out of the
+// database.
+func (f *fakeRepo) worldObjectReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.worldReads
+}
+
+// worldObjectLimits is the cap each of those reads was given, in order.
+func (f *fakeRepo) worldObjectLimits() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.worldLimits...)
+}
+
+// insertedObjects is every deposit written down so far, in the order it was
+// written.
+func (f *fakeRepo) insertedObjects() []insertedObject {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]insertedObject(nil), f.inserted...)
+}
+
+// journal remembers how to put the durable state back, when the write it is
+// about to make is happening inside a transaction.
+//
+// It is what gives this fake the one property a fake repository does not
+// normally have and one assertion genuinely needs: a batch that fails partway
+// leaves NOTHING behind. Service.inTx takes a real transaction only when the
+// handle it was given can begin one, so a test whose q is nil or noPool watches
+// three writes land one after another and stay landed however the last of them
+// ends — see fakeTx.
+//
+// A whole snapshot rather than a per-statement inverse, because the durable
+// state here is two slices and copying them cannot be got subtly wrong. The CALL
+// records — writes, written, inserted — are deliberately NOT restored: those
+// calls really were made, and a test asserting that a deposit was attempted and
+// then undone has to be able to see both halves of that.
+func (f *fakeRepo) journal(q db.DBTX) {
+	tx, ok := q.(*fakeTx)
+	if !ok {
+		return
+	}
+	rows := append([]StatRow(nil), f.rows...)
+	appended := append([]Event(nil), f.appended...)
+	tx.undo = append(tx.undo, func() { f.rows, f.appended = rows, appended })
+}
+
+// txPool is a connection handle that can begin a transaction over the fake
+// repository — the thing Service.inTx looks for before it decides whether the
+// batch it is about to run is atomic at all.
+//
+// It embeds noPool, so a query that somehow reached the pool itself still panics
+// rather than quietly reading nothing.
+type txPool struct {
+	noPool
+	// begun is every transaction started through it, so a test can say the batch
+	// was committed rather than merely not rolled back.
+	begun []*fakeTx
+}
+
+// Begin starts one. The error path is not modelled: a pool that cannot begin a
+// transaction is a database that is down, which is not a distinction any
+// assertion here rests on.
+func (p *txPool) Begin(context.Context) (pgx.Tx, error) {
+	tx := &fakeTx{}
+	p.begun = append(p.begun, tx)
+	return tx, nil
+}
+
+// fakeTx is a transaction over the fake repository: a list of ways to undo what
+// has been written through it, and a flag saying whether it is still open.
+//
+// pgx.Tx is EMBEDDED rather than implemented. Nothing calls anything on it but
+// Commit and Rollback — the fake repository ignores the handle it is given — and
+// a nil embedded interface panics loudly on any method that was not expected,
+// which is exactly what a test wants from a call it did not predict.
+type fakeTx struct {
+	pgx.Tx
+	// undo runs the state back, most recent first.
+	undo []func()
+	// done is set by whichever of commit or rollback got there first.
+	done      bool
+	committed bool
+}
+
+// Commit keeps everything written through this transaction.
+func (tx *fakeTx) Commit(context.Context) error {
+	tx.done, tx.committed, tx.undo = true, true, nil
+	return nil
+}
+
+// Rollback puts back what was written through this transaction, in reverse.
+//
+// A rollback after a commit is a no-op, and it has to be: inTx defers one
+// unconditionally and ignores its error, which is the same shape pgx supports by
+// answering ErrTxClosed. Undoing a committed batch here would make every
+// successful action in this file look like it had written nothing.
+func (tx *fakeTx) Rollback(context.Context) error {
+	if tx.done {
+		return nil
+	}
+	tx.done = true
+	for i := len(tx.undo) - 1; i >= 0; i-- {
+		tx.undo[i]()
+	}
+	tx.undo = nil
+	return nil
+}
+
 func (f *fakeRepo) Stats(_ context.Context, _ db.DBTX, _ string) ([]StatRow, error) {
 	f.statReads++
 	return append([]StatRow(nil), f.rows...), nil
@@ -207,7 +413,8 @@ func (f *fakeRepo) SeedStats(_ context.Context, _ db.DBTX, _ string, rows []Stat
 	return nil
 }
 
-func (f *fakeRepo) WriteStats(_ context.Context, _ db.DBTX, _ string, rows []StatRow) error {
+func (f *fakeRepo) WriteStats(_ context.Context, q db.DBTX, _ string, rows []StatRow) error {
+	f.journal(q)
 	f.writes++
 	// Copied, not aliased: the caller owns the slice it passed and a test that
 	// compared against a batch the service later reused would prove nothing.
@@ -1213,10 +1420,11 @@ func TestAReadThatRecordsADeathLeavesThePlaneShowingHimDead(t *testing.T) {
 
 // AppendEvents records the batch, assigning sequence numbers the way the real
 // table's statement does — from the current maximum, in the order given.
-func (f *fakeRepo) AppendEvents(_ context.Context, _ db.DBTX, _ string, verbs []string, at time.Time) ([]Event, error) {
+func (f *fakeRepo) AppendEvents(_ context.Context, q db.DBTX, _ string, verbs []string, at time.Time) ([]Event, error) {
 	if f.appendErr != nil {
 		return nil, f.appendErr
 	}
+	f.journal(q)
 	out := make([]Event, 0, len(verbs))
 	for _, verb := range verbs {
 		e := Event{Seq: int64(len(f.appended) + 1), Verb: verb, At: at}

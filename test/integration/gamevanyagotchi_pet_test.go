@@ -1679,3 +1679,213 @@ func TestVanyagotchiWorldObjectSingletonIsADatabaseInvariant(t *testing.T) {
 		t.Fatalf("non-singleton rows = %d, want 2", n)
 	}
 }
+
+// petWorldObject is one row of the world-object table, read back with none of
+// the plane's own filters.
+//
+// Unfiltered on purpose. The service's SELECT hides an expired, exhausted or
+// deleted row and never returns `singleton` at all — and `singleton` is exactly
+// what the assertion below turns on, because it is the column the database's
+// at-most-one-active index is predicated on. What is under test here is what the
+// INSERT actually wrote, not what a read would show of it.
+type petWorldObject struct {
+	id          string
+	kind        string
+	locationKey string
+	x, y        float64
+	singleton   bool
+	expiresAt   *time.Time
+	exhaustedAt *time.Time
+}
+
+// petWorldObjectsOwnedBy reads everything one account has left behind, oldest
+// first.
+func petWorldObjectsOwnedBy(t *testing.T, accountID string) []petWorldObject {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT id::text, kind, location_key, x, y, singleton, expires_at, exhausted_at
+		   FROM game_vanyagotchi_world_objects
+		  WHERE owner_account_id = $1::uuid
+		  ORDER BY created_at`,
+		accountID)
+	if err != nil {
+		t.Fatalf("read the world objects owned by %s: %v", accountID, err)
+	}
+	defer rows.Close()
+
+	var out []petWorldObject
+	for rows.Next() {
+		var o petWorldObject
+		if err := rows.Scan(&o.id, &o.kind, &o.locationKey, &o.x, &o.y, &o.singleton, &o.expiresAt, &o.exhaustedAt); err != nil {
+			t.Fatalf("scan a world object of %s: %v", accountID, err)
+		}
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the world objects owned by %s: %v", accountID, err)
+	}
+	return out
+}
+
+// petForgetWorldObjects deletes every deposit these accounts left.
+//
+// The suite shares ONE database and has no truncate step, so a test that writes
+// into a table other tests read has to clean up after itself. Deposits are
+// filtered on read rather than swept in production — nothing sweeps, by design —
+// which means a row left here would still be standing in the yard when a later
+// test looks at it, and the failure would land somewhere with nothing to do with
+// the cause.
+func petForgetWorldObjects(t *testing.T, accountIDs ...string) {
+	t.Helper()
+	for _, id := range accountIDs {
+		if _, err := pool.Exec(context.Background(),
+			`DELETE FROM game_vanyagotchi_world_objects WHERE owner_account_id = $1::uuid`, id); err != nil {
+			t.Fatalf("clean up the world objects of %s: %v", id, err)
+		}
+	}
+}
+
+// petLocationEntry is where the catalogue says a pet stands on arriving.
+//
+// Derived rather than written down, like every other expectation in this file:
+// the entry point is content, and a test that pinned (0.5, 0.5) would report
+// moving the door as a regression.
+func petLocationEntry(t *testing.T, key string) gamevanyagotchi.Point {
+	t.Helper()
+	for _, l := range gamevanyagotchi.Content().Locations {
+		if l.Key == key {
+			return l.Entry
+		}
+	}
+	t.Fatalf("the catalogue has no location %q", key)
+	return gamevanyagotchi.Point{}
+}
+
+// petAtPoint fails unless a stored position is the point it should be.
+func petAtPoint(t *testing.T, what string, x, y float64, want gamevanyagotchi.Point) {
+	t.Helper()
+	// A double precision column round-trips a float64 exactly, so the tolerance
+	// here is against arithmetic rather than against storage.
+	if math.Abs(x-want.X) > 1e-9 || math.Abs(y-want.Y) > 1e-9 {
+		t.Errorf("%s is at (%v,%v); want (%v,%v)", what, x, y, want.X, want.Y)
+	}
+}
+
+// TestVanyagotchiRelievingHimselfLeavesARealDepositInTheWorld is the world half
+// of a verb against the database that has to hold it.
+//
+// The row it writes is the first this table has ever had in production, and the
+// single most valuable line below is the SECOND player's. The insert is
+// `ON CONFLICT DO NOTHING` against a partial unique index, which means a kind
+// wrongly marked `singleton` would not fail loudly — it would swallow the second
+// deposit in silence while the verb still answered as though it had worked, and
+// the game would quietly become one in which only one person at a time may
+// relieve himself. That is the invariant migration 008's comment says the
+// `singleton` column exists for, and it can only be proved where a real index is
+// enforcing it.
+//
+// The rest is what a fake repository cannot say either: that the `expires_at`
+// the TTL is filtered against is really written, that the deposit lands where
+// the yard believes its owner is standing, and that the plane's own read gets
+// the row back.
+func TestVanyagotchiRelievingHimselfLeavesARealDepositInTheWorld(t *testing.T) {
+	ctx := context.Background()
+	relieve := petAction(t, gamevanyagotchi.ActionRelieve)
+	if relieve.Leaves == "" {
+		t.Fatalf("the catalogue says %q leaves nothing behind; this test is asserting a rule the game no longer has", relieve.Key)
+	}
+	kind, ok := gamevanyagotchi.ObjectKindByKey(relieve.Leaves)
+	if !ok {
+		t.Fatalf("%q leaves %q behind and the catalogue has no such object kind", relieve.Key, relieve.Leaves)
+	}
+	if kind.Singleton {
+		t.Fatalf("the catalogue marks %q a singleton; the database would then allow exactly one of them in the whole world, and two players could not both use %q",
+			kind.Key, relieve.Key)
+	}
+	if kind.Lifetime <= 0 {
+		t.Fatalf("%q has no lifetime; the expiry asserted below is not a thing this kind has", kind.Key)
+	}
+
+	app, game := petApp(t)
+	alice := loginAs(t, app.URL, "7240", "user")
+	bob := loginAs(t, app.URL, "7241", "user")
+	for name, cli := range map[string]*http.Client{"alice": alice, "bob": bob} {
+		if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+			t.Fatalf("%s create: status=%d body=%v", name, s, body)
+		}
+	}
+	aliceAccount, bobAccount := accountIDByUID(t, "7240"), accountIDByUID(t, "7241")
+	t.Cleanup(func() { petForgetWorldObjects(t, aliceAccount, bobAccount) })
+
+	pressed := time.Now().UTC()
+	state := petDo(t, game, aliceAccount, relieve.Key)
+
+	deposits := petWorldObjectsOwnedBy(t, aliceAccount)
+	if len(deposits) != 1 {
+		t.Fatalf("%d rows were written into the world for one %s; want exactly one deposit: %+v", len(deposits), relieve.Key, deposits)
+	}
+	left := deposits[0]
+
+	if left.kind != kind.Key {
+		t.Errorf("the row is of kind %q; want the catalogue's %q", left.kind, kind.Key)
+	}
+	if left.locationKey != state.Pet.LocationKey {
+		t.Errorf("the deposit was left in %q; want the location his pet is in, %q", left.locationKey, state.Pet.LocationKey)
+	}
+	// Nobody has ever been placed on this plane — the service here has no
+	// transport at all — so the yard's answer for where he is standing is his
+	// location's entry point, and the deposit is written there.
+	petAtPoint(t, "the deposit", left.x, left.y, petLocationEntry(t, state.Pet.LocationKey))
+	if left.singleton {
+		t.Errorf("the row was written with singleton=true; the index would then permit exactly one active %q in the whole world", kind.Key)
+	}
+	if left.exhaustedAt != nil {
+		t.Errorf("the deposit was written already exhausted (%s); a deposit is never used up, it expires", left.exhaustedAt.UTC())
+	}
+	if left.expiresAt == nil {
+		t.Fatalf("the deposit has no expires_at; the TTL is filtered on read, so a NULL here is a deposit that stands in the yard for ever")
+	}
+	// A minute of slack against the wall clock between the test reading it and
+	// the verb reading its own, which is two orders of magnitude below the
+	// lifetime under test.
+	if drift := left.expiresAt.Sub(pressed.Add(kind.Lifetime)); drift < -time.Minute || drift > time.Minute {
+		t.Errorf("the deposit expires at %s, %s away from the %s lifetime the catalogue gives %q",
+			left.expiresAt.UTC(), drift, kind.Lifetime, kind.Key)
+	}
+
+	// THE ONE THAT MATTERS. A second player relieving himself is a second row,
+	// and this is where a `singleton` gone wrong would show up as silence rather
+	// than as an error.
+	petDo(t, game, bobAccount, relieve.Key)
+	his := petWorldObjectsOwnedBy(t, bobAccount)
+	if len(his) != 1 {
+		t.Fatalf("a second player used %q and the world holds %d of his deposits; want 1 — the insert is ON CONFLICT DO NOTHING, so a kind wrongly marked singleton loses this row in silence and the verb still answers as though it had worked",
+			relieve.Key, len(his))
+	}
+	if again := petWorldObjectsOwnedBy(t, aliceAccount); len(again) != 1 || again[0].id != left.id {
+		t.Fatalf("the first player's deposit is no longer the one and only thing he left: %+v", again)
+	}
+
+	// And both come back from the read the plane actually uses.
+	live, err := gamevanyagotchi.NewPostgresRepository().LiveWorldObjects(ctx, pool, state.Pet.LocationKey, 200)
+	if err != nil {
+		t.Fatalf("LiveWorldObjects: %v", err)
+	}
+	standing := make(map[string]gamevanyagotchi.WorldObject, len(live))
+	for _, o := range live {
+		standing[o.ID] = o
+	}
+	for who, row := range map[string]petWorldObject{"the first player": left, "the second player": his[0]} {
+		o, ok := standing[row.id]
+		if !ok {
+			t.Fatalf("%s's deposit is in the table and does not come back from the plane's own read of the yard: %+v", who, live)
+		}
+		if o.Kind != kind.Key {
+			t.Errorf("%s's deposit reads back as kind %q; want %q", who, o.Kind, kind.Key)
+		}
+		petAtPoint(t, who+"'s deposit as the plane reads it", o.At.X, o.At.Y, gamevanyagotchi.Point{X: row.x, Y: row.y})
+		if o.ExpiresAt == nil {
+			t.Errorf("%s's deposit reads back with no expiry, so the plane would draw it for ever", who)
+		}
+	}
+}

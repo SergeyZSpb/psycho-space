@@ -252,6 +252,22 @@ UPDATE game_vanyagotchi_pet_stats
 UPDATE game_vanyagotchi_pets SET died_at = NULL, updated_at = now() WHERE id = '<uuid>';
 ```
 
+**To see what is lying about in the yard**, and why a deposit will not go away:
+
+```sql
+SELECT id, kind, location_key, x, y, singleton, expires_at, exhausted_at
+  FROM game_vanyagotchi_world_objects
+ WHERE deleted_at IS NULL AND (expires_at IS NULL OR expires_at > now())
+ ORDER BY created_at DESC;
+```
+
+Deposits are **filtered on read, never swept** — nothing deletes them, so expired
+rows accumulate and are simply ignored, and a growing count is normal rather
+than a leak. The server also holds a cached copy that is refreshed only when
+somebody says hello or leaves something behind, so a row you delete by hand
+stays on the plane until the next hello: the 5 Hz tick deliberately reads
+nothing. Restart the service, or reload a client, to see a hand-edited world.
+
 **Never write one stat row on its own.** Health is integrated from its own
 `as_of` against the other stats' trajectories, so all the pairs have to share one
 instant. Re-stamping the bladder alone would erase whatever damage a full bladder

@@ -152,6 +152,10 @@ func (s *Service) load(ctx context.Context, accountID string) {
 	// The yard's furniture comes first, so the arriving player sees everybody
 	// who is asleep in it rather than an empty field followed by a pop-in.
 	s.ensureSleepers(ctx)
+	// And whatever is lying about in it, for the same reason: a hello is a fresh
+	// socket and therefore human-paced, which is the only kind of moment allowed
+	// to read the world.
+	s.loadWorld(ctx)
 
 	// The picture, before the pet, and deliberately not fatal. A hello is the one
 	// human-paced moment this is read — the tick must never reach the account

@@ -41,6 +41,7 @@ internal/
                     content.go  the catalogue — stats, actions, skins, NPCs, every constant
                     decay.go    time arithmetic for stats · motion.go the same for space
                     display.go  the in-memory cache the 5 Hz broadcast draws from
+                    world.go    what is lying about in the yard — same cache rule
                     message.go  the wire types · service.go the verbs and the tick
   settings/  app_settings key/value (open registration)
   web/       go:embed of the built SPA (dir gitignored except .gitkeep)

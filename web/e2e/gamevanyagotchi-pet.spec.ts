@@ -87,6 +87,31 @@ interface ActionDef {
    * empty effects list meaningful.
    */
   starts_over: boolean;
+  /**
+   * The world-object kind this verb leaves standing in the yard, or absent for a
+   * verb that leaves nothing. `omitempty` on the wire, hence optional here.
+   *
+   * A KEY, resolved against `object_kinds` — which is the whole reason the splash
+   * can state what «покакать» now does to the yard, and for how long, without a
+   * word of it being typed into the SPA.
+   */
+  leaves?: string;
+}
+
+/**
+ * A kind of durable thing that can stand on the plane.
+ *
+ * Mirrored from internal/gamevanyagotchi/content.go like every other fixture in
+ * this block. `lifetime_seconds` rather than a Go duration, because a nanosecond
+ * count is not a number any client should have to know how to read; zero means
+ * forever. `label` is optional and the shipped kind carries none — a caption over
+ * a deposit would be one more thing to draw on a small screen.
+ */
+interface ObjectKindDef {
+  key: string;
+  art: string;
+  label?: string;
+  lifetime_seconds: number;
 }
 
 interface ConfigFixture {
@@ -96,6 +121,12 @@ interface ConfigFixture {
   actions: ActionDef[];
   /** `image` is present only for a skin the asset store has a blob for. */
   skins: { key: string; label: string; emoji: string; gradient: string; image?: string }[];
+  /**
+   * What a durable thing standing in the yard can be. Served so the splash can
+   * say what a verb leaves behind; nothing renders from it, because an object
+   * arrives in the roster as an ordinary entity with an art key.
+   */
+  object_kinds: ObjectKindDef[];
   locations: { key: string; label: string; entry: { x: number; y: number } }[];
   default_skin: string;
   default_location: string;
@@ -226,6 +257,21 @@ const DRINK: ActionDef = {
   starts_over: false,
 };
 
+/**
+ * What «покакать» leaves standing in the yard, with the shipped ten minutes.
+ *
+ * Unnamed on purpose, exactly as the catalogue has it: nobody needs telling what
+ * it is, and a caption would be one more thing on a phone. Mirrored here so the
+ * splash assertions see the shape the real server serves — without it the
+ * cheatsheet would quietly stop mentioning a rule that everybody in the yard can
+ * see, and this suite would agree with the omission.
+ */
+const RELIEF_KIND: ObjectKindDef = {
+  key: 'relief',
+  art: 'obj_relief',
+  lifetime_seconds: 600,
+};
+
 /** The other half of the loop drinking creates — and the verb a corpse is refused. */
 const RELIEVE: ActionDef = {
   key: 'relieve',
@@ -238,6 +284,10 @@ const RELIEVE: ActionDef = {
     { stat_key: 'shits_taken', delta: 1 },
   ],
   done: 'полегчало',
+  // And it stays where he left it, for everybody to walk past. A KEY rather than
+  // anything describing the thing: the sentence the splash builds out of it comes
+  // from the kind, one constant up.
+  leaves: RELIEF_KIND.key,
   revives_fatal: false,
   starts_over: false,
 };
@@ -307,6 +357,7 @@ const CATALOGUE: ConfigFixture = {
       image: PAINTED_IMAGE,
     },
   ],
+  object_kinds: [RELIEF_KIND],
   locations: [{ key: 'yard', label: 'двор', entry: { x: 0.5, y: 0.5 } }],
   default_skin: SKIN_VANYA,
   default_location: 'yard',
@@ -1362,6 +1413,17 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     );
     await expect(page.locator('[data-test="rule-action-relieve"]')).toContainText('мочевой пузырь → 0');
     await expect(page.locator('[data-test="rule-action-relieve"]')).toContainText('мёртвому нельзя');
+    // «Покакать» stopped being a private matter: it leaves a deposit standing
+    // where you were, everybody in the yard walks past it, and it is gone ten
+    // minutes later. BOTH HALVES OF THAT SENTENCE ARE DERIVED — the verb carries
+    // the kind key, the kind carries the lifetime — so a player is told about it
+    // without a word of it being typed into the SPA, and a retune in content.go
+    // moves the line rather than leaving it lying about the yard.
+    await expect(page.locator('[data-test="rule-action-relieve"]')).toContainText(
+      'оставляет кое-что на земле: видно всем 10 минут',
+    );
+    // And only the verb that leaves something says so.
+    await expect(page.locator('[data-test="rule-action-drink"]')).not.toContainText('оставляет');
 
     // The verb that is the whole of the death rule. Its effects list is EMPTY on
     // the wire, because `starts_over` ignores it — so a cheatsheet that rendered
@@ -1395,8 +1457,16 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
       'покакано раз',
     );
 
-    // And the part no catalogue carries.
+    // And the part no catalogue carries. The second line is the one the world
+    // objects added: that not everything standing in the yard is somebody, and
+    // that the things are left out of «во дворе». The exclusion is a server rule
+    // — `props` in world.go appends them after the count is taken — and it is on
+    // no wire at all, so the hand-maintained half of the cheatsheet is the only
+    // place a player can be told.
     await expect(page.locator('[data-test="rules-prose"]')).toContainText('пока вкладка закрыта');
+    await expect(page.locator('[data-test="rules-prose"]')).toContainText(
+      'в счётчике народу не числится',
+    );
   });
 
   test('a retuned catalogue retunes the cheatsheet with it', async ({ page }) => {
