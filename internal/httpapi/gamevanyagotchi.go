@@ -1,12 +1,6 @@
 package httpapi
 
-import (
-	"errors"
-	"net/http"
-
-	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
-	"github.com/go-chi/chi/v5"
-)
+import "net/http"
 
 // available reports whether the game is wired, and answers 503 when it is not.
 //
@@ -55,38 +49,11 @@ func (s *Server) handleGameVanyagotchiState(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, st)
 }
 
-// handleGameVanyagotchiAction applies one catalogue action and answers with the
-// server's recomputed state.
+// There is no action handler here, and that absence is the design.
 //
-// The verb is a path segment validated against the catalogue, and the body
-// carries nothing at all. The client says "heal", never "set hp to 80", so there
-// is no number in the request to forge — and because the allowlist is the
-// catalogue rather than a switch in here, an action added to content.go is
-// reachable without touching this file or the SPA.
-// DEBT, and named rather than left to drift (CLAUDE.md → *No legacy code*).
-// The SPA no longer calls this: verbs travel over the socket, through the same
-// Service.Do this handler calls. It survives only because six integration tests
-// drive a verb through it, and moving them to Service.Do is the one thing
-// between this route and deletion. Nothing new may be built on it.
-func (s *Server) handleGameVanyagotchiAction(w http.ResponseWriter, r *http.Request) {
-	if !s.gameVanyagotchiAvailable(w, r) {
-		return
-	}
-	viewer, _ := accountFromContext(r.Context())
-	st, err := s.d.GameVanyagotchi.Act(r.Context(), viewer.ID, chi.URLParam(r, "action"))
-	if err != nil {
-		switch {
-		case errors.Is(err, gamevanyagotchi.ErrUnknownAction):
-			writeError(w, r, http.StatusNotFound, "unknown_action")
-		case errors.Is(err, gamevanyagotchi.ErrPetDead):
-			// 409 rather than 422: the request is perfectly well formed and
-			// would succeed against a living pet. What is wrong is the state of
-			// the world, and the client's remedy is a different action.
-			writeError(w, r, http.StatusConflict, "pet_dead")
-		default:
-			writeError(w, r, http.StatusInternalServerError, "internal")
-		}
-		return
-	}
-	writeJSON(w, http.StatusOK, st)
-}
+// A verb arrives over the socket instead, as one `vanyagotchi_do` frame, and is
+// interpreted by the one `Service.Do` that a replay also goes through. What the
+// server decided comes back as STATE — a line over the player's own Ваня and a
+// push of the pet — never as a response body, because the 5 Hz full-state frame
+// already reconciles the yard and a verb that owes a reply is a verb with two
+// ways of being answered. See ADR-043.

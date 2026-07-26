@@ -161,11 +161,14 @@ func (s *Server) Handler() http.Handler {
 		// is the guard, and every write below is idempotent or clamped.
 		r.Route("/game-vanyagotchi", func(r chi.Router) {
 			r.Use(s.requireAuth)
+			// Two reads, and nothing that writes on purpose. A VERB DOES NOT
+			// ARRIVE HERE: it travels over the socket as one `vanyagotchi_do`
+			// frame, and the server answers with state rather than a response
+			// body — see ADR-043. There is deliberately no HTTP form of it,
+			// because a second way to press a button is a second thing to keep
+			// in agreement with the first.
 			r.Get("/config", s.handleGameVanyagotchiConfig)
 			r.Get("/state", s.handleGameVanyagotchiState)
-			// The verb is a path segment checked against the content catalogue,
-			// so a new action is a catalogue entry rather than a route.
-			r.Post("/actions/{action}", s.handleGameVanyagotchiAction)
 		})
 
 		// Game art — shared infrastructure, NOT a game. The blob store has

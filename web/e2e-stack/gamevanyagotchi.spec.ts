@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { loginAs } from './fixtures';
+import { loginAs, type SeededAccount } from './fixtures';
+import { psql, uuid } from './vanyagotchi-db';
 
 // «Ванягоччи» against the real stack: two browsers, two seeded accounts, one Go
 // binary, one real WebSocket each. Nothing is stubbed — a pass here means the
@@ -1214,6 +1215,124 @@ test('a tap is a walk across the yard, not a teleport', async ({ browser, baseUR
   }
 });
 
+// ---------------------------------------------------------------------------
+// Putting an inherited Ваня back on his feet — a DIRECT DATABASE WRITE, and
+// deliberately not a request and not a button press.
+//
+// Two tests below cannot say anything about a POSE until they know the pet is
+// not dead: death outranks sleep — a dead Ваня is drawn dead however long his
+// owner has been away — and a dead Ваня never mutters. This suite shares one
+// database and a pet is permanent, so an earlier file may well have left this
+// account's Ваня on the floor, and neither test would then be failing about
+// anything it is meant to be about.
+//
+// This used to be `POST /api/game-vanyagotchi/actions/drink`. THAT ROUTE NO
+// LONGER EXISTS — a verb travels over the socket as a `vanyagotchi_do` frame and
+// is answered with state — so do not "restore" the request. It is a write rather
+// than a press of the drink button for three reasons:
+//
+//   * A press TALKS. It puts the action's own line over his head for four
+//     seconds, on every screen in the yard — and the chatter test's entire claim
+//     is about WHICH balloon appeared and which pool it came from, so a fixture
+//     that talks is a fixture that lies to the test. A write leaves the yard
+//     silent.
+//   * A press can be dropped in silence. A verb is rate-limited to one a second
+//     per account and owes no reply at all, so a fixture that spends one has no
+//     way of knowing whether it landed; a write either happens or throws.
+//
+// It writes the SNAPSHOT — game_vanyagotchi_pet_stats, which migration 009 keeps
+// authoritative for a read — so this is the same state a verb would have left,
+// arrived at without pressing anything.
+//
+// Whitebox, and the project's rule is real flows or direct DB setup — the same
+// reasoning the sibling pet spec gives for its own direct setup. The container
+// name is fixed in docker-compose.yml and this suite already requires Docker.
+// ---------------------------------------------------------------------------
+
+const STATE_URL = '/api/game-vanyagotchi/state';
+
+/**
+ * Where a revived Ваня is put down, mirrored from
+ * internal/gamevanyagotchi/content.go.
+ *
+ * Every shipped stat, comfortably clear of its own warning mark, so the pose is
+ * `fine` and nothing drifts over a threshold while a test runs. All of them
+ * rather than only the fatal one, and stamped with ONE instant, because the
+ * coupled decay assumes every stat's `as_of` moved together — a fixture that
+ * lifted hp and left the drivers behind would set up a window the server's
+ * arithmetic does not expect. The count assertion below is what makes a stat
+ * added to the catalogue fail loudly here instead.
+ */
+const ALIVE_STATS = { hp: 60, beer: 60, bladder: 10 };
+
+/**
+ * Makes sure this account's Ваня is alive and well, in the database AND in the
+ * running process's idea of him.
+ *
+ * Read, write, read. The reads are the app's own creation path — a plain
+ * `GET /state`, which creates the pet lazily on first sight and re-caches it on
+ * every sight — and neither is a stand-in for the verb that used to be posted
+ * here. Both are load-bearing:
+ *
+ *   * The FIRST one makes the row exist. There is nothing to revive until it
+ *     does, and the sleeper test needs it so that his position has somewhere to
+ *     be written down when he leaves.
+ *   * The SECOND one is why this fixture works wherever it is called from. The
+ *     pose the plane draws comes from an in-memory cache that a query never
+ *     refreshes — it is filled when a client says hello on a fresh socket and
+ *     whenever that account's pet is read — so a row changed behind the
+ *     process's back is a row nothing would ever notice. Reading it back leaves
+ *     exactly what the POST left, which is what makes this a replacement for it
+ *     rather than an approximation.
+ *
+ * The write between them is two statements, and both are needed: a pose is drawn
+ * `dead` while `died_at` is set OR while the fatal stat sits on its floor, and
+ * the next read would re-record the death from the second even with the first
+ * cleared.
+ */
+async function reviveInDb(
+  context: BrowserContext,
+  base: string,
+  account: SeededAccount,
+): Promise<void> {
+  const read = async () => {
+    const res = await context.request.get(`${base}${STATE_URL}`);
+    expect(res.status(), `GET ${STATE_URL}`).toBe(200);
+  };
+  await read();
+
+  const id = uuid(account.account_id);
+  const pets = psql(
+    `UPDATE game_vanyagotchi_pets SET died_at = NULL, updated_at = now() ` +
+      `WHERE account_id = '${id}' AND deleted_at IS NULL`,
+  );
+  expect(pets, 'no living pet to revive — was the read above answered?').toBe('UPDATE 1');
+
+  const cases = Object.entries(ALIVE_STATS)
+    .map(([key, value]) => `WHEN '${key}' THEN ${value}`)
+    .join(' ');
+  const keys = Object.keys(ALIVE_STATS)
+    .map((key) => `'${key}'`)
+    .join(', ');
+  const owned =
+    `(SELECT id FROM game_vanyagotchi_pets WHERE account_id = '${id}' AND deleted_at IS NULL)`;
+  const stats = psql(
+    `UPDATE game_vanyagotchi_pet_stats SET value = CASE stat_key ${cases} END, ` +
+      `as_of = now(), updated_at = now() ` +
+      `WHERE stat_key IN (${keys}) AND pet_id IN ${owned}`,
+  );
+  expect(stats, 'the named stats are not the ones this pet has').toBe(
+    `UPDATE ${Object.keys(ALIVE_STATS).length}`,
+  );
+  // And they are ALL of them, so nothing was left holding an older `as_of`.
+  expect(
+    psql(`SELECT count(*) FROM game_vanyagotchi_pet_stats WHERE pet_id IN ${owned}`),
+    'the catalogue has a stat this fixture does not set, so one row kept an older as_of',
+  ).toBe(String(Object.keys(ALIVE_STATS).length));
+
+  await read();
+}
+
 test('a Ваня whose owner has gone is asleep in the yard where he stood', async ({
   browser,
   baseURL,
@@ -1236,7 +1355,7 @@ test('a Ваня whose owner has gone is asleep in the yard where he stood', asy
   const ctxB = await browser.newContext(PHONE);
   try {
     await loginAs(ctxA, PLAYER_A);
-    await loginAs(ctxB, PLAYER_B);
+    const accB = await loginAs(ctxB, PLAYER_B);
     const pageA = await enterYard(ctxA, base);
     const pageB = await enterYard(ctxB, base);
     await expect(playerDots(pageA)).toHaveCount(2, { timeout: 15_000 });
@@ -1245,9 +1364,11 @@ test('a Ваня whose owner has gone is asleep in the yard where he stood', asy
     // his owner has been away, because hiding that behind a peaceful nap would
     // hide the one thing his owner needs to come back for — so a pet left dead
     // by an earlier file would make this assert the wrong pose for the right
-    // reason. A beer is the game's own way of fixing that, over the real route.
-    const revived = await pageB.request.post('/api/game-vanyagotchi/actions/drink');
-    expect(revived.status(), 'POST drink').toBe(200);
+    // reason. It would also make him miss the sleeper count below entirely:
+    // `playerDots` counts a Ваня drawn dead and not one drawn asleep.
+    //
+    // A database write, not a request and not a button press — see `reviveInDb`.
+    await reviveInDb(ctxB, base, accB);
 
     // Somewhere no other test in this file walks to, so the position asserted
     // after the restart cannot be one left lying around by an earlier one.
@@ -1378,8 +1499,8 @@ test('a Ваня standing still mutters, and both screens hear the same words', 
         'distinguishes a Ваня who is bored from one who has just given up on a walk',
     ).toHaveLength(0);
 
-    await loginAs(ctxA, PLAYER_A);
-    await loginAs(ctxB, PLAYER_B);
+    const accA = await loginAs(ctxA, PLAYER_A);
+    const accB = await loginAs(ctxB, PLAYER_B);
     // Recording from before boot, on BOTH pages. A remark is up for four seconds
     // in twelve, so polling the DOM for one is a coin toss that has to be won
     // twice at once; a recorder installed ahead of the app catches every balloon
@@ -1391,16 +1512,20 @@ test('a Ваня standing still mutters, and both screens hear the same words', 
     await expect(playerDots(pageB)).toHaveCount(2, { timeout: 15_000 });
 
     // Both are alive, because a DEAD Ваня never says anything and an earlier
-    // file may well have left one that way. A beer is the game's own way of
-    // fixing that, over the real route — the same thing the sleeper test does
-    // above, and for the same reason.
-    for (const [page, who] of [
-      [pageA, 'A'],
-      [pageB, 'B'],
-    ] as const) {
-      const revived = await page.request.post('/api/game-vanyagotchi/actions/drink');
-      expect(revived.status(), `POST drink for ${who}`).toBe(200);
-    }
+    // file may well have left one that way.
+    //
+    // A database write, not a request and not a button press — see `reviveInDb`.
+    // The distinction matters more here than anywhere else in the file: a press
+    // puts the action's own `done` line over that Ваня's head for four seconds,
+    // on BOTH screens, and every assertion at the end of this test is about which
+    // balloon appeared and which pool it came from — so a fixture that talks is a
+    // fixture that lies to the test. A write leaves the yard silent.
+    await reviveInDb(ctxA, base, accA);
+    await reviveInDb(ctxB, base, accB);
+
+    // Confirmed on the plane rather than in the database: it is the SERVER's pose
+    // that decides whether anybody mutters, and nothing below can happen while
+    // somebody is drawn dead.
     await expect(
       playerDots(pageA).locator('[data-test="peer-face"][data-condition="dead"]'),
       'somebody in the yard is dead, and a dead Ваня has nothing to add',

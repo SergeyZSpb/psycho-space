@@ -10,9 +10,9 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **app:** systemd unit `psycho-space` under user `psychospace`; binary `/opt/psycho-space/psycho-space`; env `/etc/psycho-space/app.env`; logs `/var/log/psycho-space/app.log`.
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/gamekhimki/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
-- **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*`, view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and both phrase pools are in `content.go`, not the database — so retuning, renaming, adding an NPC or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from two disjoint pools and mean different things: `tiredSays` means he gave up on a walk, `idleSays` means he is just standing about. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep.
+- **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*` — **two reads (`config`, `state`) and nothing that writes**, because a verb travels over the socket as a `vanyagotchi_do` frame and cannot be curl'd (ADR-043) — view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and both phrase pools are in `content.go`, not the database — so retuning, renaming, adding an NPC or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from two disjoint pools and mean different things: `tiredSays` means he gave up on a walk, `idleSays` means he is just standing about. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
-- **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, the append-only decision records saying why it is that shape), `../CLAUDE.md` (working rules and gates).
+- **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
 - **constraints:** never commit the host/IP/port or any secret; never paste real personal data into shared places. The app log is PII-free by design; the DB and nginx access log are not — treat their contents as confidential.
 
@@ -229,8 +229,18 @@ not "now". A `died_at` equal to the moment you looked means something is wrong
 with the derivation rather than with your test.
 
 **To bring somebody back**, press «выпить пива» in the app; it is the action that
-revives (and «покакать» deliberately is not — a dead Ваня goes nowhere, so it
-answers 409 `pet_dead`). Over `psql` the equivalent is refilling *and* clearing,
+revives (and «покакать» deliberately is not — a dead Ваня goes nowhere, so it is
+refused, and the refusal appears as «он не встаёт» in the balloon over his head
+rather than as an error).
+
+**A verb cannot be curl'd, and that is deliberate** — do not go looking for the
+endpoint. It travels over the socket as a `vanyagotchi_do` frame and is answered
+with state rather than a reply ([ADR-043](adrs/ADR-043-a-verb-travels-over-the-socket-and-is.md)),
+so the only two ways to apply one are the app and the `psql` equivalent below.
+The two reads (`/api/game-vanyagotchi/config` and `/state`) are still ordinary
+HTTP and still curl-able, which is what the ageing recipe above uses.
+
+Over `psql` the equivalent of a revive is refilling *and* clearing,
 because a pet whose `died_at` is NULL with health still at zero simply dies again
 on the next read — and every row must carry the same `as_of`:
 

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { loginAs, stack, type SeededAccount, type SeededKind } from './fixtures';
+import { psql, uuid } from './vanyagotchi-db';
 
 // «Ванягоччи» — the pet, against the real stack: the real Go binary, the real
 // catalogue, and a real PostgreSQL. Nothing is stubbed.
@@ -73,37 +74,6 @@ const BLADDER_FULL_AT = 80;
 // needs no compose-project resolution; the suite already requires Docker to run
 // at all.
 // ---------------------------------------------------------------------------
-
-const DB_CONTAINER = 'psycho-pg-e2e';
-
-/** Runs one statement against the e2e database and returns its unaligned output. */
-function psql(sql: string): string {
-  try {
-    return execFileSync(
-      'docker',
-      ['exec', '-i', DB_CONTAINER, 'psql', '-U', 'psychospace', '-d', 'psychospace', '-At', '-c', sql],
-      { encoding: 'utf8', timeout: 30_000 },
-    ).trim();
-  } catch (err) {
-    throw new Error(
-      `psql against ${DB_CONTAINER} failed — is the e2e stack up? (scripts/e2e-stack.sh)\n${String(err)}`,
-    );
-  }
-}
-
-/**
- * Guards an id before it is spliced into SQL.
- *
- * The values come from the seed file rather than from anything user-supplied, so
- * this is not a security control — it is a guard against a malformed seed file
- * turning into a confusing SQL syntax error three lines later.
- */
-function uuid(value: string): string {
-  expect(value, 'expected a UUID from the seed file').toMatch(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-  );
-  return value;
-}
 
 /**
  * Removes an account's pet entirely, so the next read creates a genuinely new
@@ -184,10 +154,11 @@ function restartServer(): string {
 
 // ---------------------------------------------------------------------------
 
+// The two routes this game has. There is deliberately no third: a verb travels
+// over the socket as a `vanyagotchi_do` frame and is answered with STATE, so
+// there is no action URL to name here and nothing in this file may post one.
 const CONFIG_URL = '/api/game-vanyagotchi/config';
 const STATE_URL = '/api/game-vanyagotchi/state';
-const DRINK_URL = '/api/game-vanyagotchi/actions/drink';
-const RELIEVE_URL = '/api/game-vanyagotchi/actions/relieve';
 
 /** The death notice, which is the screen's own line rather than the catalogue's. */
 const DEATH_LINE = 'Ваня не выдержал. Откачай его.';
@@ -212,8 +183,8 @@ async function enterYardFrom(page: Page): Promise<void> {
  * Needed because of a deliberate performance property rather than a shortcut:
  * the 5 Hz broadcast is a render step that touches no database, so what it draws
  * comes from an in-memory cache filled on the two occasions a human causes — a
- * client saying hello on a fresh socket, and that account acting over HTTP. A
- * row changed by this file's direct-DB setup is neither, so nothing would ever
+ * client saying hello on a fresh socket, and that account pressing a verb. A row
+ * changed by this file's direct-DB setup is neither, so nothing would ever
  * notice it.
  *
  * A reload rather than an action, because an action would also change the very
@@ -358,7 +329,7 @@ test('one drink moves three stats, and all three survive a reload', async ({ bro
   //
   // Three of them from ONE press, which is what the action's `effects` slice
   // bought: drinking tops him up, cheers him up and fills his bladder. The
-  // client posts a verb and never a value, so every number below was computed
+  // client sends a verb and never a value, so every number below was computed
   // and stored by the server.
   test.setTimeout(90_000);
   const base = baseURL ?? 'http://127.0.0.1:8081';
@@ -486,13 +457,20 @@ test('relieving himself empties the bladder and leaves the rest alone', async ({
 
 test('a dead Ваня refuses the toilet and accepts a beer', async ({ browser, baseURL }) => {
   // The refusal path, which only became REACHABLE with the second verb: until
-  // there was an action that cannot revive him, every request succeeded and the
-  // 409 was a branch nobody could reach. A dead Ваня does not go to the toilet.
+  // there was an action that cannot revive him, every verb succeeded and the
+  // refusal was a branch nobody could reach. A dead Ваня does not go to the
+  // toilet.
   //
-  // Both halves matter. The refusal must be a 409 with the stable code rather
-  // than a 500, and the screen must answer it with the line that says what to do
-  // — not with the global "something went wrong" modal for a situation the game
-  // is already explaining in words.
+  // A refusal has no status code to assert any more, and that is the design
+  // rather than a gap: the socket owes no reply, so what the player is owed is
+  // knowing what happened — and he is told the way he is told everything else,
+  // as STATE. So the whole of the contract is observable on screen, and that is
+  // where it is asserted: the line that says what to do appears over his own
+  // Ваня, the global "something went wrong" modal never opens over a situation
+  // the game is already explaining in words, and the pet is still dead
+  // afterwards. The `ErrPetDead` sentinel behind that line is pinned by the Go
+  // tests, which own it (internal/gamevanyagotchi/pet_test.go, and
+  // test/integration/gamevanyagotchi_pet_test.go drives it through Service.Do).
   test.setTimeout(90_000);
   const base = baseURL ?? 'http://127.0.0.1:8081';
   const seeded = await stack();
@@ -522,13 +500,7 @@ test('a dead Ваня refuses the toilet and accepts a beer', async ({ browser, 
     expect(dead.alive, 'a Ваня at zero health was still reported alive').toBe(false);
     expect((dead.pet as { died_at: string | null }).died_at, 'no death was recorded').not.toBeNull();
 
-    // The wire contract, asserted directly: 409 and the stable code, not a 500
-    // and not a silent success.
-    const refused = await page.request.post(RELIEVE_URL);
-    expect(refused.status(), 'relieving a corpse should be refused with a 409').toBe(409);
-    expect((await refused.json()) as { error: string }).toMatchObject({ error: 'pet_dead' });
-
-    // And now on screen, where the death has to read without anybody parsing a
+    // On screen, where the death has to read without anybody parsing a
     // number. The page is already in the yard, so it is nudged into re-reading
     // the row this test changed behind its back.
     await refreshTheYardsIdeaOf(page);
@@ -786,13 +758,9 @@ test('reading the state twice returns the same pet, and a server clock with it',
       'bladder',
       'hp',
     ]);
-
-    // Both action routes the buttons post to are real, and answer with a state.
-    for (const url of [DRINK_URL, RELIEVE_URL]) {
-      const acted = await page.request.post(url);
-      expect(acted.status(), `POST ${url}`).toBe(200);
-      expect(((await acted.json()) as { pet: { id: string } }).pet.id).toBe(firstPet.id);
-    }
+    // And there is no third route. The buttons post nothing at all — a verb is a
+    // socket frame — so what a press does to the right pet is proved by pressing
+    // it, in the tests above, and not by a request from here.
   } finally {
     await context.close();
   }

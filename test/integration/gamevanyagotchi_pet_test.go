@@ -65,26 +65,21 @@ import (
 // tighter than any real bug would hide inside.
 const petStatEpsilon = 0.5
 
-// petBuildApp builds the app with «Ванягоччи» wired to the real pool.
+// petBuildApp builds the app with «Ванягоччи» wired to the real pool, and hands
+// back the game alongside the handler that serves it.
 //
 // Its own builder rather than the package's shared one because this file is
 // only interested in the durable half of the game: the transport is nil, no hub
 // runs, and nothing here publishes a roster. The pet path never touches the
 // transport, which is precisely the separation the service's own doc comment
 // claims — so passing nil is a small assertion of that in itself.
-func petBuildApp(vkBaseURL string) http.Handler {
-	h, _ := petBuildAppWithGame(vkBaseURL)
-	return h
-}
-
-// petBuildAppWithGame is petBuildApp plus the service itself.
 //
-// Verbs travel over the socket now, and these tests are about what a verb does
-// to a pet in a real Postgres rather than about how it arrived — so they call
-// Service.Do, which is the single funnel the socket handler itself goes
-// through. Driving a websocket here would test the transport twice and the
-// durable half not at all.
-func petBuildAppWithGame(vkBaseURL string) (http.Handler, *gamevanyagotchi.Service) {
+// The service itself comes back because verbs travel over the socket now, and
+// these tests are about what a verb does to a pet in a real Postgres rather than
+// about how it arrived — so they call Service.Do, which is the single funnel the
+// socket handler itself goes through. Driving a websocket here would test the
+// transport twice and the durable half not at all.
+func petBuildApp(vkBaseURL string) (http.Handler, *gamevanyagotchi.Service) {
 	cfg := config.Config{
 		Env: "dev",
 		VK:  config.VK{AppID: "app-1", ServiceToken: "svc", RedirectURI: vkRedirect, BaseURL: vkBaseURL},
@@ -103,23 +98,57 @@ func petBuildAppWithGame(vkBaseURL string) (http.Handler, *gamevanyagotchi.Servi
 	return observability.WrapHandler(h, "http.server"), game
 }
 
-// petApp starts a server for one test and returns it with its base URL.
-func petApp(t *testing.T) *httptest.Server {
+// petApp starts a server for one test and returns it with the game it serves. A
+// test that only reads takes the server alone; a test that presses a verb needs
+// both.
+func petApp(t *testing.T) (*httptest.Server, *gamevanyagotchi.Service) {
 	t.Helper()
 	vkSrv := fakeVKDynamic()
 	t.Cleanup(vkSrv.Close)
-	app := httptest.NewServer(petBuildApp(vkSrv.URL))
+	h, game := petBuildApp(vkSrv.URL)
+	app := httptest.NewServer(h)
 	t.Cleanup(app.Close)
-	return app
+	return app, game
 }
 
-// petActionURL builds the path for one catalogue verb, from the verb's own key.
+// petDo presses a batch of verbs the way an inbound socket frame does, and fails
+// the test on a refusal.
 //
-// The client resolves actions against the served config rather than hardcoding
-// them, and these tests do the same — so renaming a verb is one edit in the
-// catalogue and nothing here has to be found and changed.
-func petActionURL(base, action string) string {
-	return base + "/api/game-vanyagotchi/actions/" + action
+// The instant is passed because Do takes one: the read, the fold, the write and
+// the answer then all happen at a single moment, and that moment is what every
+// backdated as_of in this file is measured against. A verb that took its own
+// clock somewhere inside would make the arithmetic below true only by accident.
+//
+// What this deliberately does NOT reproduce is the wrapper handleVerbs puts
+// around the same call. The per-account one-verb-a-second bound (allowVerb) and
+// the line over his head (Say) are properties of the plane in memory rather than
+// of the pet in Postgres, they have their own unit tests in
+// internal/gamevanyagotchi/service_test.go, and reproducing them here would make
+// every test below wait a second between presses to assert nothing new.
+func petDo(t *testing.T, game *gamevanyagotchi.Service, accountID string, verbs ...string) gamevanyagotchi.State {
+	t.Helper()
+	st, err := game.Do(context.Background(), accountID, verbs, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("Do(%v) for account %s: %v", verbs, accountID, err)
+	}
+	return st
+}
+
+// petValue plucks one decayed stat value out of the state a verb answered with.
+//
+// A sibling of petStateValue rather than a replacement, because there are
+// genuinely two shapes here and neither is the other's leftover: a READ still
+// goes over HTTP and arrives as a map[string]any, while a verb now comes back as
+// the typed State that Do returns.
+func petValue(t *testing.T, st gamevanyagotchi.State, statKey string) float64 {
+	t.Helper()
+	for _, v := range st.Stats {
+		if v.Key == statKey {
+			return v.Value
+		}
+	}
+	t.Fatalf("stat %s is missing from the state a verb answered with: %+v", statKey, st.Stats)
+	return 0
 }
 
 // petRowCount counts an account's pet rows, INCLUDING any soft-deleted one.
@@ -561,20 +590,23 @@ func petFatalHours(t *testing.T, def gamevanyagotchi.Stat) float64 {
 // pet is durable per-account state — an unauthenticated caller reaching /state
 // would be creating rows for whoever the handler thought they were.
 func TestVanyagotchiPetRoutesRejectACallerWithoutASession(t *testing.T) {
-	app := petApp(t)
+	app, _ := petApp(t)
 	anon := &http.Client{}
 
-	for _, tc := range []struct {
-		method, path string
-	}{
-		{http.MethodGet, "/api/game-vanyagotchi/config"},
-		{http.MethodGet, "/api/game-vanyagotchi/state"},
-		{http.MethodPost, "/api/game-vanyagotchi/actions/" + gamevanyagotchi.ActionDrink},
-		{http.MethodPost, "/api/game-vanyagotchi/actions/" + gamevanyagotchi.ActionRelieve},
+	// Both reads, and nothing else, because the group is two reads now: a verb's
+	// gate is the socket handshake, and that gate is pinned in
+	// test/integration/realtime_test.go — a pending account is refused the
+	// upgrade, an expired session is refused, a blocked account is refused. So the
+	// absence of a verb from this table is not verbs becoming ungated. What is
+	// pinned HERE is narrower and still worth a test of its own: a pet is never
+	// materialised for a caller the server cannot name.
+	for _, path := range []string{
+		"/api/game-vanyagotchi/config",
+		"/api/game-vanyagotchi/state",
 	} {
-		s, body := doJSON(t, anon, tc.method, app.URL+tc.path, nil)
+		s, body := doJSON(t, anon, http.MethodGet, app.URL+path, nil)
 		if s != http.StatusUnauthorized || body["error"] != "unauthorized" {
-			t.Fatalf("%s %s: status=%d body=%v; want 401 unauthorized", tc.method, tc.path, s, body)
+			t.Fatalf("GET %s: status=%d body=%v; want 401 unauthorized", path, s, body)
 		}
 	}
 }
@@ -589,20 +621,18 @@ func TestVanyagotchiPetRoutesRejectACallerWithoutASession(t *testing.T) {
 // because that is the case the middleware actually has to catch: authorization
 // is re-read on every request rather than frozen at login.
 func TestVanyagotchiPetRoutesRejectAnUnapprovedAccount(t *testing.T) {
-	app := petApp(t)
+	app, _ := petApp(t)
 	cli := loginAs(t, app.URL, "7210", "user")
 	setRoleStatus(t, accountIDByUID(t, "7210"), "user", "pending")
 
+	// The reads only, for the same reason as the test above: a verb no longer
+	// arrives over HTTP, and the approval check a verb passes is the one at the
+	// socket upgrade — asserted in test/integration/realtime_test.go, where a
+	// pending account is refused the handshake outright.
 	for _, path := range []string{"/api/game-vanyagotchi/config", "/api/game-vanyagotchi/state"} {
 		s, body := doJSON(t, cli, http.MethodGet, app.URL+path, nil)
 		if s != http.StatusForbidden || body["error"] != "not_approved" {
 			t.Fatalf("GET %s: status=%d body=%v; want 403 not_approved", path, s, body)
-		}
-	}
-	for _, action := range []string{gamevanyagotchi.ActionDrink, gamevanyagotchi.ActionRelieve} {
-		s, body := doJSON(t, cli, http.MethodPost, petActionURL(app.URL, action), nil)
-		if s != http.StatusForbidden || body["error"] != "not_approved" {
-			t.Fatalf("POST %s: status=%d body=%v; want 403 not_approved", action, s, body)
 		}
 	}
 }
@@ -620,7 +650,7 @@ func TestVanyagotchiPetRoutesRejectAnUnapprovedAccount(t *testing.T) {
 // render, which is why the two defaults are checked against the lists rather
 // than merely for being non-empty.
 func TestVanyagotchiPetConfigServesTheWholeCatalogue(t *testing.T) {
-	app := petApp(t)
+	app, _ := petApp(t)
 	cli := loginAs(t, app.URL, "7201", "user")
 
 	s, cfg := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/config", nil)
@@ -663,7 +693,7 @@ func TestVanyagotchiPetConfigServesTheWholeCatalogue(t *testing.T) {
 // "a row exists saying sixty-five" are different claims and only the second one
 // survives a restart.
 func TestVanyagotchiPetIsCreatedByTheFirstStateRead(t *testing.T) {
-	app := petApp(t)
+	app, _ := petApp(t)
 	cli := loginAs(t, app.URL, "7202", "user")
 	account := accountIDByUID(t, "7202")
 
@@ -722,7 +752,7 @@ func TestVanyagotchiPetIsCreatedByTheFirstStateRead(t *testing.T) {
 // leave one pet and one row per stat; anything else means the client's own
 // polling is a slow leak.
 func TestVanyagotchiPetStateIsIdempotent(t *testing.T) {
-	app := petApp(t)
+	app, _ := petApp(t)
 	cli := loginAs(t, app.URL, "7203", "user")
 	account := accountIDByUID(t, "7203")
 
@@ -762,7 +792,7 @@ func TestVanyagotchiPetStateIsIdempotent(t *testing.T) {
 // pet, without DO NOTHING the loser gets a unique violation — and this test
 // fails for either.
 func TestVanyagotchiPetIsCreatedOnceUnderConcurrentFirstReads(t *testing.T) {
-	app := petApp(t)
+	app, _ := petApp(t)
 	cli := loginAs(t, app.URL, "7204", "user")
 	account := accountIDByUID(t, "7204")
 
@@ -816,7 +846,7 @@ func TestVanyagotchiPetIsCreatedOnceUnderConcurrentFirstReads(t *testing.T) {
 // here is the uncoupled property alone — the coupling has a test of its own,
 // below, and a test that mixed the two would not say which had broken.
 func TestVanyagotchiPetStatsDecayFromTheStoredInstant(t *testing.T) {
-	app := petApp(t)
+	app, _ := petApp(t)
 	cli := loginAs(t, app.URL, "7205", "user")
 
 	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
@@ -874,7 +904,7 @@ func TestVanyagotchiPetStatsDecayFromTheStoredInstant(t *testing.T) {
 // retuned catalogue that no longer has that shape says so instead of quietly
 // testing nothing.
 func TestVanyagotchiPetHealthFallsFasterWhileANeedGoesUnmet(t *testing.T) {
-	app := petApp(t)
+	app, _ := petApp(t)
 	cli := loginAs(t, app.URL, "7233", "user")
 
 	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
@@ -955,7 +985,7 @@ func TestVanyagotchiPetHealthFallsFasterWhileANeedGoesUnmet(t *testing.T) {
 // then has to leave the record alone, which is what "materialised exactly once"
 // means: the first observer writes the fact, everyone after that reports it.
 func TestVanyagotchiPetDeathIsRecordedAtTheDerivedInstant(t *testing.T) {
-	app := petApp(t)
+	app, _ := petApp(t)
 	cli := loginAs(t, app.URL, "7206", "user")
 
 	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
@@ -1047,13 +1077,14 @@ func TestVanyagotchiPetDeathIsRecordedAtTheDerivedInstant(t *testing.T) {
 // and "a row says eighty" are different claims and only the second survives a
 // restart.
 func TestVanyagotchiPetDrinkMovesThreeStatsAtOneInstant(t *testing.T) {
-	app := petApp(t)
+	app, game := petApp(t)
 	cli := loginAs(t, app.URL, "7230", "user")
 
 	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
 		t.Fatalf("create: status=%d body=%v", s, body)
 	}
-	id := petID(t, accountIDByUID(t, "7230"))
+	account := accountIDByUID(t, "7230")
+	id := petID(t, account)
 
 	drink := petAction(t, gamevanyagotchi.ActionDrink)
 	if len(drink.Effects) < 2 {
@@ -1067,12 +1098,9 @@ func TestVanyagotchiPetDrinkMovesThreeStatsAtOneInstant(t *testing.T) {
 	away := petHours(petFirstOnsetHours(t, hpDef) / 2)
 	petBackdateAll(t, id, away)
 
-	s, state := doJSON(t, cli, http.MethodPost, petActionURL(app.URL, drink.Key), nil)
-	if s != http.StatusOK {
-		t.Fatalf("%s: status=%d body=%v", drink.Key, s, state)
-	}
-	if state["alive"] != true {
-		t.Fatalf("alive = %v after a drink, want true", state["alive"])
+	state := petDo(t, game, account, drink.Key)
+	if !state.Alive {
+		t.Fatalf("alive = %v after a drink, want true", state.Alive)
 	}
 
 	for _, e := range drink.Effects {
@@ -1085,7 +1113,7 @@ func TestVanyagotchiPetDrinkMovesThreeStatsAtOneInstant(t *testing.T) {
 		}
 		value, _ := petStoredStat(t, id, e.StatKey)
 		petNear(t, "stored "+e.StatKey+" after a drink", value, want)
-		petNear(t, "responded "+e.StatKey+" after a drink", petStateValue(t, state, e.StatKey), want)
+		petNear(t, "answered "+e.StatKey+" after a drink", petValue(t, state, e.StatKey), want)
 	}
 
 	petRecent(t, "the instant a drink stamped on every stat", petSharedAsOf(t, id))
@@ -1104,13 +1132,14 @@ func TestVanyagotchiPetDrinkMovesThreeStatsAtOneInstant(t *testing.T) {
 // beer had already done would simply vanish at the moment of the next flush,
 // which is a bug nobody would report because the game would merely feel kind.
 func TestVanyagotchiPetRelieveEmptiesTheBladderAndRestampsEveryStat(t *testing.T) {
-	app := petApp(t)
+	app, game := petApp(t)
 	cli := loginAs(t, app.URL, "7231", "user")
 
 	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
 		t.Fatalf("create: status=%d body=%v", s, body)
 	}
-	id := petID(t, accountIDByUID(t, "7231"))
+	account := accountIDByUID(t, "7231")
+	id := petID(t, account)
 
 	relieve := petAction(t, gamevanyagotchi.ActionRelieve)
 	hpDef := petStat(t, gamevanyagotchi.StatHP)
@@ -1130,10 +1159,9 @@ func TestVanyagotchiPetRelieveEmptiesTheBladderAndRestampsEveryStat(t *testing.T
 	away := petHours(hours)
 	petBackdateAll(t, id, away)
 
-	s, state := doJSON(t, cli, http.MethodPost, petActionURL(app.URL, relieve.Key), nil)
-	if s != http.StatusOK {
-		t.Fatalf("%s: status=%d body=%v", relieve.Key, s, state)
-	}
+	// The state it answers with is not read here: every assertion below is raw
+	// SQL, because what this test is about is what the write left in the table.
+	petDo(t, game, account, relieve.Key)
 
 	// Asserted first, because it is the invariant the values below only make
 	// sense on top of, and because it names the regression outright when a write
@@ -1177,22 +1205,24 @@ func TestVanyagotchiPetRelieveEmptiesTheBladderAndRestampsEveryStat(t *testing.T
 // reviving is allowed through, which is what turns "he is dead" from a label
 // into a state the player has to act their way out of — and it has to be a
 // refusal rather than a no-op, because a button that appears to work and changes
-// nothing is how a player concludes the game is broken. 409 rather than 422: the
-// request is perfectly well formed and would succeed against a living pet; what
-// is wrong is the state of the world, and the remedy is a different action. The
-// refusal must also be total — no stat may be re-stamped on the way out, since a
-// rejected action that silently reset the clock would hand out free hours. Both
-// halves of the guard are exercised in one test on purpose: an implementation
-// that refused everything would pass the first half alone and leave the game
-// unwinnable.
+// nothing is how a player concludes the game is broken. The refusal is an error
+// out of the one funnel every verb goes through; its player-facing form is a line
+// over his head rather than a status code — refusalLine turns ErrPetDead into
+// «он не встаёт», which is asserted in internal/gamevanyagotchi/service_test.go,
+// where the plane can actually be read. The refusal must also be total — no stat
+// may be re-stamped on the way out, since a rejected verb that silently reset the
+// clock would hand out free hours. Both halves of the guard are exercised in one
+// test on purpose: an implementation that refused everything would pass the first
+// half alone and leave the game unwinnable.
 func TestVanyagotchiPetRelieveIsRefusedOnADeadPetAndDrinkIsNot(t *testing.T) {
-	app := petApp(t)
+	app, game := petApp(t)
 	cli := loginAs(t, app.URL, "7232", "user")
 
 	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
 		t.Fatalf("create: status=%d body=%v", s, body)
 	}
-	id := petID(t, accountIDByUID(t, "7232"))
+	account := accountIDByUID(t, "7232")
+	id := petID(t, account)
 
 	hpDef := petStat(t, gamevanyagotchi.StatHP)
 	relieve := petAction(t, gamevanyagotchi.ActionRelieve)
@@ -1213,9 +1243,8 @@ func TestVanyagotchiPetRelieveIsRefusedOnADeadPetAndDrinkIsNot(t *testing.T) {
 	}
 	asOfBefore := petSharedAsOf(t, id)
 
-	s, body := doJSON(t, cli, http.MethodPost, petActionURL(app.URL, relieve.Key), nil)
-	if s != http.StatusConflict || body["error"] != "pet_dead" {
-		t.Fatalf("%s on a dead pet: status=%d body=%v; want 409 pet_dead", relieve.Key, s, body)
+	if _, err := game.Do(context.Background(), account, []string{relieve.Key}, time.Now().UTC()); !errors.Is(err, gamevanyagotchi.ErrPetDead) {
+		t.Fatalf("%s on a dead pet: err=%v; want ErrPetDead", relieve.Key, err)
 	}
 	if at := petDiedAt(t, id); at == nil || !at.Equal(*died) {
 		t.Fatalf("died_at = %v after a refused %s, want the recorded %v — a refusal must not touch the pet", at, relieve.Key, died)
@@ -1225,14 +1254,15 @@ func TestVanyagotchiPetRelieveIsRefusedOnADeadPetAndDrinkIsNot(t *testing.T) {
 			asOfBefore.UTC(), at.UTC(), relieve.Key)
 	}
 
-	s, state := doJSON(t, cli, http.MethodPost, petActionURL(app.URL, drink.Key), nil)
-	if s != http.StatusOK {
-		t.Fatalf("%s on the same dead pet: status=%d body=%v; want 200 — this is the way back", drink.Key, s, state)
+	// Back to back with no wait, which is legal precisely BECAUSE Do carries no
+	// rate limit of its own: through handleVerbs the second press would be dropped
+	// by verbInterval, and that bound belongs to the plane in memory rather than to
+	// the pet in Postgres.
+	state := petDo(t, game, account, drink.Key)
+	if !state.Alive {
+		t.Fatalf("alive = %v after a %s, want true", state.Alive, drink.Key)
 	}
-	if state["alive"] != true {
-		t.Fatalf("alive = %v after a %s, want true", state["alive"], drink.Key)
-	}
-	if hp := petStateValue(t, state, hpDef.Key); hp <= hpDef.Min {
+	if hp := petValue(t, state, hpDef.Key); hp <= hpDef.Min {
 		t.Fatalf("hp = %.4f after a %s, want above the fatal floor %.1f", hp, drink.Key, hpDef.Min)
 	}
 	if at := petDiedAt(t, id); at != nil {
@@ -1253,13 +1283,14 @@ func TestVanyagotchiPetRelieveIsRefusedOnADeadPetAndDrinkIsNot(t *testing.T) {
 // the clamp in both directions of usefulness, because the drink that fills him
 // up also fills his bladder — a stat whose ceiling is the bad end of its scale.
 func TestVanyagotchiPetDrinkRevivesADeadPetAndClampsAtTheMaximum(t *testing.T) {
-	app := petApp(t)
+	app, game := petApp(t)
 	cli := loginAs(t, app.URL, "7207", "user")
 
 	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
 		t.Fatalf("create: status=%d body=%v", s, body)
 	}
-	id := petID(t, accountIDByUID(t, "7207"))
+	account := accountIDByUID(t, "7207")
+	id := petID(t, account)
 	hpDef := petStat(t, gamevanyagotchi.StatHP)
 	bladderDef := petStat(t, gamevanyagotchi.StatBladder)
 	drink := petAction(t, gamevanyagotchi.ActionDrink)
@@ -1269,14 +1300,11 @@ func TestVanyagotchiPetDrinkRevivesADeadPetAndClampsAtTheMaximum(t *testing.T) {
 		t.Fatalf("state before drinking: status=%d alive=%v; want 200 and dead", s, state["alive"])
 	}
 
-	s, state := doJSON(t, cli, http.MethodPost, petActionURL(app.URL, drink.Key), nil)
-	if s != http.StatusOK {
-		t.Fatalf("%s on a dead pet: status=%d body=%v; want 200 — this is the way back", drink.Key, s, state)
+	state := petDo(t, game, account, drink.Key)
+	if !state.Alive {
+		t.Fatalf("alive = %v after a %s, want true", state.Alive, drink.Key)
 	}
-	if state["alive"] != true {
-		t.Fatalf("alive = %v after a %s, want true", state["alive"], drink.Key)
-	}
-	if hp := petStateValue(t, state, hpDef.Key); hp <= hpDef.Min {
+	if hp := petValue(t, state, hpDef.Key); hp <= hpDef.Min {
 		t.Fatalf("hp = %.4f after a %s, want above the fatal floor %.1f", hp, drink.Key, hpDef.Min)
 	}
 	if at := petDiedAt(t, id); at != nil {
@@ -1285,28 +1313,22 @@ func TestVanyagotchiPetDrinkRevivesADeadPetAndClampsAtTheMaximum(t *testing.T) {
 
 	// Drink until the ceiling, then once more. Bounded rather than counted, so a
 	// retuned delta in the catalogue does not turn this into a false failure.
-	hp := petStateValue(t, state, hpDef.Key)
+	hp := petValue(t, state, hpDef.Key)
 	for i := 0; hp < hpDef.Max && i < 20; i++ {
-		var body map[string]any
-		if s, body = doJSON(t, cli, http.MethodPost, petActionURL(app.URL, drink.Key), nil); s != http.StatusOK {
-			t.Fatalf("%s %d: status=%d body=%v", drink.Key, i, s, body)
-		}
-		hp = petStateValue(t, body, hpDef.Key)
+		round := petDo(t, game, account, drink.Key)
+		hp = petValue(t, round, hpDef.Key)
 		if hp > hpDef.Max {
 			t.Fatalf("hp = %.4f after %s %d, want no more than the catalogue max %.1f", hp, drink.Key, i, hpDef.Max)
 		}
-		if bladder := petStateValue(t, body, bladderDef.Key); bladder > bladderDef.Max {
+		if bladder := petValue(t, round, bladderDef.Key); bladder > bladderDef.Max {
 			t.Fatalf("bladder = %.4f after %s %d, want no more than the catalogue max %.1f", bladder, drink.Key, i, bladderDef.Max)
 		}
 	}
 	petNear(t, "hp at the ceiling", hp, hpDef.Max)
 
 	// One more at the ceiling: it must land, and it must change nothing.
-	s, state = doJSON(t, cli, http.MethodPost, petActionURL(app.URL, drink.Key), nil)
-	if s != http.StatusOK {
-		t.Fatalf("%s at the ceiling: status=%d body=%v", drink.Key, s, state)
-	}
-	if hp := petStateValue(t, state, hpDef.Key); hp > hpDef.Max {
+	state = petDo(t, game, account, drink.Key)
+	if hp := petValue(t, state, hpDef.Key); hp > hpDef.Max {
 		t.Fatalf("hp = %.4f after drinking at the ceiling, want exactly %.1f", hp, hpDef.Max)
 	}
 	// The clamp must reach the row, not just the response — a stored value above
@@ -1321,34 +1343,45 @@ func TestVanyagotchiPetDrinkRevivesADeadPetAndClampsAtTheMaximum(t *testing.T) {
 // TestVanyagotchiPetRejectsAnActionOutsideTheCatalogue confirms the allowlist is
 // the catalogue itself.
 //
-// The verb is a path segment, so this endpoint is reachable with any string at
+// A verb is a string off the wire, so the funnel is reachable with anything at
 // all; what makes that safe is that an unknown one is refused rather than
-// ignored. 404 with a stable code, because a client asking for it is either
-// stale or probing and both deserve the same answer.
+// ignored. And the refusal happens BEFORE storage is touched, which is the second
+// half of this test: the catalogue lookup runs first precisely so a verb nobody
+// has heard of cannot conjure a pet — with rows and seeded stats — for an account
+// that has never opened the game. A hostile client would otherwise have a free
+// write per frame.
 func TestVanyagotchiPetRejectsAnActionOutsideTheCatalogue(t *testing.T) {
-	app := petApp(t)
-	cli := loginAs(t, app.URL, "7208", "user")
+	app, game := petApp(t)
+	// The login is what creates the account row; nothing here ever reads over
+	// HTTP, so the client itself is not needed.
+	loginAs(t, app.URL, "7208", "user")
+	account := accountIDByUID(t, "7208")
 
-	s, body := doJSON(t, cli, http.MethodPost, petActionURL(app.URL, "подкормить"), nil)
-	if s != http.StatusNotFound || body["error"] != "unknown_action" {
-		t.Fatalf("unknown action: status=%d body=%v; want 404 unknown_action", s, body)
+	_, err := game.Do(context.Background(), account, []string{"подкормить"}, time.Now().UTC())
+	if !errors.Is(err, gamevanyagotchi.ErrUnknownAction) {
+		t.Fatalf("an unknown verb: err=%v; want ErrUnknownAction", err)
 	}
-	if body["trace_id"] == "" {
-		t.Fatal("error envelope carries no trace_id")
+	if n := petRowCount(t, account); n != 0 {
+		t.Fatalf("pets after a verb outside the catalogue = %d, want 0 — the lookup runs before any storage is touched so that nonsense cannot materialise a pet", n)
 	}
 }
 
 // TestVanyagotchiPetsAreIsolatedPerAccount confirms one player's pet is one
 // player's.
 //
-// Everything in the durable half is keyed on the caller's account id taken from
-// the session, never from the request, so this is really a check that no query
-// lost its account predicate — the failure mode being one shared Ваня that every
-// player feeds. It matters more now than it did: an action re-stamps every stat
-// row it can reach, so a missing predicate would not merely read somebody else's
-// pet, it would rewrite it.
+// Every query in the durable half carries an account predicate, and this is the
+// check that none of them lost it — the failure mode being one shared Ваня that
+// every player feeds. It matters more now than it did: a verb re-stamps every
+// stat row it can reach, so a missing predicate would not merely read somebody
+// else's pet, it would rewrite it.
+//
+// The account id is an ARGUMENT here rather than something taken from a session,
+// which is the honest shape of the funnel: Do is handed an account and trusts it.
+// Where that argument comes from is proved elsewhere — the /state tests for the
+// reads, and for a verb the realtime.Member the hub binds at the socket upgrade,
+// which a frame cannot talk its way out of.
 func TestVanyagotchiPetsAreIsolatedPerAccount(t *testing.T) {
-	app := petApp(t)
+	app, game := petApp(t)
 	alice := loginAs(t, app.URL, "7220", "user")
 	bob := loginAs(t, app.URL, "7221", "user")
 
@@ -1357,7 +1390,8 @@ func TestVanyagotchiPetsAreIsolatedPerAccount(t *testing.T) {
 			t.Fatalf("%s create: status=%d body=%v", name, s, body)
 		}
 	}
-	aliceID := petID(t, accountIDByUID(t, "7220"))
+	aliceAccount := accountIDByUID(t, "7220")
+	aliceID := petID(t, aliceAccount)
 	bobID := petID(t, accountIDByUID(t, "7221"))
 	if aliceID == bobID {
 		t.Fatalf("both accounts resolved to pet %s — the pet is not per-account", aliceID)
@@ -1372,12 +1406,9 @@ func TestVanyagotchiPetsAreIsolatedPerAccount(t *testing.T) {
 	petBackdateAll(t, aliceID, petHours(petFatalHours(t, hpDef)/2))
 	beforeValue, beforeAsOf := petStoredStat(t, bobID, hpDef.Key)
 
-	s, state := doJSON(t, alice, http.MethodPost, petActionURL(app.URL, drink.Key), nil)
-	if s != http.StatusOK {
-		t.Fatalf("alice's %s: status=%d body=%v", drink.Key, s, state)
-	}
-	if id, _ := state["pet"].(map[string]any)["id"].(string); id != aliceID {
-		t.Fatalf("alice's %s answered with pet %s, want %s", drink.Key, id, aliceID)
+	state := petDo(t, game, aliceAccount, drink.Key)
+	if state.Pet.ID != aliceID {
+		t.Fatalf("alice's %s answered with pet %s, want %s", drink.Key, state.Pet.ID, aliceID)
 	}
 
 	afterValue, afterAsOf := petStoredStat(t, bobID, hpDef.Key)

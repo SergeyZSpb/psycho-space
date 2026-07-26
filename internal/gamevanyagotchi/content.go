@@ -147,7 +147,7 @@ type Action struct {
 	Done string `json:"done"`
 	// RevivesFatal: allowed on, and undoes, a death. Deliberately not true of
 	// every action — a dead Ваня cannot go to the toilet, and that is what makes
-	// the refusal path real rather than theoretical. See Service.Act.
+	// the refusal path real rather than theoretical. See Service.Do.
 	RevivesFatal bool `json:"revives_fatal"`
 }
 

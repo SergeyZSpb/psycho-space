@@ -2780,3 +2780,41 @@ func TestADeadВаняStillCarriesWhatTheServerSaid(t *testing.T) {
 		t.Fatalf("a dead Ваня says %q; the server's answer to a refused verb must reach the player who pressed it", p.Say)
 	}
 }
+
+// TestRefusalLineSaysTheRightThingOrDeliberatelyNothing pins the whole mapping
+// from a refusal to what the player reads.
+//
+// Two of these rows are asserting SILENCE, which is the half a well-meaning
+// future edit is most likely to break: a refusal nobody can act on is worse than
+// no message, because it tells a player something went wrong while giving him
+// nothing to do about it. An unknown verb can only come from a client that
+// invented one, and an unknown stat is our own catalogue disagreeing with itself
+// — in neither case is there a button that would help.
+//
+// The asymmetry between those two is that only the second is OUR bug, so only
+// the second is logged. That is not asserted here (a log line is not this
+// function's return value) and is stated in the branch's own comment.
+func TestRefusalLineSaysTheRightThingOrDeliberatelyNothing(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"a dead pet is the one refusal a player must read", ErrPetDead, "он не встаёт"},
+		{"too many verbs at once", ErrBatchTooLong, "не части"},
+		{"a verb outside the catalogue is answered with silence", ErrUnknownAction, ""},
+		{"a catalogue that disagrees with itself is answered with silence", ErrUnknownStat, ""},
+		{"anything unexpected is honest and vague", errors.New("boom"), "чёт не вышло"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Wrapped, because Do wraps: the real errors arrive with the verb
+			// that caused them fmt.Errorf'd around the sentinel, so a mapping
+			// written with == instead of errors.Is would pass an unwrapped test
+			// and fail in production.
+			if got := refusalLine(context.Background(), fmt.Errorf("verb %q: %w", "выпить", c.err)); got != c.want {
+				t.Fatalf("refusalLine(%v) = %q, want %q", c.err, got, c.want)
+			}
+		})
+	}
+}

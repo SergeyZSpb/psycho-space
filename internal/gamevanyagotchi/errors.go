@@ -18,19 +18,28 @@ var (
 	ErrInvalidPosition = errors.New("gamevanyagotchi: invalid position")
 )
 
-// Sentinels for the HTTP path. Unlike the ones above these DO reach a client, as
-// a stable error code chosen by the handler — never as this text.
+// Sentinels for a verb — what Do decided about one, rather than what the parser
+// made of a frame.
+//
+// They reach a client no more directly than the ones above do: a verb has no
+// response body to be answered in. What reaches the PLAYER is a line over his
+// Ваня's head, chosen from the sentinel by refusalLine and carried there by the
+// next full-state frame — or, for a refusal he could not act on and did not
+// cause, deliberately no line at all.
 var (
 	// ErrUnknownAction means the requested verb is not in the catalogue. A
-	// client that asks for one is either stale or probing; both are the same
-	// 404.
+	// client that asks for one is either stale or probing, and neither has
+	// anything useful to be told: both are answered with silence.
 	ErrUnknownAction = errors.New("gamevanyagotchi: unknown action")
 	// ErrUnknownStat means the catalogue disagrees with itself — an action that
 	// moves a stat which no longer exists. That is a content bug rather than
-	// anything the caller did, so it is a 500 and not a 404.
+	// anything the player did, and nothing he could press would help, so it earns
+	// the same silence as a verb that was never in the catalogue.
 	ErrUnknownStat = errors.New("gamevanyagotchi: unknown stat")
 	// ErrPetDead means the action needs a living pet and this one is not. Only
-	// an action that can revive him is allowed through.
+	// an action that can revive him is allowed through, and this is the refusal
+	// the player most needs to read — «он не встаёт» — because being told is also
+	// the hint about which verb to press instead.
 	ErrPetDead = errors.New("gamevanyagotchi: pet is dead")
 )
 

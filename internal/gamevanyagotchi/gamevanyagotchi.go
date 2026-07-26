@@ -42,7 +42,7 @@ const (
 	// which the catalogue defines, so "looking rough" and "the bar turned amber"
 	// are the same threshold rather than two numbers that drift apart.
 	PosePoorly = "poorly"
-	// PoseDead is one who did not make it. Reversible; see Service.Act.
+	// PoseDead is one who did not make it. Reversible; see Service.Do.
 	PoseDead = "dead"
 	// PoseAsleep is a Ваня whose owner is away, lying where he last stood.
 	//

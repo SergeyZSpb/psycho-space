@@ -609,8 +609,8 @@ func TestAVerbThatIsNotInTheCatalogueIsRejectedAndTouchesNothing(t *testing.T) {
 	for _, key := range []string{"", "sudo-drink", StatHP, "DRINK", ActionDrink + " "} {
 		t.Run("action "+key, func(t *testing.T) {
 			repo := &fakeRepo{}
-			if _, err := petService(repo).Act(context.Background(), testAccount, key); !errors.Is(err, ErrUnknownAction) {
-				t.Fatalf("Act(%q) error = %v; want ErrUnknownAction", key, err)
+			if _, err := petService(repo).Do(context.Background(), testAccount, []string{key}, time.Now().UTC()); !errors.Is(err, ErrUnknownAction) {
+				t.Fatalf("Do(%q) error = %v; want ErrUnknownAction", key, err)
 			}
 			if repo.ensured != 0 || repo.writes != 0 || repo.seeded != 0 {
 				t.Fatalf("a rejected verb still touched storage: ensured=%d writes=%d seeded=%d",
@@ -620,7 +620,7 @@ func TestAVerbThatIsNotInTheCatalogueIsRejectedAndTouchesNothing(t *testing.T) {
 	}
 }
 
-// TestActAppliesEveryEffectOfAMultiStatAction is the action loop itself.
+// TestAVerbAppliesEveryEffectOfAMultiStatAction is the action loop itself.
 //
 // The client sends a verb and never a value, so the server's own arithmetic is
 // the only thing standing between "a drink helped" and "a client set its hp to a
@@ -628,7 +628,7 @@ func TestAVerbThatIsNotInTheCatalogueIsRejectedAndTouchesNothing(t *testing.T) {
 // him up and fills his bladder, which is the whole joke and the reason the
 // second verb has anything to do — so every effect has to land, each clamped
 // against its OWN stat's bounds rather than against the first one's.
-func TestActAppliesEveryEffectOfAMultiStatAction(t *testing.T) {
+func TestAVerbAppliesEveryEffectOfAMultiStatAction(t *testing.T) {
 	drink := mustAction(t, ActionDrink)
 	if len(drink.Effects) < 2 {
 		t.Fatalf("%q moves %d stats; this test exists for the multi-effect case", drink.Key, len(drink.Effects))
@@ -671,10 +671,10 @@ func TestActAppliesEveryEffectOfAMultiStatAction(t *testing.T) {
 			repo := playedFor(rows...)
 
 			before := time.Now().UTC()
-			st, err := petService(repo).Act(context.Background(), testAccount, ActionDrink)
+			st, err := petService(repo).Do(context.Background(), testAccount, []string{ActionDrink}, time.Now().UTC())
 			after := time.Now().UTC()
 			if err != nil {
-				t.Fatalf("Act: %v", err)
+				t.Fatalf("Do: %v", err)
 			}
 
 			clamped := 0
@@ -739,8 +739,8 @@ func TestEveryActionRestampsEveryStatAtOneInstant(t *testing.T) {
 			repo := playedFor(rows...)
 
 			before := time.Now().UTC()
-			if _, err := petService(repo).Act(context.Background(), testAccount, action.Key); err != nil {
-				t.Fatalf("Act(%q): %v", action.Key, err)
+			if _, err := petService(repo).Do(context.Background(), testAccount, []string{action.Key}, time.Now().UTC()); err != nil {
+				t.Fatalf("Do(%q): %v", action.Key, err)
 			}
 			after := time.Now().UTC()
 
@@ -803,9 +803,9 @@ func TestRelievingHimDoesNotEraseTheDamageAFullBladderAlreadyDid(t *testing.T) {
 	}
 	repo := playedFor(rows...)
 
-	st, err := petService(repo).Act(context.Background(), testAccount, ActionRelieve)
+	st, err := petService(repo).Do(context.Background(), testAccount, []string{ActionRelieve}, time.Now().UTC())
 	if err != nil {
-		t.Fatalf("Act(%q): %v", ActionRelieve, err)
+		t.Fatalf("Do(%q): %v", ActionRelieve, err)
 	}
 
 	// The bladder is reset. A delta larger than the whole scale plus the clamp is
@@ -898,17 +898,18 @@ func TestADeathIsRecordedOnceAtTheMomentItHappened(t *testing.T) {
 }
 
 // TestADeadPetTakesTheActionThatRevivesAndRefusesTheOneThatDoesNot covers both
-// halves of Act's death guard, which are now both reachable through the shipped
+// halves of Do's death guard, which are now both reachable through the shipped
 // catalogue.
 //
 // Death here is a fright rather than an ending — an irreversible loss in a
 // fifteen-person friend group is how a player leaves for good — so beer brings
 // him round and what a death costs is the scare plus whatever decayed while
 // nobody was looking. The refusal is the other half and it is not decoration: a
-// dead Ваня does not go to the toilet, which is what makes ErrPetDead, the 409 it
-// becomes, and the screen that says what to do instead all real rather than
-// theoretical. A refusal must also write nothing at all, or a corpse would keep
-// having its stats re-stamped by a verb it just declined.
+// dead Ваня does not go to the toilet, which is what makes ErrPetDead, the
+// «он не встаёт» it becomes over his head, and the screen that says what to do
+// instead all real rather than theoretical. A refusal must also write nothing at
+// all, or a corpse would keep having its stats re-stamped by a verb it just
+// declined.
 func TestADeadPetTakesTheActionThatRevivesAndRefusesTheOneThatDoesNot(t *testing.T) {
 	hpDef := mustStat(t, StatHP)
 
@@ -925,12 +926,12 @@ func TestADeadPetTakesTheActionThatRevivesAndRefusesTheOneThatDoesNot(t *testing
 	for _, action := range Content().Actions {
 		t.Run(action.Key, func(t *testing.T) {
 			repo := deadPet(t)
-			st, err := petService(repo).Act(context.Background(), testAccount, action.Key)
+			st, err := petService(repo).Do(context.Background(), testAccount, []string{action.Key}, time.Now().UTC())
 
 			if !action.RevivesFatal {
 				refused++
 				if !errors.Is(err, ErrPetDead) {
-					t.Fatalf("Act(%q) on a dead pet error = %v; want ErrPetDead", action.Key, err)
+					t.Fatalf("Do(%q) on a dead pet error = %v; want ErrPetDead", action.Key, err)
 				}
 				if repo.writes != 0 {
 					t.Errorf("%q wrote %d batches of stat rows on a dead pet; want none", action.Key, repo.writes)
@@ -946,7 +947,7 @@ func TestADeadPetTakesTheActionThatRevivesAndRefusesTheOneThatDoesNot(t *testing
 
 			revived++
 			if err != nil {
-				t.Fatalf("Act(%q) on a dead pet = %v; an action that revives must be allowed through", action.Key, err)
+				t.Fatalf("Do(%q) on a dead pet = %v; an action that revives must be allowed through", action.Key, err)
 			}
 			if !st.Alive || st.Pet.DiedAt != nil {
 				t.Fatalf("he is still dead after an action that revives him: alive=%v died_at=%v", st.Alive, st.Pet.DiedAt)
@@ -979,7 +980,7 @@ func TestADeadPetTakesTheActionThatRevivesAndRefusesTheOneThatDoesNot(t *testing
 // reported alive whose health is still zero — dead again on the very next read,
 // with the recorded moment of death now a lie.
 //
-// The guard is exercised directly rather than through Act, and deliberately not
+// The guard is exercised directly rather than through Do, and deliberately not
 // by adding a catalogue entry that exists only for tests: content.go is
 // production content. Whether the shipped numbers can reach this branch end to
 // end is a separate question, and it is asked below rather than assumed.
@@ -1004,7 +1005,7 @@ func TestARevivalNeedsTheActionToLiftHimOffTheFloor(t *testing.T) {
 	}
 
 	// Reachability, stated rather than assumed. With the shipped numbers every
-	// reviving action raises hp well clear of its floor, so Act's `revives`
+	// reviving action raises hp well clear of its floor, so Do's `revives`
 	// refusal cannot currently be produced end to end; the guard is unit-tested
 	// above instead of being faked with test-only content.
 	for _, a := range Content().Actions {
@@ -1012,7 +1013,7 @@ func TestARevivalNeedsTheActionToLiftHimOffTheFloor(t *testing.T) {
 			continue
 		}
 		if hpDef.Clamp(hpDef.Min+effectOn(a, StatHP)) <= hpDef.Min {
-			t.Logf("%q revives but lifts hp to %v, so Act's `revives` refusal is now reachable end to end and deserves a service-level test",
+			t.Logf("%q revives but lifts hp to %v, so Do's `revives` refusal is now reachable end to end and deserves a service-level test",
 				a.Key, hpDef.Clamp(hpDef.Min+effectOn(a, StatHP)))
 		}
 	}

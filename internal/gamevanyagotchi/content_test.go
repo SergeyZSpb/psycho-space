@@ -119,8 +119,10 @@ func TestEveryStatHasAUsableRange(t *testing.T) {
 
 // TestEveryActionMovesStatsThatExist is the catalogue agreeing with itself.
 // An action naming a stat that has been renamed or removed is a button that
-// appears to work: Act answers ErrUnknownStat, which is a 500 rather than
-// anything the player did wrong.
+// appears to work: Do refuses the whole batch with ErrUnknownStat, which is the
+// catalogue disagreeing with itself rather than anything the player did wrong —
+// and since a verb is answered with state rather than a reply, what the player
+// actually gets is nothing at all.
 //
 // An action moves a LIST of stats now — drinking tops him up, cheers him up and
 // fills his bladder — so every entry in that list has to resolve, not just the
@@ -343,10 +345,10 @@ func TestExactlyOneStatIsFatalAndItActuallyDrains(t *testing.T) {
 // fifteen-person friend group is how a player leaves permanently — so a
 // catalogue in which no action revives is a dead end that would reach a player
 // before anyone noticed. The other half is subtler: if EVERY action revived,
-// Act's death guard could never fire, ErrPetDead would be unreachable, and the
-// 409 the client is written to handle would be dead code that nothing proves
-// works. A dead Ваня not being able to go to the toilet is what makes that path
-// real.
+// Do's death guard could never fire, ErrPetDead would be unreachable, and the
+// «он не встаёт» balloon the refusal turns into would be dead code that nothing
+// proves works. A dead Ваня not being able to go to the toilet is what makes
+// that path real.
 func TestDeathIsRecoverableAndTheRefusalIsReachable(t *testing.T) {
 	var revives, refuses []string
 	for _, a := range Content().Actions {
@@ -360,7 +362,7 @@ func TestDeathIsRecoverableAndTheRefusalIsReachable(t *testing.T) {
 		t.Error("no action sets revives_fatal: a dead pet would be unrecoverable and the account would be finished with the game")
 	}
 	if len(refuses) == 0 {
-		t.Error("every action sets revives_fatal: Act's death guard can never fire, so ErrPetDead and the 409 it becomes are unreachable")
+		t.Error("every action sets revives_fatal: Do's death guard can never fire, so ErrPetDead and the balloon it becomes are unreachable")
 	}
 }
 

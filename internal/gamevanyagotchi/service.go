@@ -839,20 +839,21 @@ func (s *Service) State(ctx context.Context, accountID string) (State, error) {
 	return s.state(ctx, accountID, time.Now().UTC())
 }
 
-// Act applies one catalogue action to the caller's pet and answers with the
-// server's own recomputed state.
+// Do applies a batch of verbs to one account's pet and answers with the server's
+// own recomputed state.
+//
+// It is the single funnel every verb passes through, whatever delivered it. One
+// place interprets a verb, so a rule — refused while dead, too far from the
+// vendor, the stock is empty — is written once and cannot be enforced on one
+// path and forgotten on another. An inbound socket frame is a thin adapter onto
+// this and is currently the only one; a replay reads back the very log this
+// appends.
 //
 // The client sends a verb and never a value — it does not say "set hp to 80",
 // it says "heal" — so there is nothing in the request to forge. That differs
 // deliberately from the first game, which carries its tension counter
 // client-side: a run there is ephemeral and unrecorded until it ends, and a pet
 // here is persistent.
-// Do is the single funnel every verb passes through, whatever delivered it.
-//
-// One place interprets a verb, so a rule — refused while dead, too far from the
-// vendor, the stock is empty — is written once and cannot be enforced on one
-// path and forgotten on another. The HTTP handler is a thin adapter onto this,
-// and an inbound socket frame is a second one.
 //
 // A BATCH IS THE GENERAL CASE AND A SINGLE ACTION IS A BATCH OF ONE. The verbs
 // are folded in order against one snapshot, so drink-then-relieve is a
@@ -947,13 +948,6 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 	return s.state(ctx, accountID, at)
 }
 
-// Act applies exactly one verb. Kept as the name the HTTP handler and the tests
-// already use, and now a batch of one — which is the same property the fold
-// itself rests on.
-func (s *Service) Act(ctx context.Context, accountID, actionKey string) (State, error) {
-	return s.Do(ctx, accountID, []string{actionKey}, time.Now().UTC())
-}
-
 // revives reports whether the rows about to be written leave every fatal stat
 // above its floor.
 func revives(rows []StatRow) bool {
@@ -966,8 +960,8 @@ func revives(rows []StatRow) bool {
 	return true
 }
 
-// state is the one read path, shared by State and Act so an action can never
-// answer with a differently-computed world than a plain read would have.
+// state is the one read path, shared by State and Do so a verb can never answer
+// with a differently-computed world than a plain read would have.
 //
 // now is passed in rather than taken, so that one action reads, writes and
 // answers against a single instant instead of three slightly different ones.
@@ -1196,7 +1190,7 @@ func (s *Service) handleVerbs(ctx context.Context, m realtime.Member, payload []
 
 	state, err := s.Do(ctx, m.AccountID, verbs, now)
 	if err != nil {
-		s.Say(m.AccountID, refusalLine(err), sayFor)
+		s.Say(m.AccountID, refusalLine(ctx, err), sayFor)
 		return
 	}
 	if line := doneLine(verbs); line != "" {
@@ -1296,21 +1290,31 @@ func (s *Service) pushState(ctx context.Context, accountID string, state State) 
 // The catalogue does not own these because they are not content about a verb —
 // they are what the SERVER decided about this attempt, and the same sentence
 // serves whichever verb was refused.
-func refusalLine(err error) string {
+func refusalLine(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, ErrPetDead):
 		return "он не встаёт"
 	case errors.Is(err, ErrBatchTooLong):
 		return "не части"
-	case errors.Is(err, ErrUnknownAction), errors.Is(err, ErrUnknownStat):
+	case errors.Is(err, ErrUnknownAction):
 		// A verb the catalogue does not have can only come from a client that
 		// invented one, so there is nothing useful to say and nothing to fix.
+		return ""
+	case errors.Is(err, ErrUnknownStat):
+		// Silent to the PLAYER for the same reason — nothing he could press
+		// would help — but not silent to the operator, and that asymmetry is the
+		// point. An unknown verb is somebody else's stale client; an unknown
+		// stat is OUR catalogue disagreeing with itself, which is a bug in the
+		// content we shipped. A unit test makes it unreachable in a released
+		// binary, so if it ever fires the log line is the only thing that would
+		// say so.
+		slog.WarnContext(ctx, "gamevanyagotchi: the catalogue disagrees with itself", "err", err)
 		return ""
 	default:
 		// A database failure or anything else unexpected. The player gets
 		// something honest and vague; the operator gets the real reason in the
 		// log, with a trace id, which is where an error of this kind belongs.
-		slog.WarnContext(context.Background(), "gamevanyagotchi: a verb failed", "err", err)
+		slog.WarnContext(ctx, "gamevanyagotchi: a verb failed", "err", err)
 		return "чёт не вышло"
 	}
 }

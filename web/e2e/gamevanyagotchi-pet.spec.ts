@@ -29,11 +29,15 @@ const TYPE_DO = 'vanyagotchi_do';
 /** The owner's own pet, pushed after it changes. */
 const TYPE_STATE = 'vanyagotchi_state';
 
-/** The routes the SPA calls, spelled out rather than built from a helper. */
+/**
+ * The routes the SPA calls, spelled out rather than built from a helper.
+ *
+ * Two of them, and that is the whole list: a verb is a socket frame, so there is
+ * no action route here to name. The stub still answers the action PREFIX, but as
+ * a tripwire rather than as a route — see `stubBackend`.
+ */
 const CONFIG_PATH = '/api/game-vanyagotchi/config';
 const STATE_PATH = '/api/game-vanyagotchi/state';
-const DRINK_PATH = '/api/game-vanyagotchi/actions/drink';
-const RELIEVE_PATH = '/api/game-vanyagotchi/actions/relieve';
 
 // ---------------------------------------------------------------------------
 // Wire fixtures. Local mirrors of internal/gamevanyagotchi/{content,decay,pet}.go.
@@ -308,23 +312,28 @@ interface PetStub {
   /** Called per request, so every answer is stamped with a fresh clock. */
   state?: (() => StateFixture) | 'fail';
   /**
-   * What POST /actions/{key} answers with, given the verb — so one stub can
-   * refuse one action and honour another, which is the whole point now that not
-   * every action can be applied to a corpse. Defaults to whatever `state` says.
+   * What a VERB does, given its key — so one stub can refuse one action and
+   * honour another, which is the whole point now that not every action can be
+   * applied to a corpse. Defaults to whatever `state` says.
+   *
+   * Read by the socket fake, which is where verbs actually go, and by the HTTP
+   * tripwire, which exists only so that a verb going anywhere else fails loudly.
+   * A `Refusal` is not sent back at all: the socket owes no reply, so the server
+   * answers a refused verb with a line over the player's own Ваня instead.
    */
   acted?: (action: string) => StateFixture | Refusal;
-  /**
-   * Held open, if set, before any action is answered. A test that needs to
-   * observe the in-flight state waits on this rather than on a timeout — the
-   * disabled button is otherwise a state one Vue flush wide.
-   */
-  hold?: Promise<void>;
 }
 
-/** The calls the page actually made, for tests that care how many. */
+/**
+ * The calls the page actually made, for tests that care how many.
+ *
+ * One field, and it counts the requests that must NEVER happen rather than the
+ * ones that should — see the tripwire in `stubBackend`. There was a `states`
+ * counter beside it, incremented on every read and asserted by nothing; a
+ * counter nobody reads cannot fail, so it was not coverage.
+ */
 interface PetCalls {
   posts: string[];
-  states: number;
 }
 
 /**
@@ -337,7 +346,7 @@ interface PetCalls {
  */
 async function stubBackend(page: Page, pet: PetStub = {}): Promise<PetCalls> {
   stubbedPet = pet;
-  const calls: PetCalls = { posts: [], states: 0 };
+  const calls: PetCalls = { posts: [] };
   await page.addInitScript(() => {
     try {
       localStorage.setItem('ps-theme', 'dark');
@@ -373,13 +382,22 @@ async function stubBackend(page: Page, pet: PetStub = {}): Promise<PetCalls> {
       return json(pet.config ?? {});
     }
     if (path === STATE_PATH) {
-      calls.states += 1;
       if (pet.state === 'fail') return boom();
       return json(pet.state ? pet.state() : {});
     }
+    // A TRIPWIRE, not a route. `POST /api/game-vanyagotchi/actions/{verb}` NO
+    // LONGER EXISTS on the server — a verb travels over the socket as a
+    // `vanyagotchi_do` frame — so nothing the SPA does should ever land here.
+    //
+    // The branch exists precisely so that it never fires: every action test
+    // below asserts `calls.posts` is EMPTY, which is what proves the SPA sends
+    // no HTTP verb. Without it a regression — the client quietly going back to
+    // HTTP — would be caught by nothing here and would 404 in production
+    // instead, where the failure is a button that silently does nothing.
+    //
+    // So do not delete it because the route is gone. Gone is the point.
     if (path.startsWith('/api/game-vanyagotchi/actions/')) {
       calls.posts.push(path);
-      if (pet.hold) await pet.hold;
       const verb = path.slice(path.lastIndexOf('/') + 1);
       if (pet.acted) {
         const answer = pet.acted(verb);
@@ -443,8 +461,23 @@ async function stubSocket(page: Page, pet: PetStub = stubbedPet): Promise<Socket
       // The same stub that answers the HTTP read, so a test describes its world
       // once and both paths agree about it.
       const verb = verbs[verbs.length - 1];
-      const answer = pet.acted ? pet.acted(verb) : pet.state?.();
-      if (!answer || 'refusal' in (answer as object)) return;
+      const answer = pet.acted
+        ? pet.acted(verb)
+        : typeof pet.state === 'function'
+          ? pet.state()
+          : undefined;
+      // A REFUSAL IS NOT SENT BACK, and nor is a broken read. The socket owes no
+      // reply at all: the server's answer to a refused verb is a line over the
+      // player's own Ваня, which a test pushes as a roster frame, so the shape
+      // `stubBackend` would have turned into a 409 becomes silence here.
+      //
+      // Discriminated on `code`, which is what a `Refusal` carries and a state
+      // does not — the same discriminator the HTTP branch uses. It used to look
+      // for a `refusal` field that nothing has ever set, so a refused verb was
+      // answered with a `vanyagotchi_state` frame carrying a status code where
+      // the pet should be: a frame the real server cannot produce, in the one
+      // test whose comment says the fake sends nothing.
+      if (!answer || 'code' in answer) return;
       route.send(JSON.stringify({ t: TYPE_STATE, state: answer }));
     });
     resolveReady();
@@ -460,9 +493,14 @@ async function stubSocket(page: Page, pet: PetStub = stubbedPet): Promise<Socket
 }
 
 /**
- * One entry of a roster frame. `art`, `label` and `pose` are optional because
- * they are optional on the wire — `label` is omitted outright for a Ваня with no
- * name — and every combination has to draw somebody.
+ * One entry of a roster frame. `art`, `label`, `pose` and `say` are optional
+ * because they are optional on the wire — `label` is omitted outright for a Ваня
+ * with no name — and every combination has to draw somebody.
+ *
+ * `say` is the line the SERVER decided to put over this entity's head: what a
+ * verb did, or why it was refused, or idle muttering. It belongs here because it
+ * is how a verb is answered — there is no reply channel — so a test that presses
+ * one describes the answer by pushing a roster frame carrying it.
  */
 interface Peer {
   id: string;
@@ -471,6 +509,7 @@ interface Peer {
   art?: string;
   label?: string;
   pose?: string;
+  say?: string;
 }
 
 /**
