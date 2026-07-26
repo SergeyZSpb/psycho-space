@@ -436,8 +436,18 @@ interface Peer {
   pose?: string;
 }
 
+/**
+ * A roster frame, carrying the head count the server puts on one.
+ *
+ * `here` is how many PEOPLE are in the yard, which stopped being `peers.length`
+ * once the roster began carrying the yard's regulars and everybody asleep in it
+ * as well. Every peer this file builds is a person, so the two agree — but the
+ * field is sent rather than omitted, because omitting it would silently route
+ * every frame in this file through the client's legacy fallback and leave the
+ * path a live server actually uses untested here.
+ */
 function roster(...peers: Peer[]): string {
-  return JSON.stringify({ t: TYPE_ROSTER, peers });
+  return JSON.stringify({ t: TYPE_ROSTER, peers, here: peers.length });
 }
 
 /** Copied, not imported — see the header. */

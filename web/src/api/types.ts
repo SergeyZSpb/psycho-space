@@ -294,6 +294,28 @@ export interface VanyagotchiSkin {
   image?: string;
 }
 
+/**
+ * Somebody in the yard who is not a player.
+ *
+ * Three fields and no fourth: `art` is a catalogue key resolved exactly as a
+ * pet's skin is, which is why an NPC costs the browser nothing — to the client
+ * it is one more entity in the roster, with a face it already knows how to draw.
+ * HOW an NPC moves is deliberately absent from the wire (`json:"-"` on the Go
+ * side): where it stands arrives in the roster like everybody else's position,
+ * and publishing the pattern would invite a second implementation of it here.
+ *
+ * The screen does not currently read this list at all — the roster already
+ * carries each NPC's art key, so nothing has to be looked up by character. It is
+ * typed because it is part of the contract, and because a surface that wants to
+ * name the cast (a credits line, say) should not have to invent the shape.
+ */
+export interface VanyagotchiNPC {
+  key: string;
+  label: string;
+  /** A catalogue art key, resolved exactly as a pet's skin is. */
+  art: string;
+}
+
 export interface VanyagotchiLocation {
   key: string;
   label: string;
@@ -307,6 +329,12 @@ export interface VanyagotchiConfig {
   stats: VanyagotchiStat[];
   actions: VanyagotchiAction[];
   skins: VanyagotchiSkin[];
+  /**
+   * The cast. Optional for the same reason `rate_per_hour` is: a server that
+   * predates the field — or a fixture that omits it — must still draw a yard,
+   * and it can, because the roster is self-describing.
+   */
+  npcs?: VanyagotchiNPC[];
   locations: VanyagotchiLocation[];
   default_skin: string;
   default_location: string;

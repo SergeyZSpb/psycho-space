@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { loginAs, stack, type SeededAccount, type SeededKind } from './fixtures';
 
@@ -155,6 +157,31 @@ function setStats(account: SeededAccount, values: Record<string, number>): void 
   ).toEqual(Object.keys(values).sort());
 }
 
+/**
+ * Takes the server away and gives it back, exactly as a deploy does.
+ *
+ * Copied from the sibling spec rather than imported: a game's fixtures are its
+ * own, so deleting «Ванягоччи» stays a matter of deleting its files.
+ *
+ * Needed here for a reason `forgetPet` cannot cover. Deleting a pet's row does
+ * not delete the SERVER's idea of where that account is standing — a placement
+ * lives in memory, and since the yard started keeping absent Ваняs lying about
+ * in it, a placement is no longer evicted when the reconnect grace runs out. So
+ * an account whose row has been deleted still gets drawn wherever this process
+ * last saw it, forever. A restart is the only thing that makes "has never stood
+ * anywhere" true of both layers at once.
+ */
+function restartServer(): string {
+  const script = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    'scripts',
+    'e2e-stack-restart.sh',
+  );
+  return execFileSync('bash', [script], { encoding: 'utf8', timeout: 90_000 }).trim();
+}
+
 // ---------------------------------------------------------------------------
 
 const CONFIG_URL = '/api/game-vanyagotchi/config';
@@ -199,24 +226,53 @@ async function refreshTheYardsIdeaOf(page: Page): Promise<void> {
   await enterYardFrom(page);
 }
 
+/**
+ * Everything the plane is drawing, which is NOT the same as the people in it.
+ *
+ * The roster carries the yard's two regulars — characters with no accounts,
+ * evaluated closed-form on every tick — and everybody who is asleep in it, an
+ * account whose owner is away lying where he last stood. Both are entities to
+ * draw and neither is a player, so `PLAYER_ONLY` below is what a test means when
+ * it says "the Ваняs who are here", and the head count comes off the wire.
+ */
 const dots = (page: Page) => page.locator('[data-test="peer"]');
+
+/**
+ * Everybody who is actually here: not a regular, and not asleep.
+ *
+ * A regular is recognised by the `npc-` id prefix the server mints for it, which
+ * is the only handle it can have — it has no account, so no pseudonym and no
+ * row. Written as one selector string because `positions` below has to hand the
+ * same rule to `querySelectorAll` inside the page.
+ */
+const PLAYER_ONLY =
+  '[data-test="peer"]:not([data-peer^="npc-"]):not(:has([data-test="peer-face"][data-condition="asleep"]))';
+
 /** The caller's own dot, and everybody else's — the plane marks which is which. */
 const yourDot = (page: Page) => page.locator('[data-test="peer"][data-you="1"]');
-const theirDot = (page: Page) => page.locator('[data-test="peer"]:not([data-you="1"])');
+const playerDots = (page: Page) => page.locator(PLAYER_ONLY);
+/**
+ * The OTHER player's dot.
+ *
+ * "Not me" stopped being enough to find him: it now also matches the two
+ * regulars and anybody asleep in the yard, so this narrows to the entities that
+ * are people who are present.
+ */
+const theirDot = (page: Page) => playerDots(page).and(page.locator(':not([data-you="1"])'));
 /** A dot's face, which now carries the condition the SERVER decided. */
 const faceOf = (dot: ReturnType<typeof dots>) => dot.locator('[data-test="peer-face"]');
 
-/** Every dot's normalised position, read from the custom properties. Copied. */
+/** Every PLAYER's normalised position, read from the custom properties. Copied. */
 async function positions(page: Page): Promise<{ x: number; y: number }[]> {
-  return page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>('[data-test="peer"]')].map((el) => {
+  return page.evaluate((selector) =>
+    [...document.querySelectorAll<HTMLElement>(selector)].map((el) => {
       const style = getComputedStyle(el);
       return {
         x: Number.parseFloat(style.getPropertyValue('--x')),
         y: Number.parseFloat(style.getPropertyValue('--y')),
       };
     }),
-  );
+  PLAYER_ONLY);
 }
 
 /** A stat's number as the screen is currently showing it. */
@@ -759,7 +815,11 @@ test("a neighbour sees how ill your Ваня really is, without being told", asy
 
     await enterYardFrom(pageA);
     await enterYardFrom(pageB);
-    await expect(dots(pageB)).toHaveCount(2, { timeout: 15_000 });
+    // The PLAYERS, not the entities: the yard's regulars are drawn alongside
+    // them and are not people, so counting everything on the plane would say
+    // four here and would say something different again the day a character is
+    // added.
+    await expect(playerDots(pageB)).toHaveCount(2, { timeout: 15_000 });
     await expect(yourDot(pageB)).toHaveCount(1, { timeout: 15_000 });
 
     // B is watching A's Ваня. B never asked for it and could not be told: the
@@ -824,9 +884,18 @@ test('a Ваня who has never stood anywhere arrives in the middle of the yard'
   // the check below that the columns really are null is what stops this test
   // passing for the wrong reason — with a default of 0.5 in the schema, a
   // completely broken restore path would still put him in the centre.
+  test.setTimeout(120_000);
   const base = baseURL ?? 'http://127.0.0.1:8081';
   const seeded = await stack();
   forgetPet(seeded[PLAYER_A]);
+  // Deleting the row is only half of "never stood anywhere": the running server
+  // still holds this account's last placement in memory, and a placement is no
+  // longer evicted when the reconnect grace expires — it becomes the sleeper
+  // lying in the yard instead. Without the restart this test asserts the spawn
+  // point against a position an earlier test walked to, and the assertion that
+  // the columns are NULL passes while the plane draws him somewhere else
+  // entirely. Restarting is what makes both layers agree that he is new.
+  restartServer();
 
   const context = await browser.newContext(PHONE);
   try {
@@ -845,11 +914,13 @@ test('a Ваня who has never stood anywhere arrives in the middle of the yard'
     ).toBe('t');
 
     await enterYardFrom(page);
-    await expect(dots(page)).toHaveCount(1, { timeout: 15_000 });
+    await expect(playerDots(page)).toHaveCount(1, { timeout: 15_000 });
 
     // He is drawn, and drawn in the middle. Read off the custom properties,
     // which are written from the frame — an unset property parses as NaN, so
-    // this also fails if no position ever reached the DOM at all.
+    // this also fails if no position ever reached the DOM at all. `positions`
+    // returns the players only, so index 0 is him rather than whichever regular
+    // the server happened to append first.
     await expect
       .poll(async () => (await positions(page))[0]?.x, {
         message: 'a pet with no stored position never arrived on the plane',
@@ -861,6 +932,9 @@ test('a Ваня who has never stood anywhere arrives in the middle of the yard'
     // And he is a real entity rather than a placeholder: he has a face, and the
     // yard counts him.
     await expect(faceOf(yourDot(page))).toHaveCount(1);
+    // One PERSON in the yard, whatever else is drawn in it. The count is the
+    // server's own — published precisely so this screen never has to work out
+    // which entity is somebody you could talk to.
     await expect(page.getByText('во дворе: 1')).toBeVisible();
   } finally {
     await context.close();

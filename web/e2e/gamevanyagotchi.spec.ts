@@ -22,6 +22,12 @@ const TYPE_YOU = 'vanyagotchi_you';
 /** Mirrored from src/lib/vanyagotchiPlane.ts, for the same reason. */
 const X_PROPERTY = '--x';
 const Y_PROPERTY = '--y';
+/** Which depth band an entity is in. The stylesheet uses it as the z-index. */
+const BAND_PROPERTY = '--band';
+/** That band's scale factor. */
+const DEPTH_PROPERTY = '--depth';
+/** 1 when a balloon has to hang below its entity instead of above it. */
+const SAY_BELOW_PROPERTY = '--say-below';
 
 /**
  * The longest name a dot will show, in code points. Mirrored from
@@ -29,6 +35,60 @@ const Y_PROPERTY = '--y';
  * cap that quietly moved should fail this test rather than be followed.
  */
 const LABEL_MAX = 16;
+
+/**
+ * What each depth band multiplies an entity's size by, back of the plane to
+ * front. Mirrored from DEPTH_SCALES.
+ *
+ * The FIRST entry being 1 is the load-bearing part, and it is why this is
+ * written down here rather than measured: depth can only make an entity bigger,
+ * so the 44 px tap-target floor is the CSS size itself rather than a product of
+ * two numbers that could drift apart. A change that scaled the far band DOWN
+ * would still draw a perfectly plausible yard, and should fail here.
+ */
+const DEPTH_SCALES = [1, 1.08, 1.16, 1.24] as const;
+
+/**
+ * The unscaled size of a dot in CSS pixels — `.peer` in GameVanyagotchiView.vue,
+ * and the floor the mobile rule is about.
+ */
+const PEER_BASE_PX = 44;
+
+/**
+ * Above this height a balloon no longer fits over its entity and hangs below it
+ * instead. Mirrored from SAY_FLIP_Y: the flip is the only thing between a line
+ * near the top of the plane and a line clipped away to nothing, and unlike a cut
+ * name — which is still legibly somebody's name — a clipped balloon is nothing
+ * at all.
+ */
+const SAY_FLIP_Y = 0.15;
+
+/**
+ * The stylesheet's cap on a balloon's WIDTH: `min(96px, 34cqw)` against the
+ * plane's own box. Both branches are asserted for the same reason the label's
+ * two are — the px ceiling keeps a line legible on a tablet, the percentage
+ * keeps it the same fraction of the world everywhere — and whichever is smaller
+ * on the viewport under test is the one actually in force.
+ */
+const SAY_MAX_PX = 96;
+const SAY_MAX_PLANE_FRACTION = 0.34;
+
+/** The longest line a balloon will show, in code points. Mirrored from SAY_MAX. */
+const SAY_MAX = 24;
+
+/** What the server says when he gives up part way. Mirrored from `tiredSay`. */
+const TIRED_SAY = 'устал';
+
+/**
+ * Which band an entity at this height belongs to. Mirrored from `bandFor`.
+ *
+ * Re-derived here rather than read off the element, so that a test asserting
+ * "this y is in band 2" is asserting something about the DESIGN rather than
+ * agreeing with whatever the code happened to write.
+ */
+function bandFor(y: number): number {
+  return Math.min(DEPTH_SCALES.length - 1, Math.max(0, Math.floor(y * DEPTH_SCALES.length)));
+}
 
 /**
  * One entry of a roster frame.
@@ -50,18 +110,55 @@ interface Peer {
   art?: string;
   /** The pet's name. Left out, never empty, when it has none. */
   label?: string;
-  /** 'fine' | 'poorly' | 'dead', as the SERVER decided it. */
+  /**
+   * 'fine' | 'poorly' | 'dead' | 'asleep', as the SERVER decided it.
+   *
+   * `asleep` is a Ваня whose owner is away, lying where he last stood. It is
+   * what makes a solo visit a place rather than an empty field, and it is why an
+   * entry in this list stopped meaning "a player who is here".
+   */
   pose?: string;
+  /**
+   * A line over his head, for the few seconds the server keeps it on the wire.
+   *
+   * A string rather than a second pose because the server draws the same
+   * distinction: a pose is how he LOOKS and this is something he SAID.
+   */
+  say?: string;
 }
 
 /**
- * A roster frame.
+ * A roster frame, with the head count the server would have put on it.
+ *
+ * `here` is how many PEOPLE are in the yard, which stopped being `peers.length`
+ * the moment the roster started carrying the NPCs and everybody asleep in it as
+ * well. Every peer built through this helper is a person, so the two agree —
+ * which is exactly what a real server with no cast and no sleepers sends, and
+ * what keeps every assertion written before the count existed honest.
+ * `rosterHere` is for the frames where they deliberately differ.
  *
  * `JSON.stringify` drops an undefined property rather than writing `null`, which
- * is exactly what the Go `omitempty` on `Label` does — so a peer built without a
- * name here reaches the client in the same shape a nameless one really does.
+ * is exactly what the Go `omitempty` on `Label` and `Say` does — so a peer built
+ * without a name here reaches the client in the same shape a nameless one
+ * really does.
  */
 function roster(...peers: Peer[]): string {
+  return rosterHere(peers.length, ...peers);
+}
+
+/** A roster frame whose head count is NOT the number of things in it. */
+function rosterHere(here: number, ...peers: Peer[]): string {
+  return JSON.stringify({ t: TYPE_ROSTER, peers, here });
+}
+
+/**
+ * A roster frame from a server that predates the head count.
+ *
+ * Not a hypothetical: a deploy is a window in which one is live, and the client
+ * has a documented fallback for it. Exercised rather than assumed, because a
+ * fallback nothing runs is a fallback nobody knows is broken.
+ */
+function rosterWithoutHere(...peers: Peer[]): string {
   return JSON.stringify({ t: TYPE_ROSTER, peers });
 }
 
@@ -235,6 +332,89 @@ async function peerPosition(page: Page, id: string): Promise<{ x: string; y: str
   );
 }
 
+/** One entity's depth: the band it is in, the scale that band gives it, and the
+ *  stacking order the stylesheet derives from the band.
+ *
+ *  `zIndex` is read as the browser RESOLVED it rather than as the declaration
+ *  was written, which is the whole point of reading it here: `z-index:
+ *  var(--band)` is only depth if the custom property really reaches the used
+ *  value, and a typo in either name would leave it `auto` while every other
+ *  assertion in the suite still passed. */
+async function peerDepth(
+  page: Page,
+  id: string,
+): Promise<{ band: number; depth: number; zIndex: string }> {
+  return page.evaluate(
+    ([peerId, bandProp, depthProp]) => {
+      const el = document.querySelector<HTMLElement>(`[data-peer="${peerId}"]`);
+      if (!el) throw new Error(`no dot for ${peerId}`);
+      const style = getComputedStyle(el);
+      return {
+        band: Number.parseFloat(style.getPropertyValue(bandProp)),
+        depth: Number.parseFloat(style.getPropertyValue(depthProp)),
+        zIndex: style.zIndex,
+      };
+    },
+    [id, BAND_PROPERTY, DEPTH_PROPERTY] as const,
+  );
+}
+
+/** One entity's balloon, if the server is currently giving it one. */
+const sayBubble = (page: Page, id: string) =>
+  page.locator(`[data-peer="${id}"] [data-test="peer-say"]`);
+
+/** Whether this entity's balloon has been told to hang below it. */
+async function saysBelow(page: Page, id: string): Promise<string> {
+  return page.evaluate(
+    ([peerId, prop]) => {
+      const el = document.querySelector<HTMLElement>(`[data-peer="${peerId}"]`);
+      if (!el) throw new Error(`no dot for ${peerId}`);
+      return getComputedStyle(el).getPropertyValue(prop).trim();
+    },
+    [id, SAY_BELOW_PROPERTY] as const,
+  );
+}
+
+/**
+ * How far a face has been rotated, in degrees.
+ *
+ * Sleep is the one condition drawn as a rotation rather than as a filter, so
+ * this is what tells "he is lying down" from "he is a slightly dimmer circle".
+ * Read out of the used `transform` matrix rather than off the declaration: the
+ * browser has already resolved it, so this fails if the rule stops applying for
+ * any reason at all rather than only if somebody deletes it.
+ */
+async function faceTilt(page: Page, id: string): Promise<number> {
+  return page.evaluate((peerId) => {
+    const el = document.querySelector<HTMLElement>(
+      `[data-peer="${peerId}"] [data-test="peer-face"]`,
+    );
+    if (!el) throw new Error(`no face for ${peerId}`);
+    const t = getComputedStyle(el).transform;
+    if (!t || t === 'none') return 0;
+    const parts = t.slice(t.indexOf('(') + 1, t.lastIndexOf(')')).split(',').map(Number);
+    // matrix(a, b, c, d, e, f): the first column is the rotated x axis.
+    return (Math.atan2(parts[1] ?? 0, parts[0] ?? 1) * 180) / Math.PI;
+  }, id);
+}
+
+/** Whatever the stylesheet is drawing in a dot's `::after` — the 💤, for a sleeper. */
+async function badge(page: Page, id: string): Promise<string> {
+  return page.evaluate((peerId) => {
+    const el = document.querySelector<HTMLElement>(`[data-peer="${peerId}"]`);
+    if (!el) throw new Error(`no dot for ${peerId}`);
+    return getComputedStyle(el, '::after').content;
+  }, id);
+}
+
+/** A dot's resolved opacity, which is how "not here" reads at a glance. */
+async function peerOpacity(page: Page, id: string): Promise<number> {
+  return page.evaluate((peerId) => {
+    const el = document.querySelector<HTMLElement>(`[data-peer="${peerId}"]`);
+    if (!el) throw new Error(`no dot for ${peerId}`);
+    return Number.parseFloat(getComputedStyle(el).opacity);
+  }, id);
+}
 
 /**
  * Records every stale/live transition of the plane, from before the app boots.
@@ -249,6 +429,11 @@ async function recordStale(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const log: boolean[] = [];
     (window as unknown as { __staleLog: boolean[] }).__staleLog = log;
+    // Whether the recorder is running at all. An empty log is a legitimate
+    // result — a fast reconnect never paints the stale state — so without this
+    // flag "no transitions" and "no recorder" are indistinguishable, and the
+    // assertion that the plane ended live would pass for want of any evidence.
+    (window as unknown as { __staleWatching: boolean }).__staleWatching = false;
     const read = () => !!document.querySelector('[data-test="plane"][data-stale="1"]');
     let last: boolean | undefined;
     new MutationObserver(() => {
@@ -257,18 +442,32 @@ async function recordStale(page: Page): Promise<void> {
         last = now;
         log.push(now);
       }
-    }).observe(document.documentElement, {
+    }).observe(document, {
+      // THE DOCUMENT, not `document.documentElement`. An init script runs before
+      // the page's own scripts, and at that moment `documentElement` can still
+      // be null — `observe` then throws, the recorder quietly records nothing,
+      // and an assertion of the form "the log never ended stale" passes because
+      // the log is empty. A Document is a Node and covers every descendant, so
+      // this attaches whatever stage the parse has reached.
       subtree: true,
       childList: true,
       attributes: true,
       attributeFilter: ['data-stale'],
     });
+    (window as unknown as { __staleWatching: boolean }).__staleWatching = true;
   });
 }
 
 /** The recorded stale/live transitions so far. */
 function staleLog(page: Page): Promise<boolean[]> {
   return page.evaluate(() => (window as unknown as { __staleLog: boolean[] }).__staleLog ?? []);
+}
+
+/** Whether the recorder above ever attached. See `recordStale`. */
+function staleWatching(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () => (window as unknown as { __staleWatching: boolean }).__staleWatching === true,
+  );
 }
 
 const plane = (page: Page) => page.locator('[data-test="plane"]');
@@ -291,7 +490,8 @@ const LABEL_MAX_PX = 80;
 const LABEL_MAX_PLANE_FRACTION = 0.3;
 
 /**
- * Asserts one dot's name is no wider than the cap allows.
+ * Asserts one dot's name is no wider than the cap allows, at the height it is
+ * standing at.
  *
  * This is the assertion that has teeth. A name is centred on its dot, so an
  * uncapped one covers every neighbour it reaches — which is what a player would
@@ -299,22 +499,37 @@ const LABEL_MAX_PLANE_FRACTION = 0.3;
  * its own overflow and the root stylesheet sets `overflow-x: hidden`, so the
  * page cannot grow a scrollbar however wide a label gets.
  *
+ * THE HEIGHT IS AN ARGUMENT because depth arrived and the cap is no longer the
+ * drawn width. `max-width` bounds the label's own layout box, but the box is
+ * then scaled by the `transform` on its parent dot — so a name in the nearest
+ * band is drawn `DEPTH_SCALES[3]` times its cap, and a bound of a flat 80 px
+ * became wrong for three of the four bands the moment the yard gained depth.
+ * That is consistent rather than a defect (a nearer Ваня is bigger, name and
+ * all), and the cap still has teeth against what it exists to stop: an uncapped
+ * name here measures a couple of hundred pixels, not 24% over.
+ *
+ * `y` is the fixture's own coordinate rather than anything read back off the
+ * element, so this stays an assertion about the DESIGN — a band written wrongly
+ * onto the dot would otherwise move the goalposts with it.
+ *
  * A pixel of slack on each bound, because a fractional layout size rounds.
  */
-async function expectLabelWithinCap(page: Page, id: string): Promise<void> {
+async function expectLabelWithinCap(page: Page, id: string, y: number): Promise<void> {
   const label = await nameTag(page, id).boundingBox();
   const box = await plane(page).boundingBox();
   expect(label, `no label box for ${id}`).not.toBeNull();
   expect(box, 'the plane has no box').not.toBeNull();
   const width = label?.width ?? 0;
   const planeWidth = box?.width ?? 1;
-  expect(width, `${id}'s name is ${Math.round(width)}px wide`).toBeLessThanOrEqual(
-    LABEL_MAX_PX + 1,
-  );
+  const scale = DEPTH_SCALES[bandFor(y)];
+  expect(
+    width,
+    `${id}'s name is ${Math.round(width)}px wide in band ${bandFor(y)} (×${scale})`,
+  ).toBeLessThanOrEqual(LABEL_MAX_PX * scale + 1);
   expect(
     width / planeWidth,
     `${id}'s name is ${Math.round((width / planeWidth) * 100)}% of the yard wide`,
-  ).toBeLessThanOrEqual(LABEL_MAX_PLANE_FRACTION + 0.01);
+  ).toBeLessThanOrEqual(LABEL_MAX_PLANE_FRACTION * scale + 0.01);
 }
 
 /** Loads the game and steps past the intro into the yard. */
@@ -476,12 +691,15 @@ test.describe('«Ванягоччи» — the shared plane', () => {
     await expect(dots(page)).toHaveCount(1);
 
     if (isMobile(page)) {
-      // The 44 px rule binds the sprite size, which is what Phase 2's depth
-      // scaling has to stay above. Checked now so the constraint is already
-      // pinned when scaling arrives.
+      // The 44 px rule binds the sprite size. Depth scaling has since arrived
+      // and can only ever make a dot BIGGER — the far band's scale is 1 — so
+      // this stays the floor rather than becoming an average. The band-by-band
+      // version of the check is in the depth suite below.
       const box = await dots(page).first().boundingBox();
       expect(box).not.toBeNull();
-      expect(Math.round(Math.min(box?.width ?? 0, box?.height ?? 0))).toBeGreaterThanOrEqual(44);
+      expect(Math.round(Math.min(box?.width ?? 0, box?.height ?? 0))).toBeGreaterThanOrEqual(
+        PEER_BASE_PX,
+      );
     }
   });
 
@@ -570,6 +788,10 @@ test.describe('«Ванягоччи» — surviving a restart', () => {
     // reconnect was — a quick one is coalesced away inside a single Vue flush,
     // which is a feature. What must hold either way is that it ended live and
     // never went stale-and-stayed-there.
+    expect(
+      await staleWatching(page),
+      'the stale recorder never attached, so an empty log would prove nothing',
+    ).toBe(true);
     const log = await staleLog(page);
     expect(log.at(-1) ?? false, `stale transitions: ${JSON.stringify(log)}`).toBe(false);
   });
@@ -837,8 +1059,10 @@ test.describe('«Ванягоччи» — a yard of people rather than a field o
     // THE assertion: a name is a fraction of the world wide, not a third of the
     // screen. Without the width cap this label measures the whole 42 characters
     // and covers every neighbour it passes.
-    await expectLabelWithinCap(page, 'left');
-    await expectLabelWithinCap(page, 'right');
+    // Both stand at mid-height, which the depth bands put in band 2 — so the
+    // cap they are measured against is scaled by that band, not a flat 80 px.
+    await expectLabelWithinCap(page, 'left', 0.5);
+    await expectLabelWithinCap(page, 'right', 0.5);
 
     // And the yard did not move to accommodate any of them — same box, to the
     // pixel. A label that could stretch its parent would show up here as a
@@ -907,12 +1131,583 @@ test.describe('«Ванягоччи» — a yard of people rather than a field o
     );
     await expect(dots(page)).toHaveCount(8);
 
-    await expectLabelWithinCap(page, 'peer-0');
-    await expectLabelWithinCap(page, 'peer-3');
+    // `peer-0` and `peer-3` are the top row, y = 0 — the furthest band, which is
+    // the one the cap is stated in: its scale is 1, so these two measure the
+    // stylesheet's number exactly.
+    await expectLabelWithinCap(page, 'peer-0', 0);
+    await expectLabelWithinCap(page, 'peer-3', 0);
     await expectNoOverflow(page, 'vanyagotchi yard of long names at 320x568');
     await expectNoVerticalScroll(page, 'vanyagotchi yard of long names at 320x568');
     // The plane was not squeezed to nothing to make room for the names either.
     const box = await plane(page).boundingBox();
     expect(box?.height ?? 0, 'the plane collapsed under a crowd of names').toBeGreaterThan(120);
+  });
+});
+
+test.describe('«Ванягоччи» — the yard is no longer a list of the people in it', () => {
+  // A roster entry used to mean "a player who is here", so counting the entries
+  // counted the players. It does not any more: the same list now carries the
+  // yard's two regulars, who have no accounts, and everybody who is ASLEEP in
+  // it, who has an account but is not here. Both are entities to draw and
+  // neither is somebody you can talk to.
+  //
+  // So the head count moved onto the wire as `here`, counted by the server. That
+  // is not a convenience: deriving it in the browser would mean the browser
+  // holding an opinion about which entity is a real person, and a character
+  // added on the server would then silently inflate the count on every client
+  // that had not been redeployed.
+
+  test('the head count is the one the server sent, not the number of things on the plane', async ({
+    page,
+  }) => {
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    // Five entities, two of whom are people: one other player, one Ваня asleep
+    // where his owner left him, and the two regulars.
+    await socket.push(
+      rosterHere(
+        2,
+        { id: 'me', x: 0.5, y: 0.5, art: 'vanya', label: 'я', pose: 'fine' },
+        { id: 'neighbour', x: 0.3, y: 0.4, art: 'vanya', label: 'сосед', pose: 'fine' },
+        { id: 'dozing', x: 0.2, y: 0.8, art: 'vanya', label: 'соня', pose: 'asleep' },
+        { id: 'npc-sahur', x: 0.6, y: 0.3, art: 'npc_sahur', label: 'Тунг Тунг Сахур', pose: 'fine' },
+        { id: 'npc-ballerina', x: 0.7, y: 0.9, art: 'npc_ballerina', label: 'Балерина', pose: 'fine' },
+      ),
+    );
+
+    // Everything in the frame is drawn — the client stays kind-agnostic, which
+    // is what makes "add a character" a backend-only change.
+    await expect(dots(page)).toHaveCount(5);
+
+    // And exactly two of them are counted as people.
+    await expect(page.getByText('во дворе: 2')).toBeVisible();
+    await expect(page.getByText('во дворе: 5')).toHaveCount(0);
+    // The same number reaches a screen reader, from the same source. These used
+    // to be two independent reads of `peerIds.length` and could not disagree;
+    // now they are two reads of one ref, and this is what says so.
+    await expect(plane(page)).toHaveAttribute('aria-label', 'Двор, во дворе 2');
+  });
+
+  test('the count follows the server down as well as up', async ({ page }) => {
+    // The count is a ref of a primitive, so an unchanged yard costs no render —
+    // which is exactly the shape of bug where a number goes up and never comes
+    // back down.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    const cast = [
+      { id: 'npc-sahur', x: 0.6, y: 0.3, art: 'npc_sahur', pose: 'fine' },
+      { id: 'npc-ballerina', x: 0.7, y: 0.9, art: 'npc_ballerina', pose: 'fine' },
+    ];
+    await socket.push(
+      rosterHere(
+        3,
+        { id: 'a', x: 0.2, y: 0.2, art: 'vanya', pose: 'fine' },
+        { id: 'b', x: 0.4, y: 0.4, art: 'vanya', pose: 'fine' },
+        { id: 'c', x: 0.6, y: 0.6, art: 'vanya', pose: 'fine' },
+        ...cast,
+      ),
+    );
+    await expect(page.getByText('во дворе: 3')).toBeVisible();
+
+    // Two of the three go home. They are past the grace, so they are still on
+    // the plane — asleep — and the yard is emphatically NOT emptier to look at.
+    await socket.push(
+      rosterHere(
+        1,
+        { id: 'a', x: 0.2, y: 0.2, art: 'vanya', pose: 'fine' },
+        { id: 'b', x: 0.4, y: 0.4, art: 'vanya', pose: 'asleep' },
+        { id: 'c', x: 0.6, y: 0.6, art: 'vanya', pose: 'asleep' },
+        ...cast,
+      ),
+    );
+    await expect(page.getByText('во дворе: 1')).toBeVisible();
+    await expect(dots(page), 'the sleepers left the plane instead of lying down').toHaveCount(5);
+  });
+
+  test('a server that does not count falls back to counting entities', async ({ page }) => {
+    // A deploy is a window in which the old server is still live, and it sends
+    // no `here`. Falling back to the number of entities is exactly right for it:
+    // a server with no cast and no sleepers puts nothing in a frame that is not
+    // a person. Exercised rather than assumed — an untried fallback is one
+    // nobody knows is broken.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      rosterWithoutHere(
+        { id: 'a', x: 0.2, y: 0.2, art: 'vanya', pose: 'fine' },
+        { id: 'b', x: 0.8, y: 0.8, art: 'vanya', pose: 'fine' },
+      ),
+    );
+    await expect(page.getByText('во дворе: 2')).toBeVisible();
+
+    // And the field wins over the fallback the moment it appears, rather than
+    // the first frame's answer sticking.
+    await socket.push(
+      rosterHere(
+        1,
+        { id: 'a', x: 0.2, y: 0.2, art: 'vanya', pose: 'fine' },
+        { id: 'b', x: 0.8, y: 0.8, art: 'vanya', pose: 'asleep' },
+      ),
+    );
+    await expect(page.getByText('во дворе: 1')).toBeVisible();
+  });
+
+  test('a sleeping Ваня reads as dormant rather than as somebody standing still', async ({
+    page,
+  }) => {
+    // The sleepers are what stop a solo visit being an empty field, so a sleeper
+    // has to read as "somebody, not here" rather than as "somebody, slightly
+    // faded" — one that looked merely dim would be indistinguishable from a
+    // player standing still, and the yard would seem full of people ignoring
+    // you. Three cues, none of them colour alone, and all three are asserted:
+    // the dot dims, the face topples over, and a 💤 floats off it.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      rosterHere(
+        1,
+        { id: 'awake', x: 0.3, y: 0.6, art: 'vanya', label: 'бодрый', pose: 'fine' },
+        { id: 'dozing', x: 0.7, y: 0.6, art: 'vanya', label: 'соня', pose: 'asleep' },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(2);
+
+    // The pose came off the wire and reached the DOM. A client that did not know
+    // the fourth pose would fall back to `fine` here rather than fail, which is
+    // why this is asserted at all: the fallback is deliberate and would hide it.
+    await expect(face(page, 'dozing')).toHaveAttribute('data-condition', 'asleep');
+    await expect(face(page, 'awake')).toHaveAttribute('data-condition', 'fine');
+
+    // Dimmed, and dimmed as a WHOLE dot rather than only the face — he is not a
+    // player who is doing badly, he is a player who is not here.
+    await expect(page.locator('[data-peer="dozing"]')).toHaveClass(/peer--asleep/);
+    await expect(page.locator('[data-peer="awake"]')).not.toHaveClass(/peer--asleep/);
+    const dozingOpacity = await peerOpacity(page, 'dozing');
+    const awakeOpacity = await peerOpacity(page, 'awake');
+    expect(awakeOpacity, 'a Ваня who is present should be drawn at full strength').toBeCloseTo(1, 1);
+    expect(
+      dozingOpacity,
+      `a sleeper is drawn at ${dozingOpacity}, which is not visibly dimmer than the player next to him`,
+    ).toBeLessThan(0.9);
+
+    // Lying down. At 44 px a change of ORIENTATION carries across the yard where
+    // a change of tone does not, and it is literally what the server means.
+    const tilt = await faceTilt(page, 'dozing');
+    expect(Math.abs(tilt), `a sleeping face is tilted ${Math.round(tilt)}°`).toBeGreaterThan(45);
+    expect(Math.abs(await faceTilt(page, 'awake'))).toBeLessThan(1);
+
+    // And the 💤, which is the cue that survives a greyscale screenshot.
+    expect(await badge(page, 'dozing')).toContain('💤');
+    expect(await badge(page, 'awake')).not.toContain('💤');
+
+    // He is still a real entity: drawn where the server put him, with a face and
+    // his name, rather than a placeholder.
+    expect(await peerPosition(page, 'dozing')).toEqual({ x: '0.7', y: '0.6' });
+    await expect(nameTag(page, 'dozing')).toHaveText('соня');
+  });
+
+  test('a line over his head appears when the server sends it, and goes when it stops', async ({
+    page,
+  }) => {
+    // The frames below are IDENTICAL apart from the line, which is the whole
+    // point of the test. A balloon is on the wire for a few seconds and then
+    // gone, so it is the one appearance field that reliably changes twice a
+    // minute — and the guard that keeps 299 frames out of 300 from re-rendering
+    // compares appearance field by field. Left out of that comparison the
+    // balloon would only ever be noticed on a frame that happened to change
+    // something else, which in a quiet yard is never.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    const SAME = { id: 'walker', x: 0.5, y: 0.5, art: 'vanya', label: 'Ваня', pose: 'fine' };
+
+    await socket.push(roster(SAME));
+    await expect(dots(page)).toHaveCount(1);
+    await expect(sayBubble(page, 'walker')).toHaveCount(0);
+    // Marked so the assertions below can tell "the balloon appeared on this dot"
+    // from "the list was re-keyed and this is a different dot that has one".
+    await page.evaluate(() => {
+      document.querySelector('[data-peer="walker"]')?.setAttribute('data-marked', '1');
+    });
+
+    await socket.push(roster({ ...SAME, say: TIRED_SAY }));
+
+    await expect(sayBubble(page, 'walker')).toBeVisible();
+    await expect(sayBubble(page, 'walker')).toHaveText(TIRED_SAY);
+    await expect(page.locator('[data-peer="walker"][data-marked="1"]')).toHaveCount(1);
+    // The position tier was not disturbed by the appearance change.
+    expect(await peerPosition(page, 'walker')).toEqual({ x: '0.5', y: '0.5' });
+
+    // And it goes when the server stops saying it — absent, not empty, so there
+    // is no stray box left sitting over his head.
+    await socket.push(roster(SAME));
+    await expect(sayBubble(page, 'walker')).toHaveCount(0);
+    await expect(page.locator('[data-peer="walker"][data-marked="1"]')).toHaveCount(1);
+  });
+
+  test('a balloon stays on the plane and never grows past its cap, at any width', async ({
+    page,
+  }) => {
+    // Three independent caps, the same shape as the name's: `capSay` bounds the
+    // STRING, the stylesheet bounds the WIDTH, and the plane's `overflow:
+    // hidden` is the backstop. The first two are load-bearing and are what this
+    // asserts.
+    //
+    // The vertical half is the flip. A balloon hangs off the top of a dot, so
+    // near the top of the plane there is no room for it and it goes underneath
+    // instead. That matters more than it sounds: unlike a clipped NAME, which is
+    // still legibly somebody's name, a clipped balloon is nothing at all — the
+    // line is transient, so if it is not readable now it never will be.
+    const LONG = 'мне очень нехорошо после вчерашнего, братан';
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    const emptyPlane = await plane(page).boundingBox();
+    expect(emptyPlane, 'the plane has no box').not.toBeNull();
+
+    await socket.push(
+      roster(
+        { id: 'middle', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine', say: TIRED_SAY },
+        { id: 'high', x: 0.5, y: 0.03, art: 'vanya', pose: 'fine', say: TIRED_SAY },
+        { id: 'wordy', x: 0.5, y: 0.6, art: 'vanya', pose: 'fine', say: LONG },
+        // Deliberately ON the edge. A balloon is centred on its dot, so this one
+        // hangs half its width off the plane and is left clipped on purpose —
+        // what is asserted for it is its WIDTH, not its containment.
+        { id: 'edge', x: 0, y: 0.55, art: 'vanya', pose: 'fine', say: LONG },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(4);
+
+    const planeBox = await plane(page).boundingBox();
+    expect(planeBox).not.toBeNull();
+    const planeWidth = planeBox?.width ?? 1;
+    const cap = Math.min(SAY_MAX_PX, planeWidth * SAY_MAX_PLANE_FRACTION);
+
+    // Scaled by the band, for the same reason a name is: `max-width` bounds the
+    // balloon's own layout box and the dot's depth `transform` then scales it,
+    // so the DRAWN width of a line in the nearest band is a quarter over the
+    // number in the stylesheet. Both of these stand at heights whose scale the
+    // fixture states, rather than being measured back off the element.
+    for (const [id, y] of [
+      ['wordy', 0.6],
+      ['edge', 0.55],
+    ] as const) {
+      const scale = DEPTH_SCALES[bandFor(y)];
+      const box = await sayBubble(page, id).boundingBox();
+      expect(box, `no balloon box for ${id}`).not.toBeNull();
+      expect(
+        box?.width ?? 0,
+        `${id}'s balloon is ${Math.round(box?.width ?? 0)}px wide in band ${bandFor(y)} against a ${Math.round(cap)}px cap (×${scale})`,
+      ).toBeLessThanOrEqual(cap * scale + 1);
+    }
+
+    // The STRING was cut too, not merely hidden by CSS — so nothing downstream
+    // has to re-derive the cap, and a server that never validated a line cannot
+    // put a kilobyte of it in the DOM. Counted in code points, because cutting
+    // UTF-16 mid-surrogate is how this field grows a replacement character the
+    // first time somebody uses an emoji.
+    const shown = (await sayBubble(page, 'wordy').textContent()) ?? '';
+    expect([...shown].length, `the balloon rendered ${shown}`).toBeLessThanOrEqual(SAY_MAX);
+    expect([...LONG].length, 'the fixture is no longer past the cap').toBeGreaterThan(SAY_MAX);
+
+    // A balloon in the body of the plane hangs ABOVE its dot and is wholly on
+    // the plane.
+    expect(await saysBelow(page, 'middle')).toBe('0');
+    const middleBubble = await sayBubble(page, 'middle').boundingBox();
+    const middleDot = await page.locator('[data-peer="middle"]').boundingBox();
+    expect(middleBubble?.y ?? 0, "the middle balloon is not above its own dot").toBeLessThan(
+      middleDot?.y ?? 0,
+    );
+    expect(middleBubble?.y ?? -1, 'the middle balloon starts above the plane').toBeGreaterThanOrEqual(
+      (planeBox?.y ?? 0) - 1,
+    );
+    expect(
+      (middleBubble?.y ?? 0) + (middleBubble?.height ?? 0),
+      'the middle balloon runs off the bottom of the plane',
+    ).toBeLessThanOrEqual((planeBox?.y ?? 0) + (planeBox?.height ?? 0) + 1);
+    expect(middleBubble?.x ?? -1).toBeGreaterThanOrEqual((planeBox?.x ?? 0) - 1);
+    expect((middleBubble?.x ?? 0) + (middleBubble?.width ?? 0)).toBeLessThanOrEqual(
+      (planeBox?.x ?? 0) + (planeBox?.width ?? 0) + 1,
+    );
+
+    // And one near the top of the plane has flipped underneath its dot, which is
+    // the only thing between it and being clipped away to nothing.
+    expect(bandFor(0.03), 'the fixture is no longer in the flip zone').toBe(0);
+    expect(0.03, 'the fixture is no longer above the flip line').toBeLessThan(SAY_FLIP_Y);
+    expect(await saysBelow(page, 'high')).toBe('1');
+    const highBubble = await sayBubble(page, 'high').boundingBox();
+    expect(
+      highBubble?.y ?? -1,
+      'a balloon at the top of the plane was drawn off the top of it, where nobody can read it',
+    ).toBeGreaterThanOrEqual(planeBox?.y ?? 0);
+    const highDot = await page.locator('[data-peer="high"]').boundingBox();
+    expect(highBubble?.y ?? 0, 'the balloon near the top did not flip below its dot').toBeGreaterThan(
+      highDot?.y ?? 0,
+    );
+
+    // The yard did not move to accommodate any of it, and the page still does
+    // not scroll — at whichever of the suite's three widths this ran.
+    const talkingPlane = await plane(page).boundingBox();
+    expect(talkingPlane?.width, 'the plane changed width once somebody spoke').toBeCloseTo(
+      emptyPlane?.width ?? 0,
+      1,
+    );
+    expect(talkingPlane?.height, 'the plane changed height once somebody spoke').toBeCloseTo(
+      emptyPlane?.height ?? 0,
+      1,
+    );
+    await expectNoOverflow(page, 'vanyagotchi yard full of talking Ваняs');
+    await expectNoVerticalScroll(page, 'vanyagotchi yard full of talking Ваняs');
+  });
+
+  test('a balloon does not swallow the tap underneath it', async ({ page }) => {
+    // The plane is the tap target, not the things drawn on it. Ground that goes
+    // briefly unwalkable whenever somebody speaks is an intermittent bug of
+    // exactly the kind nobody ever reports usefully, because by the time you try
+    // again the line has gone.
+    //
+    // What actually holds it up is a PAIR, and it is worth knowing which half is
+    // which. `pointer-events: none` on `.peer-say` stops the balloon being the
+    // event's target; the plane's handler being an ANCESTOR means the event
+    // reaches it by bubbling even when something else is. So neither half alone
+    // is load-bearing today — mutating the balloon to `pointer-events: auto`
+    // leaves this test green — and the failure this guards is the pair going
+    // wrong together, which is what happens the day somebody "tidies" the
+    // handler into `if (event.target !== el) return`. Asserted as behaviour
+    // rather than as either declaration, so it keeps its meaning whichever half
+    // moves.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      roster({ id: 'me', x: 0.5, y: 0.5, art: 'vanya', label: 'Ваня', pose: 'fine', say: TIRED_SAY }),
+    );
+    await expect(sayBubble(page, 'me')).toBeVisible();
+
+    const bubble = await sayBubble(page, 'me').boundingBox();
+    const planeBox = await plane(page).boundingBox();
+    expect(bubble, 'the balloon has no box to tap').not.toBeNull();
+    expect(planeBox).not.toBeNull();
+    const tapX = (bubble?.x ?? 0) + (bubble?.width ?? 0) / 2;
+    const tapY = (bubble?.y ?? 0) + (bubble?.height ?? 0) / 2;
+
+    await page.mouse.click(tapX, tapY);
+
+    // Exactly one move, and it is the point under the balloon rather than
+    // wherever a swallowed tap might have ended up. The hello sent on open is
+    // not a move.
+    await expect.poll(() => socket.sent.filter((m) => m.t === TYPE_MOVE).length).toBe(1);
+    const move = socket.sent.filter((m) => m.t === TYPE_MOVE)[0];
+    expect(move.x as number).toBeCloseTo((tapX - (planeBox?.x ?? 0)) / (planeBox?.width ?? 1), 2);
+    expect(move.y as number).toBeCloseTo((tapY - (planeBox?.y ?? 0)) / (planeBox?.height ?? 1), 2);
+  });
+});
+
+test.describe('«Ванягоччи» — further down the plane is nearer', () => {
+  // Depth is drawn by two mechanisms that agree only because it is DISCRETE: the
+  // size is a `transform`, which the compositor interpolates over the 220 ms a
+  // move takes, and the stacking order is a `z-index`, which can only jump.
+  // Both are written imperatively alongside the position, off the same `--y`,
+  // for the same reason the position is: at 5 Hz and twenty entities, putting
+  // this through Vue would be a thousand vdom patches a second to produce a
+  // transform the compositor could have been handed straight away.
+
+  test('a lower dot is in a nearer band, drawn larger, and stacked in front', async ({ page }) => {
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    // One entity per band, at the middle of each quarter of the plane.
+    const ys = [0.1, 0.35, 0.6, 0.85];
+    await socket.push(
+      roster(
+        ...ys.map((y, i) => ({ id: `band-${i}`, x: 0.5, y, art: 'vanya', pose: 'fine' })),
+      ),
+    );
+    await expect(dots(page)).toHaveCount(4);
+
+    let previous: { band: number; depth: number; zIndex: string } | undefined;
+    for (const [i, y] of ys.entries()) {
+      const seen = await peerDepth(page, `band-${i}`);
+      // The band the DESIGN puts this height in, not whatever was written.
+      expect(seen.band, `y=${y} landed in band ${seen.band}`).toBe(bandFor(y));
+      expect(seen.depth, `band ${seen.band} scales by ${seen.depth}`).toBeCloseTo(
+        DEPTH_SCALES[bandFor(y)],
+        3,
+      );
+      // The band is the stacking order, resolved by the browser rather than read
+      // off the declaration — `z-index: var(--band)` is only depth if the custom
+      // property really reaches the used value.
+      expect(seen.zIndex, `band ${seen.band} stacks at ${seen.zIndex}`).toBe(String(bandFor(y)));
+
+      if (previous) {
+        expect(seen.band, 'a lower entity is in a further band').toBeGreaterThan(previous.band);
+        expect(seen.depth, 'a lower entity is not drawn any larger').toBeGreaterThan(previous.depth);
+        expect(
+          Number(seen.zIndex),
+          'a lower entity does not stack in front of the one behind it',
+        ).toBeGreaterThan(Number(previous.zIndex));
+      }
+      previous = seen;
+    }
+
+    // And the scale is really being drawn, not merely declared: the nearest band
+    // measures bigger than the furthest by its own ratio.
+    const far = await dots(page).nth(0).boundingBox();
+    const near = await dots(page).nth(3).boundingBox();
+    expect(far?.width ?? 0).toBeCloseTo(PEER_BASE_PX, 0);
+    expect(near?.width ?? 0).toBeCloseTo(PEER_BASE_PX * DEPTH_SCALES[3], 0);
+  });
+
+  test('the nearer of two overlapping Ваняs is the one you can see', async ({ page }) => {
+    // The claim `z-index` actually makes, asked of the RENDERER rather than
+    // re-derived from the stylesheet in the test.
+    //
+    // The near dot is FIRST in the frame, and therefore first in the DOM. Source
+    // order alone would paint the second one on top, so a build that lost the
+    // stacking order — or applied it from something other than the band —
+    // answers with the far dot here. That is the mutation this is for.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    // A hair either side of a band boundary, so they overlap almost completely
+    // and are still one band apart.
+    const NEAR_Y = 0.51;
+    const FAR_Y = 0.49;
+    expect(bandFor(NEAR_Y), 'the fixture no longer straddles a band boundary').toBe(
+      bandFor(FAR_Y) + 1,
+    );
+
+    await socket.push(
+      roster(
+        { id: 'near', x: 0.5, y: NEAR_Y, art: 'vanya', pose: 'fine' },
+        { id: 'far', x: 0.5, y: FAR_Y, art: 'vanya', pose: 'fine' },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(2);
+
+    // The dots are `pointer-events: none` in production — the plane takes the
+    // tap, and the balloon test above is what pins that. Hit-testing is
+    // nevertheless the only way to ask the BROWSER which of two overlapping
+    // things is in front, because `elementFromPoint` walks the same painting
+    // order `z-index` defines. Turning the dots on for this one measurement
+    // touches neither `z-index` nor `transform`, which are what is under test.
+    await page.addStyleTag({
+      content: '[data-test="peer"] { pointer-events: auto !important; }',
+    });
+
+    const nearBox = await page.locator('[data-peer="near"]').boundingBox();
+    const farBox = await page.locator('[data-peer="far"]').boundingBox();
+    expect(nearBox, 'no box for the near dot').not.toBeNull();
+    expect(farBox, 'no box for the far dot').not.toBeNull();
+
+    // The middle of wherever the two actually overlap, computed rather than
+    // guessed — the plane is a different size at each of the suite's widths.
+    const left = Math.max(nearBox?.x ?? 0, farBox?.x ?? 0);
+    const right = Math.min(
+      (nearBox?.x ?? 0) + (nearBox?.width ?? 0),
+      (farBox?.x ?? 0) + (farBox?.width ?? 0),
+    );
+    const top = Math.max(nearBox?.y ?? 0, farBox?.y ?? 0);
+    const bottom = Math.min(
+      (nearBox?.y ?? 0) + (nearBox?.height ?? 0),
+      (farBox?.y ?? 0) + (farBox?.height ?? 0),
+    );
+    expect(right - left, 'the two dots do not overlap horizontally').toBeGreaterThan(4);
+    expect(bottom - top, 'the two dots do not overlap vertically').toBeGreaterThan(4);
+
+    const frontmost = await page.evaluate(
+      ([x, y]) =>
+        document
+          .elementFromPoint(x, y)
+          ?.closest('[data-peer]')
+          ?.getAttribute('data-peer') ?? null,
+      [(left + right) / 2, (top + bottom) / 2] as const,
+    );
+    expect(
+      frontmost,
+      'the Ваня standing further down the plane was drawn BEHIND the one further up',
+    ).toBe('near');
+  });
+
+  test('your own Ваня does not float above somebody standing nearer than he is', async ({
+    page,
+  }) => {
+    // Your own dot used to carry a `z-index` of its own, which was harmless
+    // while everything else was 0 and is a lie now that the stacking order MEANS
+    // something: it would draw you in front of a player standing nearer the
+    // viewer, in a yard where that is the only cue for how far away anybody is.
+    // The ring already says which one is you, and it says it without moving you.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(JSON.stringify({ t: TYPE_YOU, id: 'me' }));
+    await socket.push(
+      roster(
+        { id: 'me', x: 0.5, y: 0.1, art: 'vanya', label: 'я', pose: 'fine' },
+        { id: 'neighbour', x: 0.5, y: 0.9, art: 'vanya', label: 'сосед', pose: 'fine' },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(2);
+    // The marking really did apply, so this is a test of the stacking rather
+    // than of a class that silently stopped being added.
+    await expect(page.locator('[data-peer="me"][data-you="1"]')).toHaveCount(1);
+    await expect(page.locator('[data-peer="me"]')).toHaveClass(/peer--you/);
+
+    const mine = await peerDepth(page, 'me');
+    const theirs = await peerDepth(page, 'neighbour');
+    expect(mine.zIndex, 'your own Ваня was lifted out of his own band').toBe(String(bandFor(0.1)));
+    expect(theirs.zIndex).toBe(String(bandFor(0.9)));
+    expect(
+      Number(theirs.zIndex),
+      'you are drawn in front of somebody standing nearer the viewer than you',
+    ).toBeGreaterThan(Number(mine.zIndex));
+  });
+
+  test('the furthest band is still a 44 px tap target', async ({ page }) => {
+    // The floor, band by band. It holds without arithmetic because the FIRST
+    // depth scale is 1: depth can only ever make an entity bigger, so 44 px is
+    // the smallest anything is ever drawn rather than the product of two numbers
+    // that could drift apart. A change that scaled the far band DOWN instead
+    // would draw a perfectly plausible yard and quietly break the mobile rule.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    const ys = [0.1, 0.35, 0.6, 0.85];
+    await socket.push(
+      roster(...ys.map((y, i) => ({ id: `band-${i}`, x: 0.5, y, art: 'vanya', pose: 'fine' }))),
+    );
+    await expect(dots(page)).toHaveCount(4);
+
+    expect(DEPTH_SCALES[0], 'the furthest band no longer draws at full size').toBe(1);
+    expect(Math.min(...DEPTH_SCALES), 'some band now draws an entity SMALLER than its CSS size').toBe(
+      1,
+    );
+
+    if (isMobile(page)) {
+      for (const [i, y] of ys.entries()) {
+        const box = await page.locator(`[data-peer="band-${i}"]`).boundingBox();
+        expect(box, `no box for the dot in band ${bandFor(y)}`).not.toBeNull();
+        const min = Math.round(Math.min(box?.width ?? 0, box?.height ?? 0));
+        expect(
+          min,
+          `band ${bandFor(y)} draws a ${Math.round(box?.width ?? 0)}x${Math.round(box?.height ?? 0)} tap target`,
+        ).toBeGreaterThanOrEqual(PEER_BASE_PX);
+      }
+    }
   });
 });

@@ -6,8 +6,8 @@ import type { VanyagotchiSkin } from '../api/types';
 // a `:style`, each frame would become a scheduler pass plus one vdom patch per
 // entity, which at twenty entities is on the order of a thousand patches a
 // second to produce a transform the compositor could have been handed straight
-// away. So a frame is applied by writing two CSS custom properties per element
-// and nothing else.
+// away. So a frame is applied by writing a handful of CSS custom properties per
+// element and nothing else.
 //
 // Custom properties rather than writing `transform` directly, for one concrete
 // reason: the mapping from normalised 0..1 coordinates to pixels then lives once,
@@ -15,6 +15,13 @@ import type { VanyagotchiSkin } from '../api/types';
 // cached in JavaScript to invalidate — which matters here because the plane
 // resizes whenever mobile browser chrome slides in or out. It also composes with
 // anything else the stylesheet wants to do to the same element.
+//
+// Everything DERIVED from a position travels the same way and in the same write:
+// the depth band, its scale, and which side of an entity a speech balloon has to
+// hang on are all pure functions of x and y, so they are properties on the same
+// element rather than anything Vue is told about. The rule is the rate of change,
+// not the kind of fact — see the appearance half at the foot of this file for
+// what does go through reactivity, and why.
 
 /**
  * The positional half of one entity in a roster frame.
@@ -33,6 +40,12 @@ export interface PeerPosition {
 /** The custom properties the stylesheet reads. */
 export const X_PROPERTY = '--x';
 export const Y_PROPERTY = '--y';
+/** Which depth band the entity is in — the stylesheet uses it as the z-index. */
+export const BAND_PROPERTY = '--band';
+/** That band's scale factor. */
+export const DEPTH_PROPERTY = '--depth';
+/** 1 when a speech balloon has to hang below its entity instead of above it. */
+export const SAY_BELOW_PROPERTY = '--say-below';
 
 /**
  * Everything this module needs of an element: somewhere to set a custom
@@ -66,10 +79,100 @@ export function isRenderablePosition(peer: unknown): peer is PeerPosition {
   );
 }
 
-/** Writes one entity's position onto its element. */
+// ---------------------------------------------------------------------------
+// Depth. Further down the plane is nearer the viewer, so an entity there is
+// drawn slightly larger and in front of the ones behind it.
+//
+// DISCRETE BANDS, NOT A CONTINUOUS FUNCTION OF Y, and that is the whole design.
+// The two halves of "nearer" are drawn by different mechanisms: the size is a
+// `transform`, which the compositor INTERPOLATES over the 220 ms a move takes,
+// while the stacking order is a `z-index`, which can only JUMP. Scale one
+// continuously and the two disagree on every single frame — an entity is already
+// visibly bigger a third of the way through the walk that will eventually put it
+// in front, so for that third it is a large shape drawn behind a small one. With
+// bands the disagreement is confined to the instant a boundary is crossed, which
+// happens a handful of times per journey rather than sixty times a second.
+//
+// Four of them because three reads as two-and-a-half — the middle band is most
+// of the plane — and five puts the boundaries close enough together that a
+// diagonal walk pops through two of them at once.
+// ---------------------------------------------------------------------------
+
+/**
+ * What each band multiplies an entity's size by, from the back of the plane to
+ * the front.
+ *
+ * THE FIRST ENTRY IS 1 ON PURPOSE, and it is what keeps the mobile suite's 44 px
+ * tap-target floor satisfied without anybody having to redo the arithmetic:
+ * depth can only ever make an entity BIGGER than its unscaled size, so the floor
+ * is the CSS size itself (44 px, `.peer` in GameVanyagotchiView.vue) rather than
+ * a product of two numbers that could drift apart. Scaling the far band DOWN
+ * instead would have meant every future change to either number re-deriving
+ * whether the smallest entity was still tappable.
+ *
+ * 8% a band: enough that two entities a band apart read as at different
+ * distances, small enough that the jump at a boundary is not a pop.
+ */
+export const DEPTH_SCALES: readonly number[] = [1, 1.08, 1.16, 1.24];
+
+/**
+ * The unscaled size of an entity in CSS pixels.
+ *
+ * Mirrors `.peer { width/height }` in GameVanyagotchiView.vue rather than
+ * driving it — the stylesheet owns the size, this is here so the floor above can
+ * be asserted in a unit test. The e2e suite measures the real box at mobile
+ * widths, so the two cannot drift apart silently.
+ */
+export const PEER_BASE_PX = 44;
+
+/**
+ * Which band an entity at this height belongs to.
+ *
+ * Equal slices of the plane rather than a perspective curve: the plane is a
+ * flat 3:4 rectangle with no horizon in it, so there is no vanishing point for a
+ * curve to be right about, and equal slices are the thing a player can predict.
+ */
+export function bandFor(y: number): number {
+  if (!Number.isFinite(y)) return 0;
+  const band = Math.floor(y * DEPTH_SCALES.length);
+  return Math.min(DEPTH_SCALES.length - 1, Math.max(0, band));
+}
+
+/**
+ * How far up the plane a speech balloon stops fitting above its entity.
+ *
+ * The balloon hangs off the top of a 44 px dot that is centred on its own
+ * coordinates, so it needs roughly 45 px of plane above that point; on the
+ * shortest plane we support (about 308 px tall, at 320x568) that is 0.145 of the
+ * height. Normalised rather than measured, deliberately — measuring would mean
+ * caching the plane's box in JavaScript, which is the one thing this module is
+ * built not to do. On a tall screen it therefore flips a balloon that would just
+ * have fitted, which costs nothing: below the entity is a perfectly good place
+ * for it, and it is where the balloon goes for the whole bottom 85% anyway.
+ */
+export const SAY_FLIP_Y = 0.15;
+
+/** Does this entity's balloon have to hang below it to stay on the plane? */
+export function sayBelow(y: number): boolean {
+  return Number.isFinite(y) && y < SAY_FLIP_Y;
+}
+
+/**
+ * Writes one entity's position onto its element.
+ *
+ * Everything here is a pure function of x and y, which is why the depth band
+ * travels with the position rather than being written from somewhere else:
+ * derived at a second site it could lag the coordinates by a frame, and an
+ * entity drawn a band behind where it is standing is exactly the artefact the
+ * discrete bands above exist to avoid.
+ */
 export function applyPosition(el: StyleTarget, x: number, y: number): void {
+  const band = bandFor(y);
   el.style.setProperty(X_PROPERTY, String(x));
   el.style.setProperty(Y_PROPERTY, String(y));
+  el.style.setProperty(BAND_PROPERTY, String(band));
+  el.style.setProperty(DEPTH_PROPERTY, String(DEPTH_SCALES[band]));
+  el.style.setProperty(SAY_BELOW_PROPERTY, sayBelow(y) ? '1' : '0');
 }
 
 /**
@@ -159,10 +262,10 @@ function clamp01(v: number): number {
  * the yard has to show everybody the same world, and a pose worked out locally
  * would be worked out from state only its owner can see.
  */
-export type PeerPose = 'fine' | 'poorly' | 'dead';
+export type PeerPose = 'fine' | 'poorly' | 'dead' | 'asleep';
 
 /** The poses this client knows how to draw. Anything else falls back to fine. */
-const POSES: readonly string[] = ['fine', 'poorly', 'dead'];
+const POSES: readonly string[] = ['fine', 'poorly', 'dead', 'asleep'];
 
 /**
  * What one entity looks like this frame.
@@ -178,6 +281,16 @@ export interface PeerAppearance {
   /** The pet's name. Absent, not empty, until it has been given one. */
   label?: string;
   pose: PeerPose;
+  /**
+   * A line over this entity's head, absent almost always.
+   *
+   * A string rather than a second pose, because the server draws the same
+   * distinction: a pose is how somebody LOOKS and this is something he SAID. It
+   * arrives already decided — the walk he gave up on was rolled once, on the
+   * server, so everybody watches him sit down in the same spot saying the same
+   * thing, which a locally-derived line could not manage.
+   */
+  say?: string;
 }
 
 /**
@@ -199,18 +312,41 @@ export const LABEL_MAX = 16;
  * Returns undefined rather than an empty string so that "no name" is a single
  * state at every layer: the template asks `v-if="peer.label"` and there is no
  * second falsy value to remember, and nothing can render the string "undefined".
- *
- * Cut by code point rather than by `slice`, because slicing a UTF-16 string in
- * the middle of a surrogate pair leaves a lone half that renders as a replacement
- * character — and a name is exactly the field somebody puts an emoji in.
  */
 export function capLabel(raw: unknown): string | undefined {
+  return capText(raw, LABEL_MAX);
+}
+
+/**
+ * The longest line a balloon will show, in characters.
+ *
+ * Longer than a name because a name is one word and a line is a sentence, short
+ * enough that a balloon is still smaller than the entity it belongs to. What it
+ * really guards is the same thing LABEL_MAX guards: the wire is trusted to be
+ * short, and this is what makes it true rather than hoped for.
+ */
+export const SAY_MAX = 24;
+
+/** Reads a spoken line off the wire, or reports that there isn't one. */
+export function capSay(raw: unknown): string | undefined {
+  return capText(raw, SAY_MAX);
+}
+
+/**
+ * Trims a wire string to a maximum, or reports that there was nothing there.
+ *
+ * Cut by code point rather than by `slice`, because slicing a UTF-16 string in
+ * the middle of a surrogate pair leaves a lone half that renders as a
+ * replacement character — and both of the fields this caps are exactly the ones
+ * somebody puts an emoji in.
+ */
+function capText(raw: unknown, max: number): string | undefined {
   if (typeof raw !== 'string') return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
   const chars = [...trimmed];
-  if (chars.length <= LABEL_MAX) return trimmed;
-  return `${chars.slice(0, LABEL_MAX - 1).join('')}…`;
+  if (chars.length <= max) return trimmed;
+  return `${chars.slice(0, max - 1).join('')}…`;
 }
 
 /**
@@ -233,6 +369,7 @@ export function readAppearances(peers: readonly unknown[]): readonly PeerAppeara
     // positional shape, which deliberately does not describe these fields.
     const raw = peer as unknown as Record<string, unknown>;
     const label = capLabel(raw.label);
+    const say = capSay(raw.say);
     const appearance: PeerAppearance = {
       id: peer.id,
       art: typeof raw.art === 'string' ? raw.art : '',
@@ -242,6 +379,7 @@ export function readAppearances(peers: readonly unknown[]): readonly PeerAppeara
           : 'fine',
     };
     if (label !== undefined) appearance.label = label;
+    if (say !== undefined) appearance.say = say;
     out.push(appearance);
   }
   return Object.freeze(out);
@@ -265,8 +403,34 @@ export function sameAppearance(
     const was = before.get(look.id);
     if (!was) return false;
     if (was.art !== look.art || was.label !== look.label || was.pose !== look.pose) return false;
+    // Compared like the rest, and it has to be: a line is on the wire for a few
+    // seconds and then gone, so it is the ONE appearance field that reliably
+    // changes twice a minute. Left out of this comparison it would be read from
+    // a frame that happened to change something else, which in a quiet yard is
+    // never — the balloon would simply not appear.
+    if (was.say !== look.say) return false;
   }
   return true;
+}
+
+/**
+ * How many PEOPLE are in the yard, as the server counted them.
+ *
+ * Not `peers.length`, which stopped being the answer the moment the roster
+ * started carrying NPCs and sleeping Vanyas as well. The count is published
+ * precisely so this client does not have to tell a person from a character:
+ * doing that here would mean the browser holding a copy of who is real, and a
+ * cast added on the server would silently start inflating the head count on
+ * every client that had not been redeployed.
+ *
+ * Falls back to the number of entities when the field is missing, which is
+ * exactly right for the server that omits it: one that does not send `here` is
+ * one that has no NPCs and no sleepers either, so every entity in its frame IS
+ * a person.
+ */
+export function readHere(raw: unknown, entities: number): number {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return entities;
+  return raw;
 }
 
 /**

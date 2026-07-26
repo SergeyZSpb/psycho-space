@@ -1,8 +1,11 @@
 package gamevanyagotchi
 
 import (
+	"fmt"
+	"math"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // The catalogue is data, and data has no compiler.
@@ -440,5 +443,179 @@ func TestALookupFindsWhatIsThereAndMissesWhatIsNot(t *testing.T) {
 		} else if !reflect.DeepEqual(a, Action{}) {
 			t.Errorf("ActionByKey(%q) missed but returned %+v; want the zero value", key, a)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The yard's regulars.
+//
+// An NPC is the purest form of the thing this file exists to guard: he has no
+// table, no row and no client code, so he is nothing but a catalogue entry and
+// the arithmetic it names. There is correspondingly nothing between a typo here
+// and a character who stands in the fence, never moves, or is drawn as a blank.
+// ---------------------------------------------------------------------------
+
+// TestEveryNPCIsAddressableAndDrawable covers the three fields that reach a
+// screen. The key becomes the entity's id in the roster, so a duplicate would
+// publish two entities the client cannot tell apart; the art is what it resolves
+// against the catalogue exactly as it resolves a pet's skin, so an empty one is
+// an entity with nothing to draw; and the label is how a player recognises him.
+//
+// A silent, nameless prop is imaginable — a crate, a bench — and if one is ever
+// added, this test failing is how that becomes a decision rather than an
+// oversight.
+func TestEveryNPCIsAddressableAndDrawable(t *testing.T) {
+	npcs := Content().NPCs
+	if len(npcs) == 0 {
+		t.Fatal("the catalogue has no regulars; the yard is an empty field and every check below asserts nothing")
+	}
+	seen := make(map[string]bool, len(npcs))
+	for _, npc := range npcs {
+		t.Run(npc.Key, func(t *testing.T) {
+			if npc.Key == "" {
+				t.Fatal("a regular has no key; nothing can address him and his roster id is the bare prefix")
+			}
+			if seen[npc.Key] {
+				t.Fatalf("key %q appears twice; two entities would be published under one id and the client cannot tell them apart", npc.Key)
+			}
+			seen[npc.Key] = true
+			if npc.Art == "" {
+				t.Error("no art key; the client resolves this against the catalogue and has nothing to draw without it")
+			}
+			if npc.Label == "" {
+				t.Error("no label; a regular nobody can name is indistinguishable from a player's unnamed Ваня")
+			}
+		})
+	}
+}
+
+// TestEveryNPCMovesInAWayThatExists is the join between the two halves of the
+// design — a character is art plus a pattern KEY — and it is the join a rename
+// breaks silently.
+//
+// evaluate parks an unknown pattern at Home rather than failing, which is the
+// right behaviour at runtime and the reason this has to be checked here: a
+// catalogue naming a pattern nobody wrote produces a character standing
+// perfectly still, in a game where standing perfectly still is also what one of
+// the patterns does on purpose.
+func TestEveryNPCMovesInAWayThatExists(t *testing.T) {
+	for _, npc := range Content().NPCs {
+		t.Run(npc.Key, func(t *testing.T) {
+			if _, ok := patterns[npc.Pattern]; !ok {
+				t.Fatalf("moves by pattern %q, which is not in the table; he would stand at his home for ever and nothing would say why", npc.Pattern)
+			}
+		})
+	}
+}
+
+// TestEveryNPCsParametersSuitItsPattern checks the numbers each pattern actually
+// reads, because MotionParams is one struct for all of them and an unused field
+// is simply zero.
+//
+// That is the design's own trade: a pattern chosen by a catalogue string means
+// the compiler cannot say a patroller needs a route. So this does. Each of these
+// is a character who renders — no crash, no warning — and does nothing anybody
+// meant him to do.
+func TestEveryNPCsParametersSuitItsPattern(t *testing.T) {
+	for _, npc := range Content().NPCs {
+		t.Run(npc.Key, func(t *testing.T) {
+			switch npc.Pattern {
+			case PatternIdle:
+				onPlane(t, npc.Params.Home, "his home")
+			case PatternWander:
+				if npc.Params.Period <= 0 {
+					t.Fatalf("wanders on a period of %v; wanderAt parks him at home for anything not positive, so he would never move", npc.Params.Period)
+				}
+				if npc.Params.Spread.X == 0 && npc.Params.Spread.Y == 0 {
+					t.Fatal("wanders with no spread at all; he is an idler with extra arithmetic")
+				}
+				onPlane(t, npc.Params.Home, "his home")
+				// The box he ambles in has to fit on the plane. It is clamped if it
+				// does not, so nothing breaks — he just spends part of his day
+				// pressed against the fence, which reads as a stuck character.
+				for _, corner := range []Point{
+					{X: npc.Params.Home.X - npc.Params.Spread.X, Y: npc.Params.Home.Y - npc.Params.Spread.Y},
+					{X: npc.Params.Home.X + npc.Params.Spread.X, Y: npc.Params.Home.Y + npc.Params.Spread.Y},
+				} {
+					onPlane(t, corner, "the corner of the box he wanders in")
+				}
+			case PatternPatrol:
+				if len(npc.Params.Route) < 2 {
+					t.Fatalf("patrols a route of %d points; patrolAt parks him on the first one, so his whole joke is standing still", len(npc.Params.Route))
+				}
+				if npc.Params.Period <= 0 {
+					t.Fatalf("patrols on a period of %v; anything not positive parks him on the first point of the route", npc.Params.Period)
+				}
+				for i, p := range npc.Params.Route {
+					onPlane(t, p, fmt.Sprintf("route point %d", i))
+				}
+			}
+		})
+	}
+}
+
+// TestEveryNPCStaysOnThePlaneAllDay is the catalogue's own version of the sweep
+// in motion_test.go, and it is the one that would catch a retune rather than a
+// bug.
+//
+// Numbers here are meant to be moved by feel, and a spread or a route nudged a
+// little too far does not fail anywhere: the clamp catches it and the character
+// stands against the fence looking stuck. A day's worth of instants either side
+// of the world's epoch is enough to catch that — including the ones BEFORE it,
+// which a box whose clock is a minute slow really does ask for.
+func TestEveryNPCStaysOnThePlaneAllDay(t *testing.T) {
+	const step = 977 * time.Millisecond // deliberately not a factor of any period
+	for _, npc := range Content().NPCs {
+		t.Run(npc.Key, func(t *testing.T) {
+			for i := -2000; i < 2000; i++ {
+				elapsed := time.Duration(i) * step
+				at := evaluate(npc.Pattern, npc.Params, elapsed)
+				onPlane(t, at, fmt.Sprintf("his position %v into the world", elapsed))
+			}
+		})
+	}
+}
+
+// onPlane fails unless p is somewhere a client could actually draw: 0..1 on both
+// axes, and a number at all.
+func onPlane(t *testing.T, p Point, what string) {
+	t.Helper()
+	if math.IsNaN(p.X) || math.IsNaN(p.Y) || math.IsInf(p.X, 0) || math.IsInf(p.Y, 0) {
+		t.Fatalf("%s is (%v,%v), which is not a position", what, p.X, p.Y)
+	}
+	if p.X < 0 || p.X > 1 || p.Y < 0 || p.Y > 1 {
+		t.Errorf("%s is (%v,%v), off the plane — the clamp will pin him to the fence and he will read as stuck", what, p.X, p.Y)
+	}
+}
+
+// TestTheWorldEpochIsAFixedInstant pins the one property of NPC motion that no
+// other test can see, and that a browser test provably cannot.
+//
+// Every character's position is measured from this instant, so it has to be the
+// SAME instant in every process. Derive it from process start — `time.Now()` in
+// a var, which is the obvious and wrong way to write this — and the entire cast
+// teleports on every deploy, several times a day, while every unit test keeps
+// passing because they all measure against the same variable they are testing.
+//
+// A full-stack test was attempted for it and deliberately withdrawn: restarting
+// the binary and comparing an NPC's position across the restart passed even
+// against a server broken exactly this way, because reconnect latency varies by
+// more than the difference being measured. That is the sort of test that is
+// worse than none, so the property is pinned here instead — cheaply, and by
+// construction.
+func TestTheWorldEpochIsAFixedInstant(t *testing.T) {
+	want := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
+	if !worldEpoch.Equal(want) {
+		t.Fatalf("worldEpoch = %s; want the literal %s.\n"+
+			"If this was changed on purpose, moving it teleports every NPC once and "+
+			"then stays correct. If it now depends on time.Now(), it teleports them "+
+			"on EVERY deploy and nothing else will tell you.", worldEpoch, want)
+	}
+	// And it is genuinely a constant rather than something recomputed: two reads
+	// an instant apart are the same instant.
+	first := worldEpoch
+	time.Sleep(0) // yields; no wall-clock dependency, so this is not a sleep-to-wait
+	if !worldEpoch.Equal(first) {
+		t.Fatal("worldEpoch changed between two reads, so it is being recomputed rather than fixed")
 	}
 }

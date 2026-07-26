@@ -63,16 +63,29 @@ type fakeRepo struct {
 	markDiedCalls int
 	died          []time.Time
 
-	// mu guards positions ALONE, and that narrowness is the point rather than an
-	// oversight. Every other field here is touched only from the pet path, which
-	// is one goroutine per test; a position is the one thing production writes
-	// from a goroutine of its own — the writer Service.Run starts — so it is the
-	// one field a test could ever see appended to concurrently.
+	// mu guards positions and sleepReads ALONE, and that narrowness is the point
+	// rather than an oversight. Every other field here is touched only from the
+	// pet path, which is one goroutine per test; a position is the one thing
+	// production writes from a goroutine of its own — the writer Service.Run
+	// starts — so it is the one field a test could ever see appended to
+	// concurrently.
 	mu sync.Mutex
 	// positions records every SavePosition call, in order. A departure leaves no
 	// other trace, so this is what "he was written down where he was standing"
 	// is asserted against.
 	positions []savedPosition
+	// sleepReads counts calls to SleepingPets. Guarded by the same lock as
+	// positions because the only paths that could ever call it are the plane's,
+	// which run on goroutines of their own.
+	sleepReads int
+	// sleeping, when set, is what SleepingPets answers with: the yard as the
+	// database knows it, which is generally several pets belonging to nobody in
+	// particular rather than the caller's own. Unset, the single pet above stands
+	// in for it, which is all the pet path's own tests need.
+	sleeping []Pet
+	// sleepErr fails the query, so a test can prove the load is retried rather
+	// than spending its one chance on a database blip.
+	sleepErr error
 }
 
 // savedPosition is one SavePosition call, exactly as it was made.
@@ -107,6 +120,49 @@ func (f *fakeRepo) FindPet(_ context.Context, _ db.DBTX, accountID string) (Pet,
 		return Pet{}, false, nil
 	}
 	return *f.pet, true, nil
+}
+
+// SleepingPets returns the pets that have stood somewhere, newest first, up to
+// limit — the query that is meant to refill the yard with sleeping Ваняs after a
+// restart, since the position map dies with the process.
+//
+// It mirrors the SQL's two filters: a pet with no x/y has never stood anywhere
+// and is not lying in the yard, and the order is by last_seen_at descending so
+// the cap keeps the people who were here most recently rather than an arbitrary
+// handful. sleepReads counts the calls, because "read ONCE per process, lazily,
+// on the first hello" is a property of WHEN it is called rather than of what it
+// returns — and it is asserted in display_test.go, against ensureSleepers.
+func (f *fakeRepo) SleepingPets(_ context.Context, _ db.DBTX, limit int) ([]Pet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sleepReads++
+	if f.sleepErr != nil {
+		return nil, f.sleepErr
+	}
+	pets := f.sleeping
+	if pets == nil && f.pet != nil {
+		pets = []Pet{*f.pet}
+	}
+	out := make([]Pet, 0, len(pets))
+	for _, p := range pets {
+		// The SQL's own filter: a pet with no x/y has never stood anywhere and is
+		// not lying in the yard.
+		if p.X == nil || p.Y == nil {
+			continue
+		}
+		if len(out) == limit {
+			break
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// sleepingReads is how many times the yard has been read out of the database.
+func (f *fakeRepo) sleepingReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sleepReads
 }
 
 // SavePosition records a departure. Nothing here reads it back — the pet path
@@ -1060,9 +1116,13 @@ func TestAnHTTPReadRefreshesWhatThePlaneDraws(t *testing.T) {
 
 	// Before the read the plane knows nothing about him, and still draws him:
 	// catalogue default, no label, no trouble.
-	before := svc.place(planeMember, asOf)
-	if len(before) != 1 {
-		t.Fatalf("an account with no pet read yet produced %d entities; want 1: %+v", len(before), before)
+	// place answers with the entities AND how many of them are people, and one
+	// connected account is one of each: the NPCs are appended by the broadcast
+	// rather than here, and there is nobody asleep in the yard.
+	before, here := svc.place(planeMember, asOf)
+	if len(before) != 1 || here != 1 {
+		t.Fatalf("an account with no pet read yet produced %d entities and a head count of %d; want 1 of each: %+v",
+			len(before), here, before)
 	}
 	if before[0].Art != Content().DefaultSkin || before[0].Label != "" || before[0].Pose != PoseFine {
 		t.Fatalf("before any read the plane drew %+v; want the catalogue default skin, no label and no trouble", before[0])
@@ -1073,9 +1133,10 @@ func TestAnHTTPReadRefreshesWhatThePlaneDraws(t *testing.T) {
 	}
 
 	reads := repo.statReads
-	after := svc.place(planeMember, asOf)
-	if len(after) != 1 {
-		t.Fatalf("the roster carries %d entities after a read; want 1: %+v", len(after), after)
+	after, here := svc.place(planeMember, asOf)
+	if len(after) != 1 || here != 1 {
+		t.Fatalf("the roster carries %d entities and a head count of %d after a read; want 1 of each: %+v",
+			len(after), here, after)
 	}
 	got := after[0]
 	if got.Art != repo.pet.SkinKey {
@@ -1135,9 +1196,9 @@ func TestAReadThatRecordsADeathLeavesThePlaneShowingHimDead(t *testing.T) {
 			entry.diedAt, st.Pet.DiedAt)
 	}
 
-	peers := svc.place(planeMember, time.Now().UTC())
-	if len(peers) != 1 {
-		t.Fatalf("the roster carries %d entities; want 1: %+v", len(peers), peers)
+	peers, here := svc.place(planeMember, time.Now().UTC())
+	if len(peers) != 1 || here != 1 {
+		t.Fatalf("the roster carries %d entities and a head count of %d; want 1 of each: %+v", len(peers), here, peers)
 	}
 	if peers[0].Pose != PoseDead {
 		t.Fatalf("the plane draws a dead Ваня as %q; want %q", peers[0].Pose, PoseDead)

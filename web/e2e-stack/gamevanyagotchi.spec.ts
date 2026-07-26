@@ -34,24 +34,107 @@ const PHONE = {
 
 /** Opens a logged-in phone-sized page already standing in the yard. */
 async function enterYard(context: BrowserContext, baseURL: string): Promise<Page> {
+  return enterYardWith(context, baseURL, async () => undefined);
+}
+
+/**
+ * The same, with a chance to set the page up BEFORE it navigates.
+ *
+ * Anything installed with `addInitScript` has to be in place before the first
+ * document loads, so a recorder cannot be attached by a test that already has a
+ * page in the yard.
+ */
+async function enterYardWith(
+  context: BrowserContext,
+  baseURL: string,
+  prepare: (page: Page) => Promise<void>,
+): Promise<Page> {
   const page = await context.newPage();
+  await prepare(page);
   await page.goto(`${baseURL}/app/game-vanyagotchi`);
   await page.getByRole('button', { name: 'Во двор' }).click();
   await expect(page.locator('[data-test="plane"]')).toBeVisible();
   return page;
 }
 
+/**
+ * Everything the plane is drawing — which STOPPED being the people in the yard.
+ *
+ * The roster now also carries the two regulars, who have no accounts, and
+ * everybody who is asleep in it, who has an account but is not here. So a count
+ * of these is a count of things on screen and nothing more; the locators below
+ * are how a test says which kind it means, and `here` is how it counts people.
+ */
 const dots = (page: Page) => page.locator('[data-test="peer"]');
+
+/**
+ * The yard's regulars.
+ *
+ * Identified by the `npc-` id prefix the server mints for them, which is the
+ * only handle there is: they have no account, so they have no pseudonym, no row
+ * and nothing else to be recognised by.
+ */
+const npcDots = (page: Page) => page.locator('[data-test="peer"][data-peer^="npc-"]');
+
+/** Everybody lying about the yard: an account whose owner is not here. */
+const sleeperDots = (page: Page) =>
+  page.locator(
+    '[data-test="peer"]:not([data-peer^="npc-"]):has([data-test="peer-face"][data-condition="asleep"])',
+  );
+
+/**
+ * The players who are actually here — the thing `dots` used to mean.
+ *
+ * A dead sleeper is drawn `dead` rather than `asleep` (death outranks sleep, so
+ * that his owner is not shown a peaceful nap where the one thing he needs to
+ * come back for is), which means this locator would count one. Nothing in this
+ * suite leaves a dead pet lying about, and where the distinction could matter a
+ * test reads `here` — the server's own count — instead of counting these.
+ */
+const playerDots = (page: Page) =>
+  page.locator(
+    '[data-test="peer"]:not([data-peer^="npc-"]):not(:has([data-test="peer-face"][data-condition="asleep"]))',
+  );
+
 /** The catalogue the server actually served, so nothing here invents content. */
 const CONFIG_URL = '/api/game-vanyagotchi/config';
 
-/** Every dot's normalised x, read from the custom property the stylesheet uses. */
+/**
+ * How many PEOPLE the server says are in the yard.
+ *
+ * Read off the status row rather than counted from the plane, because counting
+ * the plane is precisely the thing that stopped working: the server counts the
+ * humans and publishes the number so that no client has to hold an opinion about
+ * which entity is a real person.
+ */
+async function here(page: Page): Promise<number> {
+  const text = (await page.locator('.hud-count').textContent()) ?? '';
+  const found = text.match(/(\d+)/);
+  return found ? Number(found[1]) : Number.NaN;
+}
+
+/** Every PLAYER's normalised x, read from the custom property the stylesheet uses. */
 async function xs(page: Page): Promise<number[]> {
   return page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>('[data-test="peer"]')].map((el) =>
-      Number.parseFloat(getComputedStyle(el).getPropertyValue('--x')),
-    ),
+    [
+      ...document.querySelectorAll<HTMLElement>(
+        '[data-test="peer"]:not([data-peer^="npc-"]):not(:has([data-test="peer-face"][data-condition="asleep"]))',
+      ),
+    ].map((el) => Number.parseFloat(getComputedStyle(el).getPropertyValue('--x'))),
   );
+}
+
+/** One named entity's normalised position, or NaN when it is not on the plane. */
+async function peerAt(page: Page, id: string): Promise<{ x: number; y: number }> {
+  return page.evaluate((peerId) => {
+    const el = document.querySelector<HTMLElement>(`[data-peer="${peerId}"]`);
+    if (!el) return { x: Number.NaN, y: Number.NaN };
+    const style = getComputedStyle(el);
+    return {
+      x: Number.parseFloat(style.getPropertyValue('--x')),
+      y: Number.parseFloat(style.getPropertyValue('--y')),
+    };
+  }, id);
 }
 
 /**
@@ -107,6 +190,198 @@ async function tapAt(page: Page, x: number, y: number): Promise<void> {
   await page.mouse.click((box?.x ?? 0) + (box?.width ?? 0) * x, (box?.y ?? 0) + (box?.height ?? 0) * y);
 }
 
+// ---------------------------------------------------------------------------
+// Walking.
+//
+// A tap used to BE the position: the server clamped it and broadcast it, and the
+// dot slid over 220 ms whatever the distance. He now WALKS, at about a fifth of
+// the yard a second — so the far corner is some seven seconds away, and distance
+// finally means something.
+//
+// Two consequences for every test in this file that moves anybody. Arrival is no
+// longer immediate, so nothing may assume the position one tick after a tap. And
+// a LONG walk may not finish at all: the server rolls once, at accept time, on
+// whether he gives up part way and sits down saying «устал». That roll is a hash
+// of the account, the destination and the instant, so it is unpredictable from
+// here by design — which makes it something to be tolerated rather than
+// arranged. `walkTo` is what tolerates it.
+// ---------------------------------------------------------------------------
+
+/**
+ * The distance below which a walk is always completed. Mirrored from `tiredFrom`
+ * in internal/gamevanyagotchi/content.go, and only used to REASON about a
+ * fixture, never to make one pass.
+ */
+const NEVER_TIRES_WITHIN = 0.45;
+
+/** What he says when he gives up. Mirrored from `tiredSay`. */
+const TIRED_SAY = 'устал';
+
+/**
+ * Waits until your own Ваня has either reached a point or stopped moving.
+ *
+ * Answers true when he arrived. Polling rather than sleeping on a guess,
+ * because the journey's length depends on where he happened to be standing — and
+ * "he stopped somewhere else" is a real outcome the server is entitled to
+ * produce, not a timeout.
+ *
+ * Stillness is only believed after a beat: for the first moment after a tap the
+ * dot is legitimately still at its old position, and counting that as "stopped"
+ * would call every walk a failure before it began.
+ */
+async function settleNear(
+  page: Page,
+  x: number,
+  y: number,
+  tolerance = 0.02,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  const deadline = startedAt + 30_000;
+  // Four identical reads 150 ms apart is 600 ms of not moving — three broadcast
+  // ticks, so it cannot be an unlucky gap between two frames.
+  const STILL_ENOUGH = 4;
+  let last = { x: Number.NaN, y: Number.NaN };
+  let still = 0;
+  while (Date.now() < deadline) {
+    const at = await you(page);
+    if (Number.isFinite(at.x) && Math.hypot(at.x - x, at.y - y) <= tolerance) return true;
+    if (Number.isFinite(at.x) && at.x === last.x && at.y === last.y) {
+      still += 1;
+      if (still >= STILL_ENOUGH && Date.now() - startedAt > 1_500) return false;
+    } else {
+      still = 0;
+      last = at;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw new Error(`he neither arrived at ${x},${y} nor stopped walking within 30s`);
+}
+
+/**
+ * Walks your Ваня to a point and waits until he is standing on it.
+ *
+ * Asks again when he gives up part way, which is why this is a loop rather than
+ * a tap: each attempt starts from where he sat down, so the distance left
+ * shrinks every time and is soon under the one below which he never gives up at
+ * all. That makes "put him here" deterministic without anybody having to predict
+ * the server's roll — and without a test ever wanting the roll to be turned off,
+ * which would be the same as not testing it.
+ */
+async function walkTo(page: Page, x: number, y: number): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await tapAt(page, x, y);
+    if (await settleNear(page, x, y)) return;
+  }
+  const at = await you(page);
+  throw new Error(`he never made it to ${x},${y}; he gave up at ${at.x},${at.y}`);
+}
+
+/** One recorded moment of one entity, as the browser was told to draw it. */
+interface Step {
+  id: string;
+  x: number;
+  y: number;
+}
+
+/**
+ * Records every position the plane is ever told to draw, from before the app
+ * boots.
+ *
+ * The plane redraws five times a second and a walk is over in a few, so polling
+ * from the test can only ever sample it — and "was he ever between here and
+ * there" is a question about the whole journey rather than about any instant. A
+ * MutationObserver installed before boot sees every write, so the assertion can
+ * be about the recorded TRAJECTORY instead of about being quick enough.
+ *
+ * It watches the `style` attribute because that is where a position lives: the
+ * frames are applied by writing custom properties onto the element and nothing
+ * else, deliberately, so that a frame costs no Vue render.
+ */
+async function recordTrail(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const steps: Step[] = [];
+    const said: string[] = [];
+    (window as unknown as { __trail: Step[] }).__trail = steps;
+    (window as unknown as { __said: string[] }).__said = said;
+    new MutationObserver((records) => {
+      for (const record of records) {
+        // A line over somebody's head is on the wire for a few seconds and then
+        // gone, so catching it by polling is a coin toss. Recorded on arrival.
+        for (const node of record.addedNodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          const bubble = node.matches?.('[data-test="peer-say"]')
+            ? node
+            : node.querySelector?.('[data-test="peer-say"]');
+          if (bubble) said.push(bubble.textContent ?? '');
+        }
+        const el = record.target;
+        if (!(el instanceof HTMLElement)) continue;
+        const id = el.getAttribute('data-peer');
+        if (!id) continue;
+        const x = Number.parseFloat(el.style.getPropertyValue('--x'));
+        const y = Number.parseFloat(el.style.getPropertyValue('--y'));
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        const previous = steps[steps.length - 1];
+        // Consecutive identical writes are the standing case — five a second
+        // saying the same thing — and would drown the journey in noise.
+        if (previous && previous.id === id && previous.x === x && previous.y === y) continue;
+        steps.push({ id, x, y });
+      }
+    }).observe(document, {
+      // THE DOCUMENT, not `document.documentElement`. An init script runs before
+      // the page's own scripts and, on this stack, before the `<html>` element
+      // exists at all — so `documentElement` is null here and `observe` throws
+      // on it, leaving a recorder that silently records nothing and a test that
+      // passes for want of any evidence. A Document is a Node and covers every
+      // descendant, so this attaches whatever stage the parse has reached.
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['style'],
+    });
+  });
+}
+
+/** Everything recorded so far, oldest first. */
+function trail(page: Page): Promise<Step[]> {
+  return page.evaluate(() => (window as unknown as { __trail: Step[] }).__trail ?? []);
+}
+
+/** Every line anybody has been seen to say. */
+function saidSoFar(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window as unknown as { __said: string[] }).__said ?? []);
+}
+
+/** Forgets the recording, so the next assertion is about one journey. */
+async function forgetTrail(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as unknown as { __trail: Step[] }).__trail.length = 0;
+    (window as unknown as { __said: string[] }).__said.length = 0;
+  });
+}
+
+/** The id the server told this page is its own. */
+async function youId(page: Page): Promise<string> {
+  const id = await page
+    .locator('[data-test="peer"][data-you="1"]')
+    .getAttribute('data-peer');
+  expect(id, 'the page never learned which Ваня is its own').toBeTruthy();
+  return id as string;
+}
+
+/** How far a point lies off the straight line from `from` to `to`. */
+function offLine(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  at: { x: number; y: number },
+): number {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return Math.hypot(at.x - from.x, at.y - from.y);
+  return Math.abs(dx * (at.y - from.y) - dy * (at.x - from.x)) / length;
+}
+
 test('two players share one plane, and a move crosses between them', async ({
   browser,
   baseURL,
@@ -123,18 +398,24 @@ test('two players share one plane, and a move crosses between them', async ({
 
     // Each sees both of them. The server builds this from its own connection
     // list every tick, so it is proof the two sockets really are in one room.
-    await expect(dots(pageA)).toHaveCount(2);
-    await expect(dots(pageB)).toHaveCount(2);
+    await expect(playerDots(pageA)).toHaveCount(2);
+    await expect(playerDots(pageB)).toHaveCount(2);
     await expect(pageA.getByText('во дворе: 2')).toBeVisible();
+    // And the yard's regulars are there alongside them, on both screens — which
+    // is also what says the count above is the server's own rather than a tally
+    // of everything drawn.
+    await expect(npcDots(pageA)).toHaveCount(2);
+    await expect(npcDots(pageB)).toHaveCount(2);
 
-    // A taps a quarter across. Nothing local happens; the position is only real
+    // A walks a quarter across. Nothing local happens; the position is only real
     // once the server has clamped it and sent it back to everybody.
-    const box = await pageA.locator('[data-test="plane"]').boundingBox();
-    expect(box).not.toBeNull();
-    await pageA.mouse.click(
-      (box?.x ?? 0) + (box?.width ?? 0) * 0.25,
-      (box?.y ?? 0) + (box?.height ?? 0) * 0.5,
-    );
+    //
+    // Through `walkTo` rather than a bare click, because a tap stopped being a
+    // teleport: he takes seconds to cross the yard, and a long walk may end with
+    // the server sitting him down part way. Asking again from where he sat down
+    // is how a test gets him somewhere definite without wanting that roll turned
+    // off — which would be the same as not testing it.
+    await walkTo(pageA, 0.25, 0.5);
 
     // B learns about it. Both start at the spawn point (0.5), so a dot arriving
     // near 0.25 on B's screen can only have come through the server.
@@ -155,8 +436,12 @@ test('two players share one plane, and a move crosses between them', async ({
     // B leaves. A's plane empties down to one without anything telling the game
     // that B went — the roster is rebuilt from the hub on every tick.
     await ctxB.close();
-    await expect(dots(pageA)).toHaveCount(1, { timeout: 10_000 });
+    await expect(playerDots(pageA)).toHaveCount(1, { timeout: 10_000 });
     await expect(pageA.getByText('во дворе: 1')).toBeVisible();
+    // B is inside the reconnect grace, so he is not drawn at all — a grace is
+    // about REMEMBERING where somebody was, not about showing him. He becomes a
+    // sleeper only once it runs out.
+    await expect(sleeperDots(pageA)).toHaveCount(0);
   } finally {
     await ctxA.close();
     await ctxB.close().catch(() => undefined);
@@ -180,7 +465,7 @@ test('the yard survives leaving the route and coming back', async ({ browser, ba
   try {
     await loginAs(context, PLAYER_A);
     const page = await enterYard(context, base);
-    await expect(dots(page)).toHaveCount(1);
+    await expect(playerDots(page)).toHaveCount(1);
 
     const nav = page.locator('.v-navigation-drawer');
     await nav.getByRole('link', { name: 'Вишлист' }).click();
@@ -189,7 +474,7 @@ test('the yard survives leaving the route and coming back', async ({ browser, ba
 
     await nav.getByRole('link', { name: 'Ванягоччи' }).click();
     await page.getByRole('button', { name: 'Во двор' }).click();
-    await expect(dots(page)).toHaveCount(1, { timeout: 10_000 });
+    await expect(playerDots(page)).toHaveCount(1, { timeout: 10_000 });
     await expect(page.getByText('на связи')).toBeVisible();
   } finally {
     await context.close();
@@ -230,10 +515,10 @@ test('two open pages survive a restart of the binary', async ({ browser, baseURL
     await loginAs(ctxB, PLAYER_B);
     const pageA = await enterYard(ctxA, base);
     const pageB = await enterYard(ctxB, base);
-    await expect(dots(pageA)).toHaveCount(2);
-    await expect(dots(pageB)).toHaveCount(2);
+    await expect(playerDots(pageA)).toHaveCount(2);
+    await expect(playerDots(pageB)).toHaveCount(2);
 
-    const before = await pageA.locator('[data-test="peer"]').count();
+    const before = await playerDots(pageA).count();
     expect(before).toBe(2);
 
     restartServer();
@@ -243,19 +528,19 @@ test('two open pages survive a restart of the binary', async ({ browser, baseURL
     // pseudonym is derived from a key that died with the old process.
     await expect(pageA.getByText('на связи')).toBeVisible({ timeout: 60_000 });
     await expect(pageB.getByText('на связи')).toBeVisible({ timeout: 60_000 });
-    await expect(dots(pageA)).toHaveCount(2, { timeout: 30_000 });
-    await expect(dots(pageB)).toHaveCount(2, { timeout: 30_000 });
+    await expect(playerDots(pageA)).toHaveCount(2, { timeout: 30_000 });
+    await expect(playerDots(pageB)).toHaveCount(2, { timeout: 30_000 });
+    // The regulars came back with the world. They are evaluated closed-form from
+    // a FIXED world epoch rather than from process start, so a deploy does not
+    // teleport the cast — which is only observable across a restart.
+    await expect(npcDots(pageA)).toHaveCount(2, { timeout: 30_000 });
 
     // Still in the yard, never bounced back to the intro.
     await expect(pageA.getByRole('button', { name: 'Во двор' })).toHaveCount(0);
 
     // And the socket is genuinely live again rather than merely labelled so: a
     // move made after the restart has to cross to the other player.
-    const box = await pageA.locator('[data-test="plane"]').boundingBox();
-    await pageA.mouse.click(
-      (box?.x ?? 0) + (box?.width ?? 0) * 0.8,
-      (box?.y ?? 0) + (box?.height ?? 0) * 0.5,
-    );
+    await walkTo(pageA, 0.8, 0.5);
     await expect
       .poll(async () => (await xs(pageB)).some((x) => Math.abs(x - 0.8) < 0.06), {
         message: 'a move made after the restart never reached the other player',
@@ -281,16 +566,12 @@ test('the same account on two devices is ONE Ваня', async ({ browser, baseUR
     const pagePhone = await enterYard(phone, base);
     const pageLaptop = await enterYard(laptop, base);
 
-    await expect(dots(pagePhone)).toHaveCount(1);
-    await expect(dots(pageLaptop)).toHaveCount(1);
+    await expect(playerDots(pagePhone)).toHaveCount(1);
+    await expect(playerDots(pageLaptop)).toHaveCount(1);
     await expect(pagePhone.getByText('во дворе: 1')).toBeVisible();
 
     // A move from the laptop moves the Ваня the phone is watching.
-    const box = await pageLaptop.locator('[data-test="plane"]').boundingBox();
-    await pageLaptop.mouse.click(
-      (box?.x ?? 0) + (box?.width ?? 0) * 0.2,
-      (box?.y ?? 0) + (box?.height ?? 0) * 0.5,
-    );
+    await walkTo(pageLaptop, 0.2, 0.5);
     await expect
       .poll(async () => (await xs(pagePhone)).some((x) => Math.abs(x - 0.2) < 0.06), {
         message: "the phone never saw the laptop's move",
@@ -330,8 +611,8 @@ test("each player sees the OTHER's Ваня rather than an anonymous dot", async
     const pageA = await enterYard(ctxA, base);
     const pageB = await enterYard(ctxB, base);
 
-    await expect(dots(pageA)).toHaveCount(2);
-    await expect(dots(pageB)).toHaveCount(2);
+    await expect(playerDots(pageA)).toHaveCount(2);
+    await expect(playerDots(pageB)).toHaveCount(2);
     // The hello has been answered, so "not me" identifies the other player
     // without either page having to know the other's pseudonym.
     await expect(pageA.locator('[data-test="peer"][data-you="1"]')).toHaveCount(1);
@@ -343,7 +624,10 @@ test("each player sees the OTHER's Ваня rather than an anonymous dot", async
       [pageA, 'A'],
       [pageB, 'B'],
     ] as const) {
-      const theirs = page.locator('[data-test="peer"]:not([data-you="1"])');
+      // "Not me" stopped identifying the other player: it now also matches the
+      // two regulars and anybody asleep in the yard. What is wanted here is the
+      // other PERSON, so the regulars and the sleepers are excluded by name.
+      const theirs = playerDots(page).and(page.locator(':not([data-you="1"])'));
       await expect(theirs, `${who} should see exactly one other player`).toHaveCount(1);
 
       const theirFace = theirs.locator('[data-test="peer-face"]');
@@ -361,7 +645,12 @@ test("each player sees the OTHER's Ваня rather than an anonymous dot", async
       // what is asserted is that it is one of the three the server can send,
       // which a missing or invented field would not be. The pose TRACKING a
       // pet's real condition is pinned end to end in the sibling pet spec.
-      await expect(theirFace).toHaveAttribute('data-condition', /^(fine|poorly|dead)$/);
+      // FOUR poses now, not three. `asleep` joined them when the yard started
+      // keeping absent Ваняs lying about in it — and while the neighbour asserted
+      // here is connected and so cannot be one, pinning the set to the three that
+      // existed before would make this the test that fails when somebody's
+      // socket blips rather than when anything is wrong.
+      await expect(theirFace).toHaveAttribute('data-condition', /^(fine|poorly|dead|asleep)$/);
 
       // And the caller's own dot has one too — appearance is for everybody, not
       // a swap of who gets to be anonymous.
@@ -394,12 +683,17 @@ test('a Ваня is still standing where you left him after a restart', async ({
   try {
     await loginAs(context, PLAYER_A);
     const page = await enterYard(context, base);
-    await expect(dots(page)).toHaveCount(1);
+    await expect(playerDots(page)).toHaveCount(1);
     await expect(page.locator('[data-test="peer"][data-you="1"]')).toHaveCount(1);
 
     // A corner no other test in this suite walks to, so a pass cannot be
     // inherited from a position an earlier test happened to leave behind.
-    await tapAt(page, 0.15, 0.85);
+    //
+    // `walkTo` rather than a bare tap: the journey from wherever he is standing
+    // is long enough that the server may decide he has had enough and sit him
+    // down part way, and the point of this test is the restart rather than the
+    // roll. Each retry starts from where he sat down, so he gets there.
+    await walkTo(page, 0.15, 0.85);
     // BOTH coordinates, and a window nothing else can occupy.
     //
     // This was a one-axis poll with a ±0.05 tolerance, and it made the test fail
@@ -435,7 +729,7 @@ test('a Ваня is still standing where you left him after a restart', async ({
     // The page was not touched and not reloaded: it notices, reconnects, and
     // says hello to a process that has never heard of it.
     await expect(page.getByText('на связи')).toBeVisible({ timeout: 60_000 });
-    await expect(dots(page)).toHaveCount(1, { timeout: 30_000 });
+    await expect(playerDots(page)).toHaveCount(1, { timeout: 30_000 });
     await expect(page.locator('[data-test="peer"][data-you="1"]')).toHaveCount(1, {
       timeout: 30_000,
     });
@@ -453,11 +747,420 @@ test('a Ваня is still standing where you left him after a restart', async ({
 
     // And he is still a player rather than a frozen snapshot: a move made after
     // the restart still reaches the server and comes back.
-    await tapAt(page, 0.6, 0.4);
-    await expect
-      .poll(async () => (await you(page)).x, { timeout: 20_000 })
-      .toBeCloseTo(0.6, 1);
+    await walkTo(page, 0.6, 0.4);
+    expect((await you(page)).x).toBeCloseTo(0.6, 1);
   } finally {
     await context.close();
+  }
+});
+
+/** One regular as the catalogue describes it. Mirrored from the config response. */
+interface WireNPC {
+  key: string;
+  label: string;
+  art: string;
+}
+
+/** The whole catalogue, as the server served it to this page. */
+async function catalogue(page: Page): Promise<{ skins: WireSkin[]; npcs?: WireNPC[] }> {
+  const res = await page.request.get(CONFIG_URL);
+  expect(res.status(), `GET ${CONFIG_URL}`).toBe(200);
+  return (await res.json()) as { skins: WireSkin[]; npcs?: WireNPC[] };
+}
+
+/**
+ * The cap a name is cut to before it is drawn, in code points. Mirrored from
+ * `LABEL_MAX` in src/lib/vanyagotchiPlane.ts.
+ *
+ * Needed here because a regular's name comes off the SERVER's catalogue and one
+ * of them is longer than the cap, so a test comparing the drawn label with the
+ * served one has to apply the same rule the client does. Cut by code point, not
+ * by `slice`, because halving a surrogate pair is how this field grows a
+ * replacement character.
+ */
+const LABEL_MAX = 16;
+
+function capLabel(raw: string): string {
+  const chars = [...raw.trim()];
+  if (chars.length <= LABEL_MAX) return raw.trim();
+  return `${chars.slice(0, LABEL_MAX - 1).join('')}…`;
+}
+
+test('the yard has regulars, and both players see the same ones', async ({ browser, baseURL }) => {
+  // The yard used to be as empty as the number of friends who happened to be
+  // online, which for five to thirty people is almost always nobody. It now has
+  // characters in it who are not players at all.
+  //
+  // Everything asserted is read back from what the SERVER served — the cast, its
+  // names and its art all come from `/api/game-vanyagotchi/config` in this test
+  // rather than being written down in it. A hardcoded «Тунг Тунг Сахур» would
+  // only prove that the client can draw a string this file already knew.
+  //
+  // The claim that matters is that they are SHARED: two independent browsers,
+  // two accounts, two sockets, and the same characters on both. An NPC faked
+  // client-side would satisfy every single-page assertion here.
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const ctxA = await browser.newContext(PHONE);
+  const ctxB = await browser.newContext(PHONE);
+  try {
+    await loginAs(ctxA, PLAYER_A);
+    await loginAs(ctxB, PLAYER_B);
+    const pageA = await enterYard(ctxA, base);
+    const pageB = await enterYard(ctxB, base);
+
+    const cfg = await catalogue(pageA);
+    const npcs = cfg.npcs ?? [];
+    expect(npcs.length, 'the server serves no cast at all').toBeGreaterThanOrEqual(2);
+
+    for (const [page, who] of [
+      [pageA, 'A'],
+      [pageB, 'B'],
+    ] as const) {
+      await expect(npcDots(page), `${who} sees the wrong number of regulars`).toHaveCount(
+        npcs.length,
+        { timeout: 15_000 },
+      );
+
+      for (const npc of npcs) {
+        // The id the server mints is `npc-` plus the catalogue key — the only
+        // handle a character without an account can have.
+        const dot = page.locator(`[data-peer="npc-${npc.key}"]`);
+        await expect(dot, `${who} cannot see ${npc.key}`).toHaveCount(1);
+
+        // Its art resolved against the same catalogue, exactly as a pet's skin
+        // does. That is the whole reason a character costs the browser nothing:
+        // to the client it is one more entity in the roster.
+        const skin = cfg.skins.find((s) => s.key === npc.art);
+        expect(skin, `the catalogue has no skin for ${npc.key}'s art key ${npc.art}`).toBeDefined();
+        const npcFace = dot.locator('[data-test="peer-face"]');
+        await expect(npcFace, `${who} sees a faceless ${npc.key}`).toHaveCount(1);
+        if (skin?.image) {
+          await expect(npcFace.locator('img.peer-sprite')).toHaveCount(1);
+        } else {
+          await expect(npcFace, `${who} drew the placeholder for ${npc.key}`).toHaveText(
+            skin?.emoji ?? '',
+          );
+        }
+
+        // And its name, cut the way every name on the plane is cut.
+        await expect(dot.locator('[data-test="peer-label"]')).toHaveText(capLabel(npc.label));
+      }
+    }
+
+    // THE point of the head count. Five entities are drawn and two of them are
+    // people, and the number on screen is two — on both screens. Counting the
+    // plane would say five, which is the bug the field exists to foreclose.
+    await expect(playerDots(pageA)).toHaveCount(2);
+    await expect(pageA.getByText('во дворе: 2')).toBeVisible();
+    await expect(pageB.getByText('во дворе: 2')).toBeVisible();
+    expect(await here(pageA), 'the regulars were counted as people').toBe(2);
+    expect(await dots(pageA).count()).toBe(2 + npcs.length);
+  } finally {
+    await ctxA.close();
+    await ctxB.close();
+  }
+});
+
+test('a regular is in the same place on both screens at the same moment', async ({
+  browser,
+  baseURL,
+}) => {
+  // THE closed-form claim, and the one no stub can make.
+  //
+  // An NPC's position is `pattern(params, now − epoch)` — a pure function of the
+  // clock, evaluated fresh on every broadcast, stored nowhere. The whole payoff
+  // is that it cannot drift: a tick that is late, early, skipped or duplicated
+  // still produces the same world, so two players watching from two browsers see
+  // one character rather than two copies slowly disagreeing. Nothing about that
+  // is observable from a single page, and a velocity that were integrated per
+  // tick instead would pass every other test in this file.
+  //
+  // The sampling is PAIRED — both pages read in the same `Promise.all` — because
+  // the claim is about a moment rather than about an average. And it is followed
+  // by a RESTART, because agreement between two pages watching one broadcast is
+  // the easy half: see the comment above that leg for what it adds.
+  test.setTimeout(150_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const ctxA = await browser.newContext(PHONE);
+  const ctxB = await browser.newContext(PHONE);
+  try {
+    await loginAs(ctxA, PLAYER_A);
+    await loginAs(ctxB, PLAYER_B);
+    const pageA = await enterYard(ctxA, base);
+    const pageB = await enterYard(ctxB, base);
+
+    const npcs = (await catalogue(pageA)).npcs ?? [];
+    expect(npcs.length, 'the server serves no cast at all').toBeGreaterThanOrEqual(1);
+    await expect(npcDots(pageA)).toHaveCount(npcs.length, { timeout: 15_000 });
+    await expect(npcDots(pageB)).toHaveCount(npcs.length, { timeout: 15_000 });
+
+    // One that MOVES. A character standing still would agree with itself on two
+    // screens for entirely uninteresting reasons, so the assertion that the
+    // agreement is non-trivial is made against the same samples below.
+    const wanderer = `npc-${npcs[0].key}`;
+
+    // A frame is published to everybody at once, so at worst the two pages are
+    // one tick apart. The wanderer covers well under 0.01 of the plane in a 200
+    // ms tick, so this is a couple of ticks of slack — and still far tighter
+    // than the distance he is required to have covered by the time we stop.
+    const TICK_SLACK = 0.03;
+    // How far he has to have gone before the agreement above counts for
+    // anything. A character standing still agrees with itself for free.
+    const MIN_TRAVELLED = TICK_SLACK * 2;
+
+    // Sampled until he HAS moved that far, rather than for a fixed few seconds.
+    // His path is the sum of two sinusoids whose periods are deliberately
+    // incommensurable, so his speed varies from nothing to about a fortieth of
+    // the plane a second — a fixed window that happened to land on a turning
+    // point would fail for a reason that has nothing to do with the claim.
+    const paired: { a: { x: number; y: number }; b: { x: number; y: number } }[] = [];
+    let travelled = 0;
+    const deadline = Date.now() + 40_000;
+    while (Date.now() < deadline) {
+      const [a, b] = await Promise.all([peerAt(pageA, wanderer), peerAt(pageB, wanderer)]);
+      if (Number.isFinite(a.x) && Number.isFinite(b.x)) {
+        const previous = paired[paired.length - 1];
+        // Total path length rather than net displacement: he is going nowhere in
+        // particular, so he can end up where he started having covered ground.
+        if (previous) travelled += Math.hypot(a.x - previous.a.x, a.y - previous.a.y);
+        paired.push({ a, b });
+        // The agreement is asserted as we go, so a disagreement fails on the
+        // sample that had it rather than being averaged away.
+        const apart = Math.hypot(a.x - b.x, a.y - b.y);
+        expect(
+          apart,
+          `sample ${paired.length}: the two players are watching ${wanderer} in different ` +
+            `places — (${a.x.toFixed(3)},${a.y.toFixed(3)}) vs (${b.x.toFixed(3)},${b.y.toFixed(3)})`,
+        ).toBeLessThan(TICK_SLACK);
+      }
+      if (paired.length >= 12 && travelled > MIN_TRAVELLED) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    expect(paired.length, 'the wanderer was never on both planes at once').toBeGreaterThanOrEqual(12);
+    expect(
+      travelled,
+      `${wanderer} moved only ${travelled.toFixed(3)} of a plane in 40 seconds — ` +
+        'a stationary character agrees with itself for free',
+    ).toBeGreaterThan(MIN_TRAVELLED);
+
+    // WHAT THIS TEST DOES NOT REACH, stated so nobody reads more into it.
+    //
+    // Both pages agree largely because they are shown ONE broadcast frame, so
+    // the agreement above proves the regulars are SERVER-AUTHORITATIVE and
+    // shared — a cast generated in the browser would drift between two tabs
+    // within seconds — but it does not prove they are evaluated closed-form.
+    //
+    // The property it cannot reach is that the world's clock is a FIXED epoch
+    // rather than process start: get that wrong and the whole cast snaps back to
+    // its t = 0 pose on every deploy. Deciding it from here needs two restarts
+    // and a sample taken at a known moment after each, and the moment is not
+    // knowable — the page reconnects on its own schedule, and the few seconds of
+    // slack in that is more movement than the difference being looked for. An
+    // attempt at it passed against a server deliberately broken to use process
+    // start, which is worse than no test. It belongs in a Go unit test asserting
+    // `worldEpoch` is a literal date; the existing one compares each frame
+    // against `worldEpoch` itself and so would follow the same change.
+  } finally {
+    await ctxA.close();
+    await ctxB.close();
+  }
+});
+
+test('a tap is a walk across the yard, not a teleport', async ({ browser, baseURL }) => {
+  // Before this the position WAS the tap: the server clamped it and broadcast
+  // it, and the dot slid over 220 ms whatever the distance — so the far side of
+  // the plane was 220 ms away and distance meant nothing. It has to mean
+  // something, because the errands this game is heading for are races to ARRIVE.
+  //
+  // "Not a teleport" is a claim about a JOURNEY, not about any instant, so it is
+  // asserted against the recorded trajectory: a teleport writes one position and
+  // is done, and a walk writes a stream of them along the straight line between
+  // where he was and where he is going.
+  test.setTimeout(120_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const context = await browser.newContext(PHONE);
+  try {
+    await loginAs(context, PLAYER_A);
+    const page = await enterYardWith(context, base, recordTrail);
+    await expect(playerDots(page)).toHaveCount(1);
+    await expect(page.locator('[data-test="peer"][data-you="1"]')).toHaveCount(1);
+    const me = await youId(page);
+
+    // Put him against one wall first, so the journey below is the width of the
+    // yard rather than however far he happens to be from the far side.
+    await walkTo(page, 0.08, 0.5);
+    const from = await you(page);
+
+    const to = { x: 0.92, y: 0.5 };
+    await forgetTrail(page);
+    await tapAt(page, to.x, to.y);
+    const arrived = await settleNear(page, to.x, to.y);
+
+    const journey = (await trail(page)).filter((step) => step.id === me);
+    expect(journey.length, 'nothing about his position was ever written').toBeGreaterThan(0);
+
+    // He was NOT already there when the first frame after the tap arrived. This
+    // is the assertion a teleport fails outright.
+    const first = journey[0];
+    expect(
+      Math.hypot(first.x - to.x, first.y - to.y),
+      `the very first frame after the tap already had him at the destination ` +
+        `(${first.x.toFixed(3)},${first.y.toFixed(3)}) — that is a teleport`,
+    ).toBeGreaterThan(0.1);
+
+    // And he was seen in a stream of places strictly between the two ends,
+    // rather than at one end and then the other.
+    const between = journey.filter(
+      (step) =>
+        Math.hypot(step.x - from.x, step.y - from.y) > 0.05 &&
+        Math.hypot(step.x - to.x, step.y - to.y) > 0.05,
+    );
+    expect(
+      between.length,
+      `he was drawn at ${journey.length} places and only ${between.length} of them were ` +
+        'part-way across; a walk at a fifth of a plane a second should be a couple of dozen',
+    ).toBeGreaterThanOrEqual(5);
+
+    // Every one of them on the straight line between the two ends — so this is a
+    // walk rather than a dot wandering about on its way.
+    for (const step of between) {
+      expect(
+        offLine(from, to, step),
+        `he strayed ${offLine(from, to, step).toFixed(3)} off the line to where he was asked to go`,
+      ).toBeLessThan(0.03);
+    }
+
+    // The walk had to be long enough that giving up was on the table, or the
+    // branch below is never taken and this test quietly stops covering it.
+    expect(
+      Math.hypot(to.x - from.x, to.y - from.y),
+      'the fixture is now a short hop, which can never be given up on',
+    ).toBeGreaterThan(NEVER_TIRES_WITHIN);
+
+    if (arrived) {
+      const at = await you(page);
+      expect(at.x).toBeCloseTo(to.x, 1);
+      expect(at.y).toBeCloseTo(to.y, 1);
+    } else {
+      // The other honest outcome: the server decided he had had enough and sat
+      // him down part way, saying so. The roll is a hash of the account, the
+      // destination and the instant — unpredictable from here on purpose — so
+      // this branch is tolerated rather than arranged, and asserting where he
+      // stopped is what stops "gave up" being an excuse for "went nowhere".
+      const at = await you(page);
+      expect(
+        offLine(from, to, at),
+        'he gave up somewhere that is not on the way to where he was going',
+      ).toBeLessThan(0.03);
+      const progress =
+        Math.hypot(at.x - from.x, at.y - from.y) / Math.hypot(to.x - from.x, to.y - from.y);
+      expect(progress, 'he gave up before setting off, which reads as an ignored tap').toBeGreaterThan(
+        0.2,
+      );
+      expect(progress, 'he "gave up" within a whisker of arriving').toBeLessThan(0.95);
+      // And he said so. Recorded on arrival in the DOM rather than polled for:
+      // the line is on the wire for a few seconds only, so catching it by
+      // sampling would be a coin toss.
+      expect(
+        await saidSoFar(page),
+        'he stopped short of where he was sent without a word about it',
+      ).toContain(TIRED_SAY);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+test('a Ваня whose owner has gone is asleep in the yard where he stood', async ({
+  browser,
+  baseURL,
+}) => {
+  // What stops a solo visit being an empty field. With five to thirty friends
+  // the yard is almost never occupied by two people at once, but it is never
+  // empty either, because everybody else is lying about in it.
+  //
+  // Driven through a RESTART rather than by waiting out the two-minute reconnect
+  // grace. That is not a shortcut around the clock — it is the other, and
+  // harder, half of the feature: after a deploy the new process has never heard
+  // of anybody, so the sleepers have to be read back out of Postgres on the
+  // first hello. Without that the first visitor after every deploy finds the
+  // bare field the sleepers exist to prevent, and no amount of waiting would
+  // exercise it. The grace-expiry path is covered in the Go tests, which own the
+  // clock, and by the stubbed suite, which owns the wire.
+  test.setTimeout(150_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const ctxA = await browser.newContext(PHONE);
+  const ctxB = await browser.newContext(PHONE);
+  try {
+    await loginAs(ctxA, PLAYER_A);
+    await loginAs(ctxB, PLAYER_B);
+    const pageA = await enterYard(ctxA, base);
+    const pageB = await enterYard(ctxB, base);
+    await expect(playerDots(pageA)).toHaveCount(2, { timeout: 15_000 });
+
+    // B is alive. Death outranks sleep — a dead Ваня is drawn dead however long
+    // his owner has been away, because hiding that behind a peaceful nap would
+    // hide the one thing his owner needs to come back for — so a pet left dead
+    // by an earlier file would make this assert the wrong pose for the right
+    // reason. A beer is the game's own way of fixing that, over the real route.
+    const revived = await pageB.request.post('/api/game-vanyagotchi/actions/drink');
+    expect(revived.status(), 'POST drink').toBe(200);
+
+    // Somewhere no other test in this file walks to, so the position asserted
+    // after the restart cannot be one left lying around by an earlier one.
+    await walkTo(pageB, 0.86, 0.14);
+    const stood = await you(pageB);
+    expect(Math.abs(stood.x - 0.5), 'he is standing on the spawn point').toBeGreaterThan(0.2);
+
+    // A can see him there while he is still connected.
+    await expect
+      .poll(async () => (await xs(pageA)).some((x) => Math.abs(x - stood.x) < 0.05), {
+        message: "A never saw B walk over",
+        timeout: 20_000,
+      })
+      .toBe(true);
+
+    // B goes. The server writes down where he was standing on the next tick.
+    await ctxB.close();
+    await expect(playerDots(pageA)).toHaveCount(1, { timeout: 20_000 });
+
+    restartServer();
+
+    // A's page was not touched and not reloaded: it notices, reconnects, and
+    // says hello to a process that has never heard of it — and that hello is
+    // what makes the new process read the yard's sleepers out of the database.
+    await expect(pageA.getByText('на связи')).toBeVisible({ timeout: 60_000 });
+    await expect(playerDots(pageA)).toHaveCount(1, { timeout: 30_000 });
+
+    // There he is, lying where he stood.
+    await expect(sleeperDots(pageA), 'the yard came back empty of everybody who had left').toHaveCount(
+      1,
+      { timeout: 30_000 },
+    );
+    const sleeper = sleeperDots(pageA).first();
+    await expect(sleeper.locator('[data-test="peer-face"]')).toHaveAttribute(
+      'data-condition',
+      'asleep',
+    );
+    const sleeperId = await sleeper.getAttribute('data-peer');
+    expect(sleeperId, 'the sleeper has no id').toBeTruthy();
+    const restingAt = await peerAt(pageA, sleeperId as string);
+    expect(
+      Math.hypot(restingAt.x - stood.x, restingAt.y - stood.y),
+      `he went to sleep at ${restingAt.x.toFixed(3)},${restingAt.y.toFixed(3)} rather than ` +
+        `where he was standing, ${stood.x.toFixed(3)},${stood.y.toFixed(3)}`,
+    ).toBeLessThan(0.05);
+
+    // He is emphatically NOT one of the people in the yard, which is the whole
+    // reason the head count stopped being the length of the roster: A is alone
+    // in a yard with four things drawn in it.
+    expect(await here(pageA), 'a sleeper was counted as somebody who is here').toBe(1);
+    await expect(pageA.getByText('во дворе: 1')).toBeVisible();
+    // And the regulars are still there alongside him.
+    await expect(npcDots(pageA)).toHaveCount(2);
+  } finally {
+    await ctxA.close();
+    await ctxB.close().catch(() => undefined);
   }
 });

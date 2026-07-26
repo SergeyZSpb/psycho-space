@@ -79,6 +79,33 @@ func (PostgresRepository) FindPet(ctx context.Context, q db.DBTX, accountID stri
 	return p, true, nil
 }
 
+// SleepingPets reads the yard's furniture: everybody who has ever stood
+// somewhere, newest first. Bounded by the caller, because a frame carrying every
+// pet who ever played would grow without limit as the game gets older.
+func (PostgresRepository) SleepingPets(ctx context.Context, q db.DBTX, limit int) ([]Pet, error) {
+	rows, err := q.Query(ctx,
+		`SELECT `+petColumns+`
+		   FROM game_vanyagotchi_pets
+		  WHERE deleted_at IS NULL AND x IS NOT NULL AND y IS NOT NULL
+		  ORDER BY last_seen_at DESC NULLS LAST
+		  LIMIT $1`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Pet
+	for rows.Next() {
+		p, err := scanPet(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 func (PostgresRepository) SavePosition(ctx context.Context, q db.DBTX, accountID string, at Point, seen time.Time) error {
 	_, err := q.Exec(ctx,
 		`UPDATE game_vanyagotchi_pets

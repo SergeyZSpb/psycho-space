@@ -42,6 +42,14 @@ const (
 type Roster struct {
 	T     string `json:"t"`
 	Peers []Peer `json:"peers"`
+	// Here is how many PEOPLE are in the yard — not how many entities the frame
+	// carries, which also includes the NPCs and the sleepers.
+	//
+	// Counted by the server and published, so the client can say «во дворе: 3»
+	// without having to learn what an NPC is. Deriving it client-side would mean
+	// teaching the browser to tell a person from a character, which is exactly
+	// the content knowledge the entity frame exists to keep out of it.
+	Here int `json:"here"`
 }
 
 // Peer is one entity on the plane: one ACCOUNT, not one connection. Signing in
@@ -84,6 +92,12 @@ type Peer struct {
 	Label string `json:"label,omitempty"`
 	// Pose is how he is doing: see PoseFine and friends.
 	Pose string `json:"pose"`
+	// Say is a line over his head, absent almost always.
+	//
+	// Its first use is «устал» — the walk he did not finish. The cringe-phrase
+	// pool arrives later on this same field, which is why it is a string rather
+	// than a second pose: a pose is how he looks, and this is something he said.
+	Say string `json:"say,omitempty"`
 }
 
 // You tells one client which entity in the roster is its own. It is the answer

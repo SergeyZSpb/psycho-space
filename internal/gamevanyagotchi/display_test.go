@@ -1,6 +1,8 @@
 package gamevanyagotchi
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -203,4 +205,189 @@ func TestTheSkinFallsBackToTheCatalogueDefault(t *testing.T) {
 	if got := (display{skinKey: other}).skin(); got != other {
 		t.Fatalf("a cached skin was published as %q, want %q", got, other)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Furnishing the yard: the one query that makes a restart survivable.
+//
+// The position map dies with the process, so without this a deploy would empty
+// the yard of everybody asleep in it and the first visitor afterwards would find
+// a bare field — which is the exact thing the sleepers exist to prevent. It is
+// also the one place the plane is allowed to read the database, so WHEN it reads
+// matters as much as what it reads.
+// ---------------------------------------------------------------------------
+
+// sleepingPet is a pet the database says is lying in the yard.
+func sleepingPet(accountID string, at Point, name string) Pet {
+	x, y := at.X, at.Y
+	p := Pet{ID: "pet-" + accountID, AccountID: accountID, SkinKey: SkinVanya, LocationKey: LocationYard, X: &x, Y: &y}
+	if name != "" {
+		p.Name = &name
+	}
+	return p
+}
+
+// TestTheYardIsFurnishedOnceAndThenLeftAlone is the shape of the read as much as
+// its result: ONE query per process, triggered by a human saying hello.
+//
+// Not a timer, and above all not the broadcast — the tick is a render step that
+// reads nothing, and a query there would be every player five times a second
+// against a box that also serves the site. After the one read the cache is kept
+// up by the events that actually change it: somebody connects, somebody acts,
+// somebody leaves.
+func TestTheYardIsFurnishedOnceAndThenLeftAlone(t *testing.T) {
+	lay := Point{X: 0.2, Y: 0.9}
+	repo := &fakeRepo{sleeping: []Pet{
+		sleepingPet("acct-asleep", lay, "Спящий"),
+		// Never stood anywhere: NULL is not a position, and laying him down at the
+		// origin would put him in the corner of the plane rather than nowhere.
+		{ID: "pet-new", AccountID: "acct-never-stood", SkinKey: SkinVanya},
+	}}
+	tr := &fakeTransport{}
+	tr.setMembers(member("visitor"))
+	svc := planeService(tr, repo)
+
+	svc.load(context.Background(), accountOf("visitor"))
+	if n := repo.sleepingReads(); n != 1 {
+		t.Fatalf("the yard was read %d times for one hello; want exactly 1", n)
+	}
+
+	// A second hello, and a third: the yard is furniture, and it does not need
+	// re-reading every time somebody walks in.
+	svc.load(context.Background(), accountOf("visitor"))
+	svc.load(context.Background(), "acct-somebody-else")
+	if n := repo.sleepingReads(); n != 1 {
+		t.Fatalf("the yard was read %d times across three hellos; the read is once per process", n)
+	}
+
+	// The sleeper is in the yard, where the database said he was, drawn asleep
+	// and labelled — and he is not counted as a person, because he is not one.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	f := tr.frames()[0]
+	p, ok := peerOf(svc, f, "acct-asleep")
+	if !ok {
+		t.Fatalf("the pet the database says is lying in the yard is not in the frame: %+v", f)
+	}
+	standingAt(t, p, lay, "the sleeper read out of the database")
+	if p.Pose != PoseAsleep {
+		t.Errorf("he is drawn as %q; want %q", p.Pose, PoseAsleep)
+	}
+	if p.Label != "Спящий" || p.Art != SkinVanya {
+		t.Errorf("he is drawn as %+v; want the name and skin his row carries", p)
+	}
+	if f.Here != 1 {
+		t.Fatalf("the frame says %d people are in the yard; only the visitor has a socket open", f.Here)
+	}
+	if _, ok := peerOf(svc, f, "acct-never-stood"); ok {
+		t.Fatal("a pet that has never stood anywhere was laid down in the yard; NULL is not a position")
+	}
+
+	// And what was read is not written straight back out. The placement is marked
+	// as already saved, so the departure of somebody who never actually connected
+	// costs no UPDATE saying exactly what the SELECT just said.
+	svc.mu.Lock()
+	held := svc.pos["acct-asleep"]
+	svc.mu.Unlock()
+	if !held.saved {
+		t.Error("the loaded position is not marked as saved; the next tick would queue a write to store what it had just read")
+	}
+	if held.provisional {
+		t.Error("the loaded position is marked provisional; it came out of the database, and a spawn point must not be allowed to replace it")
+	}
+	if n := len(queued(svc)); n != 0 {
+		t.Fatalf("%d writes were queued by reading the yard; furnishing it is a read", n)
+	}
+}
+
+// TestAFailedFurnishingIsTriedAgain is why the once-only flag is a bool rather
+// than a sync.Once.
+//
+// A Once would spend its single chance on a database blip and leave the yard
+// bare until the next deploy — which, for a feature whose entire job is that the
+// field is never empty, is the failure mode that matters. Nobody would notice
+// either: an empty yard looks exactly like an evening when nobody was playing.
+func TestAFailedFurnishingIsTriedAgain(t *testing.T) {
+	lay := Point{X: 0.6, Y: 0.15}
+	repo := &fakeRepo{
+		sleeping: []Pet{sleepingPet("acct-asleep", lay, "")},
+		sleepErr: errors.New("the database is having a moment"),
+	}
+	tr := &fakeTransport{}
+	tr.setMembers(member("visitor"))
+	svc := planeService(tr, repo)
+
+	svc.load(context.Background(), accountOf("visitor"))
+	svc.mu.Lock()
+	_, furnished := svc.pos["acct-asleep"]
+	svc.mu.Unlock()
+	if furnished {
+		t.Fatal("a failed read furnished the yard anyway")
+	}
+
+	// The next person through the door tries again, and this time it works.
+	repo.mu.Lock()
+	repo.sleepErr = nil
+	repo.mu.Unlock()
+	svc.load(context.Background(), accountOf("visitor"))
+	if n := repo.sleepingReads(); n != 2 {
+		t.Fatalf("the yard was read %d times across a failure and a retry; want 2", n)
+	}
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	p, ok := peerOf(svc, tr.frames()[0], "acct-asleep")
+	if !ok {
+		t.Fatal("the yard is still bare after a successful retry")
+	}
+	standingAt(t, p, lay, "the sleeper read on the second attempt")
+
+	// And having succeeded, it stops asking.
+	svc.load(context.Background(), accountOf("visitor"))
+	if n := repo.sleepingReads(); n != 2 {
+		t.Fatalf("the yard was read %d times after a successful load; it is once per process from then on", n)
+	}
+}
+
+// TestFurnishingTheYardNeverDisplacesSomebodyWhoIsAlreadyInIt is the ordering
+// this read has to survive.
+//
+// A hello can arrive at any moment, including while its sender is already
+// standing somewhere he walked to — the hub registers a connection before the
+// hello, and a reconnect is a hello too. The database's copy is older news than
+// the map's in both cases, and applying it would drag a live player back to
+// wherever he was when he last left, which is the exact teleport the whole grace
+// period exists to prevent.
+func TestFurnishingTheYardNeverDisplacesSomebodyWhoIsAlreadyInIt(t *testing.T) {
+	stored := Point{X: 0.1, Y: 0.1}
+	repo := &fakeRepo{sleeping: []Pet{sleepingPet(accountOf("here"), stored, "")}}
+	tr := &fakeTransport{}
+	tr.setMembers(member("here"))
+	svc := planeService(tr, repo)
+
+	// He is in the yard and has walked somewhere of his own.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	walked := Point{X: 0.65, Y: 0.55}
+	w := tap(t, svc, member("here"), walked)
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	// Now the yard is furnished — and the database still thinks he is in the
+	// corner where he left off last week.
+	svc.load(context.Background(), accountOf("here"))
+	if err := svc.broadcast(context.Background(), afterArriving(w).Add(time.Second)); err != nil {
+		t.Fatalf("broadcast after the load: %v", err)
+	}
+
+	frames := tr.frames()
+	p, ok := peerOf(svc, frames[len(frames)-1], accountOf("here"))
+	if !ok {
+		t.Fatalf("the player vanished when the yard was furnished: %+v", frames[len(frames)-1])
+	}
+	standingAt(t, p, walked, "the player who was already standing somewhere")
 }

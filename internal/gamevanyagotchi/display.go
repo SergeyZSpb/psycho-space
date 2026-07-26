@@ -121,6 +121,10 @@ func (s *Service) load(ctx context.Context, accountID string) {
 	if s.repo == nil || s.q == nil {
 		return
 	}
+	// The yard's furniture comes first, so the arriving player sees everybody
+	// who is asleep in it rather than an empty field followed by a pop-in.
+	s.ensureSleepers(ctx)
+
 	pet, ok, err := s.repo.FindPet(ctx, s.q, accountID)
 	if err != nil {
 		// Not fatal to anything: the plane draws catalogue defaults and the next
@@ -142,10 +146,75 @@ func (s *Service) load(ctx context.Context, accountID string) {
 	if at, known := pet.Standing(); known {
 		s.mu.Lock()
 		if held, ok := s.pos[accountID]; !ok || held.provisional {
-			held.at = at
+			// Standing, not walking: he was put down here by the database, and
+			// arriving mid-stride from wherever the map happened to have him
+			// would be inventing a journey nobody took.
+			held.walk = standing(at)
 			held.provisional = false
 			s.pos[accountID] = held
 		}
 		s.mu.Unlock()
 	}
+}
+
+// ensureSleepers reads, once, who is lying about in the yard.
+//
+// Without it the plane would only know about people who had connected since the
+// last deploy, so the first visitor after a restart would find an empty field —
+// and an empty field is exactly what the sleepers exist to prevent. With five to
+// thirty friends the yard is almost never occupied by two people at once, but it
+// is never empty either, because everybody else is asleep in it.
+//
+// ONE QUERY PER PROCESS, triggered by a human saying hello — not a timer, not
+// the broadcast. After that the cache is maintained by the events that actually
+// change it: somebody connects, somebody acts, somebody leaves. A pet created
+// later joins the yard the first time its owner does anything, which is the
+// moment it becomes true that they are in it.
+//
+// Retried on failure rather than being a sync.Once, because a Once would spend
+// its single chance on a database blip and leave the yard bare until the next
+// deploy.
+func (s *Service) ensureSleepers(ctx context.Context) {
+	if s.repo == nil || s.q == nil {
+		return
+	}
+	s.mu.Lock()
+	done := s.sleepersLoaded
+	s.mu.Unlock()
+	if done {
+		return
+	}
+
+	pets, err := s.repo.SleepingPets(ctx, s.q, sleeperLimit)
+	if err != nil {
+		slog.WarnContext(ctx, "gamevanyagotchi: sleepers load failed", "err", err)
+		return
+	}
+
+	for _, pet := range pets {
+		at, known := pet.Standing()
+		if !known {
+			continue
+		}
+		// No stats fetched, and none needed: a sleeper is drawn asleep whatever
+		// his numbers say, and the one thing that outranks sleep — being dead —
+		// is on the pet row itself. Fetching stats for thirty pets to decide
+		// something nobody can see would be a query per sleeper for nothing.
+		s.remember(pet.AccountID, pet, nil)
+
+		s.mu.Lock()
+		if _, held := s.pos[pet.AccountID]; !held {
+			// lastSeen is left at its zero value on purpose: it means "long ago",
+			// which puts him past the grace immediately and therefore asleep
+			// rather than briefly-disconnected. `saved` is set because this
+			// position came OUT of the database — writing it straight back on
+			// the next departure would be a write to say nothing changed.
+			s.pos[pet.AccountID] = placement{walk: standing(at), saved: true}
+		}
+		s.mu.Unlock()
+	}
+
+	s.mu.Lock()
+	s.sleepersLoaded = true
+	s.mu.Unlock()
 }

@@ -27,6 +27,16 @@ type Repository interface {
 	// for its state yet simply renders with catalogue defaults.
 	FindPet(ctx context.Context, q db.DBTX, accountID string) (Pet, bool, error)
 
+	// SleepingPets returns the pets that have stood somewhere, most recently
+	// seen first, up to limit.
+	//
+	// Read ONCE per process, lazily, on the first hello — never on a timer and
+	// never on the broadcast. It exists so that a restart does not empty the
+	// yard of everybody who is asleep in it: without it the plane would only
+	// know about people who had connected since the last deploy, and the first
+	// visitor after one would find the field bare.
+	SleepingPets(ctx context.Context, q db.DBTX, limit int) ([]Pet, error)
+
 	// SavePosition records where an account's pet was standing, and when.
 	//
 	// Written once per session on the last disconnect, never per move: thirty

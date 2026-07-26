@@ -63,14 +63,97 @@ func expectRosterAt(t *testing.T, tick chan<- time.Time, frames <-chan []byte, n
 	return gamevanyagotchi.Roster{}
 }
 
-// peerAt reports whether a roster contains an entity standing exactly here.
+// walkTo taps a destination on one socket and ticks the clock on until he is
+// standing there, answering with the instant on the tick that saw him arrive.
+//
+// Both halves earn their keep. The tap is asynchronous — it is read on its own
+// socket's pump, so a broadcast can land before it — and it now starts a WALK,
+// measured from whatever instant the last tick carried, so a run of ticks all
+// carrying ONE instant would show him setting off and never arriving. Advancing
+// the clock a minute per tick outruns any walk this plane allows, which is about
+// seven seconds corner to corner however the numbers are retuned.
+//
+// The instant it returns is the one to keep ticking at afterwards: it is the
+// last tick he was connected for, which is what a departure is written down as.
+func walkTo(t *testing.T, conn *websocket.Conn, tick chan<- time.Time, frames <-chan []byte,
+	from time.Time, to gamevanyagotchi.Point,
+) time.Time {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText,
+		fmt.Appendf(nil, `{"t":"%s","x":%v,"y":%v}`, gamevanyagotchi.TypeMove, to.X, to.Y)); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for i := 0; ; i++ {
+		now := from.Add(time.Duration(i) * time.Minute)
+		if peerAt(expectRosterAt(t, tick, frames, now), to.X, to.Y) {
+			return now
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nobody ever reached (%v,%v)", to.X, to.Y)
+		}
+	}
+}
+
+// peerAt reports whether a roster contains a PERSON standing exactly here. The
+// yard's regulars are skipped: they are moving all the time and a test that
+// happened to catch one on the spot it was looking for would pass for the wrong
+// reason.
 func peerAt(r gamevanyagotchi.Roster, x, y float64) bool {
-	for _, p := range r.Peers {
+	for _, p := range peopleIn(r) {
 		if p.X == x && p.Y == y {
 			return true
 		}
 	}
 	return false
+}
+
+// regulars is the handles the yard's NPCs are published under.
+//
+// The "npc-" prefix is the server's own naming, and this is where the test suite
+// depends on it — asserted against the wire in
+// TestVanyagotchiTheYardHasItsRegularsInIt and derived from here everywhere else.
+// The client needs none of this: to it they are entities like any other, which is
+// the whole reason a new character costs no client work.
+func regulars() map[string]gamevanyagotchi.NPC {
+	out := make(map[string]gamevanyagotchi.NPC, len(gamevanyagotchi.Content().NPCs))
+	for _, npc := range gamevanyagotchi.Content().NPCs {
+		out["npc-"+npc.Key] = npc
+	}
+	return out
+}
+
+// peopleIn is the entities in a roster that are not the yard's regulars: the
+// players in it, and anybody asleep in it.
+func peopleIn(r gamevanyagotchi.Roster) []gamevanyagotchi.Peer {
+	npcs := regulars()
+	out := make([]gamevanyagotchi.Peer, 0, len(r.Peers))
+	for _, p := range r.Peers {
+		if _, is := npcs[p.ID]; !is {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// awakeIn is the players actually connected: not the regulars, and not the
+// bodies asleep in the yard.
+//
+// The sleepers are why a count of entities is no longer a count of people, and
+// why the assertions below mostly use Roster.Here instead. This exists for the
+// few that need the entities themselves — and it has to be filtered rather than
+// counted, because the database is shared by the whole package and a pet another
+// test left a position on is asleep in this test's yard too.
+func awakeIn(r gamevanyagotchi.Roster) []gamevanyagotchi.Peer {
+	out := make([]gamevanyagotchi.Peer, 0, len(r.Peers))
+	for _, p := range peopleIn(r) {
+		if p.Pose != gamevanyagotchi.PoseAsleep {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // peerByID finds one entity in a roster by the handle it is published under.
@@ -259,8 +342,8 @@ func TestVanyagotchiTwoPlayersSeeEachOther(t *testing.T) {
 	waitRegistered(t, hub, framesB)
 
 	// Both are on the plane before anybody has moved.
-	if got := expectRoster(t, tick, framesB); len(got.Peers) != 2 {
-		t.Fatalf("roster carries %d peers; want both players: %+v", len(got.Peers), got)
+	if got := expectRoster(t, tick, framesB); got.Here != 2 {
+		t.Fatalf("the roster says %d people are in the yard; want both players: %+v", got.Here, got)
 	}
 
 	// A moves, and B is told about it. Identity never travels in the payload —
@@ -382,8 +465,8 @@ func TestVanyagotchiDropsAPlayerWhoLeaves(t *testing.T) {
 	framesA, framesB := readFrames(t, connA), readFrames(t, connB)
 	waitRegistered(t, hub, framesA)
 	waitRegistered(t, hub, framesB)
-	if got := expectRoster(t, tick, framesB); len(got.Peers) != 2 {
-		t.Fatalf("roster carries %d peers before the disconnect; want 2", len(got.Peers))
+	if got := expectRoster(t, tick, framesB); got.Here != 2 {
+		t.Fatalf("the roster says %d people are in the yard before the disconnect; want 2", got.Here)
 	}
 
 	_ = connA.CloseNow()
@@ -391,7 +474,7 @@ func TestVanyagotchiDropsAPlayerWhoLeaves(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		r := expectRoster(t, tick, framesB)
-		if len(r.Peers) == 1 {
+		if r.Here == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -442,11 +525,14 @@ func TestVanyagotchiOneAccountOnTwoSocketsIsOnePeer(t *testing.T) {
 	// Three sockets, two people, two entities — and two distinct ids, so they
 	// were not merged into one either.
 	first := expectRoster(t, tick, framesOther)
-	if len(first.Peers) != 2 {
-		t.Fatalf("three sockets across two accounts produced %d entities; want 2: %+v",
-			len(first.Peers), first)
+	if first.Here != 2 {
+		t.Fatalf("three sockets across two accounts produced a head count of %d; want 2: %+v", first.Here, first)
 	}
-	if first.Peers[0].ID == first.Peers[1].ID {
+	awake := awakeIn(first)
+	if len(awake) != 2 {
+		t.Fatalf("three sockets across two accounts produced %d entities; want 2: %+v", len(awake), first)
+	}
+	if awake[0].ID == awake[1].ID {
 		t.Fatalf("two accounts were published under one id: %+v", first)
 	}
 
@@ -463,8 +549,8 @@ func TestVanyagotchiOneAccountOnTwoSocketsIsOnePeer(t *testing.T) {
 		for {
 			r := expectRoster(t, tick, framesOther)
 			if peerAt(r, x, y) {
-				if len(r.Peers) != 2 {
-					t.Fatalf("a move from the %s produced %d entities; want 2: %+v", what, len(r.Peers), r)
+				if r.Here != 2 {
+					t.Fatalf("a move from the %s left %d people in the yard; want 2: %+v", what, r.Here, r)
 				}
 				return
 			}
@@ -484,7 +570,7 @@ func TestVanyagotchiOneAccountOnTwoSocketsIsOnePeer(t *testing.T) {
 	waitFor := time.Now().Add(5 * time.Second)
 	for {
 		r := expectRoster(t, tick, framesOther)
-		if len(r.Peers) == 2 && peerAt(r, 0.75, 0.25) {
+		if r.Here == 2 && peerAt(r, 0.75, 0.25) {
 			break
 		}
 		if time.Now().After(waitFor) {
@@ -496,7 +582,7 @@ func TestVanyagotchiOneAccountOnTwoSocketsIsOnePeer(t *testing.T) {
 	waitFor = time.Now().Add(5 * time.Second)
 	for {
 		r := expectRoster(t, tick, framesOther)
-		if len(r.Peers) == 1 {
+		if r.Here == 1 {
 			break
 		}
 		if time.Now().After(waitFor) {
@@ -701,8 +787,8 @@ func TestVanyagotchiTheRosterCarriesEveryPeersAppearance(t *testing.T) {
 	// does not care about the clock sends) would decay nothing and draw a Ваня
 	// who has been dying since yesterday as perfectly well.
 	r := expectRosterAt(t, tick, framesB, time.Now())
-	if len(r.Peers) != 2 {
-		t.Fatalf("roster carries %d peers; want both players: %+v", len(r.Peers), r)
+	if r.Here != 2 {
+		t.Fatalf("the roster says %d people are in the yard; want both players: %+v", r.Here, r)
 	}
 	got, ok := peerByID(r, handleA)
 	if !ok {
@@ -724,7 +810,7 @@ func TestVanyagotchiTheRosterCarriesEveryPeersAppearance(t *testing.T) {
 	// rather than as A: an appearance that leaked between accounts would look
 	// entirely plausible in a frame with two entities in it.
 	var other gamevanyagotchi.Peer
-	for _, p := range r.Peers {
+	for _, p := range awakeIn(r) {
 		if p.ID != handleA {
 			other = p
 		}
@@ -774,8 +860,18 @@ func TestVanyagotchiAPositionSurvivesADisconnect(t *testing.T) {
 	// written down has to be the last tick he was CONNECTED, and against a
 	// present-day clock that would be indistinguishable from the instant the row
 	// happened to be written.
+	//
+	// `walked` is a minute further on, and that minute is the journey. A tap is a
+	// walk now, evaluated against the instant on the tick, so a run of ticks all
+	// carrying one instant would show him setting off and never arriving. A
+	// minute of the test's own clock is far longer than the seven seconds the
+	// longest walk on this plane takes.
 	base := time.Now().Add(-time.Hour).UTC()
-	stood := gamevanyagotchi.Point{X: 0.125, Y: 0.875}
+	walked := base.Add(time.Minute)
+	// Within tiredFrom of the entry point, so he cannot decide he is too tired
+	// and sit down half way — which is a real outcome of an ambitious tap and
+	// would make this test flake rather than fail.
+	stood := gamevanyagotchi.Point{X: 0.25, Y: 0.75}
 	if stood == entryPoint(t) {
 		t.Fatal("the position this test walks to is the spawn, so a restore and a default would be indistinguishable")
 	}
@@ -793,24 +889,17 @@ func TestVanyagotchiAPositionSurvivesADisconnect(t *testing.T) {
 	waitRegistered(t, hub, framesA)
 	waitRegistered(t, hub, framesB)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := connA.Write(ctx, websocket.MessageText,
-		fmt.Appendf(nil, `{"t":"vanyagotchi_move","x":%v,"y":%v}`, stood.X, stood.Y)); err != nil {
-		t.Fatalf("A move: %v", err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for !peerAt(expectRosterAt(t, tick, framesB, base), stood.X, stood.Y) {
-		if time.Now().After(deadline) {
-			t.Fatal("A's move never reached the plane")
-		}
-	}
+	// He walks there, and the clock runs on until he has. The instant that saw
+	// him arrive is the one every tick below keeps carrying, so the moment he was
+	// last connected is a single unambiguous timestamp rather than whichever tick
+	// happened to be the last one before the socket closed.
+	arrived := walkTo(t, connA, tick, framesB, walked, stood)
 
 	// A's socket goes. Nothing tells the game so: absence is inferred by the
 	// next tick from the hub's membership.
 	_ = connA.CloseNow()
-	deadline = time.Now().Add(5 * time.Second)
-	for len(expectRosterAt(t, tick, framesB, base).Peers) != 1 {
+	deadline := time.Now().Add(5 * time.Second)
+	for expectRosterAt(t, tick, framesB, arrived).Here != 1 {
 		if time.Now().After(deadline) {
 			t.Fatal("the disconnected player is still on the plane")
 		}
@@ -820,9 +909,9 @@ func TestVanyagotchiAPositionSurvivesADisconnect(t *testing.T) {
 	if x != stood.X || y != stood.Y {
 		t.Fatalf("written down at (%v,%v); want where he was standing (%v,%v)", x, y, stood.X, stood.Y)
 	}
-	if d := seen.Sub(base); d < -time.Second || d > time.Second {
+	if d := seen.Sub(arrived); d < -time.Second || d > time.Second {
 		t.Fatalf("last_seen_at = %s, want the last tick he was connected (%s, off by %s) — an hour out is a wall clock rather than the tick's",
-			seen.UTC(), base, d)
+			seen.UTC(), arrived, d)
 	}
 
 	// Run the grace period out, so the in-memory position is genuinely forgotten
@@ -830,34 +919,53 @@ func TestVanyagotchiAPositionSurvivesADisconnect(t *testing.T) {
 	// The queue is drained first because this is the one assertion that turns on
 	// WHICH tick produced a frame.
 	drainFrames(framesB)
-	expired := base.Add(3 * gamevanyagotchi.PositionGrace)
+	expired := arrived.Add(3 * gamevanyagotchi.PositionGrace)
 	for i := range 2 {
-		if len(expectRosterAt(t, tick, framesB, expired).Peers) != 1 {
-			t.Fatalf("tick %d past the grace still has somebody extra on the plane", i)
+		r := expectRosterAt(t, tick, framesB, expired)
+		if r.Here != 1 {
+			t.Fatalf("tick %d past the grace says %d people are in the yard; only B has a socket open", i, r.Here)
+		}
+		// He is not gone, though: past the grace he is asleep in the yard, which
+		// is TestVanyagotchiASleeperIsStillInTheYard's subject.
+		if len(peopleIn(r)) < 2 {
+			t.Fatalf("tick %d past the grace left nobody lying in the yard: %+v", i, r)
 		}
 	}
 
-	// He comes back on a fresh socket, exactly as he would after a deploy. No
-	// tick is fired between the socket registering and its hello being answered:
-	// one that landed in that gap would place him at the spawn, and the load
-	// would then find a position already in memory and leave him there.
-	connA2, _, err := dialRealtime(t, app.URL, cookieHeader(t, cliA, app.URL), "http://localhost")
+	// He comes back after a DEPLOY, which is the only thing this row is for.
+	//
+	// A second app is built over the same database: a new hub, a new game, an
+	// empty position map — exactly what a restart leaves behind. Reconnecting to
+	// the old one would prove nothing any more, because the sleepers keep his
+	// placement in memory indefinitely and he would come back from there.
+	//
+	// No tick is fired between the socket registering and its hello being
+	// answered: one that landed in that gap would place him at the spawn, and the
+	// load would then find a position already in memory and leave him there.
+	deployed, hub2, _, tick2 := buildAppRealtimeGame(t, vkSrv.URL)
+	app2 := httptest.NewServer(deployed)
+	defer app2.Close()
+
+	connA2, _, err := dialRealtime(t, app2.URL, cookieHeader(t, cliA, app2.URL), "http://localhost")
 	if err != nil {
 		t.Fatalf("dial A again: %v", err)
 	}
 	defer connA2.CloseNow()
 	framesA2 := readFrames(t, connA2)
-	waitRegistered(t, hub, framesA2)
+	waitRegistered(t, hub2, framesA2)
 	handleA := helloAndWaitForTheLoad(t, connA2, framesA2)
 
-	r := expectRosterAt(t, tick, framesA2, expired.Add(time.Minute))
+	r := expectRosterAt(t, tick2, framesA2, expired.Add(time.Minute))
 	p, ok := peerByID(r, handleA)
 	if !ok {
 		t.Fatalf("the reconnected player is missing from the roster: %+v", r)
 	}
 	if p.X != stood.X || p.Y != stood.Y {
-		t.Fatalf("he came back at (%v,%v); want where he was standing when he left (%v,%v) — the spawn is (%v,%v)",
+		t.Fatalf("he came back at (%v,%v) on a fresh process; want where he was standing when he left (%v,%v) — the spawn is (%v,%v)",
 			p.X, p.Y, stood.X, stood.Y, entryPoint(t).X, entryPoint(t).Y)
+	}
+	if p.Pose == gamevanyagotchi.PoseAsleep {
+		t.Fatal("he came back asleep; his socket is open, which is what being here means")
 	}
 }
 
@@ -952,8 +1060,8 @@ func TestVanyagotchiTheBroadcastTickWritesNothing(t *testing.T) {
 		// Each tick carries a later instant than the last, so the run also
 		// covers a broadcast whose clock has moved on: time passing must not
 		// become a reason to write anything either.
-		if len(expectRosterAt(t, tick, frames, base.Add(time.Duration(i)*time.Second)).Peers) != 1 {
-			t.Fatalf("tick %d published a roster that is not just this player", i)
+		if r := expectRosterAt(t, tick, frames, base.Add(time.Duration(i)*time.Second)); r.Here != 1 {
+			t.Fatalf("tick %d says %d people are in the yard; want just this one", i, r.Here)
 		}
 	}
 
@@ -965,5 +1073,337 @@ func TestVanyagotchiTheBroadcastTickWritesNothing(t *testing.T) {
 	// what earns a write, not a frame.
 	if x, y, seen := petStanding(t, id); x != nil || y != nil || seen != nil {
 		t.Fatalf("%d broadcasts wrote a position (%v,%v at %v) for a player who has not gone anywhere", ticks, x, y, seen)
+	}
+}
+
+// TestVanyagotchiTheYardHasItsRegularsInIt drives the whole NPC argument end to
+// end, over a real socket.
+//
+// The claim being tested is that a character costs nothing: no table, no
+// migration, no client work. What arrives on the wire is therefore an ordinary
+// entity with an art key the browser resolves exactly as it resolves a pet's
+// skin — which is only true if the server publishes him in the roster like
+// anybody else, and if he is kept OUT of the head count, because that number is
+// rendered as «во дворе: N» and a yard of two friends must not claim to have four
+// people in it.
+func TestVanyagotchiTheYardHasItsRegularsInIt(t *testing.T) {
+	npcs := regulars()
+	if len(npcs) == 0 {
+		t.Fatal("the catalogue has no regulars; there is nothing for this test to look for")
+	}
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, _, tick := buildAppRealtimeGame(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	cli := loginAs(t, app.URL, "7307", "user")
+	conn, _, err := dialRealtime(t, app.URL, cookieHeader(t, cli, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	frames := readFrames(t, conn)
+	waitRegistered(t, hub, frames)
+
+	// A real clock, because where a regular stands is a function of it. No hello
+	// is sent, so nothing here has read the database and the only person in the
+	// yard is the one socket.
+	base := time.Now().UTC()
+	first := expectRosterAt(t, tick, frames, base)
+
+	if first.Here != 1 {
+		t.Fatalf("the roster says %d people are in the yard; one socket is open and the rest of the cast is furniture: %+v",
+			first.Here, first)
+	}
+	if n := len(peopleIn(first)); n != 1 {
+		t.Fatalf("%d entities that are not regulars; want the one player: %+v", n, first)
+	}
+	if len(first.Peers) != 1+len(npcs) {
+		t.Fatalf("the frame carries %d entities; want the player plus the %d regulars: %+v",
+			len(first.Peers), len(npcs), first)
+	}
+
+	for id, npc := range npcs {
+		p, ok := peerByID(first, id)
+		if !ok {
+			t.Fatalf("%q is not in the roster; a regular the client is told about in the config but never sees is a character who does not exist", id)
+		}
+		if p.Art != npc.Art {
+			t.Errorf("%q is drawn as %q; want the catalogue's own art %q — the client resolves this exactly as it resolves a pet's skin", id, p.Art, npc.Art)
+		}
+		if p.Label != npc.Label {
+			t.Errorf("%q is labelled %q; want %q", id, p.Label, npc.Label)
+		}
+		if p.Pose != gamevanyagotchi.PoseFine {
+			t.Errorf("%q is drawn as %q; a character who is not a pet has no health to be poorly about", id, p.Pose)
+		}
+		if p.X < 0 || p.X > 1 || p.Y < 0 || p.Y > 1 {
+			t.Errorf("%q is at (%v,%v), off the plane", id, p.X, p.Y)
+		}
+	}
+
+	// And they are alive: minutes later, on the same socket, at least one of them
+	// has moved. A cast evaluated against a frozen clock would satisfy everything
+	// above.
+	//
+	// Polled rather than read once, because this assertion turns on WHICH tick a
+	// frame came from and the socket may still be holding one the earlier tick
+	// produced. A frame in which somebody has moved can only have come from the
+	// later tick, so the first one that shows movement is the answer.
+	drainFrames(frames)
+	deadline := time.Now().Add(5 * time.Second)
+	stirred, later := false, gamevanyagotchi.Roster{}
+	for !stirred {
+		later = expectRosterAt(t, tick, frames, base.Add(7*time.Minute))
+		for id := range npcs {
+			a, _ := peerByID(first, id)
+			b, _ := peerByID(later, id)
+			if a.X != b.X || a.Y != b.Y {
+				stirred = true
+			}
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+	}
+	if !stirred {
+		t.Fatalf("not one regular moved in seven minutes; their positions are a function of the clock, so either the clock is not reaching them or they are all idlers: %+v", later)
+	}
+
+	// The config the client renders them from carries no hint of how they move:
+	// that stays the server's business, or there would be a second implementation
+	// of it in TypeScript for the two to disagree about.
+	s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/config", nil)
+	if s != http.StatusOK {
+		t.Fatalf("config: status=%d body=%v", s, body)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	for _, forbidden := range []string{"pattern", "params", "spread", "period", "route"} {
+		if strings.Contains(strings.ToLower(string(raw)), `"`+forbidden+`"`) {
+			t.Errorf("the config publishes %q; how a character moves is the server's business alone", forbidden)
+		}
+	}
+}
+
+// TestVanyagotchiASleeperIsStillInTheYard is what turns a solo visit from a menu
+// into a place, driven over two real sockets.
+//
+// With five to thirty friends the yard is almost never occupied by two people at
+// once. Without the sleepers it would therefore be an empty field almost all the
+// time — and filler characters would have been a worse answer than the real
+// ones, who are all still lying about in it. The three stages have to be
+// distinguishable: connected, briefly absent (a reload looks exactly like that),
+// and properly asleep.
+func TestVanyagotchiASleeperIsStillInTheYard(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, _, tick := buildAppRealtimeGame(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	cliA := loginAs(t, app.URL, "7308", "user")
+	cliB := loginAs(t, app.URL, "7309", "user")
+	// A's pet, so the body lying in the yard is recognisably his rather than an
+	// anonymous dot.
+	if s, body := doJSON(t, cliA, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+		t.Fatalf("A opening the game: status=%d body=%v", s, body)
+	}
+	const nameA = "Спящий Ваня"
+	petSetName(t, petID(t, accountIDByUID(t, "7308")), nameA)
+
+	connA, _, err := dialRealtime(t, app.URL, cookieHeader(t, cliA, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	connB, _, err := dialRealtime(t, app.URL, cookieHeader(t, cliB, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	defer connB.CloseNow()
+	framesA, framesB := readFrames(t, connA), readFrames(t, connB)
+	waitRegistered(t, hub, framesA)
+	waitRegistered(t, hub, framesB)
+
+	// A's hello is both how he learns his own handle and how the plane reads his
+	// pet, so what B sees below is drawn from the same cache a live player is.
+	handleA := helloAndWaitForTheLoad(t, connA, framesA)
+
+	// Within tiredFrom of the entry point, so the walk cannot be refused half way
+	// — giving up is a real outcome and would make this test flake, not fail.
+	stood := gamevanyagotchi.Point{X: 0.7, Y: 0.25}
+	if stood == entryPoint(t) {
+		t.Fatal("this test lies down on the spawn, so where he is asleep and where anybody starts would be the same place")
+	}
+	arrived := walkTo(t, connA, tick, framesB, time.Now().UTC(), stood)
+
+	_ = connA.CloseNow()
+
+	// Inside the grace he is simply gone from B's yard. A reload closes a socket
+	// exactly like this, and putting a body on the ground every time somebody
+	// refreshed the page would be worse than showing nothing.
+	drainFrames(framesB)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r := expectRosterAt(t, tick, framesB, arrived.Add(gamevanyagotchi.PositionGrace/2))
+		if _, still := peerByID(r, handleA); !still {
+			if r.Here != 1 {
+				t.Fatalf("B's roster says %d people are in the yard after A's socket closed; want 1: %+v", r.Here, r)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("A is still on the plane long after his socket closed")
+		}
+	}
+
+	// Past it he is furniture: back in the frame B receives, lying exactly where
+	// he stood, drawn asleep, labelled — and NOT counted as somebody who is here.
+	//
+	// Polled, like the leg above: the socket may still be holding a frame from a
+	// tick inside the grace, and a frame he is lying down in can only have come
+	// from one past it.
+	drainFrames(framesB)
+	expired := arrived.Add(gamevanyagotchi.PositionGrace + time.Minute)
+	deadline = time.Now().Add(5 * time.Second)
+	var r gamevanyagotchi.Roster
+	var asleep gamevanyagotchi.Peer
+	for {
+		r = expectRosterAt(t, tick, framesB, expired)
+		if p, ok := peerByID(r, handleA); ok {
+			asleep = p
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nobody is asleep in B's yard past the grace; a solo visit is a bare field again: %+v", r)
+		}
+	}
+	if asleep.X != stood.X || asleep.Y != stood.Y {
+		t.Fatalf("he is asleep at (%v,%v); want where he was standing when he left (%v,%v)", asleep.X, asleep.Y, stood.X, stood.Y)
+	}
+	if asleep.Pose != gamevanyagotchi.PoseAsleep {
+		t.Fatalf("he is drawn as %q; want %q", asleep.Pose, gamevanyagotchi.PoseAsleep)
+	}
+	if asleep.Label != nameA {
+		t.Errorf("the sleeper is labelled %q; want %q — the yard is furnished with people you know, which is the whole point of it", asleep.Label, nameA)
+	}
+	if r.Here != 1 {
+		t.Fatalf("B's roster says %d people are in the yard; B is the only one with a socket open: %+v", r.Here, r)
+	}
+	if n := len(awakeIn(r)); n != 1 {
+		t.Fatalf("%d players are awake in B's yard; want just B: %+v", n, r)
+	}
+}
+
+// TestVanyagotchiATapIsAJourneyAcrossTheYard is distance meaning something,
+// asserted over a socket rather than in the arithmetic.
+//
+// Before it the position WAS the tap, so the far side of the yard was 220 ms
+// away and the beer delivery could not be a race to arrive. What the other player
+// has to see is the middle of the journey — somewhere that is neither where he
+// was nor where he is going — because a walk that snapped to its destination on
+// the first frame would satisfy "he got there" just as well.
+func TestVanyagotchiATapIsAJourneyAcrossTheYard(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, _, tick := buildAppRealtimeGame(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	cliA := loginAs(t, app.URL, "7310", "user")
+	cliB := loginAs(t, app.URL, "7311", "user")
+	connA, _, err := dialRealtime(t, app.URL, cookieHeader(t, cliA, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialRealtime(t, app.URL, cookieHeader(t, cliB, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	defer connB.CloseNow()
+	framesA, framesB := readFrames(t, connA), readFrames(t, connB)
+	waitRegistered(t, hub, framesA)
+	waitRegistered(t, hub, framesB)
+	handleA := expectYou(t, connA, framesA)
+
+	// A tick first, so the tap has a clock to be measured from — and then the tap
+	// itself, followed by a handshake on the same socket. Both are read by that
+	// connection's own pump, in order, so the reply arriving is proof the move
+	// has already been applied: without that barrier the tick below would race it.
+	base := time.Now().UTC()
+	entry := entryPoint(t)
+	if r := expectRosterAt(t, tick, framesB, base); !peerAt(r, entry.X, entry.Y) {
+		t.Fatalf("nobody is standing at the entry point before anybody has moved: %+v", r)
+	}
+	// Just under tiredFrom across, so it cannot be refused, and therefore about
+	// two seconds long at walkSpeed — which is what the instant below is half of.
+	dest := gamevanyagotchi.Point{X: 0.82, Y: 0.26}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := connA.Write(ctx, websocket.MessageText,
+		fmt.Appendf(nil, `{"t":"%s","x":%v,"y":%v}`, gamevanyagotchi.TypeMove, dest.X, dest.Y)); err != nil {
+		t.Fatalf("A move: %v", err)
+	}
+	expectYou(t, connA, framesA)
+
+	// Halfway through the journey in time, he is halfway through it in space:
+	// neither where he was nor where he is going — literally.
+	//
+	// Read on until a frame from that later tick arrives: the socket may still be
+	// holding the one the first tick produced, and a frame in which he has left
+	// the entry point can only have come from a tick after he set off.
+	drainFrames(framesB)
+	deadline := time.Now().Add(5 * time.Second)
+	var p gamevanyagotchi.Peer
+	for {
+		mid := expectRosterAt(t, tick, framesB, base.Add(time.Second))
+		got, ok := peerByID(mid, handleA)
+		if !ok {
+			t.Fatalf("the walking player is missing from B's roster: %+v", mid)
+		}
+		if got.X != entry.X || got.Y != entry.Y {
+			p = got
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a second in he has not left (%v,%v); he should be on his way", got.X, got.Y)
+		}
+	}
+	if p.X == dest.X && p.Y == dest.Y {
+		t.Fatalf("a second in he is already at (%v,%v); a tap is a journey, not a teleport", p.X, p.Y)
+	}
+	if p.X < entry.X || p.X > dest.X {
+		t.Fatalf("a second in he is at (%v,%v), which is not between the entry point (%v,%v) and where he is going (%v,%v)",
+			p.X, p.Y, entry.X, entry.Y, dest.X, dest.Y)
+	}
+
+	// And a minute of the test's clock later he has arrived — and then stays
+	// there, which is the second half and needs no polling: once a frame from the
+	// later tick has been seen, every frame after it is from a later one still.
+	drainFrames(framesB)
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		r := expectRosterAt(t, tick, framesB, base.Add(time.Minute))
+		got, ok := peerByID(r, handleA)
+		if !ok {
+			t.Fatalf("the player who walked is missing from B's roster: %+v", r)
+		}
+		if got.X == dest.X && got.Y == dest.Y {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("he is at (%v,%v) a minute after setting off; want (%v,%v)", got.X, got.Y, dest.X, dest.Y)
+		}
+	}
+	for i := range 2 {
+		r := expectRosterAt(t, tick, framesB, base.Add(time.Duration(i+2)*time.Minute))
+		got, _ := peerByID(r, handleA)
+		if got.X != dest.X || got.Y != dest.Y {
+			t.Fatalf("he is at (%v,%v) %d minutes after setting off; a finished walk is simply standing somewhere", got.X, got.Y, i+2)
+		}
 	}
 }

@@ -44,6 +44,13 @@ const (
 	PosePoorly = "poorly"
 	// PoseDead is one who did not make it. Reversible; see Service.Act.
 	PoseDead = "dead"
+	// PoseAsleep is a Ваня whose owner is away, lying where he last stood.
+	//
+	// It is what makes the yard a place rather than a menu. With five to thirty
+	// friends it is almost never occupied by two people at once, so without the
+	// sleepers a solo visit is an empty field — and filler characters would have
+	// been a worse answer than the real ones, who are all still lying about.
+	PoseAsleep = "asleep"
 )
 
 // Point is a position on the plane in normalised coordinates: 0..1 on each axis,

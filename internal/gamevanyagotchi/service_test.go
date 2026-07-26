@@ -156,6 +156,174 @@ func peerOf(svc *Service, r Roster, accountID string) (Peer, bool) {
 
 const testRoom = "yard"
 
+// ---------------------------------------------------------------------------
+// A tap is a journey now, and that is what the helpers below are for.
+//
+// Three things follow from it. A position is no longer the point the tap named —
+// it is where he has got to by the instant the frame is drawn — so a test has to
+// say WHEN it is looking, and derive that instant from the walk rather than
+// writing one down. A walk lands on its destination by interpolation, from +
+// (to − from) × 1, which IEEE-754 does not promise is bit-identical to `to`, so
+// positions are compared with a tolerance rather than with ==. And an ambitious
+// tap may be refused outright, which is the subject of exactly one test and a
+// flake in every other, so the rest keep their journeys short.
+//
+// The clock stays the plain fixed epoch above, and that works because the game
+// has exactly ONE clock: a tap is stamped with the last tick's instant (see
+// Service.lastTick), never with time.Now, so a test that owns the ticks owns the
+// walks too. The one consequence worth remembering is that a tap arriving before
+// any tick has no instant to be measured from and is applied as a teleport.
+// ---------------------------------------------------------------------------
+
+// longestWalk is the longest journey the plane allows: corner to corner at
+// walkSpeed. A tick this far past a tap is past the end of whatever walk that
+// tap started, whatever it asked for and whether or not he finished it.
+var longestWalk = time.Duration(maxDistance / walkSpeed * float64(time.Second))
+
+// afterArriving is an instant by which the journey w names is certainly over.
+func afterArriving(w walk) time.Time { return w.startedAt.Add(longestWalk + time.Second) }
+
+// atProgress is the instant at which w has covered the given fraction of its
+// length. Derived from the distance and walkSpeed rather than from the walk's own
+// arithmetic, so an expectation is not computed by the thing it is checking.
+func atProgress(w walk, f float64) time.Time {
+	return w.startedAt.Add(time.Duration(distance(w.from, w.to) * f / walkSpeed * float64(time.Second)))
+}
+
+// partWayThrough is the instant w is halfway along, in time and therefore in
+// space.
+func partWayThrough(w walk) time.Time { return atProgress(w, 0.5) }
+
+// walkOf reads the journey an account is currently on, failing if the plane has
+// never heard of it.
+func walkOf(t *testing.T, svc *Service, accountID string) walk {
+	t.Helper()
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	p, ok := svc.pos[accountID]
+	if !ok {
+		t.Fatalf("the plane holds no placement for %q", accountID)
+	}
+	return p.walk
+}
+
+// tap moves an account the way a client does — an inbound frame on its own
+// connection — and hands back the journey it started.
+//
+// It reads the walk back out of the map rather than constructing one, because
+// both of the things a caller needs are decided inside the service and cannot be
+// predicted from outside: where the journey STARTS (a tap retargets from the
+// current interpolated position, not from the last destination) and whether he
+// manages it at all.
+//
+// The second is why this insists on a short hop. planWalk decides tiredness at
+// accept time by hashing (account, destination, instant) against a key
+// crypto/rand mints per process, so a test cannot predict the outcome of an
+// ambitious tap — and one that asserted arrival on one would fail a run in twenty
+// for a reason that has nothing to do with what it was testing. A journey no
+// longer than tiredFrom is never refused. A caller who asks for a longer one
+// fails here, legibly, instead of flaking somewhere downstream.
+func tap(t *testing.T, svc *Service, m realtime.Member, to Point) walk {
+	t.Helper()
+	svc.HandleInbound(context.Background(), m, testRoom,
+		fmt.Appendf(nil, `{"t":%q,"x":%v,"y":%v}`, TypeMove, to.X, to.Y))
+	w := walkOf(t, svc, m.AccountID)
+	if w.to != to {
+		t.Fatalf("the tap asked for (%v,%v) but the journey is heading for (%v,%v); the frame was rejected",
+			to.X, to.Y, w.to.X, w.to.Y)
+	}
+	if d := distance(w.from, w.to); d > tiredFrom {
+		t.Fatalf("this tap is %v across, past the %v at which he may sit down and give up: pick a nearer point, or the test flakes on the run where he does",
+			d, tiredFrom)
+	}
+	if w.stopAt != 1 {
+		t.Fatalf("a hop of %v was refused (stopAt %v); tiredFrom no longer means what this helper assumes",
+			distance(w.from, w.to), w.stopAt)
+	}
+	return w
+}
+
+// tapUntilHeGivesUp taps the same ambitious destination until the server refuses
+// one, and hands back the journey he sat down in the middle of.
+//
+// The roll cannot be predicted from outside — that is the point of it: planWalk
+// hashes (account, destination, instant) against a per-process key, so nobody,
+// client or test, can tell in advance which tap will be refused. What a test can
+// do is ask repeatedly, since every tick carries an instant this service has not
+// hashed before, and across the yard the chance of a refusal is high enough that
+// a few hundred taps without one is not a flake anybody will ever see. It is also
+// exactly what a player does when his Ваня sits down: he taps again.
+func tapUntilHeGivesUp(t *testing.T, svc *Service, m realtime.Member, to Point) walk {
+	t.Helper()
+	const attempts = 400
+	for i := 0; i < attempts; i++ {
+		// A tick first: it is what gives the next tap an instant, and a different
+		// one each time round.
+		if err := svc.broadcast(context.Background(), at(0).Add(time.Duration(i)*time.Millisecond)); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+		svc.HandleInbound(context.Background(), m, testRoom,
+			fmt.Appendf(nil, `{"t":%q,"x":%v,"y":%v}`, TypeMove, to.X, to.Y))
+		w := walkOf(t, svc, m.AccountID)
+		if d := distance(w.from, w.to); d <= tiredFrom {
+			t.Fatalf("this journey is %v across and can never be refused at all; a loop waiting for a refusal on it would never end", d)
+		}
+		if w.stopAt < 1 {
+			return w
+		}
+	}
+	t.Fatalf("%d taps across the whole yard were every one of them accepted; either the tiredness roll has been disconnected or this is the unluckiest run in the history of the game",
+		attempts)
+	return walk{}
+}
+
+// standAt plants an account in the yard already standing at p, with no journey
+// in progress and nothing provisional about it.
+//
+// The state a test cannot otherwise reach in one step: a completed walk needs
+// two ticks and a tap to produce, and half the tests below are about what happens
+// to somebody who is simply STANDING there — a departure, a shutdown flush, a
+// sleeper. It is the identical placement load() writes when it reads a stored
+// position out of Postgres.
+func standAt(svc *Service, accountID string, p Point) {
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	held := svc.pos[accountID]
+	held.walk = standing(p)
+	held.provisional = false
+	svc.pos[accountID] = held
+}
+
+// standingAt fails unless a peer is where it should be, to within the last bit
+// or two of a float64 — see the note about interpolation above.
+func standingAt(t *testing.T, got Peer, want Point, what string) {
+	t.Helper()
+	if !samePoint(Point{X: got.X, Y: got.Y}, want) {
+		t.Fatalf("%s is at (%v,%v); want (%v,%v)", what, got.X, got.Y, want.X, want.Y)
+	}
+}
+
+// npcID is the handle the plane publishes one of the yard's regulars under. The
+// prefix is the server's own convention; it is asserted against the wire in
+// TestTheYardsRegularsAreInEveryFrame and derived from here everywhere else.
+func npcID(key string) string { return "npc-" + key }
+
+// withoutNPCs is the entities in a frame that are not the yard's furniture: the
+// people in it, and anybody asleep in it.
+func withoutNPCs(r Roster) []Peer {
+	npcs := make(map[string]bool, len(catalogue.NPCs))
+	for _, n := range catalogue.NPCs {
+		npcs[npcID(n.Key)] = true
+	}
+	out := make([]Peer, 0, len(r.Peers))
+	for _, p := range r.Peers {
+		if !npcs[p.ID] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // TestBroadcastPlacesANewConnectionAtTheSpawn covers the first frame somebody
 // appears in: they have never sent a move, and they still have to be somewhere,
 // or a peer's client would have to invent a position for them.
@@ -191,23 +359,230 @@ func TestMoveShowsUpInTheNextFrame(t *testing.T) {
 	tr.setMembers(member("a"), member("b"))
 	svc := NewService(tr, testRoom, nil, nil)
 
-	svc.HandleInbound(context.Background(), member("a"), testRoom,
-		[]byte(`{"t":"vanyagotchi_move","x":0.1,"y":0.9}`))
+	// A tick before the tap. It is what puts him at the spawn, and it is what
+	// gives the walk a clock to be measured from — a tap that arrives before the
+	// plane has ever been drawn has no instant to start at and is applied as a
+	// teleport instead.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	dest := Point{X: 0.6, Y: 0.75}
+	w := tap(t, svc, member("a"), dest)
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	f := tr.frames()[1]
+	if f.Here != 2 {
+		t.Fatalf("the frame says %d people are in the yard; want both players: %+v", f.Here, f)
+	}
+	moved, ok := peerOf(svc, f, accountOf("a"))
+	if !ok {
+		t.Fatalf("the player who moved is not in the frame: %+v", f)
+	}
+	standingAt(t, moved, dest, "the player who tapped")
+	still, ok := peerOf(svc, f, accountOf("b"))
+	if !ok {
+		t.Fatalf("the player who did not move is not in the frame: %+v", f)
+	}
+	standingAt(t, still, spawn, "the player who did not tap")
+}
+
+// TestATapStartsAJourneyRatherThanATeleport is the change distance had to make
+// to mean anything.
+//
+// Before it, the position WAS the tap: the server clamped it, broadcast it, and
+// the far side of the yard was 220 ms away whatever the distance — which makes a
+// race to arrive impossible and a beer delivery pointless. He now sets off at
+// once, is somewhere in between while he walks, and arrives when the distance
+// divided by the speed says he does. All three are asserted, because a walk that
+// snapped to its destination on the first frame would still satisfy the last one.
+func TestATapStartsAJourneyRatherThanATeleport(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	dest := Point{X: 0.85, Y: 0.6}
+	w := tap(t, svc, member("a"), dest)
+	if w.from != spawn {
+		t.Fatalf("the journey starts at (%v,%v); want the spawn he was standing on (%v,%v)", w.from.X, w.from.Y, spawn.X, spawn.Y)
+	}
+
+	for _, tc := range []struct {
+		name string
+		when time.Time
+		want Point
+		why  string
+	}{
+		{
+			name: "the instant he taps", when: w.startedAt, want: spawn,
+			why: "a tap is a request to walk somewhere, and at the moment it is accepted he has not walked anywhere",
+		},
+		{
+			name: "halfway", when: partWayThrough(w), want: lerp(spawn, dest, 0.5),
+			why: "he is between the two places, which is the whole of what makes distance mean something",
+		},
+		{
+			name: "once the walk is over", when: afterArriving(w), want: dest,
+			why: "he does arrive; a journey that never ended would be worse than a teleport",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := svc.broadcast(context.Background(), tc.when); err != nil {
+				t.Fatalf("broadcast: %v", err)
+			}
+			frames := tr.frames()
+			p, ok := peerOf(svc, frames[len(frames)-1], accountOf("a"))
+			if !ok {
+				t.Fatalf("the walking player is not in the frame: %+v", frames[len(frames)-1])
+			}
+			standingAt(t, p, tc.want, tc.name+" — "+tc.why)
+		})
+	}
+}
+
+// TestATapMidJourneyRetargetsFromWhereHeActuallyIs is what makes the yard feel
+// responsive rather than queued.
+//
+// Changing your mind halfway across has to start from where he has got to. The
+// two wrong answers are both plausible implementations: carrying on from the old
+// DESTINATION queues the second errand behind the first, and restarting from
+// where the first journey BEGAN teleports him backwards before he sets off. Both
+// look almost right on a screen, and both are ruled out here.
+func TestATapMidJourneyRetargetsFromWhereHeActuallyIs(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	// Standing somewhere that is NOT the spawn, so "from where he is" and "from
+	// the default" cannot look the same.
+	stood := Point{X: 0.2, Y: 0.8}
+	if stood == spawn {
+		t.Fatal("this fixture stands on the spawn; a retarget and a reset would be indistinguishable")
+	}
+	standAt(svc, accountOf("a"), stood)
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
-	f := tr.frames()[0]
-	if len(f.Peers) != 2 {
-		t.Fatalf("frame carries %d peers; want both", len(f.Peers))
+	first := tap(t, svc, member("a"), Point{X: 0.5, Y: 0.7})
+	if first.from != stood {
+		t.Fatalf("the first journey starts at (%v,%v); want where he was standing (%v,%v)",
+			first.from.X, first.from.Y, stood.X, stood.Y)
 	}
-	moved, _ := peerOf(svc, f, accountOf("a"))
-	if moved.X != 0.1 || moved.Y != 0.9 {
-		t.Fatalf("mover at (%v,%v); want (0.1,0.9)", moved.X, moved.Y)
+
+	// Halfway along, he changes his mind. The tick is what moves the clock the
+	// second tap is stamped with.
+	half := partWayThrough(first)
+	if err := svc.broadcast(context.Background(), half); err != nil {
+		t.Fatalf("broadcast halfway: %v", err)
 	}
-	still, _ := peerOf(svc, f, accountOf("b"))
-	if still.X != spawn.X || still.Y != spawn.Y {
-		t.Fatalf("the other peer moved to (%v,%v) without asking", still.X, still.Y)
+	second := tap(t, svc, member("a"), Point{X: 0.35, Y: 0.95})
+
+	reached := first.at(half)
+	if !samePoint(second.from, reached) {
+		t.Fatalf("the second journey starts at (%v,%v); want where he had actually got to (%v,%v)",
+			second.from.X, second.from.Y, reached.X, reached.Y)
+	}
+	if samePoint(second.from, first.to) {
+		t.Fatal("the second journey starts where the first one was heading; a tap mid-errand queued behind it instead of replacing it")
+	}
+	if samePoint(second.from, stood) {
+		t.Fatal("the second journey starts where the first one began; he was wound back to the start of a walk he had half finished")
+	}
+
+	// And the frame drawn at that instant shows him at that same point, so there
+	// is no jump on the screen at the moment he is redirected.
+	if err := svc.broadcast(context.Background(), second.startedAt); err != nil {
+		t.Fatalf("broadcast at the moment of the second tap: %v", err)
+	}
+	frames := tr.frames()
+	p, ok := peerOf(svc, frames[len(frames)-1], accountOf("a"))
+	if !ok {
+		t.Fatalf("the redirected player is not in the frame: %+v", frames[len(frames)-1])
+	}
+	standingAt(t, p, reached, "the redirected player")
+}
+
+// TestGivingUpIsDecidedOnceAndShownToEverybody is tiredness as the roster sees
+// it, and the property that matters is that it is DECIDED ONCE.
+//
+// The roll happens at accept time, on the server, and becomes part of the walk.
+// Re-rolling it per tick would have him sit down in a different place on every
+// frame; rolling it on the client would put a different Ваня on every screen and
+// hand the decision to the one party with a reason to cheat. Neither would look
+// obviously wrong from one screen, which is exactly why it is pinned here.
+func TestGivingUpIsDecidedOnceAndShownToEverybody(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"), member("watching"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	w := tapUntilHeGivesUp(t, svc, member("a"), Point{X: 1, Y: 1})
+	sat := lerp(w.from, w.to, w.stopAt)
+	if samePoint(sat, w.to) {
+		t.Fatal("he gave up exactly where he was heading; there is nothing to see")
+	}
+
+	// Evaluated again and again, the journey does not change under him: same
+	// start, same destination, same fraction, same instant.
+	for _, when := range []time.Time{w.startedAt, atProgress(w, w.stopAt/2), afterArriving(w), afterArriving(w).Add(time.Hour)} {
+		if err := svc.broadcast(context.Background(), when); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+		got := walkOf(t, svc, accountOf("a"))
+		if got.stopAt != w.stopAt || got.from != w.from || got.to != w.to || !got.startedAt.Equal(w.startedAt) {
+			t.Fatalf("the journey changed between ticks: %+v became %+v — the give-up is part of the walk, not something re-rolled per frame", w, got)
+		}
+	}
+
+	// What the yard sees: still walking, then sitting and saying so, then sitting
+	// and over it. He never reaches the place he was tapped towards.
+	for _, tc := range []struct {
+		name string
+		when time.Time
+		want Point
+		say  string
+		why  string
+	}{
+		{
+			name: "on the way", when: atProgress(w, w.stopAt/2), want: lerp(w.from, w.to, w.stopAt/2), say: "",
+			why: "the walk up to the point he gives up is a walk like any other",
+		},
+		{
+			name: "the moment he sits down", when: w.stoppedAt().Add(time.Millisecond), want: sat, say: tiredSay,
+			why: "a speed cap alone reads as a tax; a Ваня who sits down halfway across the yard and says he is tired IS the game",
+		},
+		{
+			name: "once he has got his breath back", when: w.stoppedAt().Add(tiredFor), want: sat, say: "",
+			why: "the line is derived from the clock, so it needs no timer and no cleanup — it simply stops being true",
+		},
+		{
+			name: "an hour later", when: w.stoppedAt().Add(time.Hour), want: sat, say: "",
+			why: "he stays where he sat down until somebody asks him to go somewhere else",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := svc.broadcast(context.Background(), tc.when); err != nil {
+				t.Fatalf("broadcast: %v", err)
+			}
+			frames := tr.frames()
+			p, ok := peerOf(svc, frames[len(frames)-1], accountOf("a"))
+			if !ok {
+				t.Fatalf("the tired player is not in the frame: %+v", frames[len(frames)-1])
+			}
+			standingAt(t, p, tc.want, tc.name+" — "+tc.why)
+			if p.Say != tc.say {
+				t.Fatalf("%s he says %q; want %q — %s", tc.name, p.Say, tc.say, tc.why)
+			}
+			// And the frame that carries it is the one everybody in the room gets,
+			// which is what makes them all watch the same man sit down.
+			if other, ok := peerOf(svc, frames[len(frames)-1], accountOf("watching")); !ok || other.Say != "" {
+				t.Fatalf("the bystander is drawn as %+v; only the man who gave up says anything", other)
+			}
+		})
 	}
 }
 
@@ -228,51 +603,56 @@ func TestEveryFrameIsFullState(t *testing.T) {
 	}
 
 	for i, f := range tr.frames() {
-		if len(f.Peers) != 2 {
-			t.Fatalf("frame %d carries %d peers; every frame must carry all of them", i, len(f.Peers))
+		// The people, not the entities: the yard's regulars are in every frame too
+		// and are counted separately — see TestTheYardsRegularsAreInEveryFrame.
+		if n := len(withoutNPCs(f)); n != 2 {
+			t.Fatalf("frame %d carries %d people; every frame must carry all of them", i, n)
+		}
+		if f.Here != 2 {
+			t.Fatalf("frame %d says %d are in the yard; want 2", i, f.Here)
+		}
+		for _, who := range []string{"a", "b"} {
+			if _, ok := peerOf(svc, f, accountOf(who)); !ok {
+				t.Fatalf("frame %d leaves %s out; a frame is full state, not a description of what changed", i, who)
+			}
 		}
 	}
 }
 
-// TestLeavingRemovesAPeerAndItsPosition covers both halves of a disconnect for
-// somebody who had only one device. The peer must vanish from the frame, and the
-// position must not be kept for an account that is no longer here — a map that
-// only ever grows is a leak on a long-running process, and the account would
-// otherwise reappear tomorrow standing where it left off, which is not what
-// presence means. TestAnEntityOutlivesOneOfItsConnections is the multi-device
-// case, where one socket closing must NOT remove anything.
+// TestLeavingRemovesAPeerFromTheFrameAtOnce is the first half of a disconnect
+// for somebody who had only one device: he stops being a person in the yard the
+// moment his socket goes, with nothing having told the game he left.
+//
+// It is only the first half now. The position is REMEMBERED for a grace period,
+// which is what makes a reload keep your place, and past that he does not vanish
+// — he lies down and sleeps where he stood, which is
+// TestAnAbsentPlayerLiesDownInTheYardWhereHeStood's subject.
+// TestAnEntityOutlivesOneOfItsConnections is the multi-device case, where one
+// socket closing must NOT remove anything.
 func TestLeavingRemovesAPeerFromTheFrameAtOnce(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"))
 	svc := NewService(tr, testRoom, nil, nil)
 
-	svc.HandleInbound(context.Background(), member("a"), testRoom,
-		[]byte(`{"t":"vanyagotchi_move","x":0.2,"y":0.3}`))
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	w := tap(t, svc, member("a"), Point{X: 0.2, Y: 0.3})
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
 	tr.setMembers(member("b"))
-	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
 		t.Fatalf("broadcast after leave: %v", err)
 	}
 
-	f := tr.frames()[1]
+	f := tr.frames()[2]
 	if _, ok := peerOf(svc, f, accountOf("a")); ok {
 		t.Fatalf("a disconnected peer is still in the frame: %+v", f)
 	}
-
-	// The position itself is REMEMBERED for a while — that is what makes a
-	// reload keep your place — but only for a while. Whoever is looking sees
-	// them gone either way, which is the property that matters here.
-	if err := svc.broadcast(context.Background(), at(0).Add(PositionGrace)); err != nil {
-		t.Fatalf("broadcast past the grace: %v", err)
-	}
-	svc.mu.Lock()
-	_, kept := svc.pos[accountOf("a")]
-	svc.mu.Unlock()
-	if kept {
-		t.Fatal("the position of a disconnected peer outlived the grace period")
+	if f.Here != 1 {
+		t.Fatalf("the frame says %d are in the yard; only one socket is still open", f.Here)
 	}
 }
 
@@ -334,75 +714,121 @@ func TestAReloadKeepsYourPlace(t *testing.T) {
 	}
 }
 
-// TestAnEmptyRoomForgetsPositionsEventually guards the leak the grace period
-// could otherwise introduce: a position held for a reload must not be held
-// forever, or every account that ever connected stays in the map for the life of
-// the process.
-func TestAnEmptyRoomForgetsPositionsEventually(t *testing.T) {
+// TestAnEmptyRoomForgetsAPlacementNobodyChose is what is left of the leak the
+// grace period could introduce, now that a position outliving it is the FEATURE
+// rather than the bug.
+//
+// Somebody who stood somewhere is kept: he is the sleeper in the yard, and the
+// map is bounded by the number of pets rather than by traffic. Somebody who was
+// merely SEEN — placed at the spawn by a tick, never a tap, never a hello — has
+// nowhere to lie down and nothing worth remembering, and he is the one an
+// ever-growing map would be made of: every socket that ever opened, for the life
+// of the process.
+func TestAnEmptyRoomForgetsAPlacementNobodyChose(t *testing.T) {
 	tr := &fakeTransport{}
-	tr.setMembers(member("a"))
+	tr.setMembers(member("chose"), member("drifted"))
 	svc := NewService(tr, testRoom, nil, nil)
 
-	svc.HandleInbound(context.Background(), member("a"), testRoom,
-		[]byte(`{"t":"vanyagotchi_move","x":0.4,"y":0.4}`))
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
+	// One of them goes and stands somewhere; the other never says a word.
+	w := tap(t, svc, member("chose"), Point{X: 0.4, Y: 0.4})
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	gone := afterArriving(w)
 
 	tr.setMembers()
-	// One tick inside the grace: still remembered.
-	if err := svc.broadcast(context.Background(), at(1)); err != nil {
+	// One tick inside the grace: both still remembered, because a reload is
+	// exactly this shape and neither of them has really left.
+	if err := svc.broadcast(context.Background(), gone.Add(PositionGrace/2)); err != nil {
 		t.Fatalf("broadcast inside the grace: %v", err)
 	}
 	svc.mu.Lock()
 	held := len(svc.pos)
 	svc.mu.Unlock()
-	if held != 1 {
-		t.Fatalf("%d positions held one minute after leaving; want 1", held)
+	if held != 2 {
+		t.Fatalf("%d positions held inside the grace; want both", held)
 	}
 
-	// One tick past it: forgotten. The grace is measured from the last tick the
-	// account was actually connected, which is at(0).
-	if err := svc.broadcast(context.Background(), at(0).Add(PositionGrace)); err != nil {
+	// One tick past it: the drifter is forgotten entirely, and the man who stood
+	// somewhere is kept, because he is now lying in the yard asleep.
+	if err := svc.broadcast(context.Background(), gone.Add(PositionGrace+time.Second)); err != nil {
 		t.Fatalf("broadcast past the grace: %v", err)
 	}
 	svc.mu.Lock()
-	left := len(svc.pos)
+	_, keptChoser := svc.pos[accountOf("chose")]
+	_, keptDrifter := svc.pos[accountOf("drifted")]
+	_, keptDrifterFace := svc.display[accountOf("drifted")]
 	svc.mu.Unlock()
-	if left != 0 {
-		t.Fatalf("%d positions survived the grace period; want 0", left)
+	if keptDrifter || keptDrifterFace {
+		t.Fatal("a placement nobody chose survived the grace period; the map would then grow with every socket that ever opened")
+	}
+	if !keptChoser {
+		t.Fatal("the position of somebody who actually stood somewhere was thrown away; he is what the yard is furnished with when nobody is in it")
 	}
 }
 
-// TestComingBackAfterTheGraceStartsAtTheSpawn is the other half of the rule: a
-// position that has genuinely gone stale must not be resurrected, or a player
-// who was away all day would reappear wherever they happened to be standing at
-// breakfast.
-func TestComingBackAfterTheGraceStartsAtTheSpawn(t *testing.T) {
+// TestComingBackAfterTheGraceWakesHimWhereHeWasLyingDown is the rule the
+// sleepers changed.
+//
+// It used to be that a position past the grace was stale and the spawn was the
+// honest answer. It is not stale any more — it is where his Ваня is asleep, and
+// everybody else in the yard can see him lying there — so waking him up in the
+// middle of the yard would teleport a body that was on screen a frame earlier.
+// Coming back is now the same journey as any other: it starts where he is.
+func TestComingBackAfterTheGraceWakesHimWhereHeWasLyingDown(t *testing.T) {
 	tr := &fakeTransport{}
-	tr.setMembers(member("a"))
+	tr.setMembers(member("a"), member("watching"))
 	svc := NewService(tr, testRoom, nil, nil)
 
-	svc.HandleInbound(context.Background(), member("a"), testRoom,
-		[]byte(`{"t":"vanyagotchi_move","x":0.9,"y":0.1}`))
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
+	lay := Point{X: 0.8, Y: 0.2}
+	if lay == spawn {
+		t.Fatal("this fixture lies down on the spawn, so waking up in place and being reset would look the same")
+	}
+	w := tap(t, svc, member("a"), lay)
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	gone := afterArriving(w)
 
-	tr.setMembers()
-	if err := svc.broadcast(context.Background(), at(0).Add(PositionGrace)); err != nil {
+	tr.setMembers(member("watching"))
+	if err := svc.broadcast(context.Background(), gone.Add(PositionGrace+time.Second)); err != nil {
 		t.Fatalf("broadcast past the grace: %v", err)
 	}
 
-	tr.setMembers(member("a"))
-	if err := svc.broadcast(context.Background(), at(0).Add(2*PositionGrace)); err != nil {
+	tr.setMembers(member("a"), member("watching"))
+	if err := svc.broadcast(context.Background(), gone.Add(2*PositionGrace)); err != nil {
 		t.Fatalf("broadcast on the return: %v", err)
 	}
 
 	frames := tr.frames()
-	p, _ := peerOf(svc, frames[len(frames)-1], accountOf("a"))
-	if p.X != spawn.X || p.Y != spawn.Y {
-		t.Fatalf("peer at (%v,%v) after a long absence; want the spawn (%v,%v)", p.X, p.Y, spawn.X, spawn.Y)
+	back := frames[len(frames)-1]
+	p, ok := peerOf(svc, back, accountOf("a"))
+	if !ok {
+		t.Fatalf("the returning player is not in the frame: %+v", back)
+	}
+	standingAt(t, p, lay, "the player who came back")
+	if p.Pose == PoseAsleep {
+		t.Fatal("he is drawn asleep while his socket is open; waking up is what connecting means")
+	}
+	if back.Here != 2 {
+		t.Fatalf("the frame says %d are in the yard; both sockets are open", back.Here)
+	}
+	// And there is exactly one of him: an account that is both present and past
+	// the grace must not be drawn twice, once awake and once asleep.
+	n := 0
+	for _, e := range back.Peers {
+		if e.ID == svc.pseudonym(accountOf("a")) {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the returning player appears %d times in the frame; want once: %+v", n, back)
 	}
 }
 
@@ -576,8 +1002,11 @@ func TestTwoConnectionsOfOneAccountAreOneEntity(t *testing.T) {
 	}
 
 	f := tr.frames()[0]
-	if len(f.Peers) != 1 {
-		t.Fatalf("two devices of one account produced %d entities; want 1: %+v", len(f.Peers), f)
+	if n := len(withoutNPCs(f)); n != 1 {
+		t.Fatalf("two devices of one account produced %d entities; want 1: %+v", n, f)
+	}
+	if f.Here != 1 {
+		t.Fatalf("the frame says %d people are in the yard; two devices are one person: %+v", f.Here, f)
 	}
 	if _, ok := peerOf(svc, f, "acct-1"); !ok {
 		t.Fatalf("the one entity is not the account's: %+v", f)
@@ -594,7 +1023,9 @@ func TestAMoveFromEitherDeviceMovesTheSameEntity(t *testing.T) {
 		sender realtime.Member
 		x, y   float64
 	}{
-		{name: "from the phone", sender: phone, x: 0.1, y: 0.2},
+		// Both destinations are within tiredFrom of the spawn he starts from, so
+		// neither tap can be refused — see the tap helper.
+		{name: "from the phone", sender: phone, x: 0.25, y: 0.3},
 		{name: "from the laptop", sender: laptop, x: 0.7, y: 0.8},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -602,23 +1033,23 @@ func TestAMoveFromEitherDeviceMovesTheSameEntity(t *testing.T) {
 			tr.setMembers(phone, laptop)
 			svc := NewService(tr, testRoom, nil, nil)
 
-			svc.HandleInbound(context.Background(), tc.sender, testRoom,
-				fmt.Appendf(nil, `{"t":"vanyagotchi_move","x":%v,"y":%v}`, tc.x, tc.y))
 			if err := svc.broadcast(context.Background(), at(0)); err != nil {
 				t.Fatalf("broadcast: %v", err)
 			}
+			w := tap(t, svc, tc.sender, Point{X: tc.x, Y: tc.y})
+			if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+				t.Fatalf("broadcast: %v", err)
+			}
 
-			f := tr.frames()[0]
-			if len(f.Peers) != 1 {
-				t.Fatalf("frame carries %d entities; want 1: %+v", len(f.Peers), f)
+			f := tr.frames()[1]
+			if n := len(withoutNPCs(f)); n != 1 {
+				t.Fatalf("frame carries %d entities that are not the yard's regulars; want 1: %+v", n, f)
 			}
 			p, ok := peerOf(svc, f, "acct-1")
 			if !ok {
 				t.Fatalf("the account is not on the plane: %+v", f)
 			}
-			if p.X != tc.x || p.Y != tc.y {
-				t.Fatalf("entity at (%v,%v); want (%v,%v)", p.X, p.Y, tc.x, tc.y)
-			}
+			standingAt(t, p, Point{X: tc.x, Y: tc.y}, "the entity both devices drive")
 		})
 	}
 }
@@ -633,45 +1064,45 @@ func TestAnEntityOutlivesOneOfItsConnections(t *testing.T) {
 	tr.setMembers(phone, laptop)
 	svc := NewService(tr, testRoom, nil, nil)
 
-	svc.HandleInbound(context.Background(), laptop, testRoom,
-		[]byte(`{"t":"vanyagotchi_move","x":0.25,"y":0.5}`))
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	stood := Point{X: 0.25, Y: 0.5}
+	w := tap(t, svc, laptop, stood)
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
 	// The laptop goes; the phone is still connected.
 	tr.setMembers(phone)
-	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
 		t.Fatalf("broadcast after one connection left: %v", err)
 	}
-	p, ok := peerOf(svc, tr.frames()[1], "acct-1")
+	p, ok := peerOf(svc, tr.frames()[2], "acct-1")
 	if !ok {
-		t.Fatalf("the account vanished while it still had a connection: %+v", tr.frames()[1])
+		t.Fatalf("the account vanished while it still had a connection: %+v", tr.frames()[2])
 	}
 	// And it kept standing where the departed device had put it — the position
 	// belongs to the account, not to the socket that last moved it.
-	if p.X != 0.25 || p.Y != 0.5 {
-		t.Fatalf("entity at (%v,%v) after one device left; want (0.25,0.5)", p.X, p.Y)
-	}
+	standingAt(t, p, stood, "the account whose laptop closed")
 
-	// The phone goes too, and now there is nothing left to keep.
+	// The phone goes too, and now nobody is driving it.
 	tr.setMembers(conn("someone-else", "acct-2"))
-	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
 		t.Fatalf("broadcast after the last connection left: %v", err)
 	}
-	if _, ok := peerOf(svc, tr.frames()[2], "acct-1"); ok {
-		t.Fatalf("an account with no connections is still on the plane: %+v", tr.frames()[2])
+	last := tr.frames()[3]
+	if _, ok := peerOf(svc, last, "acct-1"); ok {
+		t.Fatalf("an account with no connections is still on the plane: %+v", last)
 	}
-	// Off the plane at once; out of memory once the grace has run out.
-	if err := svc.broadcast(context.Background(), at(0).Add(PositionGrace)); err != nil {
-		t.Fatalf("broadcast past the grace: %v", err)
+	if last.Here != 1 {
+		t.Fatalf("the frame says %d are in the yard; only the stranger's socket is open", last.Here)
 	}
-	svc.mu.Lock()
-	_, kept := svc.pos["acct-1"]
-	svc.mu.Unlock()
-	if kept {
-		t.Fatal("the position of a fully disconnected account outlived the grace period")
-	}
+	// Off the plane as a PERSON at once. The placement itself outlives the grace
+	// on purpose — he is asleep in the yard from then on, which is
+	// TestAnAbsentPlayerLiesDownInTheYardWhereHeStood's subject — and what must
+	// not outlive it is a placement nobody chose, which
+	// TestAnEmptyRoomForgetsAPlacementNobodyChose covers.
 }
 
 // TestTwoAccountsAreStillTwoEntities is the guard against over-correcting. The
@@ -690,8 +1121,11 @@ func TestTwoAccountsAreStillTwoEntities(t *testing.T) {
 	}
 
 	f := tr.frames()[0]
-	if len(f.Peers) != 2 {
-		t.Fatalf("three connections across two accounts produced %d entities; want 2: %+v", len(f.Peers), f)
+	if n := len(withoutNPCs(f)); n != 2 {
+		t.Fatalf("three connections across two accounts produced %d entities; want 2: %+v", n, f)
+	}
+	if f.Here != 2 {
+		t.Fatalf("the frame says %d people are in the yard; three sockets across two accounts is two people: %+v", f.Here, f)
 	}
 	for _, acct := range []string{"acct-1", "acct-2"} {
 		if _, ok := peerOf(svc, f, acct); !ok {
@@ -1065,14 +1499,19 @@ func TestComingBackMakesTheNextDepartureANewOne(t *testing.T) {
 	if err := svc.broadcast(context.Background(), at(0.4)); err != nil {
 		t.Fatalf("broadcast on the return: %v", err)
 	}
-	svc.HandleInbound(context.Background(), member("a"), testRoom,
-		[]byte(`{"t":"vanyagotchi_move","x":0.9,"y":0.8}`))
-	if err := svc.broadcast(context.Background(), at(0.6)); err != nil {
+	// His second move is a WALK — a tick has been published by now, so it has a
+	// clock to be measured from — and the departure is written down only once he
+	// has finished it. The destination is within tiredFrom of where he is
+	// standing, so the walk cannot be refused half way; that outcome is real, and
+	// it belongs to the test about it rather than to this one.
+	walked := tap(t, svc, member("a"), Point{X: 0.4, Y: 0.35})
+	if err := svc.broadcast(context.Background(), afterArriving(walked)); err != nil {
 		t.Fatalf("broadcast after the second move: %v", err)
 	}
+	back := afterArriving(walked)
 
 	tr.setMembers()
-	if err := svc.broadcast(context.Background(), at(0.8)); err != nil {
+	if err := svc.broadcast(context.Background(), back.Add(time.Second)); err != nil {
 		t.Fatalf("broadcast on the second departure: %v", err)
 	}
 
@@ -1081,13 +1520,13 @@ func TestComingBackMakesTheNextDepartureANewOne(t *testing.T) {
 		t.Fatalf("%d writes queued for two departures; want exactly 2: %+v", len(saves), saves)
 	}
 	second := saves[1]
-	if second.at.X != 0.9 || second.at.Y != 0.8 {
-		t.Errorf("the second departure was written at (%v,%v); want where he was standing by then (0.9,0.8)",
-			second.at.X, second.at.Y)
+	if !samePoint(second.at, walked.to) {
+		t.Errorf("the second departure was written at (%v,%v); want where he was standing by then (%v,%v)",
+			second.at.X, second.at.Y, walked.to.X, walked.to.Y)
 	}
-	if !second.seen.Equal(at(0.6)) {
+	if !second.seen.Equal(back) {
 		t.Errorf("the second departure carries seen = %v; want the last tick of his second visit, %v — it is a new departure, not a repeat of the first",
-			second.seen, at(0.6))
+			second.seen, back)
 	}
 }
 
@@ -1240,15 +1679,18 @@ func TestAHelloPutsAPetBackWhereItLastStood(t *testing.T) {
 
 	// He walks somewhere else, and his socket drops and comes back inside the
 	// grace. The hello must leave him where he is.
-	svc.HandleInbound(context.Background(), member("a"), testRoom,
-		[]byte(`{"t":"vanyagotchi_move","x":0.35,"y":0.45}`))
+	walked := Point{X: 0.6, Y: 0.3}
+	w := tap(t, svc, member("a"), walked)
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+		t.Fatalf("broadcast once he has walked: %v", err)
+	}
 	tr.setMembers()
-	if err := svc.broadcast(context.Background(), at(0.2)); err != nil {
+	if err := svc.broadcast(context.Background(), afterArriving(w).Add(time.Second)); err != nil {
 		t.Fatalf("broadcast while the socket is away: %v", err)
 	}
 	tr.setMembers(member("a"))
 	svc.HandleInbound(context.Background(), member("a"), testRoom, []byte(`{"t":"vanyagotchi_hello"}`))
-	if err := svc.broadcast(context.Background(), at(0.4)); err != nil {
+	if err := svc.broadcast(context.Background(), afterArriving(w).Add(2*time.Second)); err != nil {
 		t.Fatalf("broadcast after the reconnect: %v", err)
 	}
 
@@ -1257,10 +1699,8 @@ func TestAHelloPutsAPetBackWhereItLastStood(t *testing.T) {
 	if !ok {
 		t.Fatalf("the reconnected account is missing from the roster: %+v", frames[len(frames)-1])
 	}
-	if back.X != 0.35 || back.Y != 0.45 {
-		t.Fatalf("peer at (%v,%v) after reconnecting inside the grace; want where he was standing (0.35,0.45) — the stored position is older news",
-			back.X, back.Y)
-	}
+	standingAt(t, back, walked,
+		"the player who reconnected inside the grace — the stored position is older news than the walk he has just taken")
 }
 
 // waitForCount waits until the transport has seen n frames.
@@ -1394,5 +1834,390 @@ func TestRunWritesEverybodyDownOnTheWayOut(t *testing.T) {
 	}
 	if saved[0].at.X != 0.2 || saved[0].at.Y != 0.8 {
 		t.Fatalf("shutdown wrote (%v,%v); want where he was standing (0.2,0.8)", saved[0].at.X, saved[0].at.Y)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The yard's regulars: characters who are catalogue plus arithmetic, and who
+// have no rows, no accounts and no placements.
+// ---------------------------------------------------------------------------
+
+// TestTheYardsRegularsAreInEveryFrame is what makes an NPC free.
+//
+// A character costs no migration and no client work because he is nothing but a
+// catalogue entry and a closed-form position: the browser resolves his art
+// exactly as it resolves a pet's skin, so to it he is one more entity in the
+// roster. That is only true while the server actually publishes him in EVERY
+// frame — a snapshot that left the furniture out on some ticks would flicker the
+// whole cast, and the client has nothing to fill the gap with, because it is
+// deliberately not told how anybody moves.
+func TestTheYardsRegularsAreInEveryFrame(t *testing.T) {
+	if len(catalogue.NPCs) == 0 {
+		t.Fatal("the catalogue has no NPCs at all; the yard is an empty field and everything below asserts nothing")
+	}
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	when := []time.Time{at(0), at(3), at(11)}
+	for i, now := range when {
+		if err := svc.broadcast(context.Background(), now); err != nil {
+			t.Fatalf("broadcast %d: %v", i, err)
+		}
+		f := tr.frames()[i]
+		for _, npc := range catalogue.NPCs {
+			p, ok := peerByID(f, npcID(npc.Key))
+			if !ok {
+				t.Fatalf("frame %d does not carry %q; the yard's regulars are in every frame or in none", i, npc.Key)
+			}
+			if p.Art != npc.Art || p.Label != npc.Label {
+				t.Errorf("%q is drawn as %+v; want the catalogue's own art %q and label %q", npc.Key, p, npc.Art, npc.Label)
+			}
+			if p.Pose != PoseFine {
+				t.Errorf("%q is drawn as %q; a character who is not a pet has no health to be poorly about", npc.Key, p.Pose)
+			}
+			if p.Say != "" {
+				t.Errorf("%q says %q; nothing gives a regular a line yet", npc.Key, p.Say)
+			}
+			// The position is the pattern's own answer, evaluated from the FIXED
+			// world epoch rather than from process start — which is what makes two
+			// processes, and the same one after a deploy, agree about where he is.
+			want := evaluate(npc.Pattern, npc.Params, now.Sub(worldEpoch))
+			if p.X != want.X || p.Y != want.Y {
+				t.Fatalf("frame %d puts %q at (%v,%v); his pattern says (%v,%v) at that instant",
+					i, npc.Key, p.X, p.Y, want.X, want.Y)
+			}
+		}
+	}
+
+	// And they are alive rather than painted on: at instants minutes apart, at
+	// least one of them has moved. A cast evaluated against a constant would
+	// satisfy every assertion above.
+	moves := false
+	for _, npc := range catalogue.NPCs {
+		if npc.Pattern != PatternIdle {
+			moves = true
+		}
+	}
+	if moves {
+		stirred := false
+		for _, npc := range catalogue.NPCs {
+			first, _ := peerByID(tr.frames()[0], npcID(npc.Key))
+			last, _ := peerByID(tr.frames()[len(when)-1], npcID(npc.Key))
+			if first.X != last.X || first.Y != last.Y {
+				stirred = true
+			}
+		}
+		if !stirred {
+			t.Fatal("no regular moved an inch over eleven minutes, though the catalogue says some of them wander; the cast is being evaluated against a clock that does not move")
+		}
+	}
+}
+
+// TestTheRegularsAreNotPeople is the other half of "they cost nothing", and it
+// is the half that would break something real.
+//
+// They are not counted in the head count the client renders as «во дворе: N» —
+// which is the whole reason that number is computed on the server rather than by
+// counting entities in the browser. They acquire no placement, so nothing about
+// them can be moved by a tap or expire with a grace period. And above all they
+// are never queued for a write: an NPC has no account and no pet row, so a save
+// keyed on one would be an UPDATE matching nothing, five times a second, forever.
+func TestTheRegularsAreNotPeople(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	repo := &fakeRepo{}
+	svc := planeService(tr, repo)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	f := tr.frames()[0]
+	if f.Here != 1 {
+		t.Fatalf("the frame says %d people are in the yard; one socket is open and the rest of the cast is furniture: %+v", f.Here, f)
+	}
+	if len(f.Peers) != 1+len(catalogue.NPCs) {
+		t.Fatalf("the frame carries %d entities; want the one player plus the %d regulars: %+v",
+			len(f.Peers), len(catalogue.NPCs), f)
+	}
+
+	// Nothing about them is in the position map, before or after they have been
+	// drawn a few times.
+	w := tap(t, svc, member("a"), Point{X: 0.7, Y: 0.4})
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	svc.mu.Lock()
+	held := make([]string, 0, len(svc.pos))
+	for id := range svc.pos {
+		held = append(held, id)
+	}
+	svc.mu.Unlock()
+	if len(held) != 1 || held[0] != accountOf("a") {
+		t.Fatalf("the plane holds placements for %v; want only the one real account", held)
+	}
+
+	// And when the player goes, only the player is written down.
+	tr.setMembers(member("watching"))
+	if err := svc.broadcast(context.Background(), afterArriving(w).Add(time.Second)); err != nil {
+		t.Fatalf("broadcast after the departure: %v", err)
+	}
+	saves := queued(svc)
+	if len(saves) != 1 {
+		t.Fatalf("%d writes queued for one departure; want exactly 1: %+v", len(saves), saves)
+	}
+	for _, sv := range saves {
+		if sv.accountID != accountOf("a") {
+			t.Fatalf("a write was queued for %q, which is not a person's account", sv.accountID)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The sleepers: what makes the yard a place rather than a menu.
+//
+// With five to thirty friends it is almost never occupied by two people at once,
+// so without them a solo visit is an empty field — and filler characters would
+// have been a worse answer than the real ones, who are all still lying about in
+// it.
+// ---------------------------------------------------------------------------
+
+// TestAnAbsentPlayerLiesDownInTheYardWhereHeStood is the whole feature in one
+// test, and the three stages have to be distinguishable.
+//
+// While he is connected he is a person. For the grace period after his socket
+// goes he is nobody — absent, not a ghost, because a reload looks exactly like
+// this and drawing him asleep for two minutes every time somebody refreshed the
+// page would be worse than drawing nothing. Past it he is furniture: still in the
+// frame, lying exactly where he stood, and NOT counted among the people in the
+// yard.
+func TestAnAbsentPlayerLiesDownInTheYardWhereHeStood(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("goes"), member("stays"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	stood := Point{X: 0.75, Y: 0.3}
+	w := tap(t, svc, member("goes"), stood)
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	gone := afterArriving(w)
+
+	tr.setMembers(member("stays"))
+	if err := svc.broadcast(context.Background(), gone.Add(PositionGrace/2)); err != nil {
+		t.Fatalf("broadcast inside the grace: %v", err)
+	}
+	inside := tr.frames()[2]
+	if _, ok := peerOf(svc, inside, accountOf("goes")); ok {
+		t.Fatalf("he is lying in the yard a minute after his socket dropped; a reload looks exactly like this: %+v", inside)
+	}
+
+	if err := svc.broadcast(context.Background(), gone.Add(PositionGrace+time.Second)); err != nil {
+		t.Fatalf("broadcast past the grace: %v", err)
+	}
+	past := tr.frames()[3]
+	asleep, ok := peerOf(svc, past, accountOf("goes"))
+	if !ok {
+		t.Fatalf("nobody is asleep in the yard past the grace; the field is bare again: %+v", past)
+	}
+	standingAt(t, asleep, stood, "the sleeper")
+	if asleep.Pose != PoseAsleep {
+		t.Fatalf("he is drawn as %q; want %q — he is not here, he is asleep where he stood", asleep.Pose, PoseAsleep)
+	}
+	if asleep.Say != "" {
+		t.Errorf("a sleeper says %q; nobody talks in their sleep", asleep.Say)
+	}
+	if past.Here != 1 {
+		t.Fatalf("the frame says %d are in the yard; the count is PEOPLE, and he went home: %+v", past.Here, past)
+	}
+	if n := len(withoutNPCs(past)); n != 2 {
+		t.Fatalf("%d entities that are not regulars; want the one player and the one sleeper: %+v", n, past)
+	}
+}
+
+// TestADeadSleeperIsDrawnDeadRatherThanAsleep is the one thing that outranks
+// sleep.
+//
+// A dead Ваня drawn peacefully asleep would hide the single thing his owner
+// needs to come back for, and death in this game is recoverable precisely so
+// that somebody comes back and fixes it. The pose is derived from the cache the
+// same way a present player's is, so it keeps working for somebody who has not
+// been connected for a week.
+func TestADeadSleeperIsDrawnDeadRatherThanAsleep(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("dead"), member("stays"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	died := at(-1)
+	svc.remember(accountOf("dead"), Pet{SkinKey: SkinVanya, DiedAt: &died}, nil)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	w := tap(t, svc, member("dead"), Point{X: 0.4, Y: 0.65})
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	gone := afterArriving(w)
+
+	tr.setMembers(member("stays"))
+	if err := svc.broadcast(context.Background(), gone.Add(PositionGrace+time.Second)); err != nil {
+		t.Fatalf("broadcast past the grace: %v", err)
+	}
+
+	frames := tr.frames()
+	p, ok := peerOf(svc, frames[len(frames)-1], accountOf("dead"))
+	if !ok {
+		t.Fatalf("the dead pet is not lying in the yard at all: %+v", frames[len(frames)-1])
+	}
+	if p.Pose != PoseDead {
+		t.Fatalf("a dead Ваня whose owner has gone is drawn as %q; want %q — asleep would hide the one thing worth coming back for",
+			p.Pose, PoseDead)
+	}
+}
+
+// TestSomebodyWhoNeverStoodAnywhereDoesNotLieDown is the sleeper rule's other
+// edge, and it is the one that would put a body in the yard that never had one.
+//
+// A tick can place an account at the spawn before its client has said hello —
+// the hub registers a connection at the upgrade — so the map fills with
+// positions nobody chose. Laying those down would furnish the yard with people
+// who merely opened a socket once, at the exact middle of it, and would keep the
+// map growing for the life of the process.
+func TestSomebodyWhoNeverStoodAnywhereDoesNotLieDown(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("drifter"), member("stays"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	// Seen by the plane, never moved, never said hello.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	tr.setMembers(member("stays"))
+	if err := svc.broadcast(context.Background(), at(0).Add(PositionGrace+time.Second)); err != nil {
+		t.Fatalf("broadcast past the grace: %v", err)
+	}
+
+	past := tr.frames()[1]
+	if _, ok := peerOf(svc, past, accountOf("drifter")); ok {
+		t.Fatalf("somebody who never stood anywhere is lying in the yard: %+v", past)
+	}
+	if n := len(withoutNPCs(past)); n != 1 {
+		t.Fatalf("%d entities that are not regulars; want only the player who is still here: %+v", n, past)
+	}
+}
+
+// TestTheYardShowsTheMostRecentSleepersAndNoMore bounds the frame.
+//
+// Without the cap every pet who ever played would be in every frame forever, so
+// the roster would grow with the AGE of the game rather than with the size of
+// the group — thirty players a second each carrying a hundred bodies. And the
+// ones kept have to be the most recent, or the cap would fill the yard with
+// whoever the map happened to iterate first and quietly hide the people who were
+// actually here this afternoon.
+func TestTheYardShowsTheMostRecentSleepersAndNoMore(t *testing.T) {
+	tr := &fakeTransport{}
+	svc := NewService(tr, testRoom, nil, nil)
+
+	const extra = 5
+	total := sleeperLimit + extra
+	accounts := make([]string, total)
+	for i := range accounts {
+		accounts[i] = fmt.Sprintf("acct-sleeper-%03d", i)
+		// Each of them stands somewhere of his own and is seen at an instant of
+		// his own, oldest first, so "the newest thirty" is a set this test can
+		// name.
+		standAt(svc, accounts[i], Point{X: float64(i) / float64(2*total), Y: 0.5})
+		tr.setMembers(conn(fmt.Sprintf("c-%03d", i), accounts[i]))
+		if err := svc.broadcast(context.Background(), at(0).Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatalf("broadcast %d: %v", i, err)
+		}
+	}
+
+	// Everybody has gone but one person, who is there to be published to: the
+	// yard tells nobody about anything when nobody is in it.
+	watcher := conn("watcher", "acct-watcher")
+	tr.setMembers(watcher)
+	past := at(0).Add(time.Duration(total)*time.Second + PositionGrace + time.Second)
+	if err := svc.broadcast(context.Background(), past); err != nil {
+		t.Fatalf("broadcast past the grace: %v", err)
+	}
+
+	frames := tr.frames()
+	last := frames[len(frames)-1]
+	var sleepers []Peer
+	for _, p := range withoutNPCs(last) {
+		if p.ID == svc.pseudonym("acct-watcher") {
+			continue
+		}
+		sleepers = append(sleepers, p)
+	}
+	if len(sleepers) != sleeperLimit {
+		t.Fatalf("%d sleepers in the frame; the cap is %d and %d accounts are asleep", len(sleepers), sleeperLimit, total)
+	}
+
+	// The newest first, and the oldest not at all.
+	for i, p := range sleepers {
+		want := accounts[total-1-i]
+		if p.ID != svc.pseudonym(want) {
+			t.Fatalf("sleeper %d is %q; want %q — they are sorted newest first, so the cap keeps the people who were actually here recently",
+				i, p.ID, want)
+		}
+		if p.Pose != PoseAsleep {
+			t.Errorf("sleeper %d is drawn as %q; want %q", i, p.Pose, PoseAsleep)
+		}
+	}
+	for _, dropped := range accounts[:extra] {
+		if _, ok := peerOf(svc, last, dropped); ok {
+			t.Fatalf("%q is in the frame; he is one of the %d oldest and the cap should have left him out", dropped, extra)
+		}
+	}
+}
+
+// TestAnEmptyYardPublishesNothingHoweverManyAreAsleepInIt keeps the common case
+// free, and the sleepers are what made it worth restating.
+//
+// The yard is now never empty of ENTITIES — the regulars are always in it and
+// the sleepers usually are — so a frame is never small. But nobody is connected
+// for most of the day, and publishing a full roster into a room with no sockets
+// in it five times a second is bandwidth spent on nobody, and it would hide a
+// genuine "why is this room empty" question behind traffic.
+func TestAnEmptyYardPublishesNothingHoweverManyAreAsleepInIt(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	w := tap(t, svc, member("a"), Point{X: 0.3, Y: 0.6})
+	if err := svc.broadcast(context.Background(), afterArriving(w)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	published := len(tr.frames())
+
+	// He goes, and the yard runs on with him asleep in it and nobody watching.
+	tr.setMembers()
+	gone := afterArriving(w)
+	for i := 1; i <= 5; i++ {
+		when := gone.Add(PositionGrace + time.Duration(i)*time.Second)
+		if err := svc.broadcast(context.Background(), when); err != nil {
+			t.Fatalf("broadcast into the empty yard: %v", err)
+		}
+	}
+	if n := len(tr.frames()); n != published {
+		t.Fatalf("%d frames were published into a yard with nobody in it; want none beyond the %d from when somebody was", n-published, published)
+	}
+
+	// And the sleeper really is there to be published — the yard is quiet, not
+	// empty, so this test is about who is listening rather than about who is in it.
+	svc.mu.Lock()
+	_, kept := svc.pos[accountOf("a")]
+	svc.mu.Unlock()
+	if !kept {
+		t.Fatal("the sleeper was forgotten, so the assertion above is about an empty yard rather than about an unwatched one")
 	}
 }

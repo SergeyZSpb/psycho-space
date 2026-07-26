@@ -1,16 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BAND_PROPERTY,
+  DEPTH_PROPERTY,
+  DEPTH_SCALES,
   LABEL_MAX,
+  PEER_BASE_PX,
+  SAY_BELOW_PROPERTY,
+  SAY_FLIP_Y,
+  SAY_MAX,
   UNKNOWN_ART,
   X_PROPERTY,
   Y_PROPERTY,
   applyFrame,
   applyPosition,
+  bandFor,
   capLabel,
+  capSay,
   isRenderablePosition,
   readAppearances,
+  readHere,
   resolveArt,
   sameAppearance,
+  sayBelow,
   tapToPosition,
   type PeerAppearance,
 } from '../lib/vanyagotchiPlane';
@@ -49,7 +60,7 @@ describe('isRenderablePosition', () => {
 });
 
 describe('applyPosition', () => {
-  it('writes both custom properties and nothing else', () => {
+  it('writes custom properties and nothing else', () => {
     // Not `transform`, and not `left`/`top`: the mapping from 0..1 to pixels
     // lives in the stylesheet so there is no measured box to invalidate when
     // mobile chrome slides and the plane resizes.
@@ -57,7 +68,134 @@ describe('applyPosition', () => {
     applyPosition(el, 0.25, 0.75);
     expect(el.props.get(X_PROPERTY)).toBe('0.25');
     expect(el.props.get(Y_PROPERTY)).toBe('0.75');
-    expect(el.props.size).toBe(2);
+    expect([...el.props.keys()].every((name) => name.startsWith('--'))).toBe(true);
+  });
+
+  it('writes the depth band derived from y, in the same call', () => {
+    // Derived HERE rather than anywhere else on purpose: the band is a pure
+    // function of the coordinate, and computing it at a second site is how it
+    // ends up a frame behind — an entity drawn at the size and stacking order of
+    // where it used to be standing.
+    const el = fakeEl();
+    applyPosition(el, 0.5, 0.9);
+    expect(el.props.get(BAND_PROPERTY)).toBe(String(DEPTH_SCALES.length - 1));
+    expect(el.props.get(DEPTH_PROPERTY)).toBe(String(DEPTH_SCALES[DEPTH_SCALES.length - 1]));
+
+    applyPosition(el, 0.5, 0.05);
+    expect(el.props.get(BAND_PROPERTY)).toBe('0');
+    expect(el.props.get(DEPTH_PROPERTY)).toBe(String(DEPTH_SCALES[0]));
+  });
+
+  it('says which side of its entity a balloon has to hang on', () => {
+    const el = fakeEl();
+    applyPosition(el, 0.5, 0.02);
+    expect(el.props.get(SAY_BELOW_PROPERTY)).toBe('1');
+    applyPosition(el, 0.5, 0.5);
+    expect(el.props.get(SAY_BELOW_PROPERTY)).toBe('0');
+  });
+});
+
+// Depth. Discrete bands rather than a continuous function of y, because the two
+// halves of "nearer" are drawn by different machinery — a transform, which
+// interpolates over the whole 220 ms of a move, and a z-index, which jumps — and
+// only a discrete band confines their disagreement to the instant of a crossing.
+
+describe('bandFor', () => {
+  it('puts the top of the plane at the back and the bottom at the front', () => {
+    expect(bandFor(0)).toBe(0);
+    expect(bandFor(1)).toBe(DEPTH_SCALES.length - 1);
+  });
+
+  it('never invents a band past the end of the table', () => {
+    // THE clamp that matters: y = 1 is exactly `floor(1 * 4) === 4`, one past
+    // the last scale, so without this the entity standing on the bottom edge —
+    // the nearest one there is — would be drawn with `undefined` for a scale.
+    expect(bandFor(1)).toBe(3);
+    expect(DEPTH_SCALES[bandFor(1)]).toBeDefined();
+    expect(bandFor(2)).toBe(DEPTH_SCALES.length - 1);
+    expect(bandFor(-1)).toBe(0);
+  });
+
+  it('changes only at a boundary, so a walk crosses bands a few times', () => {
+    expect(bandFor(0.24)).toBe(0);
+    expect(bandFor(0.25)).toBe(1);
+    expect(bandFor(0.49)).toBe(1);
+    expect(bandFor(0.5)).toBe(2);
+    expect(bandFor(0.74)).toBe(2);
+    expect(bandFor(0.75)).toBe(3);
+  });
+
+  it('is monotonic — nothing further down is ever further away', () => {
+    let previous = -1;
+    for (let y = 0; y <= 1.0001; y += 0.01) {
+      const band = bandFor(y);
+      expect(band).toBeGreaterThanOrEqual(previous);
+      previous = band;
+    }
+  });
+
+  it('falls to the back band rather than to NaN', () => {
+    // Guarded even though isRenderablePosition has already rejected these: a NaN
+    // written into a custom property resolves to nothing, and a dot with no
+    // scale is a dot that has silently vanished.
+    expect(bandFor(Number.NaN)).toBe(0);
+    expect(bandFor(Number.POSITIVE_INFINITY)).toBe(0);
+  });
+});
+
+describe('DEPTH_SCALES', () => {
+  it('never draws an entity below the 44 px tap-target floor', () => {
+    // THE constraint, and the reason the far band is 1 rather than something
+    // smaller: depth can only make an entity BIGGER, so the floor the mobile
+    // suite measures is the unscaled CSS size itself. Scaling the far band down
+    // instead would make this a product of two numbers that have to be re-checked
+    // together every time either one moves.
+    expect(Math.min(...DEPTH_SCALES)).toBe(1);
+    expect(PEER_BASE_PX * Math.min(...DEPTH_SCALES)).toBeGreaterThanOrEqual(44);
+  });
+
+  it('grows towards the viewer, and only gently', () => {
+    for (let i = 1; i < DEPTH_SCALES.length; i += 1) {
+      expect(DEPTH_SCALES[i]).toBeGreaterThan(DEPTH_SCALES[i - 1]);
+    }
+    // A band boundary is a jump, so the step has to stay small enough not to
+    // read as a pop — and the whole range small enough that the far and near
+    // ends of the yard are the same game.
+    expect(Math.max(...DEPTH_SCALES) / Math.min(...DEPTH_SCALES)).toBeLessThanOrEqual(1.35);
+  });
+
+  it('has between three and five bands', () => {
+    // Three reads as two and a half, because the middle band is most of the
+    // plane; five puts the boundaries close enough that a diagonal walk pops
+    // through two at once.
+    expect(DEPTH_SCALES.length).toBeGreaterThanOrEqual(3);
+    expect(DEPTH_SCALES.length).toBeLessThanOrEqual(5);
+  });
+});
+
+describe('sayBelow', () => {
+  it('hangs a balloon above its entity almost everywhere', () => {
+    expect(sayBelow(0.5)).toBe(false);
+    expect(sayBelow(1)).toBe(false);
+    expect(sayBelow(SAY_FLIP_Y)).toBe(false);
+  });
+
+  it('flips it under the entity where the plane would eat it', () => {
+    // A clipped name is still legibly somebody's name; a clipped balloon is
+    // nothing at all, and the line is only on the wire for a few seconds.
+    expect(sayBelow(0)).toBe(true);
+    expect(sayBelow(0.05)).toBe(true);
+  });
+
+  it('leaves room for the balloon on the shortest plane we support', () => {
+    // 320x568 gives a plane about 308 px tall, and the balloon needs roughly
+    // 45 px above the entity's centre. Anything less than that here means a
+    // balloon clipped away on the smallest phone.
+    expect(SAY_FLIP_Y * 308).toBeGreaterThanOrEqual(45);
+  });
+
+  it('does not flip on a coordinate it cannot read', () => {
+    expect(sayBelow(Number.NaN)).toBe(false);
   });
 });
 
@@ -237,6 +375,37 @@ describe('readAppearances', () => {
     expect([...(look?.label ?? '')]).toHaveLength(LABEL_MAX);
   });
 
+  it('draws a Ваня whose owner has gone as asleep', () => {
+    // Not a fallback to fine: a sleeper is the thing that stops a solo visit
+    // being an empty field, and drawing him as an ordinary standing player would
+    // make the yard look full of people ignoring you.
+    expect(readAppearances([peer({ pose: 'asleep' })])[0]?.pose).toBe('asleep');
+  });
+
+  it('reads a line somebody said', () => {
+    expect(readAppearances([peer({ say: 'устал' })])[0]?.say).toBe('устал');
+  });
+
+  it.each([
+    ['omitted', undefined],
+    ['empty', ''],
+    ['nothing but spaces', '  '],
+    ['not a string', 12],
+  ])('leaves the line absent when it is %s', (_name, say) => {
+    // Absent rather than empty, exactly like the label: `v-if="peer.say"` is the
+    // only test the template makes, so there must be one falsy state and not two.
+    const [look] = readAppearances([peer({ say })]);
+    expect(look && 'say' in look).toBe(false);
+  });
+
+  it('caps a line long enough to cover the yard', () => {
+    // The wire is trusted to be short. This is what makes that true rather than
+    // hoped for — the balloon is capped by width in CSS as well, but a kilobyte
+    // of it would still be a kilobyte in the DOM.
+    const look = readAppearances([peer({ say: 'я'.repeat(200) })])[0];
+    expect([...(look?.say ?? '')]).toHaveLength(SAY_MAX);
+  });
+
   it('freezes what it returns', () => {
     // Handed straight to a shallowRef and never mutated in place, exactly like
     // the store's peerIds.
@@ -277,6 +446,64 @@ describe('capLabel', () => {
     ['null', null],
   ])('reports %s as no name', (_name, raw) => {
     expect(capLabel(raw)).toBeUndefined();
+  });
+});
+
+describe('capSay', () => {
+  it('passes a line that fits through untouched', () => {
+    expect(capSay('устал')).toBe('устал');
+  });
+
+  it('allows more than a name does, because a line is a sentence', () => {
+    expect(SAY_MAX).toBeGreaterThan(LABEL_MAX);
+  });
+
+  it('caps a long line with an ellipsis, without halving a character', () => {
+    const capped = capSay('🍺'.repeat(60)) ?? '';
+    expect([...capped]).toHaveLength(SAY_MAX);
+    expect(capped).toBe(`${'🍺'.repeat(SAY_MAX - 1)}…`);
+    expect(capped).not.toContain('�');
+  });
+
+  it('reports nothing at all as no line', () => {
+    expect(capSay(undefined)).toBeUndefined();
+    expect(capSay('   ')).toBeUndefined();
+    expect(capSay(7)).toBeUndefined();
+  });
+});
+
+// The head count. It is on the wire rather than derived here for one reason:
+// `peers` carries the NPCs and the sleepers too, so counting the list would mean
+// this client learning to tell a person from a character — content knowledge the
+// entity frame exists to keep out of the browser.
+
+describe('readHere', () => {
+  it('says how many people the server counted, not how many entities it sent', () => {
+    // The whole point: eight things on the plane, two of them people.
+    expect(readHere(2, 8)).toBe(2);
+  });
+
+  it('counts a yard the server says is empty of people as empty', () => {
+    // Zero is a real answer — a yard of nothing but NPCs and sleepers — and must
+    // not be mistaken for a missing field.
+    expect(readHere(0, 5)).toBe(0);
+  });
+
+  it('falls back to the entity count when the server does not say', () => {
+    // A server that has not started sending `here` has no NPCs and no sleepers
+    // either, so every entity in its frame really is a person.
+    expect(readHere(undefined, 3)).toBe(3);
+    expect(readHere(null, 3)).toBe(3);
+  });
+
+  it.each([
+    ['not a number', '2'],
+    ['a fraction', 1.5],
+    ['negative', -1],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('falls back rather than showing %s in the status row', (_name, raw) => {
+    expect(readHere(raw, 4)).toBe(4);
   });
 });
 
@@ -343,6 +570,20 @@ describe('sameAppearance', () => {
 
   it('notices a skin changing', () => {
     expect(sameAppearance([look()], [look({ art: 'npc-dog' })])).toBe(false);
+  });
+
+  it('notices a line being said, and being finished with', () => {
+    // The field this guard is most likely to swallow, and the one it can least
+    // afford to: a line is on the wire for a few seconds in a yard where nothing
+    // else is changing, so if it is not compared here the balloon never appears
+    // at all — and, having appeared, never leaves.
+    expect(sameAppearance([look()], [look({ say: 'устал' })])).toBe(false);
+    expect(sameAppearance([look({ say: 'устал' })], [look()])).toBe(false);
+    expect(sameAppearance([look({ say: 'устал' })], [look({ say: 'устал' })])).toBe(true);
+  });
+
+  it('notices somebody falling asleep', () => {
+    expect(sameAppearance([look()], [look({ pose: 'asleep' })])).toBe(false);
   });
 
   it('notices somebody arriving or leaving', () => {

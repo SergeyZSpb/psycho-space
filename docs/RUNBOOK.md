@@ -273,6 +273,21 @@ SELECT account_id, round(x::numeric, 2) AS x, round(y::numeric, 2) AS y, last_se
 **A NULL x/y is normal** — it means that pet has never been in the yard, and he
 starts at his location's entry point from the catalogue.
 
+**Not everything in the yard is a person.** A roster frame carries three kinds of
+entity and the client cannot tell them apart on purpose: connected players, the
+**NPCs** (evaluated closed-form on the tick from `content.go` — no rows, no
+accounts, nothing stored), and **sleepers** — players whose owner is away, drawn
+lying where they last stood. Only the first kind is counted, and the frame
+carries that count explicitly as `here`. So «во дворе: 1» beside eight figures on
+screen is correct, not a bug.
+
+**A Ваня who will not move where you tapped is probably tired.** A tap is a
+*walk* now, not a teleport: about a fifth of the plane per second, and for a long
+tap the server may decide at accept time that he gives up part way and says
+«устал». That decision is made once, server-side, and broadcast — so everybody
+sees him sit down in the same spot. Re-tapping starts a new walk from where he
+sat, so nothing is ever stuck. Short hops never fail.
+
 **The yard's appearance comes from an in-memory cache, not from a query.** The
 5 Hz broadcast never touches Postgres: each account's skin, name and stat pairs
 are read when its client says hello and refreshed whenever it acts over HTTP

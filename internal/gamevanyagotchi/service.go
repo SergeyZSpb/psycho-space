@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -101,6 +104,25 @@ type Service struct {
 	// second lock would buy nothing but an ordering rule to get wrong.
 	display map[string]display
 
+	// lastTick is the instant of the most recent broadcast, and it is THE clock
+	// this game measures walks against.
+	//
+	// One clock, not two. A walk is evaluated on the tick, so if a tap stamped
+	// itself with time.Now() while the tick ran on its own injected clock, the
+	// two would disagree — invisibly in production, where a ticker's timestamp is
+	// the wall clock, and catastrophically in a test, where the tick is a channel
+	// the test fires and a walk stamped "now" would look like it had not started
+	// yet. Taking the last tick's time costs at most one frame of staleness, 200
+	// ms, which nobody can perceive, and buys a game whose every moving part is
+	// driven by a clock the tests already own.
+	lastTick time.Time
+
+	// sleepersLoaded records that the one-off read of who is lying in the yard
+	// has succeeded. Guarded by mu with everything else it touches; a bool
+	// rather than a sync.Once because a Once would burn its single chance on a
+	// failed query and leave the yard permanently empty of sleepers.
+	sleepersLoaded bool
+
 	// done is closed when Run returns, so shutdown can WAIT for the flush.
 	//
 	// Without it the flush was racing process exit and losing: main cancels the
@@ -162,7 +184,10 @@ const PositionGrace = 2 * time.Minute
 // placement is a position plus the last tick at which its account was actually
 // connected, which is what the grace above is measured from.
 type placement struct {
-	at       Point
+	// walk is where he is going, which subsumes where he is: a finished walk is
+	// simply standing somewhere. Position stopped being a point when it stopped
+	// being instantaneous — see motion.go.
+	walk     walk
 	lastSeen time.Time
 	// saved records that this account's departure has already been written
 	// down, so that being absent for the whole grace period costs one write
@@ -274,12 +299,32 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 			return
 		}
 		s.mu.Lock()
+		// The tick's clock, not time.Now — see the lastTick field.
 		// By account, so all of that account's devices drive the one Ваня. Only
 		// the point is written: lastSeen belongs to the broadcast, which is the
 		// only thing here holding a clock, and a moving player is by definition
 		// connected so the next tick refreshes it anyway.
-		cur := s.pos[m.AccountID]
-		cur.at = p
+		cur, known := s.pos[m.AccountID]
+		if !known {
+			// Never been placed, so he is at the spawn — not at the origin, which
+			// is the corner of the plane and is what a zero-valued walk would
+			// quietly claim.
+			cur.walk = standing(spawn)
+		}
+		if now := s.lastTick; now.IsZero() {
+			// No frame has been published yet, so nobody has seen him anywhere
+			// and there is no journey to show. Put him where he asked to be.
+			// This also avoids the one case where the clock is genuinely unknown:
+			// there is no tick to borrow an instant from, and stamping the walk
+			// with the wall clock would make it unrelatable to whatever clock the
+			// first tick turns out to carry.
+			cur.walk = standing(p)
+		} else {
+			// Retargeted from where he ACTUALLY IS, not from where he was going:
+			// a tap mid-journey should feel like changing your mind, not like
+			// queueing a second errand behind the first.
+			cur.walk = s.planWalk(m.AccountID, cur.walk.at(now), p, now)
+		}
 		// Chosen by a person, so no longer the spawn default that a stored
 		// position is allowed to replace.
 		cur.provisional = false
@@ -382,8 +427,8 @@ func (s *Service) broadcast(ctx context.Context, now time.Time) error {
 	// period has to be able to run out. An earlier version cleared the map
 	// wholesale here, which is exactly what teleported the last player in the
 	// yard back to the middle when they reloaded the page.
-	peers := s.place(members, now)
-	if len(peers) == 0 {
+	peers, here := s.place(members, now)
+	if here == 0 {
 		// Nobody to tell. Publishing into an empty room five times a second
 		// would be pure waste, and would hide a genuine "why is this room empty"
 		// question behind traffic.
@@ -392,7 +437,12 @@ func (s *Service) broadcast(ctx context.Context, now time.Time) error {
 
 	// Marshalled and published outside the lock: a slow publish must not hold up
 	// the read pumps writing moves.
-	frame, err := json.Marshal(Roster{T: TypeRoster, Peers: peers})
+	// The NPCs, evaluated right here on the render tick and stored nowhere.
+	// Appended AFTER the people so that the roster reads as "the yard, then its
+	// furniture", and so the count above cannot accidentally include them.
+	peers = append(peers, s.cast(now)...)
+
+	frame, err := json.Marshal(Roster{T: TypeRoster, Peers: peers, Here: here})
 	if err != nil {
 		return err
 	}
@@ -412,12 +462,15 @@ func (s *Service) broadcast(ctx context.Context, now time.Time) error {
 // should not be — an absent account is not in the frame either way, so nobody
 // sees a ghost, and coming back inside the window puts you where you left off
 // instead of in the middle of the yard.
-func (s *Service) place(members []realtime.Member, now time.Time) []Peer {
+func (s *Service) place(members []realtime.Member, now time.Time) ([]Peer, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.lastTick = now
+
 	peers := make([]Peer, 0, len(members))
 	present := make(map[string]bool, len(members))
+	var sleepers []sleeper
 	for _, m := range members {
 		if present[m.AccountID] {
 			continue
@@ -429,7 +482,7 @@ func (s *Service) place(members []realtime.Member, now time.Time) []Peer {
 			// Somewhere to be drawn until we know better. Marked provisional so
 			// the stored position, which arrives on this connection's hello a
 			// moment later, is allowed to replace it.
-			p.at = spawn
+			p.walk = standing(spawn)
 			p.provisional = true
 		}
 		p.lastSeen = now
@@ -443,15 +496,30 @@ func (s *Service) place(members []realtime.Member, now time.Time) []Peer {
 		// default skin with no name and no trouble. Rendering nothing at all
 		// would make a player invisible to the yard for the sake of a label.
 		d := s.display[m.AccountID]
+		at := p.walk.at(now)
+		pose := d.pose(now)
+		say := ""
+		if pose != PoseDead && p.walk.gaveUp(now) {
+			// Decided once, at accept time, and broadcast — so everybody watches
+			// him give up in the same spot at the same moment. A client-side roll
+			// would desynchronise the world, and a client-side anything here
+			// would be forgeable.
+			say = tiredSay
+		}
 		peers = append(peers, Peer{
 			ID:    s.pseudonym(m.AccountID),
-			X:     p.at.X,
-			Y:     p.at.Y,
+			X:     at.X,
+			Y:     at.Y,
 			Art:   d.skin(),
 			Label: d.name,
-			Pose:  d.pose(now),
+			Pose:  pose,
+			Say:   say,
 		})
 	}
+	// Everybody present is a person; the sleepers and the NPCs below are not.
+	// The count is computed here and published, so the client can say how many
+	// are in the yard without having to learn what an NPC is.
+	here := len(peers)
 
 	// Whoever has just gone gets written down, once. `saved` is what makes it
 	// once: absence is observed on every tick until the grace expires, and
@@ -464,20 +532,125 @@ func (s *Service) place(members []realtime.Member, now time.Time) []Peer {
 		if !p.saved && !p.provisional {
 			p.saved = true
 			s.pos[id] = p
-			s.enqueueSave(positionSave{accountID: id, at: p.at, seen: p.lastSeen})
+			s.enqueueSave(positionSave{accountID: id, at: p.walk.at(now), seen: p.lastSeen})
 		}
-		// Forget whoever has been gone longer than the grace. Deleting during a
-		// range over a map is defined behaviour in Go, and doing it here rather
-		// than by rebuilding the map is what lets an absent account keep its
-		// entry: there is still no leave event to miss, because absence is
-		// inferred from the membership the hub reports rather than from a
-		// notification.
-		if now.Sub(p.lastSeen) >= PositionGrace {
+		// Past the grace he is not coming straight back, so he stops being
+		// somebody who has briefly dropped out and becomes somebody who is
+		// ASLEEP where he stood. That is the whole payoff of writing positions
+		// down: with five to thirty friends the yard is almost never occupied by
+		// two people at once, but it is never empty either, because everybody
+		// else is lying about in it.
+		//
+		// Note what is NOT deleted any more. The entry is the sleeper, and the
+		// map is bounded by the number of pets rather than by traffic. A
+		// PROVISIONAL entry is dropped, because somebody who never stood
+		// anywhere has nowhere to lie down.
+		if now.Sub(p.lastSeen) < PositionGrace {
+			continue
+		}
+		if p.provisional {
 			delete(s.pos, id)
 			delete(s.display, id)
+			continue
 		}
+		sleepers = append(sleepers, sleeper{id: id, at: p.walk.at(now), since: p.lastSeen})
 	}
-	return peers
+
+	// Newest first, then capped: the yard shows who was here recently rather
+	// than an ever-growing pile of everybody who ever played.
+	sort.Slice(sleepers, func(i, j int) bool { return sleepers[i].since.After(sleepers[j].since) })
+	if len(sleepers) > sleeperLimit {
+		sleepers = sleepers[:sleeperLimit]
+	}
+	for _, sl := range sleepers {
+		d := s.display[sl.id]
+		pose := PoseAsleep
+		if d.pose(now) == PoseDead {
+			// Dead outranks asleep. He is not going to wake up, and pretending
+			// otherwise would hide the one thing his owner needs to come back for.
+			pose = PoseDead
+		}
+		peers = append(peers, Peer{
+			ID:    s.pseudonym(sl.id),
+			X:     sl.at.X,
+			Y:     sl.at.Y,
+			Art:   d.skin(),
+			Label: d.name,
+			Pose:  pose,
+		})
+	}
+
+	return peers, here
+}
+
+// sleeper is an absent account still lying in the yard.
+type sleeper struct {
+	id    string
+	at    Point
+	since time.Time
+}
+
+// cast places every NPC, closed-form, at this instant.
+//
+// No rows, no accounts, no placements: they are catalogue plus arithmetic, so
+// they cannot acquire a position, cannot be written to pets, and are not counted
+// among the people in the yard. Roughly one sine per axis per character per
+// tick, which does not register.
+func (s *Service) cast(now time.Time) []Peer {
+	elapsed := now.Sub(worldEpoch)
+	out := make([]Peer, 0, len(catalogue.NPCs))
+	for _, npc := range catalogue.NPCs {
+		at := evaluate(npc.Pattern, npc.Params, elapsed)
+		out = append(out, Peer{
+			ID:    "npc-" + npc.Key,
+			X:     at.X,
+			Y:     at.Y,
+			Art:   npc.Art,
+			Label: npc.Label,
+			Pose:  PoseFine,
+		})
+	}
+	return out
+}
+
+// planWalk decides the journey a tap asks for, including whether he manages it.
+//
+// The tiredness roll happens HERE, once, on the server — not on each tick and
+// not on the client. Everybody then watches the same Ваня sit down in the same
+// place at the same moment, because the outcome is part of the walk rather than
+// something each viewer re-rolls.
+//
+// Derived rather than randomised, so it needs no seed, no injection and no
+// stored state, and a test can assert an exact outcome: the roll is a hash of
+// the account, the destination and the instant, which is unpredictable in
+// practice and reproducible in a test. A client could in principle predict its
+// own roll and gains precisely nothing by it — the server still decides.
+func (s *Service) planWalk(accountID string, from, to Point, now time.Time) walk {
+	w := walk{from: from, to: to, startedAt: now, stopAt: 1}
+	dist := distance(from, to)
+	if dist <= tiredFrom {
+		// A short hop always works, so nothing is ever unrecoverable: re-tapping
+		// starts a new walk from where he sat down.
+		return w
+	}
+	// Probability rises with how much is being asked of him, from nothing at
+	// tiredFrom to tiredChance across the whole yard.
+	reach := (dist - tiredFrom) / (maxDistance - tiredFrom)
+	roll, pick := s.rolls(accountID, to, now)
+	if roll >= tiredChance*reach {
+		return w
+	}
+	w.stopAt = tiredEarliest + pick*(tiredLatest-tiredEarliest)
+	return w
+}
+
+// rolls turns (who, where, when) into two independent numbers in 0..1.
+func (s *Service) rolls(accountID string, to Point, now time.Time) (float64, float64) {
+	seed := fmt.Sprintf("%s|%v|%v|%d", accountID, to.X, to.Y, now.UnixNano())
+	sum := crypto.HMACSHA256(s.pseudonymKey, []byte(seed))
+	a := binary.BigEndian.Uint32(sum[0:4])
+	b := binary.BigEndian.Uint32(sum[4:8])
+	return float64(a) / float64(math.MaxUint32), float64(b) / float64(math.MaxUint32)
 }
 
 // enqueueSave hands a departure to the writer without ever blocking.
@@ -528,13 +701,17 @@ func (s *Service) flushPositions() {
 	if s.repo == nil || s.q == nil {
 		return
 	}
+	// One instant for the whole flush: everybody is stopping at the same moment,
+	// and evaluating each walk against a slightly different `now` would write
+	// down a yard nobody was ever standing in.
+	flushAt := time.Now().UTC()
 	s.mu.Lock()
 	pending := make([]positionSave, 0, len(s.pos))
 	for id, p := range s.pos {
 		if p.saved || p.provisional {
 			continue
 		}
-		pending = append(pending, positionSave{accountID: id, at: p.at, seen: p.lastSeen})
+		pending = append(pending, positionSave{accountID: id, at: p.walk.at(flushAt), seen: p.lastSeen})
 	}
 	s.mu.Unlock()
 	if len(pending) == 0 {

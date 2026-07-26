@@ -38,7 +38,7 @@
         data-test="plane"
         :data-stale="isStale ? '1' : undefined"
         role="application"
-        :aria-label="`Двор, во дворе ${store.peerIds.length}`"
+        :aria-label="`Двор, во дворе ${here}`"
         @pointerdown="onPlaneTap"
       >
         <div
@@ -46,7 +46,13 @@
           :key="peer.id"
           :ref="(el) => setPeerEl(peer.id, el as Element | null)"
           class="peer"
-          :class="{ 'peer--you': peer.id === store.youId }"
+          :class="{
+            'peer--you': peer.id === store.youId,
+            // Dims the whole dot rather than only the face: a sleeper is not a
+            // player who is doing badly, he is a player who is not here, and the
+            // thing that has to read at a glance is that nobody is home.
+            'peer--asleep': peer.pose === 'asleep',
+          }"
           data-test="peer"
           :data-you="peer.id === store.youId ? '1' : undefined"
           :data-peer="peer.id"
@@ -65,6 +71,12 @@
           <span v-if="peer.label" class="peer-label" data-test="peer-label">{{
             peer.label
           }}</span>
+          <!-- What he just said, for the few seconds the server keeps it on the
+               wire. Reactive like the rest of appearance — a line arrives twice
+               a minute at most, so it costs one render each way, and the guard
+               in front of it (sameAppearance) is what keeps the other 299
+               frames free. -->
+          <span v-if="peer.say" class="peer-say" data-test="peer-say">{{ peer.say }}</span>
         </div>
         <p v-if="store.peerIds.length === 0" class="plane-empty">
           {{ emptyMessage }}
@@ -122,7 +134,7 @@
 
       <!-- Fixed-size status row. -->
       <div class="hud">
-        <span class="hud-count">во дворе: {{ store.peerIds.length }}</span>
+        <span class="hud-count">во дворе: {{ here }}</span>
         <span class="hud-status" :class="`hud-status--${store.status}`">
           {{ statusLabel }}
         </span>
@@ -138,8 +150,10 @@ import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../re
 import { useGameVanyagotchiStore } from '../stores/gameVanyagotchi';
 import {
   applyFrame,
+  applyPosition,
   isRenderablePosition,
   readAppearances,
+  readHere,
   resolveArt,
   sameAppearance,
   tapToPosition,
@@ -348,6 +362,19 @@ const lastPos = new Map<string, { x: number; y: number }>();
 const appearance = shallowRef<readonly PeerAppearance[]>([]);
 
 /**
+ * How many PEOPLE are in the yard — the number the status row shows.
+ *
+ * Its own ref rather than `drawn.length`, because the two stopped being the same
+ * number: the roster carries the NPCs and everybody who is asleep in it as well,
+ * and all of those are entities to draw and none of them is somebody you can
+ * talk to. The server counts it and sends it, so this screen never has to hold
+ * an opinion about which entity is a person. A ref of a primitive only notifies
+ * on a real change, so the five frames a second that say "still two" cost
+ * nothing.
+ */
+const here = ref(0);
+
+/**
  * Everybody, ready to draw: the wire's appearance with its art key resolved
  * against the catalogue this screen already fetched.
  *
@@ -392,6 +419,7 @@ function forgetWorld() {
   isStale.value = false;
   store.clearRoster();
   appearance.value = [];
+  here.value = 0;
   lastPos.clear();
   peerEls.clear();
 }
@@ -485,8 +513,10 @@ function setPeerEl(id: string, el: Element | null) {
   const known = lastPos.get(id);
   if (!known) return;
   node.classList.add('peer--instant');
-  node.style.setProperty('--x', String(known.x));
-  node.style.setProperty('--y', String(known.y));
+  // Through the same writer the frames use, so a dot cannot arrive holding a
+  // position without the depth that goes with it — it would be drawn at the
+  // back of the plane at full size for the 200 ms until the next frame.
+  applyPosition(node, known.x, known.y);
   requestAnimationFrame(() => node.classList.remove('peer--instant'));
 }
 
@@ -502,6 +532,7 @@ function onFrame(frame: RealtimeFrame) {
   // the keyed list and the head count cannot end up disagreeing about the yard.
   const looks = readAppearances(peers);
   const ids = looks.map((look) => look.id);
+  here.value = readHere(frame.here, ids.length);
 
   for (const peer of peers) {
     if (!isRenderablePosition(peer)) continue;
@@ -598,6 +629,7 @@ onBeforeUnmount(() => {
   // next visit a world that stopped updating when we left.
   store.clearRoster();
   appearance.value = [];
+  here.value = 0;
 });
 </script>
 
@@ -745,26 +777,49 @@ onBeforeUnmount(() => {
 }
 
 /* A dot is placed purely by transform, never by `top`/`left`: transform is
-   composited, and the two custom properties are the only thing JavaScript
-   writes. The -50% centres it on its own coordinates.
+   composited, and the custom properties are the only thing JavaScript writes.
+   The -50% centres it on its own coordinates.
    The duration tracks the server's BroadcastInterval (200 ms, see
    internal/gamevanyagotchi/service.go) times about 1.1, so consecutive segments
    overlap slightly instead of visibly stopping between frames. `linear` because
-   consecutive eased segments pulse. */
+   consecutive eased segments pulse.
+
+   DEPTH rides on the same two declarations. `--depth` is the scale of the band
+   the dot's `--y` puts it in and `--band` is that band's index, used directly as
+   the stacking order — so "further down is nearer" is one scale and one z-index,
+   both written imperatively alongside the position and neither of them reactive.
+   Because the scale is part of the same `transform`, a band change GLIDES over
+   the same 220 ms as the movement that caused it rather than snapping, which is
+   what makes four discrete sizes read as depth instead of as four sizes.
+
+   `transform-origin: 50% 100%` is not optional: scale about the centre and a dot
+   grows in both directions, so the bottom of it — where the character meets the
+   ground — slides down as it comes nearer and the whole yard looks like it is
+   floating. Scaling about the feet keeps them on the floor.
+   Deliberately NOT a `perspective`/`rotateX` floor and NOT `preserve-3d`: the
+   first breaks `getBoundingClientRect`, and with it every measurement the
+   Playwright suites make; the second makes the browser ignore `z-index`
+   entirely, which is the half of depth this is actually for. */
 .peer {
   position: absolute;
   top: 0;
   left: 0;
+  /* THE TAP-TARGET FLOOR. The mobile suite measures this box, and the nearest
+     band scales it UP (see DEPTH_SCALES — the far band is 1), so 44 px is the
+     smallest an entity is ever drawn rather than the largest. */
   width: 44px;
   height: 44px;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.85);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   transform: translate3d(
-    calc(var(--x, 0.5) * 100cqw - 50%),
-    calc(var(--y, 0.5) * 100cqh - 50%),
-    0
-  );
+      calc(var(--x, 0.5) * 100cqw - 50%),
+      calc(var(--y, 0.5) * 100cqh - 50%),
+      0
+    )
+    scale(var(--depth, 1));
+  transform-origin: 50% 100%;
+  z-index: var(--band, 0);
   transition: transform 220ms linear;
   will-change: transform;
   pointer-events: none; /* the plane is the tap target, not the dots */
@@ -799,7 +854,12 @@ onBeforeUnmount(() => {
   box-shadow:
     0 0 0 3px rgba(0, 0, 0, 0.45),
     0 2px 8px rgba(0, 0, 0, 0.5);
-  z-index: 1;
+  /* No z-index of its own any more. It used to be 1, which was harmless while
+     everything else was 0 and is wrong now that the stacking order MEANS
+     something: lifting your own Ваня above his band would draw him in front of
+     somebody standing nearer the viewer than he is, in a yard where that is the
+     one cue for how far away anybody is. The ring already says which one is you,
+     and it says it without lying about where you are standing. */
 }
 
 /* Everybody's face, centred on their dot. `pointer-events: none` is inherited
@@ -880,6 +940,73 @@ onBeforeUnmount(() => {
   50% {
     transform: rotate(6deg);
   }
+}
+
+/* ASLEEP: a Ваня whose owner is not here, lying where he last stood.
+   This is what stops a solo visit being an empty field, so it has to read as
+   "somebody, dormant" rather than as "somebody, slightly faded" — a sleeper that
+   looked merely dim would be indistinguishable from a player who is standing
+   still, and the yard would seem full of people ignoring you.
+   Three cues, none of which is colour alone: the whole dot dims, the face topples
+   over, and a 💤 floats off it. */
+.peer--asleep {
+  opacity: 0.55;
+  filter: saturate(0.45);
+}
+/* On the dot rather than on the face, because the face is rotated below and a
+   💤 rotated with it would end up at his feet. */
+.peer--asleep::after {
+  content: '💤';
+  position: absolute;
+  top: -10px;
+  right: -6px;
+  font-size: 15px;
+  line-height: 1;
+  /* The dot it sits on is at 55% opacity and so, being a child, is this — which
+     over the pale bottom of the plane's gradient was very nearly invisible at
+     360 px. The shadow is what gives it an edge to be seen against. */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+/* Lying down. The one condition drawn as a rotation instead of a filter: at 44px
+   a change of ORIENTATION is visible across the yard where a change of tone is
+   not, and it is also literally what the server means — he is lying where he
+   was standing when his owner left. */
+.peer-face[data-condition='asleep'] {
+  transform: rotate(74deg);
+}
+
+/* A line over somebody's head, for the few seconds the server keeps it on the
+   wire. Capped in the same three independent places the name is — capSay caps
+   the string, this caps the width, and the plane's `overflow: hidden` is the
+   backstop — because a balloon is wider than a name and the yard is small.
+
+   `pointer-events: none` is stated rather than left to inherit from `.peer`: the
+   plane is the tap target, and a balloon that swallowed a tap would make the
+   ground under a talking Ваня briefly unwalkable — an intermittent bug of
+   exactly the kind nobody reports usefully.
+
+   Above the head normally, and BELOW it in the top sixth of the plane, switched
+   by `--say-below` — written imperatively off `--y` by the same call that writes
+   the position (see sayBelow). The plane clips whatever leaves it, and unlike a
+   clipped name, which is still legibly somebody's name, a clipped balloon is
+   nothing at all: the line is transient, so if it is not readable now it is not
+   readable. The drop clears the dot and the name underneath it. */
+.peer-say {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%) translateY(calc(var(--say-below, 0) * 88px));
+  max-width: min(96px, 34cqw);
+  padding: 2px 6px;
+  border-radius: 9px;
+  background: rgba(12, 18, 26, 0.86);
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 /* The non-plane block: fixed size, and the plane pays for it rather than the

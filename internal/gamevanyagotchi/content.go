@@ -173,13 +173,46 @@ type Location struct {
 	Entry Point `json:"entry"`
 }
 
+// NPC is somebody in the yard who is not a player.
+//
+// THREE INDEPENDENT AXES, and keeping them independent is what stops NPCs
+// multiplying: what he LOOKS like is Art, how he MOVES is a Pattern key resolved
+// against the motion table, and what happens when you touch him will be an
+// interaction key resolved against a registry that does not exist yet and lands
+// with its second use. Because the three are separate, N characters × M ways of
+// moving costs N + M rather than N × M — and a character reusing an existing
+// pattern with different numbers costs one entry here and no code at all.
+//
+// NPCS HAVE NO ROWS AND NEED NONE. Appearance is catalogue and position is a
+// pure function of (params, elapsed), so there is nothing about one to store and
+// adding one therefore cannot require a migration. Anything about an NPC that IS
+// mutable is not the NPC: the vendor's beer stock is a world object with a count,
+// and the vendor is the stateless thing standing next to it. Keeping that split
+// is what preserves "a new character is a Go-file change".
+type NPC struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	// Art is a catalogue key the client resolves exactly as it resolves a pet's
+	// skin — which is why an NPC needs no client work at all: to the browser it
+	// is one more entity in the roster.
+	Art     string       `json:"art"`
+	Pattern PatternKey   `json:"-"`
+	Params  MotionParams `json:"-"`
+}
+
 // Config is the whole catalogue as the SPA receives it.
 type Config struct {
-	GameKey   string     `json:"game_key"`
-	Title     string     `json:"title"`
-	Stats     []Stat     `json:"stats"`
-	Actions   []Action   `json:"actions"`
-	Skins     []Skin     `json:"skins"`
+	GameKey string   `json:"game_key"`
+	Title   string   `json:"title"`
+	Stats   []Stat   `json:"stats"`
+	Actions []Action `json:"actions"`
+	Skins   []Skin   `json:"skins"`
+	// NPCs are published so the client can resolve their art, and for no other
+	// reason: where they are arrives in the roster like everything else. Their
+	// Pattern and Params are json:"-" — how a character moves is nobody's
+	// business but the server's, and sending it would invite a second
+	// implementation in TypeScript.
+	NPCs      []NPC      `json:"npcs"`
 	Locations []Location `json:"locations"`
 	// DefaultSkin and DefaultLocation are what a new pet is created with.
 	DefaultSkin     string `json:"default_skin"`
@@ -240,6 +273,64 @@ const (
 	drinkHP      = 15.0
 	drinkBladder = 25.0
 )
+
+// How a Ваня crosses the yard.
+//
+// Before this the position WAS the tap: the server clamped it and broadcast it,
+// and the client slid the dot over 220 ms whatever the distance — so the far
+// side of the plane was 220 ms away and distance meant nothing. Distance has to
+// mean something, because the beer delivery is a race to ARRIVE.
+const (
+	// walkSpeed is in plane-widths per second, which is why the plane has a
+	// fixed 3:4 shape: a speed in plane-widths only means the same thing to two
+	// players if a plane-width does.
+	//
+	// A fifth of the yard a second, so crossing it corner to corner takes about
+	// seven — long enough to be a journey, short enough that nobody is bored.
+	walkSpeed = 0.2
+
+	// tiredFor is how long he sits getting his breath back after giving up.
+	tiredFor = 4 * time.Second
+
+	// tiredFrom is the distance below which he never gives up at all: a short
+	// hop always works, and only an ambitious tap can fail.
+	tiredFrom = 0.45
+	// tiredChance is the probability of giving up on a tap right across the
+	// yard, scaling down to nothing at tiredFrom.
+	tiredChance = 0.35
+	// tiredEarliest / tiredLatest bound where he stops, as a fraction of the
+	// journey. Never so early that the tap looks ignored, never so late that
+	// giving up is indistinguishable from arriving.
+	tiredEarliest = 0.35
+	tiredLatest   = 0.8
+)
+
+// worldEpoch is when this world started. Every closed-form position is measured
+// from it, so it must be a FIXED instant rather than process start: two
+// processes — or the same one after a deploy — have to agree about where an NPC
+// is, and a per-process epoch would teleport the whole cast on every restart.
+var worldEpoch = time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
+
+// maxDistance is the longest walk the plane allows, corner to corner. Used to
+// scale the tiredness roll, so "how ambitious is this tap" means the same thing
+// whatever the numbers around it become.
+var maxDistance = distance(Point{X: 0, Y: 0}, Point{X: 1, Y: 1})
+
+// tiredSay is what he announces when he gives up part way.
+//
+// It converts a limitation into content, which is the whole point: a speed cap
+// alone reads as a tax, whereas a Ваня who sits down halfway across the yard and
+// says he is tired IS the game. Same mechanical effect, opposite feeling.
+const tiredSay = "устал"
+
+// sleeperLimit is how many absent Ваняs the yard renders lying about.
+//
+// The point of them is that a solo visit is a place rather than a menu, and
+// thirty bodies is far past the number at which that reads. It also bounds the
+// frame: without a cap, every pet who ever played would be in every frame
+// forever, and the roster would grow with the age of the game rather than with
+// the size of the group.
+const sleeperLimit = 30
 
 // catalogue is the single instance. Package-level and read-only after
 // initialisation — no init() and nothing mutates it, so it can be handed out
@@ -338,9 +429,63 @@ var catalogue = Config{
 			Emoji:    "🫃",
 			Gradient: "linear-gradient(160deg, #6b4a2f, #2f4a6b)",
 		},
+		// The NPCs' art lives in the SAME list as the pets', because to the
+		// client there is no such thing as an NPC: it resolves whatever art key
+		// an entity carries against this one catalogue. A skin missing here is
+		// not an error — the browser draws its placeholder — but it does mean a
+		// character with no face, so an NPC ships with one.
+		{
+			Key:      "npc_sahur",
+			Label:    "Тунг Тунг Сахур",
+			Emoji:    "🪵",
+			Gradient: "linear-gradient(160deg, #7a5b3a, #3a2a1a)",
+		},
+		{
+			Key:      "npc_ballerina",
+			Label:    "Балерина Каппучина",
+			Emoji:    "🩰",
+			Gradient: "linear-gradient(160deg, #d8b08c, #6b4a2f)",
+		},
 	},
 	Locations: []Location{
 		{Key: LocationYard, Label: "двор", Entry: spawn},
+	},
+	// The yard's regulars. Two of them, moving two different ways, which is
+	// exactly what earns the pattern table its existence — one would have been a
+	// function and a map with a single key.
+	NPCs: []NPC{
+		{
+			Key:     "sahur",
+			Label:   "Тунг Тунг Сахур",
+			Art:     "npc_sahur",
+			Pattern: PatternWander,
+			// Ambling the top half of the yard, going nowhere in particular over
+			// about a minute and a half.
+			Params: MotionParams{
+				Home:   Point{X: 0.5, Y: 0.3},
+				Spread: Point{X: 0.32, Y: 0.16},
+				Period: 95 * time.Second,
+			},
+		},
+		{
+			Key:     "ballerina",
+			Label:   "Балерина Каппучина",
+			Art:     "npc_ballerina",
+			Pattern: PatternPatrol,
+			// A repeating figure with a pause at each corner, which is the joke:
+			// a ballerina doing the same four steps forever.
+			Params: MotionParams{
+				Home:   Point{X: 0.2, Y: 0.7},
+				Period: 40 * time.Second,
+				Route: []Point{
+					{X: 0.12, Y: 0.62},
+					{X: 0.34, Y: 0.58},
+					{X: 0.40, Y: 0.82},
+					{X: 0.16, Y: 0.86},
+				},
+				Phase: 0.25,
+			},
+		},
 	},
 	DefaultSkin:     SkinVanya,
 	DefaultLocation: LocationYard,
@@ -359,6 +504,7 @@ func Content() Config {
 	c.Actions = append([]Action(nil), catalogue.Actions...)
 	c.Skins = append([]Skin(nil), catalogue.Skins...)
 	c.Locations = append([]Location(nil), catalogue.Locations...)
+	c.NPCs = append([]NPC(nil), catalogue.NPCs...)
 	return c
 }
 
