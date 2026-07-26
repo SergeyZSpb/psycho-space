@@ -5,10 +5,10 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** psycho-space at two altitudes in one file — the structural view (§1–7: logical containers, runtime flows, package layout, data model, deployment) and the numbered decision records that say *why* it has that shape (§8, append-only). `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
-- **status:** current as of «Ванягоччи» **I6 — the first Phase 2 slice** (2026-07-25): the game now has a **pet**. `migrations/008_game_vanyagotchi.sql` adds `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (the last one written by no code yet — its shape landed with the others because migrations are immutable); `internal/gamevanyagotchi/content.go` is the content catalogue and `decay.go` the pure time arithmetic; `GET /api/game-vanyagotchi/config` and `/state` and `POST /actions/{action}` are live. Stats decay lazily from `(value, as_of)` with nothing ticking, and a death is materialised once at the derived instant (**ADR-038**, **ADR-039**). Also in this slice: a position now survives a page reload (`PositionGrace` — absence is not departure). **I6b then made health a CONSEQUENCE rather than a timer**: a `beer` stat joined `bladder` as a need the player acts on, and hp's drain is raised while either is unmet — coupling that stays exact rather than approximate under three conditions recorded in **ADR-040**, the third of which (every write re-stamps every stat) is the one that silently corrupts the maths if skipped. **I7a then joined the two halves**: the roster carries each entity's art, name and derived pose so everybody sees everybody properly, fed by an in-memory display cache so the tick still never touches Postgres, and a pet's position is now written on its owner's last disconnect (and on shutdown) so a deploy stops teleporting the yard to the middle (**ADR-041**). **I7b made the world move**: two NPCs evaluated closed-form on that same tick (which earns the motion-pattern table), a player's tap becoming a WALK with a server-decided tiredness roll so distance finally means something, and — the payoff of durable position — absent players rendered **asleep where they stood**, so the yard is never empty (**ADR-042**). Previously current as of I5, **Phase 1 complete**. One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped, carries a `bye` frame, and now has three game seams — inbound `Handler`, `Hub.Members`, and `Hub.PublishTo` for a unicast reply (ADR-033, ADR-037) — plus a 30 s revalidation sweep, so a socket can no longer outlive its own session. Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (`internal/gamevanyagotchi/` — realtime, **no LLM on any path**; `/app/game-vanyagotchi` renders the shared plane, sends taps back, and **survives a deploy** — it reconnects with jittered backoff, treats a revoked session as terminal, and shows one entity per **account** under a per-process pseudonym (ADR-037). It now also has a **pet** — three tables, a content catalogue, lazily-decaying stats and a recorded death — so it is the first thing in this game that outlives the process). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — ADR-027…034 and ADR-037 were appended the same day, and four records were withdrawn the same day for failing the log's architecture bar, so the numbering has permanent gaps. **ADR-038, ADR-039 and ADR-040 arrived with the pet** and are the three that govern how anything time-varying and anything content-shaped is built from here on — 040 amends 038 by naming the one shape in which coupling between stats is still exact. **ADR-041 and ADR-042 arrived with the plane**: what the tick may read, and the rule that everything which moves is a function of absolute time rather than an accumulation.
+- **status:** current as of «Ванягоччи» **I6 — the first Phase 2 slice** (2026-07-25): the game now has a **pet**. `migrations/008_game_vanyagotchi.sql` adds `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (the last one written by no code yet — its shape landed with the others because migrations are immutable); `internal/gamevanyagotchi/content.go` is the content catalogue and `decay.go` the pure time arithmetic; `GET /api/game-vanyagotchi/config` and `/state` and `POST /actions/{action}` are live. Stats decay lazily from `(value, as_of)` with nothing ticking, and a death is materialised once at the derived instant (**ADR-038**, **ADR-039**). Also in this slice: a position now survives a page reload (`PositionGrace` — absence is not departure). **I6b then made health a CONSEQUENCE rather than a timer**: a `beer` stat joined `bladder` as a need the player acts on, and hp's drain is raised while either is unmet — coupling that stays exact rather than approximate under three conditions recorded in **ADR-040**, the third of which (every write re-stamps every stat) is the one that silently corrupts the maths if skipped. **I7a then joined the two halves**: the roster carries each entity's art, name and derived pose so everybody sees everybody properly, fed by an in-memory display cache so the tick still never touches Postgres, and a pet's position is now written on its owner's last disconnect (and on shutdown) so a deploy stops teleporting the yard to the middle (**ADR-041**). **I7b made the world move**: two NPCs evaluated closed-form on that same tick (which earns the motion-pattern table), a player's tap becoming a WALK with a server-decided tiredness roll so distance finally means something, and — the payoff of durable position — absent players rendered **asleep where they stood**, so the yard is never empty (**ADR-042**). Previously current as of I5, **Phase 1 complete**. One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped, carries a `bye` frame, and now has three game seams — inbound `Handler`, `Hub.Members`, and `Hub.PublishTo` for a unicast reply (ADR-033, ADR-037) — plus a 30 s revalidation sweep, so a socket can no longer outlive its own session. Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (`internal/gamevanyagotchi/` — realtime, **no LLM on any path**; `/app/game-vanyagotchi` renders the shared plane, sends taps back, and **survives a deploy** — it reconnects with jittered backoff, treats a revoked session as terminal, and shows one entity per **account** under a per-process pseudonym (ADR-037). It now also has a **pet** — three tables, a content catalogue, lazily-decaying stats and a recorded death — so it is the first thing in this game that outlives the process). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — ADR-027…034 and ADR-037 were appended the same day, and four records were withdrawn the same day for failing the log's architecture bar, so the numbering has permanent gaps. **ADR-038, ADR-039 and ADR-040 arrived with the pet** and are the three that govern how anything time-varying and anything content-shaped is built from here on — 040 amends 038 by naming the one shape in which coupling between stats is still exact. **ADR-041 and ADR-042 arrived with the plane**: what the tick may read, and the rule that everything which moves is a function of absolute time rather than an accumulation. **A docs-only sweep on 2026-07-26 then brought §1–5 level with the shipped game** — no behaviour changed and no record was earned. Four gaps closed: `gamevanyagotchi` and the realtime hub were **absent from the §1 container diagram** along with the WebSocket path (it depicted a system with one game and no realtime); **§2.6 *One tick of the yard*** is new and is the runtime view of the plane (hello fills the cache, a tap becomes a walk, the 5 Hz broadcast, the position written on the last disconnect) — the old §2.6 Deploy is now **§2.7**; **§3 gained a structural view of the SPA**, promoting *membership is reactive, positions are not* from a prose aside into the structure that enforces it; and **§5 gained the realtime wire contract**, which existed only in Go structs and a hand-mirrored TypeScript copy.
 - **rename complete (2026-07-25):** game 1 moved off generic `game` naming onto the `Game<Name>` convention (ADR-030) — package `internal/game/` → `internal/gamekhimki/` (types inside keep plain names, so `gamekhimki.Service`), table `game_runs` → `game_khimki_runs` via `migrations/007_game_khimki_rename.sql` (**`game_assets` deliberately NOT renamed** — the blob store is shared infrastructure, ADR-031), routes `/api/game/*` → `/api/game-khimki/*`, SPA `GameView.vue` → `GameKhimkiView.vue` and `/app/game` → `/app/game-khimki` with a permanent redirect. `game_key` **values** are untouched (`smalltalk_khimki`) — data, not names, and the art blobs are keyed on them. **The one-deploy-cycle `/api/game/*` alias has served its cycle and is deleted**; `TestGameKhimkiLegacyPathAliasIsGone` pins its absence, and nothing may be written against that prefix again. The `/app/game` → `/app/game-khimki` SPA redirect is permanent and stays. Sections 1–7 below describe the post-rename state.
-- **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only).
-- **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `grep -n '^#### ADR-' docs/ARCHITECTURE.md` lists every decision record.
+- **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only). For the yard specifically: `internal/gamevanyagotchi/service.go` (the verbs and the tick — `broadcast`/`place`/`cast` are §2.6 in code), `message.go` (the wire contract in §5), `content.go` (every tuning constant and every character), and on the client `web/src/views/GameVanyagotchiView.vue` + `web/src/lib/vanyagotchiPlane.ts` + `web/src/realtime/socket.ts`.
+- **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `grep -n '^#### ADR-' docs/ARCHITECTURE.md` lists every decision record; `grep -n 'TypeHello\|TypeMove\|TypeRoster\|TypeYou' internal/gamevanyagotchi/message.go` re-finds the wire types if §5 drifts.
 - **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. **The bar is architecture:** a decision that shapes deployment, data, a component boundary, or the cost of a whole class of change. A tuning constant, a UI behaviour or a test-harness fix does **not** get a record however subtle its reasoning — that goes in a comment beside the code. Four records were withdrawn on 2026-07-25 for failing this bar, so **the numbering has gaps and a number is never reused**; existing references therefore never shift. Numbers are identifiers, not an ordering and not a sequence: take the next global one, wherever the group. Highest record when this was written: **ADR-042** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id or a dead anchor, and deliberately permits gaps.
 - **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP — §1–7 describe all of it, §8 records the decisions behind it.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff is appended to §8 as a **new** record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
@@ -29,11 +29,12 @@ flowchart TB
     end
 
     subgraph box["Single Ubuntu 24.04 box"]
-        NGINX["nginx<br/>TLS (certbot) · security headers · X-Real-IP"]
+        NGINX["nginx<br/>TLS (certbot) · security headers · X-Real-IP<br/>+ Upgrade/Connection on /api/realtime"]
         subgraph bin["psycho-space — one Go binary (systemd)"]
             EMBED["embedded SPA<br/>go:embed internal/web/dist"]
             API["chi router /api<br/>middleware · handlers"]
-            DOM["domain services<br/>account · session · wishlist · settings<br/>gamekhimki (a game) · gameassets (shared)"]
+            HUB["realtime hub<br/>in-memory · game-agnostic<br/>carries bytes, decides nothing"]
+            DOM["domain services<br/>account · session · wishlist · settings<br/>gamekhimki · gamevanyagotchi — the two games<br/>gameassets (shared art blobs)"]
             REPO["repositories (pgx)"]
         end
         PG[("PostgreSQL 16<br/>localhost")]
@@ -43,14 +44,19 @@ flowchart TB
     LLM["LLM judge — «Смолтолк в Химках» only<br/>OpenAI-compatible endpoint"]
 
     SPA -- HTTPS --> NGINX
+    SPA -- "WebSocket (wss)" --> NGINX
     NGINX -- "127.0.0.1:8080" --> EMBED
     NGINX -- "127.0.0.1:8080" --> API
+    NGINX -- "101 Upgrade, 127.0.0.1:8080" --> HUB
     API --> DOM --> REPO --> PG
-    DOM -- "code exchange + user_info" --> VK
-    DOM -- "one chat completion per turn (paid)" --> LLM
+    DOM -- "5 Hz roster out<br/>presence in" --> HUB
+    DOM -- "code exchange<br/>+ user_info" --> VK
+    DOM -- "one completion<br/>per turn (paid)" --> LLM
 ```
 
 **Why one binary.** The SPA is compiled into the executable, so a deploy is a single file plus a restart, and nginx never needs to know about static asset paths. See [§8 → ADR-001](#adr-001--the-spa-is-embedded-in-the-go-binary) for why, and for what it costs.
+
+**There are two ways in, and only one of them is a request.** Everything except the yard is request/response over `/api`. «Ванягоччи» additionally holds a WebSocket, which nginx must be told about explicitly — an upgrade is not a proxied request and the `Upgrade`/`Connection` headers do not survive a default `proxy_pass`. Inside the binary the hub is deliberately **not** a domain service: it is transport, it knows no game's vocabulary, and a game reaches it through two narrow seams — publish out, query presence in ([§8 → ADR-033](#adr-033--a-game-reads-the-socket-through-a-game-agnostic-handler-and-pulls-presence)). Note also what is **not** in the diagram: nothing runs on a schedule. There is no cron, no worker, no queue and no Redis. The one recurring thing in the process is the game's 5 Hz broadcast tick, and it reads memory rather than the database ([§2.6](#26-one-tick-of-the-yard)).
 
 ## 2. Runtime views
 
@@ -202,7 +208,58 @@ sequenceDiagram
 
 The reason arrives as a **frame**, not as a WebSocket close code — a browser sees `1006` for every disconnect and reads the reason from the last `bye` frame instead. Codes: `1001` planned restart (reconnect promptly), `1013` evicted or over a cap (back off), `4001` session revoked (terminal — stop). See [ADR-018 · *The close reason travels as a frame*](#adr-018--the-close-reason-travels-as-a-frame-not-as-a-close-code) for why, and [ADR-019 · *The read pump must not observe shutdown*](#adr-019--the-read-pump-must-not-observe-shutdown) for the library trap that makes the ordering load-bearing.
 
-### 2.6 Deploy
+### 2.6 One tick of the yard
+
+**This flow is «Ванягоччи»** and it is the other half of the game — §2.4 above is the pet in Postgres, this is the plane in memory. Three things happen at three different rates, and keeping them apart is the whole design: the **database is read once**, when a client says hello; a **tap** is accepted whenever one arrives; and the **broadcast runs five times a second and touches nothing but memory**.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant H as hub
+    participant G as gamevanyagotchi
+    participant P as PostgreSQL
+
+    Note over B,P: HELLO — the only place the yard reads the database
+    B->>G: {"t":"vanyagotchi_hello"} — no fields, identity is the connection
+    G-->>B: {"t":"vanyagotchi_you","id":"<pseudonym>"} unicast to this conn
+    G->>P: SELECT this account's pet and its (value, as_of) rows
+    G->>P: SELECT sleeping pets — ONCE per process, never on a timer
+    G->>G: display cache stores the raw pairs, never a pose
+
+    Note over B,P: A TAP — the client sends a destination, never a position
+    B->>G: {"t":"vanyagotchi_move","x":0.42,"y":0.61}
+    G->>G: reject non-finite, clamp to 0..1, retarget from the CURRENT interpolated point
+    G->>G: stopAt = hash(account, destination, instant) — tiredness decided ONCE, here
+
+    Note over B,P: EVERY 200 ms — no query, no allocation of truth
+    loop injected tick, 5 Hz
+        G->>H: Members(room)
+        G->>G: people — one per distinct ACCOUNT, at walk.at(now)
+        G->>G: here = len(people), snapped BEFORE anything else is appended
+        G->>G: sleepers — absent past PositionGrace, where they stood, newest 30
+        G->>G: NPCs — pattern(params, now − worldEpoch), no rows, no accounts
+        G->>H: Publish(room, roster) — idempotent full state
+        H-->>B: {"t":"vanyagotchi_roster","peers":[...],"here":2}
+    end
+
+    Note over B,P: THE WAY OUT — written once, not per move
+    B->>H: the last connection for this account closes
+    G->>P: after PositionGrace — UPDATE pets SET x, y, last_seen_at
+    Note over G,P: and on SIGTERM everybody is flushed at once, which is<br/>why main waits for the game as well as for the hub
+```
+
+**The tick never touches Postgres, and that is a constraint rather than an optimisation.** At 5 Hz a query per entity per frame would be a self-inflicted load test, so appearance comes from an in-memory cache filled on hello and refreshed whenever that client acts over HTTP. What the cache holds is the **raw `(value, as_of)` pairs, not the pose** — a pose expires, so a cached one would show a healthy Ваня who has been dying since lunchtime, whereas a cached pair stays exact for the same reason the whole decay model does ([§8 → ADR-041](#adr-041--the-broadcast-tick-renders-from-a-cache-and-position-outlives-the-process)).
+
+**Nothing on the plane integrates a velocity.** An NPC is `pattern(params, now − worldEpoch)` and a player is a point along a walk with a known start, so a tick that is late, early, skipped, duplicated, or served to a client that has just reconnected still produces the correct world. That is what makes a GC pause cost nothing and stops two people's yards drifting apart while neither reports a fault ([§8 → ADR-042](#adr-042--everything-that-moves-is-a-function-of-absolute-time)). It is also why an NPC needs no row and no account: there is nothing about one to store, so adding one is a catalogue entry with **no migration and no client deploy**.
+
+**The frame is idempotent full state — there are no deltas and no announcements.** A dropped frame therefore costs exactly nothing, because the next one is the truth again, which is what lets the hub drop a slow client's backlog instead of blocking on it. It is also why a world *event* has to be state in the frame rather than a one-shot message: a one-shot arrives once or never, and "never" is indistinguishable from "it did not happen".
+
+**Three kinds of entity, and the client cannot tell them apart on purpose** — connected people, sleepers, and NPCs are the same shape on the wire. So the count of people is sent explicitly as `here` rather than derived by the browser: making the client work it out would mean teaching it what an NPC is, and the point of the envelope is that it does not know. An empty room publishes nothing at all — silence, not a roster of NPCs talking to themselves.
+
+**Position is in memory, written down only on the way out.** A place survives a page reload because absence is not departure — it is held for a `PositionGrace` of two minutes after the last socket closes — and survives a *deploy* because the last disconnect (and shutdown, for everyone at once) writes it to `pets.x` / `pets.y`. A crash still loses whatever had not been written, and that is accepted rather than fixed. The reward for making it durable is that an absent player can be drawn asleep where he stood instead of vanishing, which is what keeps the yard from being an empty field when only one person is online.
+
+### 2.7 Deploy
 
 ```mermaid
 sequenceDiagram
@@ -272,7 +329,55 @@ flowchart LR
 
 **Its files split by what they know.** `content.go` is the catalogue (stats, actions, skins, locations, NPCs, every tuning constant); `decay.go` is the time arithmetic for stats and `motion.go` the time arithmetic for space — both pure, both closed-form, neither storing anything; `display.go` is the in-memory cache the broadcast draws from; `service.go` holds the verbs and the tick. A new character is a `content.go` entry. A new *way of moving* is one function and one map entry in `motion.go`. Neither is a migration and neither is a client change.
 
-**`gamevanyagotchi` is one package holding two things with deliberately different lifetimes**, and the split is worth knowing before reading it. The **plane** — who is standing where — lives in memory and is published through the hub five times a second. The **pet** — the stats, the death — is in Postgres and outlives every deploy. The plane now *draws* what the database knows, and the way it does that is the load-bearing part: a **display cache** (`display.go`) holds each account's pet fields in memory, filled when a client says hello and refreshed by the HTTP read path, so **the broadcast tick never touches Postgres**. What it caches is the raw `(value, as_of)` pairs rather than a pose — a pose changes with the clock, so a cached one would quietly show a healthy Ваня who has been dying since lunchtime, whereas a cached pair stays exact for the same reason the whole decay model does ([§8 → ADR-041](#adr-041--the-broadcast-tick-renders-from-a-cache-and-position-outlives-the-process)). Beyond `repository.go` / `postgres_repository.go` / `service.go` / `errors.go` the package adds `content.go` (the content catalogue, served to the SPA) and `decay.go` (the pure time arithmetic) — see [§8 → ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked) and [ADR-039](#adr-039--game-content-is-a-go-catalogue-and-the-schema-stores-only-its-keys).
+**`gamevanyagotchi` is one package holding two things with deliberately different lifetimes**, and the split is worth knowing before reading it. The **plane** — who is standing where — lives in memory and is published through the hub five times a second. The **pet** — the stats, the death — is in Postgres and outlives every deploy. The plane now *draws* what the database knows, and the way it does that is the load-bearing part: a **display cache** (`display.go`) holds each account's pet fields in memory, filled when a client says hello and refreshed by the HTTP read path, so **the broadcast tick never touches Postgres**. What it caches is the raw `(value, as_of)` pairs rather than a pose — a pose changes with the clock, so a cached one would quietly show a healthy Ваня who has been dying since lunchtime, whereas a cached pair stays exact for the same reason the whole decay model does ([§8 → ADR-041](#adr-041--the-broadcast-tick-renders-from-a-cache-and-position-outlives-the-process)). So beyond the usual four files the package carries the five listed above, and the two halves meet in exactly one place — the broadcast, which reads the cache and never the pool. See [§8 → ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked) and [ADR-039](#adr-039--game-content-is-a-go-catalogue-and-the-schema-stores-only-its-keys) for the two rules that shape it, and [§2.6](#26-one-tick-of-the-yard) for the flow.
+
+### The SPA
+
+The browser half is a normal Vue 3 application — until the yard, which has a second data source and a second rendering discipline, and that is the part worth having a diagram for.
+
+```mermaid
+flowchart TB
+    ROUTER["router — one global beforeEach<br/>requiresApproved · requiresAdmin"]
+
+    subgraph routed["views — every route lazily loaded"]
+        SHELL["AppShell.vue — /app/*"]
+        OTHER["LandingView · PendingView · Privacy · Consent<br/>WishlistView · AdminView · GameKhimkiView"]
+        V["GameVanyagotchiView.vue<br/>«Ванягоччи» — plane + panel"]
+    end
+
+    subgraph net["transport — the yard has TWO sources on one screen"]
+        HTTPC["api/client.ts + endpoints.ts<br/>typed fetch · ApiError with code + trace_id"]
+        SOCK["realtime/socket.ts — MODULE-SCOPED<br/>refcounted subscribe · 10 s idle grace"]
+        BACK["realtime/backoff.ts<br/>policyForClose · full-jitter delay"]
+    end
+
+    PET["vanyagotchiPet.ts — pure display maths<br/>skewMs · decayedValue · statFraction · inTrouble"]
+
+    subgraph react["through pinia and refs — RE-RENDERS"]
+        LOOKS["readAppearances + sameAppearance<br/>art · label · pose · say — no coordinates"]
+        YARD["gameVanyagotchi store<br/>status · roster ids · youId<br/>no field a position could go in"]
+    end
+
+    subgraph imper["straight to the element — NO reactivity"]
+        POS["applyFrame · applyPosition<br/>--x --y --band --depth --say-below"]
+    end
+
+    GLOBAL["auth · error · theme stores"]
+
+    ROUTER --> SHELL --> OTHER & V
+    ROUTER --> GLOBAL
+    OTHER --> HTTPC
+    V -- "the pet, on demand" --> HTTPC --> PET
+    V -- "the plane, 5 Hz" --> SOCK --> BACK
+    V -- "membership and looks" --> LOOKS --> YARD
+    V -- "x and y only" --> POS
+```
+
+**The socket is owned at module scope, not by a component.** The yard is a lazy child route, so a component-owned socket would re-handshake on every navigation and spend another of the three connections a server allows per account. Its lifetime is a subscription refcount with a ten-second idle grace, so leaving the yard and coming back reuses the connection.
+
+**In the yard, membership is reactive and positions are not.** This is the load-bearing rule of the client and it is enforced structurally rather than by convention, in three places at once: the store has no field a coordinate could go in, the `PeerAppearance` shape that enters reactivity has no `x`/`y`, and the function that writes a position takes an interface narrowed to `style.setProperty` alone — so the position path *cannot* read layout, measure a box, or touch an attribute. Who is present, what they look like and what they are saying go through pinia and a keyed list, behind an equality guard so a frame that changed nothing re-renders nothing. Where they are is written straight to CSS custom properties on the element, and the mapping from `0..1` to pixels happens in the stylesheet against the plane's own container box. The reason is arithmetic: at 5 Hz, binding positions to reactivity costs a scheduler pass and a vdom patch per entity per frame to produce a transform the compositor could have been handed directly — and it would cache a measured size that mobile browser chrome invalidates every time it slides.
+
+**Everything the client knows about a game's content, it was told.** Stats, actions, skins, locations and characters all arrive from `GET /api/game-<name>/config` and are iterated generically, which is what makes a new stat or a new NPC a backend deploy. What is deliberately still hardcoded is *presentation*: the splash copy, the RU status strings, the pose vocabulary the stylesheet has rules for, and the plane's 3:4 aspect ratio — that last one being a genuine rule of the game rather than a style, because normalised coordinates only mean the same thing on two phones if both draw the same shape.
 
 ## 4. Data model
 
@@ -413,6 +518,29 @@ Two things about the `game-vanyagotchi` row read oddly and are deliberate. **`GE
 **`/api/game/*` no longer answers.** The pre-rename prefix was registered as a second route group on the same handlers for exactly one deploy cycle, so that a browser holding the previous SPA build in cache would not break mid-run; that cycle is over and the registration is deleted. `TestGameKhimkiLegacyPathAliasIsGone` in `test/integration/gamekhimki_test.go` now pins its **absence** — it asserts 404 rather than 401 on a gated path, because 401 would mean the route group had been re-registered and was merely refusing the request. On the client side `/app/game` redirects permanently to `/app/game-khimki`; that redirect is not an alias and stays.
 
 Anything not matching `/api` or `/healthz` is served the embedded SPA, so client-side routes resolve on a hard refresh.
+
+### The realtime wire contract
+
+The table above is HTTP. `GET /api/realtime?room=yard` is the other half of the surface, and it is a **protocol rather than an endpoint**, so it is written out here. Everything in both directions is a JSON **text** frame with a string `t` discriminator, and **both ends ignore an unknown `t`** — that is what lets either side learn a message type without a coordinated deploy.
+
+| Direction | `t` | Payload | Notes |
+|---|---|---|---|
+| → server | `vanyagotchi_hello` | none | Deliberately empty: identity is the connection, so there is nothing to forge. Sent on **every** open, including reconnects. |
+| → server | `vanyagotchi_move` | `x`, `y` — both required, `*float64` | A destination, never a position. Non-finite is rejected; out of range is **clamped** to `0..1`, not refused. |
+| ← client | `vanyagotchi_you` | `id` | Unicast reply to a hello: which entity in the roster is you. |
+| ← client | `vanyagotchi_roster` | `peers[]`, `here` | The full-state frame, 5 Hz. Per entity: `id`, `x`, `y`, `art`, `pose`, and optional `label` / `say`. |
+| ← client | `bye` | `code`, `reason` | Transport-owned, not the game's — sent immediately before the socket drops ([ADR-018](#adr-018--the-close-reason-travels-as-a-frame-not-as-a-close-code)). |
+
+Six properties of it are load-bearing, and each one is a decision rather than an accident:
+
+- **The frame is idempotent full state.** No deltas, no one-shot announcements, no join/leave bookkeeping on either side. A dropped frame costs nothing because the next one is the truth again — which is exactly what permits the hub to discard a slow client's backlog rather than block the broadcast on it.
+- **`id` is a per-process pseudonym, never `accounts.id`.** It is an HMAC of the account under a key minted from `crypto/rand` at startup and held only in memory, truncated to 12 base64url characters. Stable across every connection and device of one account, meaningless after a restart, and stored nowhere. A roster is fanned out to the whole room, so anything in this field is a handle every other player can record ([ADR-037](#adr-037--one-account-is-one-entity-and-the-wire-carries-a-pseudonym)).
+- **`here` is sent, not derived.** It counts distinct connected accounts, snapped before sleepers and NPCs are appended. The browser is not able to tell a person from a character and must not have to.
+- **A malformed, unknown or invalid frame gets no reply and no log line.** Silence is the policy: a log per bad frame at the permitted 10/s would be a flood lever handed to any client.
+- **Nothing inbound carries an account field.** The account is bound at the upgrade and travels to the game as a `realtime.Member`, so a payload cannot claim to be someone else.
+- **No acknowledgement for a move.** The mover learns the outcome from the next roster like everybody else, so there is exactly one source of truth about where he is.
+
+The `bye` codes are `1001` planned restart (reconnect promptly), `1013` evicted, rate-limited or over a cap (back off), and `4001` session revoked (terminal — stop, and do not reconnect). Reason strings are constants because the client branches on the exact text, so changing one is a wire change.
 
 ## 6. Security view
 

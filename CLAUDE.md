@@ -38,11 +38,16 @@ internal/
   wishlist/  items, comments, votes (upvote toggle on both)
   gamekhimki/  «Смолтолк в Химках» — LLM-judged dialogue: content/persona, judge, runs, art blobs
   gamevanyagotchi/  «Ванягоччи» — the shared plane (in memory) + the pet (Postgres):
-                    content.go the catalogue, decay.go the lazy time arithmetic
+                    content.go  the catalogue — stats, actions, skins, NPCs, every constant
+                    decay.go    time arithmetic for stats · motion.go the same for space
+                    display.go  the in-memory cache the 5 Hz broadcast draws from
+                    message.go  the wire types · service.go the verbs and the tick
   settings/  app_settings key/value (open registration)
   web/       go:embed of the built SPA (dir gitignored except .gitkeep)
 migrations/  NNN_*.sql, embedded, auto-applied, immutable once shipped
 web/         Vue SPA source (built to internal/web/dist, embedded at compile time)
+  src/realtime/  module-scoped WebSocket client + reconnect policy (refcounted)
+  src/lib/       pure per-feature logic (vanyagotchiPlane/Pet, gameKhimki*) — unit-tested
   e2e/       Playwright: mobile layout, /api stubbed in the browser
   e2e-stack/ Playwright: full-stack, real binary + real Postgres
 test/integration/  //go:build integration — testcontainers-go + fake VK server
