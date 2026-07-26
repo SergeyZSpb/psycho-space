@@ -340,7 +340,11 @@ anything being refreshed.
 ```
 
 **The two Playwright suites do different jobs.** `web/e2e/` stubs `/api` with route
-interception and checks responsive layout at 360/390/768 px. `web/e2e-stack/` runs
+interception and checks responsive layout at 360/390/768/1440 px. The desktop
+project is the newest and was added because its absence hid a real bug: the yard
+drew at a different apparent scale above tablet width and nothing had ever opened
+it there. The width-gated mobile rules (tap targets, the 44 px floor) skip at
+1440 by design — that project covers the ungated half. `web/e2e-stack/` runs
 `scripts/e2e-stack.sh` — throwaway Postgres on port 55433 (tmpfs, force-recreated
 per run), the SPA built and the server compiled and started on :8081, then accounts
 seeded straight into the database (`cmd/dev-seed -json`) so tests can be "logged

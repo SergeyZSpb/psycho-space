@@ -956,6 +956,34 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   background: linear-gradient(180deg, #24384a 0%, #35506a 55%, #4a6b57 100%);
   touch-action: manipulation;
+
+  /* HOW BIG A ВАНЯ IS, IN THIS YARD. Every fixed length inside the plane is a
+     fraction of this one, so the world is drawn at the same apparent scale on
+     every screen instead of shrinking as the plane grows.
+     It has to be, because the plane is sized from its container while an entity
+     used to be a fixed 44px: measured, that put a dot at 19.1% of the plane's
+     width on a 320px phone and 7.2% on a 1920px desktop — a 2.7x spread, i.e.
+     two different games. The spread is also not monotonic in viewport width,
+     because `min(100cqw, 75cqh)` above switches which term binds, so no
+     breakpoint-keyed fix would have been correct.
+     `13cqw` is the fraction the 360px phone already drew (44 / 336 = 13.1%), so
+     phones are unchanged and everything wider catches up to them. The 44px floor
+     is LEGIBILITY, not accessibility — `.peer` is `pointer-events: none` and the
+     plane takes every tap, so a dot has never been a tap target — and it is also
+     what the mobile suite asserts. The 88px ceiling is a guard rather than an
+     active constraint (1920px draws 79.9px): it stops a very tall window drawing
+     a 120px Ваня, and 2 x 44 keeps the arithmetic readable.
+     DECLARED HERE, USED ONLY BY DESCENDANTS. `.plane` is itself the query
+     container, so a `cqw` in a property ON `.plane` would resolve against
+     `.plane-frame` instead. This works because a custom property substitutes as
+     a token stream and the `13cqw` is resolved at the point of use, where the
+     nearest container really is the plane. Do not use `var(--unit)` in a
+     property on this rule, and do not register it with `@property`.
+     It is deliberately INDEPENDENT of `--depth`: this says how big a Ваня is
+     here, `--depth` says how much nearer this one is, and they compose by
+     multiplication without either knowing about the other. Keeping them apart is
+     what lets sprites arrive later without touching any of this. */
+  --unit: clamp(44px, 13cqw, 88px);
 }
 .plane-empty {
   position: absolute;
@@ -964,6 +992,10 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   color: rgba(255, 255, 255, 0.6);
+  /* Deliberately NOT a world unit, unlike everything else inside the plane. This
+     is a message to the reader about the yard, not a thing standing in it — it
+     is the only text here that is chrome — so it stays at the document's own
+     scale and respects the user's font size the way the panel below does. */
   font-size: 0.85rem;
   pointer-events: none;
 }
@@ -996,14 +1028,18 @@ onBeforeUnmount(() => {
   position: absolute;
   top: 0;
   left: 0;
-  /* THE TAP-TARGET FLOOR. The mobile suite measures this box, and the nearest
-     band scales it UP (see DEPTH_SCALES — the far band is 1), so 44 px is the
-     smallest an entity is ever drawn rather than the largest. */
-  width: 44px;
-  height: 44px;
+  /* One world unit — see `--unit` on `.plane`. The mobile suite measures this
+     box, and the nearest band scales it UP (see DEPTH_SCALES — the far band is
+     1), so the clamp's 44px floor is the smallest an entity is ever drawn rather
+     than the largest. That floor is legibility: a dot cannot be tapped at all
+     (`pointer-events: none` below), the plane takes the tap. */
+  width: var(--unit);
+  height: var(--unit);
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.85);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  /* Rim and shadow in world units too, or a big Ваня wears a hairline and a
+     small one wears a hoop. 2/44 and 6/44 of the unit, which is what they were. */
+  border: calc(var(--unit) * 0.045) solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 calc(var(--unit) * 0.045) calc(var(--unit) * 0.136) rgba(0, 0, 0, 0.35);
   transform: translate3d(
       calc(var(--x, 0.5) * 100cqw - 50%),
       calc(var(--y, 0.5) * 100cqh - 50%),
@@ -1043,9 +1079,12 @@ onBeforeUnmount(() => {
    one player who cannot see what colour you are to everyone else. */
 .peer--you {
   border-color: #fff;
+  /* World units, like every other length in here — 3/44 and 2/44 + 8/44 of the
+     unit. A fixed 3px ring is a bold outline on a phone and a thread on a
+     desktop, which is the same bug this whole file's `--unit` fixes. */
   box-shadow:
-    0 0 0 3px rgba(0, 0, 0, 0.45),
-    0 2px 8px rgba(0, 0, 0, 0.5);
+    0 0 0 calc(var(--unit) * 0.068) rgba(0, 0, 0, 0.45),
+    0 calc(var(--unit) * 0.045) calc(var(--unit) * 0.182) rgba(0, 0, 0, 0.5);
   /* No z-index of its own any more. It used to be 1, which was harmless while
      everything else was 0 and is wrong now that the stacking order MEANS
      something: lifting your own Ваня above his band would draw him in front of
@@ -1062,7 +1101,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 26px;
+  /* 26/44 of the dot — the face has to grow with the head it is drawn on. */
+  font-size: calc(var(--unit) * 0.59);
   line-height: 1;
 }
 
@@ -1071,8 +1111,11 @@ onBeforeUnmount(() => {
    says WHAT this is and the hue says WHO, and a skin everybody happens to be
    wearing would otherwise erase the second. */
 .peer-sprite {
-  width: calc(100% - 6px);
-  height: calc(100% - 6px);
+  /* The inset is the rim, so it is a world unit — 6/44 — and not a fixed 6px.
+     `100%` already follows the dot; a fixed inset would eat the whole rim on a
+     small screen and leave a thick ring on a large one. */
+  width: calc(100% - var(--unit) * 0.136);
+  height: calc(100% - var(--unit) * 0.136);
   border-radius: 50%;
   object-fit: cover;
 }
@@ -1099,16 +1142,18 @@ onBeforeUnmount(() => {
   top: 100%;
   left: 50%;
   transform: translateX(-50%);
-  /* Sized in the WORLD's units before the device's: a 3:4 plane is 231px across
-     on a 320px phone and 573px on a tablet, and a name that is a third of the
-     yard wide on one and a seventh on the other is two different games. The px
-     ceiling is what stops it growing past legible on a big screen. */
-  max-width: min(80px, 30cqw);
+  /* Sized in world units, the WHOLE label and not only its ceiling. It used to
+     be `min(80px, 30cqw)` wide with a fixed 10px face: the width followed the
+     yard and the text did not, so a name was a third of the plane wide on a
+     phone and a seventh on a tablet — two different games. Now both come off
+     `--unit` (80/44 and 10/44), which is already clamped, so the two-branch
+     `min()` is not needed to stop it growing past legible. */
+  max-width: calc(var(--unit) * 1.818);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   text-align: center;
-  font-size: 10px;
+  font-size: calc(var(--unit) * 0.227);
   line-height: 1.25;
   color: rgba(255, 255, 255, 0.94);
   /* Legible over both ends of the plane's gradient without a background plate,
@@ -1150,19 +1195,22 @@ onBeforeUnmount(() => {
 .peer--asleep::after {
   content: '💤';
   position: absolute;
-  top: -10px;
-  right: -6px;
-  font-size: 15px;
+  /* Hung off the dot in world units — 10/44, 6/44 and 15/44 — so the badge stays
+     in the same place on the head at every size instead of sliding towards the
+     middle as the dot grows. */
+  top: calc(var(--unit) * -0.227);
+  right: calc(var(--unit) * -0.136);
+  font-size: calc(var(--unit) * 0.341);
   line-height: 1;
   /* The dot it sits on is at 55% opacity and so, being a child, is this — which
      over the pale bottom of the plane's gradient was very nearly invisible at
      360 px. The shadow is what gives it an edge to be seen against. */
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
 }
-/* Lying down. The one condition drawn as a rotation instead of a filter: at 44px
-   a change of ORIENTATION is visible across the yard where a change of tone is
-   not, and it is also literally what the server means — he is lying where he
-   was standing when his owner left. */
+/* Lying down. The one condition drawn as a rotation instead of a filter: at the
+   sizes a Ваня is ever drawn, a change of ORIENTATION is visible across the yard
+   where a change of tone is not, and it is also literally what the server means
+   — he is lying where he was standing when his owner left. */
 .peer-face[data-condition='asleep'] {
   transform: rotate(74deg);
 }
@@ -1186,14 +1234,19 @@ onBeforeUnmount(() => {
 .peer-say {
   position: absolute;
   left: 50%;
-  bottom: calc(100% + 6px);
-  transform: translateX(-50%) translateY(calc(var(--say-below, 0) * 88px));
-  max-width: min(96px, 34cqw);
-  padding: 2px 6px;
-  border-radius: 9px;
+  /* Every length here is a world unit — 6/44 gap, 96/44 wide, 2/44 and 6/44 of
+     padding, 9/44 of radius, 10/44 of text. The flip distance is exactly TWO
+     units, which is what 88px always was: it has to clear the dot and the name
+     hanging under it, and both of those are now `--unit`-sized, so a fixed 88px
+     would under-clear on a desktop and over-clear on a phone. */
+  bottom: calc(100% + var(--unit) * 0.136);
+  transform: translateX(-50%) translateY(calc(var(--say-below, 0) * var(--unit) * 2));
+  max-width: calc(var(--unit) * 2.182);
+  padding: calc(var(--unit) * 0.045) calc(var(--unit) * 0.136);
+  border-radius: calc(var(--unit) * 0.205);
   background: rgba(12, 18, 26, 0.86);
   color: rgba(255, 255, 255, 0.95);
-  font-size: 10px;
+  font-size: calc(var(--unit) * 0.227);
   line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;

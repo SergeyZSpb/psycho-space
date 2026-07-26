@@ -185,7 +185,7 @@ The exception is genuinely immutable history: `migrations/` are forward-only and
 **Frontend (SPA)**
 - **Mobile-first & responsive — mandatory.** The site must be fully usable on phones (target ≈360 px wide) as well as desktop. Use Vuetify's responsive grid + breakpoints (`v-container`/`v-row`/`v-col`, `d-*` display utilities, `useDisplay()`), fluid layouts, and a mobile nav pattern (drawer / bottom nav) — never fixed pixel widths that overflow small screens. Keep the `viewport` meta in `index.html`.
 - Touch targets ≥ 44 px; no hover-only affordances (tap + keyboard must both work).
-- **Verify at mobile width before shipping any UI change** — and it is enforced, not just asked for: `./dev.sh e2e` runs the Playwright suite at 360/390/768 px in the pre-commit gate and fails on horizontal overflow or a sub-44 px tap target. A change that only looks right on desktop is incomplete.
+- **Verify at mobile width before shipping any UI change** — and it is enforced, not just asked for: `./dev.sh e2e` runs the Playwright suite at 360/390/768/1440 px in the pre-commit gate and fails on horizontal overflow or a sub-44 px tap target. A change that only looks right on desktop is incomplete.
 - Dark/light theme both supported; RU-only copy.
 
 **Toolchain**

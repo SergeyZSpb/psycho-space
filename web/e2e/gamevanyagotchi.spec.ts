@@ -49,10 +49,32 @@ const LABEL_MAX = 16;
 const DEPTH_SCALES = [1, 1.08, 1.16, 1.24] as const;
 
 /**
- * The unscaled size of a dot in CSS pixels — `.peer` in GameVanyagotchiView.vue,
- * and the floor the mobile rule is about.
+ * The SMALLEST a dot is ever drawn — the floor of `--unit`, not the size.
+ *
+ * `.peer` is `var(--unit)` and `--unit` is `clamp(44px, 13cqw, 88px)` on
+ * `.plane`, so an entity grows with the yard and 44 is the bottom of that clamp.
+ * It is a LEGIBILITY floor rather than a tap-target one, which matters for
+ * reading the assertions that name it: `.peer` is `pointer-events: none` and the
+ * plane takes every tap, so a dot has never been tappable.
  */
 const PEER_BASE_PX = 44;
+/** The top of the clamp, and the fraction of the plane between the two. */
+const PEER_UNIT_MAX_PX = 88;
+const PEER_UNIT_PLANE_FRACTION = 0.13;
+
+/**
+ * `--unit` at a given plane width, mirroring the stylesheet's clamp.
+ *
+ * Every fixed length inside the plane is a multiple of this, so every assertion
+ * about one of them has to compute it rather than hardcode a pixel count — that
+ * is the whole difference between the old rule and the new one. Mirrored rather
+ * than read out of the computed style on purpose: a test that asked the browser
+ * what the unit is would agree with the stylesheet by construction and could
+ * never catch it being wrong.
+ */
+function unitFor(planeWidth: number): number {
+  return Math.min(PEER_UNIT_MAX_PX, Math.max(PEER_BASE_PX, planeWidth * PEER_UNIT_PLANE_FRACTION));
+}
 
 /**
  * Above this height a balloon no longer fits over its entity and hangs below it
@@ -64,13 +86,20 @@ const PEER_BASE_PX = 44;
 const SAY_FLIP_Y = 0.15;
 
 /**
- * The stylesheet's cap on a balloon's WIDTH: `min(96px, 34cqw)` against the
- * plane's own box. Both branches are asserted for the same reason the label's
- * two are — the px ceiling keeps a line legible on a tablet, the percentage
- * keeps it the same fraction of the world everywhere — and whichever is smaller
- * on the viewport under test is the one actually in force.
+ * The stylesheet's cap on a balloon's WIDTH, in world units: `--unit * 2.182`.
+ *
+ * It used to be `min(96px, 34cqw)`, and the two branches were asserted
+ * separately because they could each be the binding one. There is one branch
+ * now: `--unit` is itself clamped, so the balloon cannot grow past legible
+ * without a second ceiling to stop it. 2.182 is 96/44 — the same cap a phone
+ * always had, now expressed as what it was a proportion OF.
+ *
+ * The plane-fraction bound below is kept as an independent second opinion. It is
+ * now the looser of the two everywhere (2.182 x 0.13 = 28.4% of the plane at
+ * most), which is the point: it is derived from a different quantity, so it
+ * still fails if the unit rule itself is wrong.
  */
-const SAY_MAX_PX = 96;
+const SAY_MAX_UNITS = 96 / 44;
 const SAY_MAX_PLANE_FRACTION = 0.34;
 
 /** The longest line a balloon will show, in code points. Mirrored from SAY_MAX. */
@@ -495,13 +524,14 @@ const nameTag = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-label"]`);
 
 /**
- * The stylesheet's cap on a name's WIDTH, mirrored: `min(80px, 30cqw)` against
- * the plane's own box. Both branches matter — the px ceiling stops a name
- * growing past legible on a tablet, the percentage keeps it the same fraction of
- * the world on every device — so both are asserted, and whichever is smaller on
- * the viewport under test is the one actually in force.
+ * The stylesheet's cap on a name's WIDTH, in world units: `--unit * 1.818`.
+ *
+ * Was `min(80px, 30cqw)`. 1.818 is 80/44, so a phone is unchanged and every
+ * wider screen now grows the name with the yard instead of leaving it behind —
+ * the same correction `--unit` makes to the dot itself. The plane-fraction bound
+ * is kept as an independent second opinion, derived from a different quantity.
  */
-const LABEL_MAX_PX = 80;
+const LABEL_MAX_UNITS = 80 / 44;
 const LABEL_MAX_PLANE_FRACTION = 0.3;
 
 /**
@@ -537,10 +567,11 @@ async function expectLabelWithinCap(page: Page, id: string, y: number): Promise<
   const width = label?.width ?? 0;
   const planeWidth = box?.width ?? 1;
   const scale = DEPTH_SCALES[bandFor(y)];
+  const cap = LABEL_MAX_UNITS * unitFor(planeWidth);
   expect(
     width,
-    `${id}'s name is ${Math.round(width)}px wide in band ${bandFor(y)} (×${scale})`,
-  ).toBeLessThanOrEqual(LABEL_MAX_PX * scale + 1);
+    `${id}'s name is ${Math.round(width)}px wide in band ${bandFor(y)} against a ${Math.round(cap)}px cap (×${scale})`,
+  ).toBeLessThanOrEqual(cap * scale + 1);
   expect(
     width / planeWidth,
     `${id}'s name is ${Math.round((width / planeWidth) * 100)}% of the yard wide`,
@@ -1116,13 +1147,13 @@ test.describe('«Ванягоччи» — a yard of people rather than a field o
   });
 
   test('long names still fit the smallest screen we support', async ({ page }) => {
-    // 320x568 is the floor, and it is the width at which the cap's OTHER branch
-    // is the one in force: the plane is about 231px across there, so `30cqw` is
-    // ~69px and wins the `min()` against the 80px ceiling. That is the whole
-    // point of sizing a name in the world's units before the device's — a name
-    // that is a third of the yard wide on a phone and a seventh on a tablet is
-    // two different games — and this is the only viewport in the suite that
-    // exercises it.
+    // 320x568 is the floor, and it is the width at which the clamp's FLOOR is
+    // the branch in force: the plane is only about 231px across there, so
+    // `13cqw` is ~30px and loses to the 44px minimum. Everything inside the
+    // plane is a multiple of that unit, so this is the one viewport in the suite
+    // where the whole world is drawn at its smallest permitted size rather than
+    // in proportion to the yard — which is exactly the case worth pinning, since
+    // it is where a name is the largest fraction of the plane it will ever be.
     //
     // Set before `goto` rather than resized afterwards, so the layout is built
     // for this size rather than reflowed into it.
@@ -1432,7 +1463,7 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     const planeBox = await plane(page).boundingBox();
     expect(planeBox).not.toBeNull();
     const planeWidth = planeBox?.width ?? 1;
-    const cap = Math.min(SAY_MAX_PX, planeWidth * SAY_MAX_PLANE_FRACTION);
+    const cap = Math.min(SAY_MAX_UNITS * unitFor(planeWidth), planeWidth * SAY_MAX_PLANE_FRACTION);
 
     // Scaled by the band, for the same reason a name is: `max-width` bounds the
     // balloon's own layout box and the dot's depth `transform` then scales it,
@@ -1605,10 +1636,113 @@ test.describe('«Ванягоччи» — further down the plane is nearer', () 
 
     // And the scale is really being drawn, not merely declared: the nearest band
     // measures bigger than the furthest by its own ratio.
+    //
+    // A RATIO, not two absolute sizes, and that is the claim this was always
+    // making. It used to read `far.width ≈ 44 && near.width ≈ 44 * scale`, which
+    // was the same statement only because a dot was 44px everywhere; a dot is
+    // now `var(--unit)` and grows with the plane, so at this project's width the
+    // absolute numbers are different on every viewport and mean nothing on any
+    // of them. What has to be true is that depth multiplies the unit — whatever
+    // the unit currently is — and that survives every future change to how big a
+    // Ваня is drawn.
     const far = await dots(page).nth(0).boundingBox();
     const near = await dots(page).nth(3).boundingBox();
-    expect(far?.width ?? 0).toBeCloseTo(PEER_BASE_PX, 0);
-    expect(near?.width ?? 0).toBeCloseTo(PEER_BASE_PX * DEPTH_SCALES[3], 0);
+    expect(far?.width ?? 0, 'the furthest dot has no width at all').toBeGreaterThan(0);
+    expect(
+      (near?.width ?? 0) / (far?.width ?? 1),
+      'the near band is not drawn larger than the far one by its own scale',
+    ).toBeCloseTo(DEPTH_SCALES[3] / DEPTH_SCALES[0], 2);
+  });
+
+  // The regression test this whole investigation exists to produce.
+  //
+  // A Ваня used to be a fixed 44px standing on a plane sized from its container,
+  // so the same world drew at 19.1% dot-to-plane on a 320px phone and 7.2% on a
+  // 1920px desktop — a 2.7x spread, which is two different games. Nothing caught
+  // it because nothing ever opened this screen wider than a tablet.
+  //
+  // It resizes the viewport itself rather than relying on the projects, for two
+  // reasons: the spread is NOT monotonic in viewport width (`min(100cqw, 75cqh)`
+  // switches which term binds, so height matters as much as width, and a
+  // breakpoint-keyed fix would have been wrong), and a claim about two widths
+  // agreeing cannot be made by a test that only ever sees one.
+  test('a Ваня is the same fraction of the yard at every width', async ({ page }) => {
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+
+    const seen: { label: string; plane: number; dot: number }[] = [];
+    for (const size of [
+      { width: 360, height: 800 },
+      { width: 390, height: 844 },
+      { width: 768, height: 1024 },
+      { width: 1440, height: 900 },
+      { width: 1920, height: 1080 },
+      // Landscape, and specifically under the `(orientation: landscape) and
+      // (max-height: 600px)` rule that puts the panel BESIDE the plane. That
+      // changes the frame's box and therefore the unit, which is the one case
+      // where reasoning about this from the portrait numbers would be wrong —
+      // so it is measured rather than assumed.
+      { width: 844, height: 390 },
+    ]) {
+      // Sized BEFORE the page is built, then loaded fresh, rather than resized
+      // between measurements. The same discipline the 320x568 test states, and
+      // for a sharper reason here: `.stage` is `calc(100dvh - 72px)` and the
+      // plane is `min(100cqw, 75cqh)` of what the panel leaves, so a page
+      // reflowed into a new viewport was measured mid-settle and reported a
+      // plane a quarter of its real width. A load per size costs a second and
+      // removes the whole class of question.
+      await page.setViewportSize(size);
+      await enterYard(page);
+      // Band 0, so `--depth` is 1 and the measured box is the unit itself rather
+      // than the unit times a scale.
+      await socket.push(roster({ id: 'me', x: 0.5, y: 0.1, art: 'vanya', pose: 'fine' }));
+      await expect(dots(page)).toHaveCount(1);
+
+      // BOTH BOXES IN ONE EVALUATE, at one instant. Read as two round trips they
+      // can straddle a reflow, and a plane from before it against a dot from
+      // after is a mismatch that looks exactly like the bug this test is for.
+      const m = await page.evaluate(() => {
+        const p = document.querySelector('[data-test="plane"]');
+        const d = document.querySelector('[data-test="peer"]');
+        return {
+          plane: p?.getBoundingClientRect().width ?? 0,
+          dot: d?.getBoundingClientRect().width ?? 0,
+        };
+      });
+      seen.push({ label: `${size.width}x${size.height}`, ...m });
+    }
+
+    // What the stylesheet says, asserted at every width INCLUDING the ones where
+    // the clamp binds: `--unit: clamp(44px, 13cqw, 88px)`, and `cqw` inside a
+    // `.peer` resolves against the plane. Written as the formula rather than as
+    // measured numbers so it stays true when the plane's own sizing changes.
+    for (const s of seen) {
+      const want = unitFor(s.plane);
+      expect(
+        s.dot,
+        `at ${s.label} the plane is ${s.plane.toFixed(1)}px and a Ваня is ${s.dot.toFixed(1)}px, want ${want.toFixed(1)}px`,
+      ).toBeCloseTo(want, 0);
+    }
+
+    // And where neither end of the clamp binds, the fraction is the SAME — which
+    // is the property the bug violated. Filtered rather than hardcoded so the
+    // test keeps meaning this when the clamp's bounds are retuned.
+    const free = seen.filter(
+      (s) =>
+        s.plane * PEER_UNIT_PLANE_FRACTION > PEER_BASE_PX &&
+        s.plane * PEER_UNIT_PLANE_FRACTION < PEER_UNIT_MAX_PX,
+    );
+    expect(
+      free.length,
+      'no viewport here draws a plane in the clamp\'s free range, so this asserts nothing',
+    ).toBeGreaterThan(1);
+    const ratios = free.map((s) => s.dot / s.plane);
+    expect(
+      Math.max(...ratios) - Math.min(...ratios),
+      `dot-to-plane ratios disagree across widths: ${free
+        .map((s, i) => `${s.label}=${(ratios[i] * 100).toFixed(1)}%`)
+        .join(' ')}`,
+    ).toBeLessThan(0.01);
   });
 
   test('the nearer of two overlapping Ваняs is the one you can see', async ({ page }) => {

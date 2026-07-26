@@ -41,6 +41,20 @@ export default defineConfig({
       name: 'tablet-768',
       use: { ...devices['Desktop Chrome'], viewport: { width: 768, height: 1024 } },
     },
+    {
+      // Desktop. Added because its ABSENCE hid a real bug for as long as it was
+      // absent: the yard's plane is sized from its container while an entity was
+      // a fixed 44px, so the same world drew at 19.1% dot-to-plane on a 320px
+      // phone and 7.2% on a 1920px desktop — and no project here had ever opened
+      // it wider than a tablet. A suite that only runs at phone widths cannot see
+      // a bug that only appears above them.
+      // The width-gated mobile rules (tap targets, the 44px floor) skip here by
+      // design — `isMobile()` in the specs is a viewport-width test — so this
+      // project's job is the ungated half: no horizontal overflow, the never-
+      // scroll layout, and the cross-viewport ratio assertions.
+      name: 'desktop-1440',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
+    },
   ],
   webServer: {
     command: 'npm run build && npm run preview -- --port 4173 --strictPort',

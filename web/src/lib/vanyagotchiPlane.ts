@@ -116,12 +116,25 @@ export function isRenderablePosition(peer: unknown): peer is PeerPosition {
 export const DEPTH_SCALES: readonly number[] = [1, 1.08, 1.16, 1.24];
 
 /**
- * The unscaled size of an entity in CSS pixels.
+ * The SMALLEST an entity is ever drawn, in CSS pixels.
  *
- * Mirrors `.peer { width/height }` in GameVanyagotchiView.vue rather than
- * driving it — the stylesheet owns the size, this is here so the floor above can
- * be asserted in a unit test. The e2e suite measures the real box at mobile
- * widths, so the two cannot drift apart silently.
+ * A floor, not the size. `.peer` is `var(--unit)` and the unit is
+ * `clamp(44px, 13cqw, 88px)`, so an entity grows with the yard and this is the
+ * bottom of that clamp — which is what a 360px phone draws and what every wider
+ * screen used to draw as well, before the plane started scaling and the dot did
+ * not.
+ *
+ * It mirrors the stylesheet rather than driving it: the stylesheet owns the
+ * size, and this exists so the floor can be asserted in a unit test. The e2e
+ * suite measures the real box at mobile widths, so the two cannot drift apart
+ * silently.
+ *
+ * The floor is LEGIBILITY rather than accessibility, which is worth stating
+ * because the tests around it are older than the distinction: `.peer` is
+ * `pointer-events: none` and the plane takes every tap, so a dot has never been
+ * a tap target. It stays 44 while `DEPTH_SCALES[0] === 1` keeps depth from ever
+ * shrinking anybody; the day a far band draws smaller than a near one, this
+ * becomes `base * minScale` and the assertions naming it have to be re-argued.
  */
 export const PEER_BASE_PX = 44;
 

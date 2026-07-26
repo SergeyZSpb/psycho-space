@@ -80,9 +80,47 @@ async function recordDrawerStates(page: Page): Promise<void> {
 const drawerStates = (page: Page): Promise<boolean[]> =>
   page.evaluate(() => window.__drawerStates ?? []);
 
+/**
+ * Is the drawer PERMANENT at this viewport rather than an overlay?
+ *
+ * `AppShell.vue` binds `:permanent="mdAndUp"`, and Vuetify's `md` starts at
+ * 960px. Where the drawer is permanent the nav is already on screen, so there is
+ * nothing to reveal and `shouldPeekDrawer` returns false — every peek assertion
+ * below is therefore a claim about the temporary drawer and has to say so.
+ *
+ * This became load-bearing the day a desktop project was added to the config.
+ * Before that every project was under 960px and the distinction could not be
+ * observed, which is precisely why it went untested for so long.
+ */
+const hasPermanentDrawer = (page: Page): boolean => (page.viewportSize()?.width ?? 0) >= 960;
+
 // Wait for the automatic peek to run its course: closed (no drawer yet), open,
 // closed again. Every assertion after this one is about a settled drawer.
+//
+// Where the drawer is permanent there is no peek to wait for, and asserting one
+// happened anyway would be asserting a bug. What is checked instead is the other
+// half of the same rule: the nav is simply there, and it never moved on its own.
 async function expectPeekCompleted(page: Page, label: string): Promise<void> {
+  if (hasPermanentDrawer(page)) {
+    await expect(drawer(page), `${label}: a permanent drawer should be on screen`).toBeVisible();
+    await expect(drawer(page)).toHaveClass(DRAWER_OPEN);
+    // Never an overlay, so never a scrim over the page behind it.
+    await expect(drawerScrim(page)).toHaveCount(0);
+    // Asserted as "opened once and never closed" rather than as an exact
+    // history, because the recorder starts before the app does: whether a
+    // leading `false` is captured depends on how much of the shell exists at
+    // the first observation, and that is a race rather than a claim. What is a
+    // claim is that once the drawer is there it stays — a permanent drawer that
+    // closed by itself would have hidden the nav.
+    const states = await drawerStates(page);
+    const opened = states.indexOf(true);
+    expect(opened, `${label}: the permanent drawer never appeared (${states.join(',')})`).toBeGreaterThanOrEqual(0);
+    expect(
+      states.slice(opened),
+      `${label}: a permanent drawer must not peek — it is already open, and closing it would hide the nav`,
+    ).toEqual([true]);
+    return;
+  }
   await expect
     .poll(() => drawerStates(page), {
       message: `${label}: the drawer should open by itself on load and then close by itself`,
@@ -248,6 +286,15 @@ for (const theme of THEMES) {
       // Nothing in this test clicks, taps, or types: the drawer opens and closes
       // entirely on its own.
       await expectPeekCompleted(page, `peek ${theme}`);
+      if (hasPermanentDrawer(page)) {
+        // Everything below this point is about a drawer that opens and closes.
+        // A permanent one does neither — it IS the nav, always on screen — so
+        // there is no peek to have happened, no icon to reopen it with, and no
+        // route change that could replay it. `expectPeekCompleted` has already
+        // asserted the whole of what this test can mean at this width.
+        await expectNoOverflow(page, `app shell permanent drawer ${theme}`);
+        return;
+      }
       await expect(nav).not.toHaveClass(DRAWER_OPEN);
       await expect(drawerScrim(page)).toHaveCount(0);
 
@@ -289,11 +336,37 @@ for (const theme of THEMES) {
       // on: sit out the whole window in which a peek would have happened.
       await page.waitForTimeout(DRAWER_PEEK_MS * 2);
 
-      expect(await drawerStates(page), 'the drawer must never open by itself').toEqual([false]);
-      await expect(drawer(page)).not.toHaveClass(DRAWER_OPEN);
+      // A permanent drawer starts open and stays open; a temporary one must not
+      // move at all. Either way the claim is that nothing MOVED on its own —
+      // which for the permanent case means it never closed, and for the
+      // temporary case means it never opened. The preference is about
+      // unrequested motion, and a drawer that was already on screen has none to
+      // make.
+      const states = await drawerStates(page);
+      if (hasPermanentDrawer(page)) {
+        const opened = states.indexOf(true);
+        expect(opened, `the permanent drawer never appeared (${states.join(',')})`).toBeGreaterThanOrEqual(0);
+        expect(states.slice(opened), 'the drawer closed by itself and took the nav with it').toEqual([
+          true,
+        ]);
+        await expect(drawer(page)).toHaveClass(DRAWER_OPEN);
+      } else {
+        expect(states, 'the drawer must never open by itself').toEqual([false]);
+        await expect(drawer(page)).not.toHaveClass(DRAWER_OPEN);
+      }
       await expect(drawerScrim(page)).toHaveCount(0);
       await expectNoOverflow(page, `app shell reduced-motion ${theme}`);
 
+      if (hasPermanentDrawer(page)) {
+        // There is no icon to press, and that is right rather than a gap: the
+        // shell binds it `v-if="!mdAndUp"`, because a button that toggles a
+        // drawer which cannot be closed is a control with nothing to do. The
+        // nav is reachable without one — which is the actual thing worth
+        // asserting, and the reason the missing button is not a regression.
+        await expect(page.locator('.v-app-bar-nav-icon')).toHaveCount(0);
+        await expect(drawer(page).getByRole('link', { name: 'Вишлист' })).toBeVisible();
+        return;
+      }
       // The nav still works, it just waits to be asked.
       await page.locator('.v-app-bar-nav-icon').click();
       await expect(drawer(page)).toHaveClass(DRAWER_OPEN);

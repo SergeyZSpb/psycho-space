@@ -637,6 +637,34 @@ func TestVanyagotchiPetRoutesRejectAnUnapprovedAccount(t *testing.T) {
 	}
 }
 
+// TestVanyagotchiActionRouteIsGone pins the ABSENCE of the HTTP verb route.
+//
+// A verb travels over the socket now (ADR-043) and the route that used to carry
+// one is deleted. This is the same shape of test the `/api/game/*` alias removal
+// left behind, and it exists because deleting something is not self-proving:
+// nothing else in the suite fails if a future change quietly re-registers it,
+// and a second way to press a button is exactly what the no-legacy rule forbids.
+//
+// IT HAS TO BE AUTHENTICATED, and that is the whole subtlety. The route group
+// carries `requireAuth` as group middleware, so chi runs the middleware before
+// it discovers there is no route — which means an anonymous request to a path
+// that never existed and one to a path just deleted BOTH answer 401,
+// indistinguishably. Only an approved caller gets far enough to be told 404. A
+// version of this test without a session would pass against a fully restored
+// route and prove nothing at all.
+func TestVanyagotchiActionRouteIsGone(t *testing.T) {
+	app, _ := petApp(t)
+	cli := loginAs(t, app.URL, "7233", "user")
+
+	for _, verb := range []string{gamevanyagotchi.ActionDrink, gamevanyagotchi.ActionRelieve} {
+		url := app.URL + "/api/game-vanyagotchi/actions/" + verb
+		s, body := doJSON(t, cli, http.MethodPost, url, nil)
+		if s != http.StatusNotFound {
+			t.Fatalf("POST %s: status=%d body=%v; want 404 — the verb route is deleted and nothing may bring it back", url, s, body)
+		}
+	}
+}
+
 // TestVanyagotchiPetConfigServesTheWholeCatalogue confirms the client can render
 // the game knowing nothing but this response.
 //
