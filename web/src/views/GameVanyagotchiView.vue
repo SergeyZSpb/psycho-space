@@ -3,20 +3,75 @@
     :class="phase === 'intro' || phase === 'play' ? 'pa-0 play-root' : 'py-4'"
     style="max-width: 900px"
   >
-    <!-- Intro / start screen. Same shape as the first game's splash: everything
-         is fixed-size except the artwork, so the title, the CTA and the
-         disclaimer can never be the thing that gets clipped. -->
+    <!-- Intro / start screen — the RULES CHEATSHEET.
+         Everything outside `.splash-scroll` is fixed-size, so the title, the CTA
+         and the disclaimer can never be the thing that gets clipped; the
+         cheatsheet in the middle is the one child that takes the slack and, on a
+         short phone, scrolls INSIDE ITSELF. The page itself still never scrolls,
+         which is the layout rule this screen shares with the yard.
+         Not one sentence in here is assembled by the template: the stat and
+         action rows come out of buildRules() so that retuning a number in
+         internal/gamevanyagotchi/content.go changes what the player is told with
+         no edit to this file. The prose block is the exception, and says so. -->
     <div v-if="phase === 'intro'" class="splash">
       <div class="splash-emoji">🫃</div>
       <h1 class="splash-title">Ванягоччи</h1>
-      <p class="splash-lore">
-        Ваня — офигенный чел. Он любит пиво, но постоянно теряет ключи, что их
-        приходится искать. В этой игре каждый может почувствовать себя Ваней.
-      </p>
-      <p class="splash-intro">
-        Общий двор. Все Вани стоят на одной поляне — тапни, чтобы дойти туда,
-        куда хочешь. Остальные видят тебя, ты видишь их.
-      </p>
+
+      <div class="splash-scroll" data-test="rules">
+        <p class="splash-lore">
+          Ваня — офигенный чел. Он любит пиво, но постоянно теряет ключи, что их
+          приходится искать. В этой игре каждый может почувствовать себя Ваней.
+        </p>
+
+        <!-- Derived from GET /api/game-vanyagotchi/config. Absent, rather than
+             empty, when the catalogue did not arrive — see loadConfig. -->
+        <section v-if="rules.stats.length" class="rules" data-test="rules-stats">
+          <h2 class="rules-head">Тикает само</h2>
+          <div
+            v-for="stat in rules.stats"
+            :key="stat.key"
+            class="rule"
+            :data-test="`rule-stat-${stat.key}`"
+          >
+            <span class="rule-emoji" aria-hidden="true">{{ stat.emoji }}</span>
+            <div class="rule-body">
+              <p class="rule-line">
+                <span class="rule-label">{{ stat.label }}</span>
+                <span class="rule-main">{{ stat.drift }}</span>
+              </p>
+              <p v-for="note in stat.notes" :key="note" class="rule-note">{{ note }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="rules.actions.length" class="rules" data-test="rules-actions">
+          <h2 class="rules-head">Жмёшь ты</h2>
+          <div
+            v-for="action in rules.actions"
+            :key="action.key"
+            class="rule"
+            :data-test="`rule-action-${action.key}`"
+          >
+            <span class="rule-emoji" aria-hidden="true">{{ action.emoji }}</span>
+            <div class="rule-body">
+              <p class="rule-line">
+                <span class="rule-label">{{ action.label }}</span>
+                <span class="rule-main">{{ action.effects }}</span>
+              </p>
+              <p v-for="note in action.notes" :key="note" class="rule-note">{{ note }}</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- The hardcoded half: what the server does not put on the wire. The
+             comment on YARD_PROSE names it as the part a rules change has to
+             come back and edit by hand. -->
+        <section class="rules" data-test="rules-prose">
+          <h2 class="rules-head">Двор</h2>
+          <p v-for="line in YARD_PROSE" :key="line" class="rule-prose">{{ line }}</p>
+        </section>
+      </div>
+
       <v-btn color="primary" size="large" class="splash-cta" @click="enterYard">
         Во двор
       </v-btn>
@@ -160,6 +215,7 @@ import {
   type PeerAppearance,
 } from '../lib/vanyagotchiPlane';
 import { decayedValue, inTrouble, skewMs, statFraction } from '../lib/vanyagotchiPet';
+import { YARD_PROSE, buildRules } from '../lib/vanyagotchiRules';
 import { gameVanyagotchiApi } from '../api/endpoints';
 import type { VanyagotchiAction, VanyagotchiConfig, VanyagotchiState } from '../api/types';
 import { ApiError } from '../api/client';
@@ -205,6 +261,16 @@ const errorStore = useErrorStore();
 // ---------------------------------------------------------------------------
 
 const config = ref<VanyagotchiConfig | null>(null);
+/**
+ * The splash cheatsheet, rebuilt whenever the catalogue arrives.
+ *
+ * A computed rather than a snapshot taken at mount, because the config is
+ * fetched asynchronously and is allowed to fail: the rows appear when it lands
+ * and stay absent when it does not, leaving the hardcoded prose on its own. The
+ * derivation itself is pure and lives in `buildRules` — the template renders
+ * rows and never assembles a sentence.
+ */
+const rules = computed(() => buildRules(config.value));
 const petState = ref<VanyagotchiState | null>(null);
 const acting = ref(false);
 /** The line under the bars — what just happened, or that he is dead. */
@@ -295,6 +361,30 @@ async function loadPet(): Promise<void> {
     /* the yard still works; see above */
   }
 }
+
+/**
+ * Loads the catalogue on its own, for the splash.
+ *
+ * Separate from `loadPet` because the two reads are not alike. The catalogue is
+ * a pure, cacheable GET that describes the game, and the splash is now a rules
+ * cheatsheet built out of it, so it is needed BEFORE the player goes in. The
+ * state read is not pure at all — it creates the pet and can record a death
+ * (ADR-038) — so it stays behind the CTA, where the player has actually asked
+ * to play. Fetching both here would mint a Ваня for somebody who only opened
+ * the page.
+ *
+ * Quiet on failure for the same reason as `loadPet`: the cheatsheet loses its
+ * derived rows and keeps its prose, and the yard is unaffected.
+ */
+async function loadCatalogue(): Promise<void> {
+  if (config.value) return;
+  try {
+    config.value = await gameVanyagotchiApi.config();
+  } catch {
+    /* the splash falls back to YARD_PROSE alone; see above */
+  }
+}
+void loadCatalogue();
 
 /** Records a fresh state and re-measures the clock skew it was computed against. */
 function applyPetState(next: VanyagotchiState): void {
@@ -673,17 +763,89 @@ onBeforeUnmount(() => {
   font-weight: 800;
   letter-spacing: 0.5px;
 }
-/* The two prose blocks are the ONLY shrinkable children on this screen, and that
-   is deliberate: `overflow: hidden` on the splash means something has to give on
-   a short phone, and it must not be the call to action or the disclaimer. So
-   these two clip and everything else keeps its size. */
-.splash-lore,
-.splash-intro {
+/* The cheatsheet is the ONLY shrinkable child on this screen, and that is
+   deliberate: `overflow: hidden` on the splash means something has to give on a
+   short phone, and it must not be the call to action or the disclaimer. So the
+   rules take all the slack and scroll INSIDE THEMSELVES — the page still never
+   scrolls, which is the layout rule this screen shares with the yard.
+
+   `overscroll-behavior: contain` stops a flick at the end of the rules turning
+   into a pull on the page behind them, which on iOS is the difference between a
+   panel that scrolls and a screen that bounces. */
+.splash-scroll {
   flex: 0 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  max-width: 560px;
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.splash-lore,
+.splash-intro {
   max-width: 560px;
   line-height: 1.45;
+}
+
+/* The cheatsheet itself. One grid per row — emoji in a fixed gutter, everything
+   else in a column beside it — so the labels line up down the screen however
+   long a stat's name happens to be. */
+.rules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rules-head {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  opacity: 0.6;
+}
+.rule {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.rule-emoji {
+  font-size: 1rem;
+  line-height: 1.35;
+}
+.rule-body {
+  min-width: 0;
+}
+.rule-line {
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+.rule-label {
+  font-weight: 700;
+}
+.rule-label::after {
+  content: ' — ';
+  font-weight: 400;
+  opacity: 0.6;
+}
+.rule-main {
+  opacity: 0.95;
+}
+/* The consequences under a rule — the penalties that actually kill him, and the
+   one thing an action row has to warn about. Dimmer than the rule, but not so
+   dim that the causal half of the game reads as a footnote. */
+.rule-note {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  opacity: 0.78;
+}
+.rule-prose {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  opacity: 0.85;
 }
 .splash-lore {
   font-size: 0.95rem;

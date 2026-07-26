@@ -1044,4 +1044,95 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expectNoOverflow(page, 'vanyagotchi splash at 320x568');
     await expectNoVerticalScroll(page, 'vanyagotchi splash at 320x568');
   });
+
+  // -------------------------------------------------------------------------
+  // The splash is a RULES CHEATSHEET, and its point is that it cannot go stale.
+  // -------------------------------------------------------------------------
+
+  test('the splash teaches the rules it was served', async ({ page }) => {
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ hp: 65, beer: 60, bladder: 0 }),
+    });
+    await stubSocket(page);
+    await page.goto('/app/game-vanyagotchi');
+
+    const rules = page.locator('[data-test="rules"]');
+    await expect(rules).toBeVisible();
+
+    // A draining stat reads as falling and a FILLING one as rising, which is the
+    // sign flip between the catalogue's drain and what a player watches the bar
+    // do. Printed straight through, this would tell them the bladder empties
+    // itself and health climbs.
+    await expect(page.locator('[data-test="rule-stat-hp"]')).toContainText('старт 65, −1 в час');
+    await expect(page.locator('[data-test="rule-stat-bladder"]')).toContainText('старт 0, +5 в час');
+
+    // The causal half of the game: what actually kills him is neglect of the
+    // other two, and the cheatsheet has to say so or the bars are a mystery.
+    await expect(page.locator('[data-test="rule-stat-hp"]')).toContainText('ещё −6 в час, пока пиво ≤ 20');
+    await expect(page.locator('[data-test="rule-stat-hp"]')).toContainText(
+      'ещё −6 в час, пока мочевой пузырь ≥ 80',
+    );
+    await expect(page.locator('[data-test="rule-stat-hp"]')).toContainText('помер');
+
+    // Actions, with the reset idiom spelled out as the bound it lands on.
+    await expect(page.locator('[data-test="rule-action-drink"]')).toContainText('пиво +40');
+    await expect(page.locator('[data-test="rule-action-drink"]')).toContainText('поднимает мёртвого');
+    await expect(page.locator('[data-test="rule-action-relieve"]')).toContainText('мочевой пузырь → 0');
+    await expect(page.locator('[data-test="rule-action-relieve"]')).toContainText('мёртвому нельзя');
+
+    // And the part no catalogue carries.
+    await expect(page.locator('[data-test="rules-prose"]')).toContainText('пока вкладка закрыта');
+  });
+
+  test('a retuned catalogue retunes the cheatsheet with it', async ({ page }) => {
+    // THE assertion this screen exists for. The rules are DERIVED from the
+    // served catalogue rather than typed into the template, so moving a number
+    // in internal/gamevanyagotchi/content.go moves what the player is told with
+    // no client change at all. Nothing else here checks that: every other
+    // assertion would pass equally well against a hand-written cheatsheet, and
+    // a hand-written one would be wrong the first afternoon somebody retuned a
+    // constant — silently, because nothing compares the two.
+    await stubBackend(page, {
+      config: catalogueOf(
+        [
+          { ...HP, start: 42, decay_per_hour: 9, penalties: [] },
+          { ...BEER, label: 'самогон' },
+          BLADDER,
+        ],
+        [{ ...DRINK, effects: [{ stat_key: 'beer', delta: 7 }] }],
+      ),
+      state: () => stateOf({ hp: 42, beer: 60, bladder: 0 }),
+    });
+    await stubSocket(page);
+    await page.goto('/app/game-vanyagotchi');
+
+    await expect(page.locator('[data-test="rule-stat-hp"]')).toContainText('старт 42, −9 в час');
+    await expect(page.locator('[data-test="rule-action-drink"]')).toContainText('самогон +7');
+    // The shipped numbers are gone, so this is the cheatsheet reading its input
+    // rather than reciting what happens to be true today.
+    await expect(page.locator('[data-test="rule-stat-hp"]')).not.toContainText('старт 65');
+    await expect(page.locator('[data-test="rule-action-drink"]')).not.toContainText('+40');
+  });
+
+  test('a catalogue that never arrives costs the derived rows and nothing else', async ({
+    page,
+  }) => {
+    // The config fetch is deliberately allowed to fail — the yard runs on the
+    // socket — so the splash must degrade to the prose rather than render an
+    // empty box or refuse to open.
+    await stubBackend(page, {
+      config: 'fail',
+      state: () => stateOf({ hp: 65, beer: 60, bladder: 0 }),
+    });
+    await stubSocket(page);
+    await page.goto('/app/game-vanyagotchi');
+
+    await expect(page.locator('[data-test="rules-prose"]')).toBeVisible();
+    await expect(page.locator('[data-test="rules-stats"]')).toHaveCount(0);
+    await expect(page.locator('[data-test="rules-actions"]')).toHaveCount(0);
+    // Still playable: the CTA is what matters and it is still there.
+    await expect(page.getByRole('button', { name: 'Во двор' })).toBeVisible();
+    await expectNoOverflow(page, 'vanyagotchi splash with no catalogue');
+  });
 });

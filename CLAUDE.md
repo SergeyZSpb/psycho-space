@@ -87,6 +87,17 @@ Each game is its own module: its own package, tables, routes and views. **No gam
 
 **Reasoning for all of the above lives in `docs/ARCHITECTURE.md` §8 — [ADR-028](docs/ARCHITECTURE.md) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared).** Read those before arguing with this rule; they are settled and are not to be relitigated by editing them.
 
+### A game states its rules on its own splash screen
+
+**Every game's splash screen carries a cheatsheet of that game's current rules** — what the player needs in order to play, on one screen, before they start. Not flavour text and not a vague description of the idea: the actual numbers and the actual consequences. What drains, what fixes it, what kills you, what the controls are, what happens while you are away.
+
+This exists because the audience is a handful of friends who will open the thing once, on a phone, with no intention of reading anything else. A rule that is only in `content.go` is a rule nobody playing the game knows.
+
+- **Derive it from the served catalogue wherever the catalogue carries it.** `GET /api/game-<name>/config` already publishes stats, their rates and penalties, and actions with their effects. Generate those lines from the config rather than typing the numbers out, so retuning a constant updates the cheatsheet by itself. A hand-typed number is a number that goes stale the first time somebody changes it.
+- **What genuinely cannot be derived is hardcoded prose, and it is marked** with a comment saying so, because that is the part a rules change has to come back and edit by hand.
+- **Generate the lines in a pure, unit-tested helper**, not in the template — the same rule the rest of the SPA follows.
+- **Keeping it current is part of the task, not a follow-up.** A change to a game's rules — a new stat, a retuned constant, a new action, a new way to die — updates the splash cheatsheet **in the same change**, and *Task workflow* step 7 makes it a gate. A cheatsheet that describes the previous version of the game is worse than none, because a player will believe it.
+
 ## Conventions
 
 **Go / service design**
@@ -187,6 +198,7 @@ The full-stack e2e suite needs none of this: `scripts/e2e-stack.sh` generates th
 - **New docs: mandatory.** No doc is created without one.
 - **Existing docs: add on touch.** Editing an older doc that lacks one? Add it in that edit. Don't retrofit docs you aren't otherwise touching.
 - **Keep it current.** Update it in the same commit that changes the doc, so `status` / `next` / `done` never lie. **A stale block is worse than none** — it will be believed.
+- **When it grows into a history, rewrite it as a snapshot.** A `status:` field that has been appended to for a dozen iterations stops being orientation and becomes a chronicle — *then we did I6, then I6b, then I7a* — and a block that long is a block nobody reads, which costs more than a short one that omits something. So when the historical narrative gets large, **replace it with a current-state description: what the thing IS now, not how it got here.** Git already holds the history perfectly, and far better than a paragraph does. Rewriting is not the same as deleting a fact that still matters — a constraint or a decision that still binds stays, it just stops being narrated in the order it happened. This is the one part of a doc where **overwriting is correct**, and the contrast with `docs/adrs/` is deliberate: a decision record is immutable because it says what was decided and why, while a continuation block is a cache of the present and is expected to be replaced.
 - **Scope:** every markdown doc in this repo (`docs/*`, `README.md` where useful) and the owner's local living-doc set.
 
 Canonical shape:
@@ -254,7 +266,7 @@ Applies to each work item — and separately to **each iteration** of a larger o
    - **Read the job output, don't just accept the green tick.** Open the run's **job summary** and check the test + coverage table each workflow publishes: per-suite pass/fail/skip counts and coverage percentages. Confirm the numbers moved the way your change should have moved them — a suite that silently ran **zero** tests is green and worthless, and coverage that fell where you added code means the test you wrote isn't exercising it. `gh run view <run-id>` lists the jobs; `gh run view <run-id> --log-failed` gets straight to a failure.
    - **Check no secrets were printed:** `./scripts/ci-check-secrets.sh <run-id>` (zero-arg = latest run). **The logs of this repository are public.** See *Never print a secret in CI* below.
    - **Verify the behaviour in production** — the health check plus whatever you actually changed.
-7. **Write back — the docs are part of the change, not a follow-up.** In the same commit: `docs/ARCHITECTURE.md` if you touched the structure (a package, a route group, a table, a runtime flow); a **new numbered record** appended to `docs/ARCHITECTURE.md` §8 **only** if you made an *architectural* decision — one that shapes deployment, data, a component boundary, or the cost of a whole class of change — whose reasoning is not recoverable from the diff; a tuning constant, a UI behaviour or a test-harness fix gets a code comment instead, and a revisited decision gets a record that supersedes or amends the old one, never an edit to an existing record; `docs/RUNBOOK.md` if you worked out an operational or debugging procedure, or if you changed behaviour it describes; this file if a convention changed; and the living doc for durable project state. Each doc's `## LLM Continuation Context` block is updated with it — a stale block is worse than none. Docs that contradict the code are a defect owned by the change that caused them.
+7. **Write back — the docs are part of the change, not a follow-up.** In the same commit: `docs/ARCHITECTURE.md` if you touched the structure (a package, a route group, a table, a runtime flow); a **new numbered record** appended to `docs/ARCHITECTURE.md` §8 **only** if you made an *architectural* decision — one that shapes deployment, data, a component boundary, or the cost of a whole class of change — whose reasoning is not recoverable from the diff; a tuning constant, a UI behaviour or a test-harness fix gets a code comment instead, and a revisited decision gets a record that supersedes or amends the old one, never an edit to an existing record; `docs/RUNBOOK.md` if you worked out an operational or debugging procedure, or if you changed behaviour it describes; **the game's own splash-screen rules cheatsheet if you changed how that game plays** (see *A game states its rules on its own splash screen* — the player-facing rules are a doc, and this is the step that keeps them true); this file if a convention changed; and the living doc for durable project state. Each doc's `## LLM Continuation Context` block is updated with it — a stale block is worse than none, and one that has grown into a history gets **rewritten as a current-state snapshot** rather than appended to. Docs that contradict the code are a defect owned by the change that caused them.
 
 **CI vs deploy:** `main` = `deploy.yml` (lint · unit · web · e2e · integration · full-stack e2e, then auto-deploy over SSH) — the normal path. Both workflows publish a test + coverage summary to the run's job summary and upload the Playwright videos. Any non-`main` branch/PR = `ci.yml` (same tests, no deploy) — only if you deliberately want to stage something before it deploys.
 
@@ -272,6 +284,7 @@ Close a work item with a compact checklist — mark each **✅ done · ⏭️ sk
 | CI logs scanned for leaked secrets (`./scripts/ci-check-secrets.sh`) | |
 | Behaviour verified in production | |
 | Docs synced — `ARCHITECTURE.md` (structure + any new §8 record) / `RUNBOOK.md` as applicable, each with its continuation block | |
+| Game rules changed? — the game's splash-screen cheatsheet updated with them | |
 | Living doc current to as-built; LLM-continuation block updated | |
 | Secrets/PII posture respected — nothing sensitive committed | |
 

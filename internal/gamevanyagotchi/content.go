@@ -521,9 +521,15 @@ var catalogue = Config{
 			Gradient: "linear-gradient(160deg, #d8b08c, #6b4a2f)",
 		},
 		{
-			Key:      "npc_67man",
-			Label:    "Сиксти Севен Мэн",
-			Emoji:    "🏀",
+			Key:   "npc_67man",
+			Label: "Сиксти Севен Мэн",
+			// Not an emoji, and that is allowed on purpose: the field is a short
+			// string the client centres inside the entity's own circular dot, so
+			// "67" renders as the roundel the character is named after. Nothing
+			// downstream assumes a single glyph — `resolveArt` hands the string
+			// through untouched — which is what makes a text badge available as
+			// art without a sprite, an upload or a schema change.
+			Emoji:    "67",
 			Gradient: "linear-gradient(160deg, #e0762b, #6d2f0c)",
 		},
 	},
