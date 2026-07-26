@@ -760,6 +760,27 @@ func TestEveryActionRestampsEveryStatAtOneInstant(t *testing.T) {
 			if stamp.Before(before) || stamp.After(after) {
 				t.Errorf("the shared as_of is %v; want the instant of the action, within [%v, %v]", stamp, before, after)
 			}
+			// A verb that STARTS HIM OVER is judged on different values, because
+			// "the stats it does not name" is all of them: a reset ignores the
+			// deltas entirely and writes each ordinary stat back to its catalogue
+			// Start, while a lifetime tally keeps the number it had. Asserting the
+			// decayed value here would be asserting the behaviour this verb exists
+			// to not have — and the shared instant above is only half of what a
+			// resetting write has to get right, which is why the batch is checked
+			// rather than the response.
+			if action.StartsOver {
+				for _, def := range Content().Stats {
+					stored := rowOf(t, batch, def.Key)
+					if def.Counter {
+						nearlyStat(t, stored.Value, def.Min+(def.Max-def.Min)/2,
+							def.Key+", a lifetime tally, carried through "+action.Key+" untouched")
+						continue
+					}
+					nearlyStat(t, stored.Value, def.Clamp(def.Start),
+						def.Key+" put back to its catalogue start by "+action.Key)
+				}
+				return
+			}
 			// Including the ones this verb has nothing to do with: a stat with no
 			// effect is re-stamped at its DECAYED value, not left where it was.
 			for _, def := range Content().Stats {
@@ -902,14 +923,14 @@ func TestADeathIsRecordedOnceAtTheMomentItHappened(t *testing.T) {
 // catalogue.
 //
 // Death here is a fright rather than an ending — an irreversible loss in a
-// fifteen-person friend group is how a player leaves for good — so beer brings
-// him round and what a death costs is the scare plus whatever decayed while
-// nobody was looking. The refusal is the other half and it is not decoration: a
-// dead Ваня does not go to the toilet, which is what makes ErrPetDead, the
-// «он не встаёт» it becomes over his head, and the screen that says what to do
-// instead all real rather than theoretical. A refusal must also write nothing at
-// all, or a corpse would keep having its stats re-stamped by a verb it just
-// declined.
+// fifteen-person friend group is how a player leaves for good — so there is a
+// verb that brings him round, and what a death costs is the scare plus whatever
+// decayed while nobody was looking. The refusal is the other half and it is not
+// decoration: a dead Ваня does not go to the toilet and does not have a beer,
+// which is what makes ErrPetDead, the «он не встаёт» it becomes over his head,
+// and the screen that says what to do instead all real rather than theoretical.
+// A refusal must also write nothing at all, or a corpse would keep having its
+// stats re-stamped by a verb it just declined.
 func TestADeadPetTakesTheActionThatRevivesAndRefusesTheOneThatDoesNot(t *testing.T) {
 	hpDef := mustStat(t, StatHP)
 
@@ -958,6 +979,29 @@ func TestADeadPetTakesTheActionThatRevivesAndRefusesTheOneThatDoesNot(t *testing
 			if repo.pet.DiedAt != nil {
 				t.Errorf("the death is still stored after a revive: %v", repo.pet.DiedAt)
 			}
+			// What "brought round" means depends on how the verb does it. A
+			// resetting one hands back a NEW Ваня — every ordinary stat on its
+			// catalogue start — which is also what lifts the fatal one off its
+			// floor, since a start sitting ON the floor would leave him dead again
+			// on the very next read. A delta-shaped revival, which no shipped verb
+			// is any more, lands on the floor plus whatever it adds.
+			//
+			// The counters are not asserted here: this fixture never gave them a
+			// tally to keep, so 0 and 0 would agree whatever the reset did with
+			// them. That property is pinned where it can fail, against a pet that
+			// has actually drunk something — see the reset tests in event_test.go
+			// and the batch this action wrote in
+			// TestEveryActionRestampsEveryStatAtOneInstant.
+			if action.StartsOver {
+				for _, def := range Content().Stats {
+					if def.Counter {
+						continue
+					}
+					nearlyStat(t, statOf(t, st, def.Key).Value, def.Clamp(def.Start),
+						def.Key+" after "+action.Key+" started him over")
+				}
+				return
+			}
 			nearlyStat(t, statOf(t, st, StatHP).Value,
 				hpDef.Clamp(hpDef.Min+effectOn(action, StatHP)), "hp after being brought round")
 		})
@@ -968,54 +1012,6 @@ func TestADeadPetTakesTheActionThatRevivesAndRefusesTheOneThatDoesNot(t *testing
 	// content; this asserts it about what actually ran here.
 	if revived == 0 || refused == 0 {
 		t.Fatalf("%d actions revived and %d were refused; the guard needs both to be reachable", revived, refused)
-	}
-}
-
-// TestARevivalNeedsTheActionToLiftHimOffTheFloor covers the second condition on
-// the way back.
-//
-// Being ALLOWED on a corpse and actually reviving one are different things: an
-// action permitted on a dead pet that failed to move the stat which killed him
-// has not brought anybody round, and clearing died_at anyway would leave a pet
-// reported alive whose health is still zero — dead again on the very next read,
-// with the recorded moment of death now a lie.
-//
-// The guard is exercised directly rather than through Do, and deliberately not
-// by adding a catalogue entry that exists only for tests: content.go is
-// production content. Whether the shipped numbers can reach this branch end to
-// end is a separate question, and it is asked below rather than assumed.
-func TestARevivalNeedsTheActionToLiftHimOffTheFloor(t *testing.T) {
-	hpDef := mustStat(t, StatHP)
-
-	if revives([]StatRow{{Key: StatHP, Value: hpDef.Min}}) {
-		t.Error("rows leaving the fatal stat on its floor were treated as a revival")
-	}
-	if !revives([]StatRow{{Key: StatHP, Value: hpDef.Min + 1}}) {
-		t.Error("rows lifting the fatal stat off its floor were not treated as a revival")
-	}
-	// A non-fatal stat on its floor is not a death and must not block one being
-	// undone — the bladder sits on its floor every time he relieves himself.
-	if !revives([]StatRow{{Key: StatBladder, Value: mustStat(t, StatBladder).Min}, {Key: StatHP, Value: hpDef.Min + 1}}) {
-		t.Error("a non-fatal stat resting on its floor was mistaken for a death")
-	}
-	// A key the catalogue no longer defines cannot decide the question either
-	// way: it is unrenderable, so it is ignored, the same rule the read path uses.
-	if !revives([]StatRow{{Key: "mood", Value: 0}}) {
-		t.Error("a stored row the catalogue does not define blocked a revival")
-	}
-
-	// Reachability, stated rather than assumed. With the shipped numbers every
-	// reviving action raises hp well clear of its floor, so Do's `revives`
-	// refusal cannot currently be produced end to end; the guard is unit-tested
-	// above instead of being faked with test-only content.
-	for _, a := range Content().Actions {
-		if !a.RevivesFatal {
-			continue
-		}
-		if hpDef.Clamp(hpDef.Min+effectOn(a, StatHP)) <= hpDef.Min {
-			t.Logf("%q revives but lifts hp to %v, so Do's `revives` refusal is now reachable end to end and deserves a service-level test",
-				a.Key, hpDef.Clamp(hpDef.Min+effectOn(a, StatHP)))
-		}
 	}
 }
 

@@ -461,6 +461,19 @@ func petAction(t *testing.T, key string) gamevanyagotchi.Action {
 	return a
 }
 
+// petEffectOn is what one action moves one stat by, zero if it does not touch
+// it. Summed rather than found, because nothing stops a verb naming a stat
+// twice and the effects are applied in order.
+func petEffectOn(a gamevanyagotchi.Action, statKey string) float64 {
+	var delta float64
+	for _, e := range a.Effects {
+		if e.StatKey == statKey {
+			delta += e.Delta
+		}
+	}
+	return delta
+}
+
 // petClamp is the tests' own copy of the bounds check, so an expectation is
 // never computed by the code it is meant to hold to account.
 func petClamp(def gamevanyagotchi.Stat, v float64) float64 {
@@ -652,12 +665,21 @@ func TestVanyagotchiPetRoutesRejectAnUnapprovedAccount(t *testing.T) {
 // indistinguishably. Only an approved caller gets far enough to be told 404. A
 // version of this test without a session would pass against a fully restored
 // route and prove nothing at all.
+// EVERY VERB IN THE CATALOGUE, taken from the catalogue rather than listed. A
+// hand-written list is a list that goes stale the next time a verb is added —
+// «восстать из мертвых» was added and the list did not grow — and a route that
+// answered for exactly the verb nobody remembered to name is the whole failure
+// this test exists to prevent.
 func TestVanyagotchiActionRouteIsGone(t *testing.T) {
 	app, _ := petApp(t)
 	cli := loginAs(t, app.URL, "7233", "user")
 
-	for _, verb := range []string{gamevanyagotchi.ActionDrink, gamevanyagotchi.ActionRelieve} {
-		url := app.URL + "/api/game-vanyagotchi/actions/" + verb
+	actions := gamevanyagotchi.Content().Actions
+	if len(actions) == 0 {
+		t.Fatal("the catalogue has no actions, so this test asserts nothing about the deleted route")
+	}
+	for _, action := range actions {
+		url := app.URL + "/api/game-vanyagotchi/actions/" + action.Key
 		s, body := doJSON(t, cli, http.MethodPost, url, nil)
 		if s != http.StatusNotFound {
 			t.Fatalf("POST %s: status=%d body=%v; want 404 — the verb route is deleted and nothing may bring it back", url, s, body)
@@ -689,16 +711,21 @@ func TestVanyagotchiPetConfigServesTheWholeCatalogue(t *testing.T) {
 		t.Fatalf("game_key = %v, want %q", cfg["game_key"], gamevanyagotchi.GameKey)
 	}
 
+	// The WHOLE catalogue, derived from the catalogue rather than named: a client
+	// resolves every key against this response, so a stat or a verb the endpoint
+	// leaves out is one the player has no way to see or press — and a hand-written
+	// list here would have gone on passing while the two lifetime tallies and the
+	// verb that undoes a death were missing from it.
 	stats := petKeys(t, cfg, "stats")
-	for _, want := range []string{gamevanyagotchi.StatHP, gamevanyagotchi.StatBeer, gamevanyagotchi.StatBladder} {
-		if !petHas(stats, want) {
-			t.Fatalf("stats = %v, want it to include %q", stats, want)
+	for _, def := range gamevanyagotchi.Stats() {
+		if !petHas(stats, def.Key) {
+			t.Fatalf("stats = %v, want it to include %q", stats, def.Key)
 		}
 	}
 	actions := petKeys(t, cfg, "actions")
-	for _, want := range []string{gamevanyagotchi.ActionDrink, gamevanyagotchi.ActionRelieve} {
-		if !petHas(actions, want) {
-			t.Fatalf("actions = %v, want it to include %q", actions, want)
+	for _, def := range gamevanyagotchi.Content().Actions {
+		if !petHas(actions, def.Key) {
+			t.Fatalf("actions = %v, want it to include %q", actions, def.Key)
 		}
 	}
 
@@ -1226,23 +1253,30 @@ func TestVanyagotchiPetRelieveEmptiesTheBladderAndRestampsEveryStat(t *testing.T
 	}
 }
 
-// TestVanyagotchiPetRelieveIsRefusedOnADeadPetAndDrinkIsNot pins the refusal
+// TestVanyagotchiPetEveryVerbButTheRevivalIsRefusedOnADeadPet pins the refusal
 // that makes death mean anything at all.
 //
-// A dead Ваня does not go to the toilet. Only a verb the catalogue marks as
-// reviving is allowed through, which is what turns "he is dead" from a label
-// into a state the player has to act their way out of — and it has to be a
-// refusal rather than a no-op, because a button that appears to work and changes
-// nothing is how a player concludes the game is broken. The refusal is an error
-// out of the one funnel every verb goes through; its player-facing form is a line
-// over his head rather than a status code — refusalLine turns ErrPetDead into
-// «он не встаёт», which is asserted in internal/gamevanyagotchi/service_test.go,
-// where the plane can actually be read. The refusal must also be total — no stat
-// may be re-stamped on the way out, since a rejected verb that silently reset the
-// clock would hand out free hours. Both halves of the guard are exercised in one
-// test on purpose: an implementation that refused everything would pass the first
-// half alone and leave the game unwinnable.
-func TestVanyagotchiPetRelieveIsRefusedOnADeadPetAndDrinkIsNot(t *testing.T) {
+// A dead Ваня does not go to the toilet, and — the part that changed — he does
+// not have a beer either. Drinking used to carry revives_fatal, which made dying
+// very nearly invisible: the verb a player presses anyway quietly undid it. Death
+// has a verb of its own now, and only the verb the catalogue marks as reviving is
+// allowed through, which is what turns "he is dead" from a label into a state the
+// player has to act their way out of. It has to be a refusal rather than a no-op,
+// because a button that appears to work and changes nothing is how a player
+// concludes the game is broken. The refusal is an error out of the one funnel
+// every verb goes through; its player-facing form is a line over his head rather
+// than a status code — refusalLine turns ErrPetDead into «он не встаёт», which is
+// asserted in internal/gamevanyagotchi/service_test.go, where the plane can
+// actually be read. The refusal must also be total — no stat may be re-stamped on
+// the way out, since a rejected verb that silently reset the clock would hand out
+// free hours. Both halves of the guard are exercised in one test on purpose: an
+// implementation that refused everything would pass the first half alone and
+// leave the game unwinnable.
+//
+// The refused verbs are taken from the catalogue rather than named, so a verb
+// that quietly acquires the flag fails here instead of reaching a player who
+// discovers that death has stopped costing anything.
+func TestVanyagotchiPetEveryVerbButTheRevivalIsRefusedOnADeadPet(t *testing.T) {
 	app, game := petApp(t)
 	cli := loginAs(t, app.URL, "7232", "user")
 
@@ -1253,11 +1287,16 @@ func TestVanyagotchiPetRelieveIsRefusedOnADeadPetAndDrinkIsNot(t *testing.T) {
 	id := petID(t, account)
 
 	hpDef := petStat(t, gamevanyagotchi.StatHP)
-	relieve := petAction(t, gamevanyagotchi.ActionRelieve)
-	drink := petAction(t, gamevanyagotchi.ActionDrink)
-	if relieve.RevivesFatal || !drink.RevivesFatal {
-		t.Fatalf("the catalogue says %s revives=%v and %s revives=%v; this test needs one of each",
-			relieve.Key, relieve.RevivesFatal, drink.Key, drink.RevivesFatal)
+	revive := petAction(t, gamevanyagotchi.ActionRevive)
+	if !revive.RevivesFatal {
+		t.Fatalf("the catalogue says %s revives=%v; there is no way back and this account is finished with the game", revive.Key, revive.RevivesFatal)
+	}
+	// Named outright because it is the specific thing that changed: if beer ever
+	// revives again the loop below would simply skip it, and this test would go
+	// green over exactly the regression it was rewritten for.
+	if drink := petAction(t, gamevanyagotchi.ActionDrink); drink.RevivesFatal {
+		t.Fatalf("%s revives a corpse again; a death is meant to cost a deliberate press of %s rather than being undone by the verb the player was pressing anyway",
+			drink.Key, revive.Key)
 	}
 
 	// Twice as long as it takes to die, so he is unambiguously gone.
@@ -1271,46 +1310,58 @@ func TestVanyagotchiPetRelieveIsRefusedOnADeadPetAndDrinkIsNot(t *testing.T) {
 	}
 	asOfBefore := petSharedAsOf(t, id)
 
-	if _, err := game.Do(context.Background(), account, []string{relieve.Key}, time.Now().UTC()); !errors.Is(err, gamevanyagotchi.ErrPetDead) {
-		t.Fatalf("%s on a dead pet: err=%v; want ErrPetDead", relieve.Key, err)
+	refused := 0
+	for _, action := range gamevanyagotchi.Content().Actions {
+		if action.RevivesFatal {
+			continue
+		}
+		refused++
+		if _, err := game.Do(context.Background(), account, []string{action.Key}, time.Now().UTC()); !errors.Is(err, gamevanyagotchi.ErrPetDead) {
+			t.Fatalf("%s on a dead pet: err=%v; want ErrPetDead", action.Key, err)
+		}
+		if at := petDiedAt(t, id); at == nil || !at.Equal(*died) {
+			t.Fatalf("died_at = %v after a refused %s, want the recorded %v — a refusal must not touch the pet", at, action.Key, died)
+		}
+		if at := petSharedAsOf(t, id); !at.Equal(asOfBefore) {
+			t.Fatalf("the stats were re-stamped from %s to %s by a refused %s — a rejected action must write nothing at all",
+				asOfBefore.UTC(), at.UTC(), action.Key)
+		}
 	}
-	if at := petDiedAt(t, id); at == nil || !at.Equal(*died) {
-		t.Fatalf("died_at = %v after a refused %s, want the recorded %v — a refusal must not touch the pet", at, relieve.Key, died)
-	}
-	if at := petSharedAsOf(t, id); !at.Equal(asOfBefore) {
-		t.Fatalf("the stats were re-stamped from %s to %s by a refused %s — a rejected action must write nothing at all",
-			asOfBefore.UTC(), at.UTC(), relieve.Key)
+	if refused == 0 {
+		t.Fatal("every verb in the catalogue revives, so ErrPetDead is unreachable and death costs nothing")
 	}
 
 	// Back to back with no wait, which is legal precisely BECAUSE Do carries no
 	// rate limit of its own: through handleVerbs the second press would be dropped
 	// by verbInterval, and that bound belongs to the plane in memory rather than to
 	// the pet in Postgres.
-	state := petDo(t, game, account, drink.Key)
+	state := petDo(t, game, account, revive.Key)
 	if !state.Alive {
-		t.Fatalf("alive = %v after a %s, want true", state.Alive, drink.Key)
+		t.Fatalf("alive = %v after a %s, want true", state.Alive, revive.Key)
 	}
 	if hp := petValue(t, state, hpDef.Key); hp <= hpDef.Min {
-		t.Fatalf("hp = %.4f after a %s, want above the fatal floor %.1f", hp, drink.Key, hpDef.Min)
+		t.Fatalf("hp = %.4f after a %s, want above the fatal floor %.1f", hp, revive.Key, hpDef.Min)
 	}
 	if at := petDiedAt(t, id); at != nil {
 		t.Fatalf("stored died_at = %v after a revive, want NULL — a stale record would re-kill him on the next read", at)
 	}
 }
 
-// TestVanyagotchiPetDrinkRevivesADeadPetAndClampsAtTheMaximum confirms death is
-// a fright rather than an ending, and that the cure cannot overshoot.
+// TestVanyagotchiPetDrinkClampsAtTheMaximum confirms the cure cannot overshoot.
 //
-// Both halves matter. Reviving is a deliberate design decision — an irreversible
-// loss in a friend group is how a player leaves for good — so the verb that
-// tops him up is also the way back, and the death record has to be cleared
-// rather than merely ignored, otherwise every later read would rediscover a
-// death that is over. Clamping matters because an action is the only thing that
-// ever raises a stat: an unclamped one would park health above its ceiling and
-// buy hours of invulnerability the catalogue never granted. The same loop proves
-// the clamp in both directions of usefulness, because the drink that fills him
-// up also fills his bladder — a stat whose ceiling is the bad end of its scale.
-func TestVanyagotchiPetDrinkRevivesADeadPetAndClampsAtTheMaximum(t *testing.T) {
+// An action is the only thing that ever raises a stat, so an unclamped one would
+// park health above its ceiling and buy hours of invulnerability the catalogue
+// never granted. The same loop proves the clamp in both directions of usefulness,
+// because the drink that fills him up also fills his bladder — a stat whose
+// ceiling is the bad end of its scale.
+//
+// It used to start by killing him, back when beer was also the way out of a
+// death. That half now belongs to the verb that owns it and is asserted in
+// TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies; what is left
+// here is the clamp alone, on a pet who is merely run down rather than gone —
+// which is also the state in which a drink is a visible change rather than a
+// no-op against a ceiling.
+func TestVanyagotchiPetDrinkClampsAtTheMaximum(t *testing.T) {
 	app, game := petApp(t)
 	cli := loginAs(t, app.URL, "7207", "user")
 
@@ -1323,20 +1374,14 @@ func TestVanyagotchiPetDrinkRevivesADeadPetAndClampsAtTheMaximum(t *testing.T) {
 	bladderDef := petStat(t, gamevanyagotchi.StatBladder)
 	drink := petAction(t, gamevanyagotchi.ActionDrink)
 
-	petBackdateAll(t, id, petHours(2*petFatalHours(t, hpDef)))
-	if s, state := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK || state["alive"] != false {
-		t.Fatalf("state before drinking: status=%d alive=%v; want 200 and dead", s, state["alive"])
-	}
+	// Half way to the grave rather than a fixed number of hours, so he is
+	// reliably still alive to do the drinking and reliably far enough down that
+	// reaching the ceiling takes several rounds.
+	petBackdateAll(t, id, petHours(petFatalHours(t, hpDef)/2))
 
 	state := petDo(t, game, account, drink.Key)
 	if !state.Alive {
 		t.Fatalf("alive = %v after a %s, want true", state.Alive, drink.Key)
-	}
-	if hp := petValue(t, state, hpDef.Key); hp <= hpDef.Min {
-		t.Fatalf("hp = %.4f after a %s, want above the fatal floor %.1f", hp, drink.Key, hpDef.Min)
-	}
-	if at := petDiedAt(t, id); at != nil {
-		t.Fatalf("stored died_at = %v after a revive, want NULL — a stale record would re-kill him on the next read", at)
 	}
 
 	// Drink until the ceiling, then once more. Bounded rather than counted, so a
@@ -1366,6 +1411,112 @@ func TestVanyagotchiPetDrinkRevivesADeadPetAndClampsAtTheMaximum(t *testing.T) {
 			t.Fatalf("stored %s = %v, want no more than %v", def.Key, value, def.Max)
 		}
 	}
+}
+
+// TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies is the way back
+// from a death, through a real database.
+//
+// Death is a fright rather than an ending — an irreversible loss in a friend
+// group is how a player leaves for good — so «восстать из мертвых» exists and
+// costs one press. What it does is not a large delta but a RESET: coming back
+// means coming back as a new Ваня, and no amount added to whatever he died
+// holding lands on the catalogue's starting values, because a delta big enough
+// to clamp gets you the stat's bound rather than its start. The stored rows are
+// what this asserts, not the response: "the API said sixty-five" and "a row says
+// sixty-five" are different claims and only the second one survives a restart.
+//
+// AND THE TALLIES SURVIVE HIM, which is the subtle half and the one a later
+// tidy-up would break. A lifetime total that a death set back to nought would
+// not be a lifetime total — «выпито пива: 0» after a dozen beers is a lie about
+// the past rather than a fresh beginning — so the counters are exempt from the
+// reset while every bar is rewritten. They are stocked by actually playing
+// first, because a counter still standing at its start would agree with a reset
+// that cleared it and this test would prove nothing.
+func TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies(t *testing.T) {
+	app, game := petApp(t)
+	cli := loginAs(t, app.URL, "7234", "user")
+
+	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+		t.Fatalf("create: status=%d body=%v", s, body)
+	}
+	account := accountIDByUID(t, "7234")
+	id := petID(t, account)
+
+	hpDef := petStat(t, gamevanyagotchi.StatHP)
+	drink := petAction(t, gamevanyagotchi.ActionDrink)
+	relieve := petAction(t, gamevanyagotchi.ActionRelieve)
+	revive := petAction(t, gamevanyagotchi.ActionRevive)
+
+	// An evening's worth of playing: two rounds in one batch and a visit to the
+	// bushes. Every tally the catalogue carries has to end up above its start, or
+	// the preservation asserted at the end would be indistinguishable from a
+	// reset — so that is checked rather than assumed.
+	pressed := []gamevanyagotchi.Action{drink, drink, relieve}
+	petDo(t, game, account, drink.Key, drink.Key)
+	petDo(t, game, account, relieve.Key)
+
+	tallies := make(map[string]float64)
+	for _, def := range gamevanyagotchi.Stats() {
+		if !def.Counter {
+			continue
+		}
+		want := def.Start
+		for _, a := range pressed {
+			want += petEffectOn(a, def.Key)
+		}
+		if want <= def.Start {
+			t.Fatalf("nothing pressed here moves the tally %s off its start %v; the reset below would have nothing to preserve", def.Key, def.Start)
+		}
+		value, _ := petStoredStat(t, id, def.Key)
+		if value != want {
+			t.Fatalf("stored %s = %v after %d verbs, want %v — a counter is a stat whose rate is nought, so counting is an effect and a press that failed to land shows up nowhere else",
+				def.Key, value, len(pressed), want)
+		}
+		tallies[def.Key] = value
+	}
+	if len(tallies) == 0 {
+		t.Fatal("the catalogue has no lifetime tallies, so half of this test asserts nothing")
+	}
+
+	// Long enough that he is unambiguously gone, measured from the catalogue
+	// rather than written down. Three times over rather than twice, because he
+	// starts this stretch topped up rather than at his starting values.
+	petBackdateAll(t, id, petHours(3*petFatalHours(t, hpDef)))
+	if s, state := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK || state["alive"] != false {
+		t.Fatalf("state before the revival: status=%d alive=%v; want 200 and dead", s, state["alive"])
+	}
+	if petDiedAt(t, id) == nil {
+		t.Fatal("died_at is NULL after the read that observed the death")
+	}
+
+	state := petDo(t, game, account, revive.Key)
+	if !state.Alive {
+		t.Fatalf("alive = %v after %s, want true", state.Alive, revive.Key)
+	}
+	if at := petDiedAt(t, id); at != nil {
+		t.Fatalf("stored died_at = %v after %s, want NULL — a stale record would re-kill him on the next read", at, revive.Key)
+	}
+
+	for _, def := range gamevanyagotchi.Stats() {
+		value, _ := petStoredStat(t, id, def.Key)
+		if def.Counter {
+			if value != tallies[def.Key] {
+				t.Fatalf("stored %s went from %v to %v across a revival, want it untouched — a total a death reset would not be a lifetime total",
+					def.Key, tallies[def.Key], value)
+			}
+			continue
+		}
+		if value != def.Start {
+			t.Fatalf("stored %s = %v after a revival, want the catalogue start %v — coming back from the dead is coming back as a new Ваня rather than as the old one plus a number",
+				def.Key, value, def.Start)
+		}
+		petNear(t, "answered "+def.Key+" after a revival", petValue(t, state, def.Key), def.Start)
+	}
+
+	// One instant across the whole set, counters included: being exempt from the
+	// reset is not being exempt from the write, and a row left at an older as_of
+	// is a window the coupled decay cannot reconstruct.
+	petRecent(t, "the instant the revival stamped on every stat", petSharedAsOf(t, id))
 }
 
 // TestVanyagotchiPetRejectsAnActionOutsideTheCatalogue confirms the allowlist is

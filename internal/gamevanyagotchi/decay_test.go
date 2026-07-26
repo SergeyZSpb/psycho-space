@@ -260,6 +260,65 @@ func TestDeadIsTrueOnlyForAFatalStatAtItsFloor(t *testing.T) {
 	}
 }
 
+// TestALifetimeTallyIsNeverTrouble covers the one place a counter is not simply
+// a stat whose rate is nought.
+//
+// Troubled is what turns a bar amber on the screen and what makes the Ваня on
+// the plane look rough, and both are answered from one number so they cannot
+// drift apart. A tally has no bad end of its scale — «выпито пива: 0» is not a
+// problem and «выпито пива: 400» is not either — so the flag short-circuits
+// before WarnAt is consulted at all, which is also why a counter's WarnAt is
+// parked at its floor purely to stay inside its own range.
+//
+// THE FIXTURES ARE THE TEST, and the shipped counters could not be. Both of them
+// carry WarnAt at the floor with GoodHigh set, so `v < WarnAt` is false for
+// every value they can hold — which means deleting the Counter guard entirely
+// would not fail a single assertion made about the catalogue's own stats. The
+// pair below sit a counter's WarnAt in the middle of its range in each
+// direction, where the guard is the only thing standing between a lifetime total
+// and an amber bar; the third case is the same numbers WITHOUT the flag, so this
+// stays a test of a specific exemption rather than of Troubled never firing.
+func TestALifetimeTallyIsNeverTrouble(t *testing.T) {
+	tallyHigh := Stat{Key: "tally-high", Min: 0, Max: 100, Start: 0, WarnAt: 50, GoodHigh: true, Counter: true}
+	tallyLow := Stat{Key: "tally-low", Min: 0, Max: 100, Start: 0, WarnAt: 50, GoodHigh: false, Counter: true}
+
+	for _, s := range []Stat{tallyHigh, tallyLow} {
+		for _, v := range []float64{s.Min, s.WarnAt - 1, s.WarnAt, s.WarnAt + 1, s.Max} {
+			if s.Troubled(v) {
+				t.Errorf("%s reads %v as trouble; a tally has no bad end of its scale, so WarnAt must never be consulted on one", s.Key, v)
+			}
+		}
+	}
+
+	// The same numbers as an ordinary bar, which is what proves the exemption is
+	// the flag rather than the values: without this, a Troubled that always said
+	// false would pass everything above.
+	bar := tallyHigh
+	bar.Counter = false
+	if !bar.Troubled(bar.WarnAt - 1) {
+		t.Error("an ordinary stat below its warning threshold is not trouble; the exemption is not keyed on Counter at all")
+	}
+
+	// And the shipped counters, at every corner they can reach. Weaker than the
+	// fixtures above by construction — see the note on the doc comment — but it is
+	// the half that notices a counter retuned to carry a threshold it could cross.
+	counters := 0
+	for _, def := range Content().Stats {
+		if !def.Counter {
+			continue
+		}
+		counters++
+		for _, v := range []float64{def.Min, def.Start, def.Max / 2, def.Max} {
+			if def.Troubled(v) {
+				t.Errorf("the catalogue's %q reads %v as trouble; a big total is meant to be an achievement rather than a warning", def.Key, v)
+			}
+		}
+	}
+	if counters == 0 {
+		t.Fatal("the catalogue has no lifetime counters, so the second half of this test asserts nothing")
+	}
+}
+
 // TestSplittingTheIntervalChangesNothing is the property the entire no-tick
 // design rests on, and the one worth guarding hardest.
 //

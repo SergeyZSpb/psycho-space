@@ -9,9 +9,10 @@ import type {
 //
 // WHY THIS IS DERIVED RATHER THAN WRITTEN OUT. Nearly everything a player needs
 // to know is already on the wire: GET /api/game-vanyagotchi/config carries every
-// stat with its start, its signed rate, its warning line, whether it can kill
-// him and what makes it fall faster, and every action with the deltas it applies
-// and whether it revives a corpse. A cheatsheet with those numbers typed into it
+// stat with its start, its signed rate, its warning line, whether it is a bar or
+// a lifetime tally, whether it can kill him and what makes it fall faster, and
+// every action with the deltas it applies, whether it starts him over and
+// whether it revives a corpse. A cheatsheet with those numbers typed into it
 // would be a second copy of the catalogue, and it would be wrong the first
 // afternoon somebody retuned a constant — silently wrong, because nothing
 // compares the two. So the copy is BUILT from the config, and
@@ -47,12 +48,35 @@ export interface RuleStat {
   notes: string[];
 }
 
+/**
+ * One lifetime tally, as the cheatsheet lists it.
+ *
+ * Separate from `RuleStat` because it is a different KIND of thing and the
+ * section it belongs under says something different about it. A counter has no
+ * drift line — that is the whole of what makes it a counter — and listing it
+ * under «тикает само» beside stats that genuinely tick would teach the player
+ * that his beer total drains overnight, which is exactly backwards. What moves
+ * one is already on the screen as an effect of the verb that moves it, so this
+ * row carries no numbers at all: a name, and the one rule about it that nothing
+ * else says.
+ */
+export interface RuleCounter {
+  key: string;
+  emoji: string;
+  label: string;
+  /** The one thing true of every tally: it only goes up, and a reset spares it. */
+  note: string;
+}
+
 /** One action, as the cheatsheet lists it. */
 export interface RuleAction {
   key: string;
   emoji: string;
   label: string;
-  /** What one press moves: «пиво +40 · здоровье +15 · мочевой пузырь +25». */
+  /**
+   * What one press does: «пиво +40 · здоровье +15 · мочевой пузырь +25», or —
+   * for an action that starts him over — the values every stat lands back on.
+   */
   effects: string;
   /** Whether it works on a dead Ваня — the one thing an action row must warn about. */
   notes: string[];
@@ -61,6 +85,8 @@ export interface RuleAction {
 /** The whole cheatsheet, in the catalogue's own order — which is display order. */
 export interface VanyagotchiRules {
   stats: RuleStat[];
+  /** The lifetime tallies, split out of `stats` — see `RuleCounter`. */
+  counters: RuleCounter[];
   actions: RuleAction[];
 }
 
@@ -78,11 +104,29 @@ export function buildRules(config: VanyagotchiConfig | null | undefined): Vanyag
   const stats = named(config?.stats);
   const actions = named(config?.actions);
   // Effects and penalties both refer to a stat by key, and both want its human
-  // label — «пока пиво ≤ 20» rather than «пока beer ≤ 20».
+  // label — «пока пиво ≤ 20» rather than «пока beer ≤ 20». Built from the WHOLE
+  // list, counters included, because an effect that bumps a tally still has to
+  // print «выпито пива +1» rather than «beers_drunk +1».
   const byKey = new Map(stats.map((stat) => [stat.key, stat]));
+  // THE SPLIT THAT MATTERS on this screen: a bar and a tally are two kinds of
+  // number and they belong under two different headings. Everything downstream
+  // takes one list or the other rather than filtering again, so there is exactly
+  // one place that decides what a counter is.
+  const bars = stats.filter((stat) => !stat.counter);
+  const counters = stats.filter((stat) => !!stat.counter);
+  // Whether the way back from a death is unique is a fact about the CATALOGUE
+  // rather than about any one action, so it is counted once here and handed
+  // down. It is the rule that changed when reviving stopped being a side effect
+  // of drinking, and a player who does not know it will press the wrong button
+  // at the one moment the game asks him to press a particular one.
+  const revivers = actions.filter((action) => action.revives_fatal).length;
+  // Whether anything in this catalogue starts him over at all — see `counterRow`
+  // for why a tally only claims to survive a reset when a reset exists.
+  const resettable = actions.some((action) => action.starts_over);
   return {
-    stats: stats.map((stat) => statRow(stat, byKey)),
-    actions: actions.map((action) => actionRow(action, byKey)),
+    stats: bars.map((stat) => statRow(stat, byKey)),
+    counters: counters.map((stat) => counterRow(stat, resettable)),
+    actions: actions.map((action) => actionRow(action, bars, byKey, revivers)),
   };
 }
 
@@ -121,6 +165,29 @@ function statRow(def: VanyagotchiStat, byKey: Map<string, VanyagotchiStat>): Rul
   };
 }
 
+/**
+ * One tally row: a name and the single rule that is true of every tally.
+ *
+ * Deliberately carries no number. `start` is always nought and `max` is a
+ * million — a bound that exists only so the clamp has something to clamp to —
+ * and printing either would be printing an implementation detail as if it were a
+ * rule. What actually increments the tally is already visible one section down,
+ * as an effect of the verb that does it.
+ */
+function counterRow(def: VanyagotchiStat, resettable: boolean): RuleCounter {
+  return {
+    key: def.key,
+    emoji: def.emoji || '',
+    label: def.label || def.key,
+    // The second clause is claimed only when there is something in the catalogue
+    // that could plausibly have reset it. Told to a player of a game with no
+    // starting-over verb it would be an answer to a question nobody asked, and
+    // the interesting half of the rule — that a lifetime total survives the one
+    // thing that wipes everything else — would be diluted by sitting next to it.
+    note: resettable ? 'только растёт: даже начав заново, его не обнулишь' : 'только растёт',
+  };
+}
+
 /** «старт 65, −1 в час» — the two things true of a stat nobody is touching. */
 function drift(def: VanyagotchiStat): string {
   const parts: string[] = [];
@@ -136,24 +203,72 @@ function drift(def: VanyagotchiStat): string {
   return parts.join(', ');
 }
 
-function actionRow(def: VanyagotchiAction, byKey: Map<string, VanyagotchiStat>): RuleAction {
-  const effects = (Array.isArray(def.effects) ? def.effects : [])
-    .filter(
-      (effect): effect is VanyagotchiStatDelta =>
-        !!effect && typeof effect.stat_key === 'string' && Number.isFinite(effect.delta),
-    )
-    .map((effect) => effectText(effect, byKey.get(effect.stat_key)));
+function actionRow(
+  def: VanyagotchiAction,
+  bars: VanyagotchiStat[],
+  byKey: Map<string, VanyagotchiStat>,
+  revivers: number,
+): RuleAction {
   return {
     key: def.key,
     emoji: def.emoji || '',
     label: def.label || def.key,
-    effects: effects.join(' · '),
-    // `revives_fatal` says both things at once: the actions that carry it are
-    // the way back from a death, and the ones that do not are refused with a 409
-    // while he is dead. Which is why every action row says one or the other
+    // A RESET IS NOT A LIST OF DELTAS, and the server says so by ignoring
+    // `effects` outright when `starts_over` is set — which is why the reviving
+    // verb ships with an empty effects list. Rendered by the ordinary path it
+    // would come out as an empty string, i.e. as a button the cheatsheet claims
+    // moves nothing, on the one verb the player most needs explained.
+    effects: def.starts_over ? resetText(bars) : effectsText(def, byKey),
+    // `revives_fatal` says both things at once: the action that carries it is
+    // the way back from a death, and the ones that do not are refused with a
+    // 409 while he is dead. Which is why every action row says one or the other
     // rather than only the cheerful half.
-    notes: [def.revives_fatal ? 'поднимает мёртвого' : 'мёртвому нельзя'],
+    notes: [reviveNote(def, revivers)],
   };
+}
+
+/**
+ * The one warning an action row owes the player.
+ *
+ * Says «единственный» only when it is TRUE — counted off the catalogue rather
+ * than asserted — because uniqueness is the rule that changed when reviving
+ * stopped being a side effect of drinking, and it is the rule that decides which
+ * button a player reaches for at the one moment the game is asking for a
+ * particular one. Should a second way back ever be added, this softens by itself
+ * rather than going quietly wrong.
+ */
+function reviveNote(def: VanyagotchiAction, revivers: number): string {
+  if (!def.revives_fatal) return 'мёртвому нельзя';
+  return revivers === 1 ? 'единственный способ поднять мёртвого' : 'поднимает мёртвого';
+}
+
+/** «пиво +40 · здоровье +15» — the ordinary case, one entry per delta. */
+function effectsText(def: VanyagotchiAction, byKey: Map<string, VanyagotchiStat>): string {
+  return (Array.isArray(def.effects) ? def.effects : [])
+    .filter(
+      (effect): effect is VanyagotchiStatDelta =>
+        !!effect && typeof effect.stat_key === 'string' && Number.isFinite(effect.delta),
+    )
+    .map((effect) => effectText(effect, byKey.get(effect.stat_key)))
+    .join(' · ');
+}
+
+/**
+ * «всё заново: здоровье → 65 · пиво → 60 · мочевой пузырь → 0».
+ *
+ * DERIVED FROM THE CATALOGUE'S OWN `start` VALUES, and that is the whole reason
+ * this function exists rather than a sentence: those numbers are already written
+ * down once, in internal/gamevanyagotchi/content.go, and a second copy typed in
+ * here would go wrong the first afternoon somebody decides дядя Ваня should come
+ * back with less health. Counters are absent because a reset spares them — they
+ * were filtered out before this was called, so there is no second opinion here
+ * about what a counter is.
+ */
+function resetText(bars: VanyagotchiStat[]): string {
+  const parts = bars
+    .filter((stat) => Number.isFinite(stat.start))
+    .map((stat) => `${stat.label || stat.key} → ${amount(stat.start)}`);
+  return parts.length ? `всё заново: ${parts.join(' · ')}` : 'всё заново';
 }
 
 function effectText(effect: VanyagotchiStatDelta, def: VanyagotchiStat | undefined): string {

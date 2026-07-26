@@ -455,11 +455,15 @@ test('relieving himself empties the bladder and leaves the rest alone', async ({
   }
 });
 
-test('a dead Ваня refuses the toilet and accepts a beer', async ({ browser, baseURL }) => {
-  // The refusal path, which only became REACHABLE with the second verb: until
-  // there was an action that cannot revive him, every verb succeeded and the
-  // refusal was a branch nobody could reach. A dead Ваня does not go to the
-  // toilet.
+test('a dead Ваня refuses everything but the one verb that raises him', async ({
+  browser,
+  baseURL,
+}) => {
+  // The refusal path, and it is now the DEFAULT rather than the exception. Beer
+  // used to bring him round, which made dying almost invisible — the verb you
+  // were pressing anyway quietly undid it. Death has its own verb now, so every
+  // other verb is refused on a corpse and «восстать из мертвых» is the only way
+  // out.
   //
   // A refusal has no status code to assert any more, and that is the design
   // rather than a gap: the socket owes no reply, so what the player is owed is
@@ -506,15 +510,25 @@ test('a dead Ваня refuses the toilet and accepts a beer', async ({ browser, 
     await refreshTheYardsIdeaOf(page);
     await expect(page.locator('[data-test="pet-line"]')).toHaveText(DEATH_LINE);
 
-    // The beer is the way back, and it is in character that it is. `revives`
-    // requires the action to actually lift the fatal stat off its floor, so this
-    // is a real revival rather than a flag being cleared.
+    // A beer is refused now, and pressing it first is the point: it proves the
+    // corpse turns down the verb that used to be its way out, over the real
+    // stack, before the verb that actually works is tried.
     await actionBtn(page, 'drink').click();
-    await expect(page.locator('[data-test="peer-say"]')).toHaveText('хорошо пошло');
-    await expect.poll(() => shownHp(page)).toBeGreaterThanOrEqual(DRINK_HP - 2);
+    await expect(page.locator('.peer--you [data-test="peer-say"]')).toHaveText('он не встаёт');
+    expect((await readState(page)).alive, 'a beer brought him round; only the revival may').toBe(
+      false,
+    );
+    await expect(page.locator('[data-test="peer-say"]')).toHaveCount(0, { timeout: 15_000 });
+
+    // And the revival is a RESET: he comes back as a new Ваня rather than as the
+    // old one plus a number, so health is the catalogue's starting value and not
+    // whatever a drink would have added to zero.
+    await actionBtn(page, 'revive').click();
+    await expect(page.locator('.peer--you [data-test="peer-say"]')).toHaveText('воскрес');
+    await expect.poll(() => shownHp(page)).toBeGreaterThanOrEqual(HP_START - 2);
 
     const revived = await readState(page);
-    expect(revived.alive, 'a beer did not bring him round').toBe(true);
+    expect(revived.alive, 'the revival did not bring him round').toBe(true);
     expect(
       (revived.pet as { died_at: string | null }).died_at,
       'the death was still recorded after a revival',
@@ -733,8 +747,18 @@ test('reading the state twice returns the same pet, and a server clock with it',
     // The catalogue's stats all came back, keyed, each with the rate it is
     // actually under — this is the contract the client resolves its bars
     // against, and every field of it is load-bearing.
+    // Compared against the CATALOGUE the same server just served, not against a
+    // list typed in here. The state and the config are two views of one set of
+    // stats, and a hand-written list only ever agrees with them until somebody
+    // adds a stat — which is exactly what it did, twice, the day the lifetime
+    // tallies arrived.
+    const served = (await (await page.request.get(CONFIG_URL)).json()) as {
+      stats: { key: string }[];
+    };
+    const want = served.stats.map((s) => s.key).sort();
+    expect(want.length, 'the served catalogue has no stats at all').toBeGreaterThan(0);
     const keys = (first.stats as { key: string }[]).map((s) => s.key).sort();
-    expect(keys).toEqual(['beer', 'bladder', 'hp']);
+    expect(keys).toEqual(want);
     for (const key of keys) {
       const stat = wireStat(first, key);
       expect(Number.isFinite(stat.rate_per_hour), `${key} has no usable rate`).toBe(true);
@@ -749,12 +773,24 @@ test('reading the state twice returns the same pet, and a server clock with it',
       stats: { key: string }[];
       actions: { key: string; effects: { stat_key: string; delta: number }[] }[];
     };
-    expect(parsed.stats.map((s) => s.key)).toEqual(['hp', 'beer', 'bladder']);
-    expect(parsed.actions.map((a) => a.key)).toEqual(['drink', 'relieve']);
-    // An action carries a LIST of effects now, and drinking is why: one press
-    // moves three stats.
+    // The bars come first and in this order, which is display order and is
+    // therefore content: health is the consequence and the two needs that drive
+    // it follow. The lifetime tallies come after them — they are not bars and
+    // the screen does not draw them as one — so this asserts the PREFIX rather
+    // than the whole list, and the tallies are checked as tallies below.
+    expect(parsed.stats.map((s) => s.key).slice(0, 3)).toEqual(['hp', 'beer', 'bladder']);
+    expect(parsed.stats.filter((s) => (s as { counter?: boolean }).counter).map((s) => s.key)).toEqual(
+      ['beers_drunk', 'shits_taken'],
+    );
+    // The revival comes last, and it is the only action that starts him over —
+    // asserted here because this is the one place the REAL server's catalogue is
+    // read over the wire, and a stub cannot notice the shipped one changing.
+    expect(parsed.actions.map((a) => a.key)).toEqual(['drink', 'relieve', 'revive']);
+    // An action carries a LIST of effects, and drinking is why: one press moves
+    // three stats and keeps a tally.
     expect(parsed.actions[0].effects.map((e) => e.stat_key).sort()).toEqual([
       'beer',
+      'beers_drunk',
       'bladder',
       'hp',
     ]);

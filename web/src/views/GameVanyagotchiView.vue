@@ -44,6 +44,29 @@
           </div>
         </section>
 
+        <!-- The lifetime tallies, and the reason they are NOT in the section
+             above: «тикает само» is a promise that everything under it drifts on
+             its own, and a counter is precisely the stat that does not. Listed
+             here so the two numbers on the yard screen have a name, and because
+             surviving a fresh start is a real rule that nothing else states. -->
+        <section v-if="rules.counters.length" class="rules" data-test="rules-counters">
+          <h2 class="rules-head">Просто счётчики</h2>
+          <div
+            v-for="counter in rules.counters"
+            :key="counter.key"
+            class="rule"
+            :data-test="`rule-counter-${counter.key}`"
+          >
+            <span class="rule-emoji" aria-hidden="true">{{ counter.emoji }}</span>
+            <div class="rule-body">
+              <p class="rule-line">
+                <span class="rule-label">{{ counter.label }}</span>
+                <span class="rule-main">{{ counter.note }}</span>
+              </p>
+            </div>
+          </div>
+        </section>
+
         <section v-if="rules.actions.length" class="rules" data-test="rules-actions">
           <h2 class="rules-head">Жмёшь ты</h2>
           <div
@@ -191,6 +214,25 @@
           </span>
           <span class="stat-value" :data-test="`stat-value-${bar.key}`">{{ bar.shown }}</span>
         </div>
+      </div>
+
+      <!-- The lifetime tallies, and deliberately NOT bars: a counter's scale
+           runs to a million so the clamp has a bound, so a track drawn against
+           it would sit empty forever and say the opposite of what the number
+           means. One wrapping row of «emoji label число», which is the whole of
+           what a total needs — the panel is the tightest thing on this screen
+           and the 320x568 case in the mobile suite is what holds that. -->
+      <div v-if="tallies.length" class="tallies" data-test="pet-tallies">
+        <span
+          v-for="tally in tallies"
+          :key="tally.key"
+          class="tally"
+          :data-test="`tally-${tally.key}`"
+        >
+          <span class="tally-emoji" aria-hidden="true">{{ tally.emoji }}</span>
+          <span class="tally-label">{{ tally.label }}</span>
+          <span class="tally-value" :data-test="`tally-value-${tally.key}`">{{ tally.shown }}</span>
+        </span>
       </div>
 
       <!-- What is going on with him, in one line. Fixed height whether or not
@@ -361,9 +403,19 @@ const values = computed(() => {
   return out;
 });
 
-/** One bar per catalogue stat, in catalogue order — which is the display order. */
+/**
+ * One bar per catalogue stat that IS a bar, in catalogue order — the display
+ * order.
+ *
+ * A lifetime tally is deliberately not one of them. A bar's whole job is to say
+ * how full something is, and a counter's scale runs to a million so that the
+ * clamp has something to clamp to: drawn as a bar, «выпито пива: 12» is an empty
+ * track that will still look empty after a year of drinking, which tells the
+ * player the opposite of what the number means. They go to `tallies` below.
+ */
 const bars = computed(() =>
   stats.value.flatMap((def) => {
+    if (def.counter) return [];
     const value = values.value.get(def.key);
     if (value === undefined) return [];
     return [
@@ -376,6 +428,26 @@ const bars = computed(() =>
         trouble: inTrouble(def, value),
       },
     ];
+  }),
+);
+
+/**
+ * The lifetime tallies: emoji, name, integer, and nothing else.
+ *
+ * No track, no percentage and no trouble flag — a total has no bad end of the
+ * scale, which is why the server never reports one as trouble either
+ * (`Stat.Troubled` in decay.go returns false for a counter outright). Still
+ * decayed through the same `values` map as everything else rather than read
+ * straight off the response: a counter's rate is nought, so the arithmetic is
+ * the identity, and routing it through the one path means there is no second
+ * place that has to remember a counter is special.
+ */
+const tallies = computed(() =>
+  stats.value.flatMap((def) => {
+    if (!def.counter) return [];
+    const value = values.value.get(def.key);
+    if (value === undefined) return [];
+    return [{ key: def.key, label: def.label, emoji: def.emoji, shown: Math.round(value) }];
   }),
 );
 
@@ -1366,10 +1438,11 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-/* Stat bars. Fixed height, and one row per stat: three today, and the row is a
-   grid so a fourth arrives without a layout decision. Each row costs about 19px
-   and the plane pays for it, which is measured rather than assumed — the 320x568
-   case in the mobile suite is what holds that. */
+/* Stat bars. Fixed height, and one row per stat that IS a bar — three today, the
+   lifetime tallies having their own row below — and the row is a grid so a
+   fourth arrives without a layout decision. Each row costs about 19px and the
+   plane pays for it, which is measured rather than assumed — the 320x568 case in
+   the mobile suite is what holds that. */
 .stats {
   flex: 0 0 auto;
   display: flex;
@@ -1411,6 +1484,42 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
   text-align: right;
   opacity: 0.85;
+}
+
+/* The lifetime tallies. ONE ROW, and staying one row is the constraint: the
+   panel is what the plane pays for, and the 320px case has about 296px of usable
+   width for two of these. `flex-wrap` is the honest fallback rather than a
+   preference — a third counter, or a longer label, takes a second line and the
+   plane gives up another sixteen pixels, which is a better failure than a label
+   truncated to something unreadable. Smaller than the bar row on purpose: a
+   total is something you check, not something you watch. */
+.tallies {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 0.7rem;
+  line-height: 1.15;
+  opacity: 0.8;
+}
+.tally {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+.tally-emoji {
+  font-size: 0.8rem;
+}
+.tally-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tally-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  opacity: 0.95;
 }
 
 /* Always present, empty or not, so the plane above does not resize when a line

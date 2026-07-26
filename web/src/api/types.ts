@@ -239,6 +239,20 @@ export interface VanyagotchiStat {
   good_high: boolean;
   /** Where the stat starts reading as trouble: below when `good_high`, above otherwise. */
   warn_at: number;
+  /**
+   * A LIFETIME TALLY rather than a bar: how many beers he has ever drunk, not
+   * how much beer is in him.
+   *
+   * On the wire as its own flag rather than left to be inferred from a zero
+   * `decay_per_hour`, even though the two coincide today, because the two say
+   * different things: the rate is arithmetic and this is what the number MEANS.
+   * A screen must be told, not left to guess — the same rule that keeps every
+   * other content decision out of the SPA. It is what stops a total being drawn
+   * as a bar creeping towards a million, and it is why such a stat is never
+   * trouble: a tally has no bad end of the scale, so `warn_at` is not consulted
+   * on one at all.
+   */
+  counter: boolean;
   /** Reaching `min` kills him. */
   fatal: boolean;
   /**
@@ -278,11 +292,24 @@ export interface VanyagotchiAction {
   /** Shown for a moment after it lands. */
   done: string;
   /**
-   * Allowed on, and undoes, a death. Deliberately not true of every action — a
-   * dead Ваня cannot go to the toilet — which is what makes the 409 refusal a
-   * path the screen has to handle rather than a theoretical one.
+   * Allowed on, and undoes, a death. Deliberately true of exactly ONE action —
+   * every other verb is refused on a corpse — which is what makes the 409
+   * refusal a path the screen has to handle rather than a theoretical one.
    */
   revives_fatal: boolean;
+  /**
+   * Puts every stat back to its catalogue `start`, IGNORING `effects`, and
+   * exempting the lifetime counters — a total that death reset would not be a
+   * total.
+   *
+   * A flag rather than a clever list of deltas because a reset is not a delta:
+   * `start` is not reachable by adding a fixed amount to whatever he happened to
+   * die holding, and a delta large enough to clamp lands on the stat's BOUND
+   * rather than on its start. Which matters here because it is the one field
+   * that makes an action with no effects at all meaningful: the splash cheatsheet
+   * must say what a reset does rather than that the verb moves nothing.
+   */
+  starts_over: boolean;
 }
 
 /** One look for a pet. `image` (a URL) wins when set; otherwise emoji over gradient. */

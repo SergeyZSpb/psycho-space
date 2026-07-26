@@ -27,6 +27,7 @@ const HP: VanyagotchiStat = {
   decay_per_hour: 1,
   good_high: true,
   warn_at: 30,
+  counter: false,
   fatal: true,
   penalties: [
     { when_key: 'beer', threshold: 20, above: false, rate_per_hour: 6 },
@@ -44,6 +45,7 @@ const BEER: VanyagotchiStat = {
   decay_per_hour: 4,
   good_high: true,
   warn_at: 20,
+  counter: false,
   fatal: false,
 };
 
@@ -60,6 +62,7 @@ const BLADDER: VanyagotchiStat = {
   decay_per_hour: -5,
   good_high: false,
   warn_at: 80,
+  counter: false,
   fatal: false,
 };
 

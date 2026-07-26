@@ -44,6 +44,22 @@ const (
 	// expression covers both directions and there is no second code path for a
 	// stat that goes the other way.
 	StatBladder = "bladder"
+
+	// StatBeersDrunk and StatShitsTaken are LIFETIME COUNTERS, and they are
+	// ordinary stats with a decay rate of zero.
+	//
+	// That is the whole trick, and it is the reason this game needs no runs
+	// table and no leaderboard schema (ADR-039): a stat is a `(value, as_of)`
+	// pair integrated against a rate, so a rate of nought is a number that only
+	// ever moves when a verb moves it. They cost no migration, they are seeded
+	// for every existing pet by the read path that already seeds a stat the
+	// catalogue has gained, and they ride the same wire the bars do.
+	//
+	// Not `Fatal`, obviously, and `GoodHigh` so a big number reads as an
+	// achievement rather than a warning. The third counter, keys_found, arrives
+	// with the thing that can increment it.
+	StatBeersDrunk = "beers_drunk"
+	StatShitsTaken = "shits_taken"
 )
 
 // Action keys.
@@ -54,6 +70,16 @@ const (
 	// ActionRelieve empties the bladder. It is the other half of the loop
 	// drinking creates.
 	ActionRelieve = "relieve"
+	// ActionRevive is «восстать из мертвых» — and it is the ONLY way back from
+	// a death.
+	//
+	// Beer used to do it, which made dying almost unnoticeable: the verb you
+	// were pressing anyway also happened to undo it. Giving death its own verb
+	// makes it a thing that happened to you rather than a bar that dipped, and
+	// it costs nothing to recover from, which is the balance the reference-game
+	// research settled on — mildly annoying and cheaply reversible, never
+	// irreversible.
+	ActionRevive = "revive"
 )
 
 // Skin and location keys.
@@ -99,6 +125,17 @@ type Stat struct {
 	// the same reason the rate is here — it is a number somebody will want to
 	// move by feel.
 	WarnAt float64 `json:"warn_at"`
+	// Counter marks a LIFETIME TALLY rather than a bar: how many beers he has
+	// ever drunk, not how much beer is in him.
+	//
+	// An explicit flag rather than "DecayPerHour is zero", even though the two
+	// coincide today. A rate is arithmetic and this is a rendering decision, and
+	// the client must be told rather than left to infer meaning from a number —
+	// the same rule that keeps every other content key out of the SPA. It is
+	// what stops a total being drawn as a bar filling towards a million, and it
+	// is why Troubled never fires on one: a tally has no bad end of the scale,
+	// so WarnAt is not consulted and is set to Min purely to stay in range.
+	Counter bool `json:"counter"`
 	// Fatal: reaching Min kills him. Exactly one stat is fatal today, and the
 	// flag exists rather than the service naming StatHP directly so that "which
 	// stat can kill" stays a property of content.
@@ -145,10 +182,24 @@ type Action struct {
 	Effects []StatDelta `json:"effects"`
 	// Done is the line shown for a moment after it lands.
 	Done string `json:"done"`
-	// RevivesFatal: allowed on, and undoes, a death. Deliberately not true of
-	// every action — a dead Ваня cannot go to the toilet, and that is what makes
-	// the refusal path real rather than theoretical. See Service.Do.
+	// RevivesFatal: allowed on, and undoes, a death. Deliberately true of
+	// exactly ONE action — a dead Ваня can do nothing else at all, and that is
+	// what makes the refusal path real rather than theoretical. See Service.Do.
 	RevivesFatal bool `json:"revives_fatal"`
+	// StartsOver puts every stat back to its catalogue Start, ignoring Effects.
+	//
+	// A RESET IS NOT A DELTA, which is why this is a flag and not a clever list
+	// of numbers. Coming back from the dead means coming back as a new Ваня —
+	// hp 65, beer 60, an empty bladder — and none of those is reachable by
+	// adding a fixed amount to whatever he happened to die holding. A delta
+	// large enough to clamp gets you the stat's bound (100), not its start.
+	//
+	// It is deliberately not a third kind of StatDelta ("set to N"): the numbers
+	// it would carry are already in the catalogue, one field down, and a second
+	// place to write a starting value is a second place for it to be wrong. A
+	// counter is exempt — see the loop in apply — because a lifetime total that
+	// death reset would not be a lifetime total.
+	StartsOver bool `json:"starts_over"`
 }
 
 // Skin is one look for a pet: an art key resolved against the shared blob store,
@@ -267,6 +318,12 @@ const (
 	beerEmptyAt        = 20.0
 	bladderFillPerHour = 5.0
 	bladderFullAt      = 80.0
+
+	// The ceiling on a lifetime counter. Not a game rule — a counter has no
+	// natural maximum — but every stat is clamped against one, and a bound this
+	// far away is unreachable by a friend group pressing a button once a second
+	// for a lifetime. It exists so the clamp has something to clamp to.
+	counterMax = 1_000_000.0
 
 	// What the verbs do.
 	drinkBeer    = 40.0
@@ -479,6 +536,35 @@ var catalogue = Config{
 			WarnAt:       bladderFullAt,
 			Fatal:        false,
 		},
+		// The lifetime counters. Rate nought, so nothing but a verb ever moves
+		// them, and `WarnAt` below the floor so no total is ever drawn as
+		// trouble — a big number here is the opposite of a warning.
+		{
+			Key:          StatBeersDrunk,
+			Label:        "выпито пива",
+			Emoji:        "🍻",
+			Min:          0,
+			Max:          counterMax,
+			Start:        0,
+			DecayPerHour: 0,
+			GoodHigh:     true,
+			WarnAt:       0,
+			Counter:      true,
+			Fatal:        false,
+		},
+		{
+			Key:          StatShitsTaken,
+			Label:        "покакано раз",
+			Emoji:        "🧻",
+			Min:          0,
+			Max:          counterMax,
+			Start:        0,
+			DecayPerHour: 0,
+			GoodHigh:     true,
+			WarnAt:       0,
+			Counter:      true,
+			Fatal:        false,
+		},
 	},
 	Actions: []Action{
 		{
@@ -492,11 +578,17 @@ var catalogue = Config{
 				{StatKey: StatBeer, Delta: drinkBeer},
 				{StatKey: StatHP, Delta: drinkHP},
 				{StatKey: StatBladder, Delta: drinkBladder},
+				// The lifetime tally, moved by the same mechanism as everything
+				// else: a counter is a stat whose rate is zero, so counting is
+				// an effect and needs no code of its own.
+				{StatKey: StatBeersDrunk, Delta: 1},
 			},
 			Done: "хорошо пошло",
-			// The way back from a death, which is why death is a scare rather
-			// than an ending — and it is in character that beer is what does it.
-			RevivesFatal: true,
+			// NO LONGER THE WAY BACK FROM A DEATH. It was, and that made dying
+			// almost invisible — the verb you were pressing anyway quietly
+			// undid it, so the one moment the game is about had no moment. A
+			// death now has its own verb, and beer is just beer.
+			RevivesFatal: false,
 		},
 		{
 			Key:   ActionRelieve,
@@ -504,12 +596,28 @@ var catalogue = Config{
 			Emoji: "💩",
 			// A delta larger than the whole scale, so the clamp lands it exactly
 			// on the floor. "Reset" needs no mechanism of its own.
-			Effects: []StatDelta{{StatKey: StatBladder, Delta: -statMax}},
-			Done:    "полегчало",
-			// A dead Ваня does not go to the toilet. This is the action that
-			// makes the refusal real rather than theoretical — and it is why the
-			// screen has to say what to do instead.
+			Effects: []StatDelta{
+				{StatKey: StatBladder, Delta: -statMax},
+				{StatKey: StatShitsTaken, Delta: 1},
+			},
+			Done: "полегчало",
+			// A dead Ваня does not go to the toilet.
 			RevivesFatal: false,
+		},
+		{
+			Key:   ActionRevive,
+			Label: "восстать из мертвых",
+			Emoji: "🧟",
+			// NO EFFECTS, because StartsOver ignores them. Listing deltas here
+			// would be two descriptions of the same outcome, and the one that
+			// did nothing would be the one somebody edited.
+			Done: "воскрес",
+			// The only action that carries this, which is the point of the
+			// verb. Every other verb is refused on a corpse, so death is a
+			// state you have to deliberately leave rather than one you fall out
+			// of by drinking.
+			RevivesFatal: true,
+			StartsOver:   true,
 		},
 	},
 	Skins: []Skin{

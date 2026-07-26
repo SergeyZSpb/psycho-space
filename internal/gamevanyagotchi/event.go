@@ -153,6 +153,35 @@ func apply(s Snapshot, e Event) (Snapshot, error) {
 		return s, ErrPetDead
 	}
 
+	// A RESET IGNORES THE DELTAS, because coming back from the dead is coming
+	// back as a new Ваня rather than as the old one plus a number. Every stat
+	// goes to its catalogue Start — except a lifetime counter, which is exempt
+	// for the obvious reason: a total that death set back to nought would not be
+	// a lifetime total, and «выпито пива: 0» after forty beers is a lie about
+	// the past rather than a fresh beginning.
+	//
+	// Still a pure function of (Snapshot, Event): the numbers come from the
+	// catalogue, which is compiled in, so a replay reads exactly what the live
+	// path read. Retuning a Start therefore retunes what a replay says a
+	// revival did, which is the same retro-tuning property every other constant
+	// here has.
+	if action.StartsOver {
+		for key := range next.Rows {
+			def, ok := StatByKey(key)
+			// Keyed on the FLAG, not on the rate. The two coincide in today's
+			// catalogue and that is exactly why it matters: inferring "this is a
+			// tally" from "its rate is nought" is the client-side mistake this
+			// project refuses everywhere else, and it would silently reset the
+			// first counter somebody gave a rate to.
+			if !ok || def.Counter {
+				continue
+			}
+			next.Rows[key] = StatRow{Key: key, Value: def.Clamp(def.Start), AsOf: e.At}
+		}
+		next.DiedAt = nil
+		return next, nil
+	}
+
 	for _, effect := range action.Effects {
 		row, ok := next.Rows[effect.StatKey]
 		if !ok {

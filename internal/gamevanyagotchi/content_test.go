@@ -128,11 +128,26 @@ func TestEveryStatHasAUsableRange(t *testing.T) {
 // fills his bladder — so every entry in that list has to resolve, not just the
 // first one. An effect whose key has gone would otherwise be an action that is
 // half a verb, failing only for the players who press it.
+//
+// THERE ARE TWO WAYS OF DOING SOMETHING NOW, and the invariant is that a verb
+// does one of them. Deltas are the ordinary way; StartsOver is the other, and it
+// is not expressible as a delta at all — coming back from the dead means coming
+// back as a new Ваня, and no fixed amount added to whatever he died holding
+// lands on the catalogue's starting values. So an empty effect list is only a
+// no-op button for a verb that does not reset, and the two are mutually
+// exclusive rather than merely both allowed: apply IGNORES the deltas of a
+// resetting action, so effects listed beside StartsOver would be content
+// describing an outcome it does not produce — and, being unreachable, the copy
+// somebody would edit.
 func TestEveryActionMovesStatsThatExist(t *testing.T) {
 	for _, a := range Content().Actions {
 		t.Run(a.Key, func(t *testing.T) {
-			if len(a.Effects) == 0 {
-				t.Fatal("the action moves nothing at all; pressing it would be a no-op the player is invited to try")
+			if len(a.Effects) == 0 && !a.StartsOver {
+				t.Fatal("the action neither moves a stat nor starts him over; pressing it would be a no-op the player is invited to try")
+			}
+			if a.StartsOver && len(a.Effects) > 0 {
+				t.Errorf("the action starts him over and also carries %d effect(s): apply ignores the deltas of a reset, so they are a second description of the outcome that never runs",
+					len(a.Effects))
 			}
 			for _, e := range a.Effects {
 				s, ok := StatByKey(e.StatKey)
@@ -338,18 +353,25 @@ func TestExactlyOneStatIsFatalAndItActuallyDrains(t *testing.T) {
 	}
 }
 
-// TestDeathIsRecoverableAndTheRefusalIsReachable pins both halves of the
-// revival rule, and they fail for opposite reasons.
+// TestExactlyOneActionUndoesADeathAndTheRestAreRefused pins the shape of the
+// revival rule, and each way of breaking it fails for a different reason.
 //
 // Death in this game is deliberately recoverable — an irreversible loss in a
 // fifteen-person friend group is how a player leaves permanently — so a
-// catalogue in which no action revives is a dead end that would reach a player
-// before anyone noticed. The other half is subtler: if EVERY action revived,
-// Do's death guard could never fire, ErrPetDead would be unreachable, and the
-// «он не встаёт» balloon the refusal turns into would be dead code that nothing
-// proves works. A dead Ваня not being able to go to the toilet is what makes
-// that path real.
-func TestDeathIsRecoverableAndTheRefusalIsReachable(t *testing.T) {
+// catalogue in which NO action revives is a dead end that would reach a player
+// before anyone noticed. TWO is the mistake that was actually made: beer used to
+// revive as a side effect of topping him up, which meant the verb you were
+// pressing anyway quietly undid the one moment the game is about, and dying was
+// very nearly unnoticeable. Death now has a verb of its own and nothing else may
+// be a second way back. And if EVERY action revived, Do's death guard could
+// never fire, ErrPetDead would be unreachable, and the «он не встаёт» balloon the
+// refusal turns into would be dead code that nothing proves works — a dead Ваня
+// not being able to go to the toilet is what makes that path real.
+//
+// Counted over the catalogue rather than asserted about a named key on purpose:
+// what must fail here is a THIRD verb quietly acquiring the flag, and a test
+// naming the one that has it today would not notice.
+func TestExactlyOneActionUndoesADeathAndTheRestAreRefused(t *testing.T) {
 	var revives, refuses []string
 	for _, a := range Content().Actions {
 		if a.RevivesFatal {
@@ -358,8 +380,10 @@ func TestDeathIsRecoverableAndTheRefusalIsReachable(t *testing.T) {
 		}
 		refuses = append(refuses, a.Key)
 	}
-	if len(revives) == 0 {
-		t.Error("no action sets revives_fatal: a dead pet would be unrecoverable and the account would be finished with the game")
+	if len(revives) != 1 {
+		t.Errorf("%d actions set revives_fatal (%v); the design says exactly one — none leaves a dead pet unrecoverable and the account finished with the game, "+
+			"and a second way back is how dying stopped being noticeable the last time. Adding one is a deliberate change, not a flag flip.",
+			len(revives), revives)
 	}
 	if len(refuses) == 0 {
 		t.Error("every action sets revives_fatal: Do's death guard can never fire, so ErrPetDead and the balloon it becomes are unreachable")

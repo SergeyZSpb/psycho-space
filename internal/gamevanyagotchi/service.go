@@ -1002,18 +1002,6 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 	return s.state(ctx, accountID, at)
 }
 
-// revives reports whether the rows about to be written leave every fatal stat
-// above its floor.
-func revives(rows []StatRow) bool {
-	for _, r := range rows {
-		def, ok := StatByKey(r.Key)
-		if ok && def.Fatal && r.Value <= def.Min {
-			return false
-		}
-	}
-	return true
-}
-
 // state is the one read path, shared by State and Do so a verb can never answer
 // with a differently-computed world than a plain read would have.
 //

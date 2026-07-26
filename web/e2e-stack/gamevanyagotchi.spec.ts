@@ -1311,24 +1311,33 @@ async function reviveInDb(
   const cases = Object.entries(ALIVE_STATS)
     .map(([key, value]) => `WHEN '${key}' THEN ${value}`)
     .join(' ');
-  const keys = Object.keys(ALIVE_STATS)
-    .map((key) => `'${key}'`)
-    .join(', ');
   const owned =
     `(SELECT id FROM game_vanyagotchi_pets WHERE account_id = '${id}' AND deleted_at IS NULL)`;
+  // EVERY row is re-stamped, but only the three bars are given a value: a
+  // `CASE` with no `ELSE` yields NULL, so `COALESCE` leaves everything else
+  // holding exactly what it held. That matters in both directions. The shared
+  // `as_of` is the invariant the coupled decay rests on, so a fixture that
+  // moved three rows and left the others behind would set up a window the
+  // server's arithmetic does not assume exists — and the rows it must not
+  // touch are the LIFETIME TALLIES, which a fixture zeroing them would quietly
+  // rewrite the player's history to make a pose assertion pass.
   const stats = psql(
-    `UPDATE game_vanyagotchi_pet_stats SET value = CASE stat_key ${cases} END, ` +
+    `UPDATE game_vanyagotchi_pet_stats ` +
+      `SET value = COALESCE(CASE stat_key ${cases} END, value), ` +
       `as_of = now(), updated_at = now() ` +
-      `WHERE stat_key IN (${keys}) AND pet_id IN ${owned}`,
+      `WHERE pet_id IN ${owned} RETURNING stat_key`,
   );
-  expect(stats, 'the named stats are not the ones this pet has').toBe(
-    `UPDATE ${Object.keys(ALIVE_STATS).length}`,
-  );
-  // And they are ALL of them, so nothing was left holding an older `as_of`.
+  const touched = stats
+    .split('\n')
+    .filter((line) => line && !/^[A-Z]+ \d+$/.test(line));
   expect(
-    psql(`SELECT count(*) FROM game_vanyagotchi_pet_stats WHERE pet_id IN ${owned}`),
-    'the catalogue has a stat this fixture does not set, so one row kept an older as_of',
-  ).toBe(String(Object.keys(ALIVE_STATS).length));
+    touched.length,
+    'the fixture re-stamped fewer rows than the pet has; the shared as_of is the whole invariant',
+  ).toBeGreaterThanOrEqual(Object.keys(ALIVE_STATS).length);
+  expect(
+    touched.sort(),
+    'a stat this fixture names is not one the pet has',
+  ).toEqual(expect.arrayContaining(Object.keys(ALIVE_STATS).sort()));
 
   await read();
 }

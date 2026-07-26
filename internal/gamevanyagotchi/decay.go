@@ -252,6 +252,12 @@ func (s Stat) DeadAtWith(value float64, asOf time.Time, drivers map[string]StatR
 // amber bar on a screen and the rough-looking Ваня on the plane are decided by
 // the same number rather than by two that can drift apart.
 func (s Stat) Troubled(v float64) bool {
+	// A lifetime tally has no bad end of the scale — «выпито пива: 0» is not a
+	// problem and «выпито пива: 400» is not either — so it is never trouble and
+	// WarnAt is never consulted on one.
+	if s.Counter {
+		return false
+	}
 	if s.GoodHigh {
 		return v < s.WarnAt
 	}
