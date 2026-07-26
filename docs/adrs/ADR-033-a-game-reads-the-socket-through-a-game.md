@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** A game reads the socket through a game-agnostic Handler, and pulls presence
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.5](../ARCHITECTURE.md#adr-033--a-game-reads-the-socket-through-a-game) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.5](../ARCHITECTURE.md#adr-033--a-game-reads-the-socket-through-a-game-agnostic-handler-and-pulls-presence) — this file is the detail behind it.
 - **related:** [ADR-037](./ADR-037-one-account-is-one-entity-and-the-wire.md)
 - **code:** `internal/realtime`
 

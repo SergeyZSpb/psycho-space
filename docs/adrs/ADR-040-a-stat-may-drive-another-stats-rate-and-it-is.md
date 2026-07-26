@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** A stat may drive another stat's rate, and it is still exact
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-040--a-stat-may-drive-another-stats-rate-and-it-is) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-040--a-stat-may-drive-another-stats-rate-and-it-is-still-exact) — this file is the detail behind it.
 - **related:** [ADR-038](./ADR-038-time-varying-state-is-computed-on-read-never.md)
 
 ---

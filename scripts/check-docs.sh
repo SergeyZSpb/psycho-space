@@ -162,9 +162,20 @@ for path in [arch] + files:
     for anchor in re.findall(r"\]\(#([^)]+)\)", outside_code):
         if anchor not in headings:
             problems.append(f"{path}: dead anchor #{anchor} -- no heading in this file slugifies to it")
-    for link in re.findall(r"\]\((?!https?:|#)([^)#]+?)(?:#[^)]*)?\)", outside_code):
-        if not (path.parent / link).exists():
+    for link, frag in re.findall(r"\]\((?!https?:|#)([^)#]+?)(?:#([^)]*))?\)", outside_code):
+        target = path.parent / link
+        if not target.exists():
             problems.append(f"{path}: dead link {link} -- no such file")
+            continue
+        # A path PLUS a fragment has to resolve in both halves. Only checking
+        # the file is how 26 summary links sat pointing at truncated anchors
+        # that were dead on GitHub and invisible here -- the file existed, so
+        # nothing looked.
+        if frag:
+            other = {slug(m.group(2))
+                     for m in re.finditer(r"^(#{1,6})\s+(.+)$", target.read_text(encoding="utf-8"), re.M)}
+            if frag not in other:
+                problems.append(f"{path}: dead anchor {link}#{frag} -- no heading in {link} slugifies to it")
 
 if problems:
     for problem in problems:

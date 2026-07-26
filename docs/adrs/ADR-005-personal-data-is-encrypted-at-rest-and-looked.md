@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Personal data is encrypted at rest, and looked up through a blind index
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.2](../ARCHITECTURE.md#adr-005--personal-data-is-encrypted-at-rest-and-looked) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.2](../ARCHITECTURE.md#adr-005--personal-data-is-encrypted-at-rest-and-looked-up-through-a-blind-index) — this file is the detail behind it.
 
 ---
 

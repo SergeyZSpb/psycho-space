@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** The client IP comes from X-Real-IP, trusted only from a loopback peer
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.7](../ARCHITECTURE.md#adr-027--the-client-ip-comes-from-x-real-ip-trusted) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.7](../ARCHITECTURE.md#adr-027--the-client-ip-comes-from-x-real-ip-trusted-only-from-a-loopback-peer) — this file is the detail behind it.
 
 ---
 

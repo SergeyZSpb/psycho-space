@@ -1,0 +1,29 @@
+# ADR-044 · A pet's history is an append-only event log, and one function interprets it
+
+## LLM Continuation Context
+
+_Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
+
+- **topic:** A pet's history is an append-only event log, and one function interprets it
+- **status:** Accepted · 2026-07-26
+- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-044--a-pets-history-is-an-append-only-event-log-and-one-function-interprets-it) — this file is the detail behind it.
+- **related:** [ADR-038](./ADR-038-time-varying-state-is-computed-on-read-never.md) · [ADR-039](./ADR-039-game-content-is-a-go-catalogue-and-the-schema.md) · [ADR-041](./ADR-041-the-broadcast-tick-renders-from-a-cache-and.md)
+- **code:** `internal/gamevanyagotchi/event.go` · `migrations/009_game_vanyagotchi_events.sql`
+
+---
+
+A pet's stat rows remain the **snapshot** and stay authoritative for a read. Beside them, `game_vanyagotchi_events` records what the player actually did — `(pet_id, seq, verb, at)`, append-only — and the two are written together so a snapshot can never disagree with the events that produced it. One function, `apply(snapshot, event)`, is the only place a verb means anything: the live path runs it over the verbs just pressed, and a replay runs it over a whole history.
+
+_Reasoning:_ until now a pet's state existed **only** as its stat rows, overwritten by every action. That answers "what is he now" and nothing else — an action left no trace once its effect had been folded into a number, so a retuned constant could not be applied retroactively, a real pet could not be replayed to reproduce a bug, and "what did I do yesterday" had no answer at all. The first of those is the prize. This game's constants are actively being tuned, and with a log a change to a decay rate is a refold: every pet ends up correct against the new number instead of carrying the arithmetic of the old one forward for ever.
+
+**The snapshot stays authoritative, which is what makes the log cheap.** A read is still one indexed query and one subtraction however long the history — the fold is needed only by a replay. Two consequences follow directly. Every existing pet keeps its state with **no backfill and no data migration**, because its current rows simply *are* its first snapshot and the log starts empty beside it. And the log is not a second source of truth: it carries no payload and no resulting values, because a verb's effects are catalogue content ([ADR-039](./ADR-039-game-content-is-a-go-catalogue-and-the-schema.md)) and freezing a copy of them at write time is precisely what would make retro-tuning impossible.
+
+**The server stamps the instant, and `seq` — not the instant — is the order.** A client-supplied time would be forgeable, and every value in this game is integrated against timestamps, so a drink backdated six hours would rewrite the decay that followed it. `at` alone also cannot order anything: a batch of verbs is one acceptance and its rows legitimately share an instant, while drink-then-relieve is a different pet from relieve-then-drink. `seq` gives the total order, computed inside the insert from the pet's current maximum, with a unique index on `(pet_id, seq)` so two connections racing on one pet cannot take the same slot.
+
+**The load-bearing property is that there is ONE function**, and it is the reason `event.go` exists at all. `apply` interprets exactly one event against a snapshot; the live path loops it over a batch, `fold` loops it over history. The two are not "kept in agreement" — they are the same code, and the moment a second implementation of the arithmetic appears the log stops being trustworthy. The only difference between the loops is what a refusal means: the live path rejects the whole batch and writes nothing, whereas a replay **skips** the event, because an event that could not be applied changed nothing when it happened and must change nothing when replayed. `apply` is a faithful extraction of what the action path already did rather than new arithmetic, which is why none of this changed what a button does.
+
+**Persistence becomes a policy question rather than a correctness one.** Today it is write-through, and a cheaper cadence later is a change in one place. Two independent axes decide it. Whether the state is cosmetic or earned decides whether deferral is *allowed*: a position may be written on departure and lost outright in a crash ([ADR-041](./ADR-041-the-broadcast-tick-renders-from-a-cache-and.md)) because a Ваня reappearing where he last stood costs nobody anything, and a stat somebody earned does not qualify. Whether writes are frequent or rare decides whether deferral is *worth* it. Stats fail the first test, so the second never arises.
+
+**Considered and rejected: replacing the closed form with the fold.** The closed form stays *inside* `apply` — decay is still `(value, as_of)` evaluated at an instant ([ADR-038](./ADR-038-time-varying-state-is-computed-on-read-never.md)), and the log sits on top of that model rather than instead of it. Recomputing a month of decay by stepping through events would be strictly worse than one subtraction, and offline progression would stop being free: it is free precisely because nothing has to be replayed to know what a pet is now.
+
+_Consequence:_ there are now two things to keep consistent instead of one, and a table that grows without bound with no pruning policy yet. Reads do not degrade as it grows, because the snapshot is current, so growth is a storage and audit question rather than a latency one — and the by-time index exists for the "events since this instant" that any eventual snapshot policy will ask for. That is the trade accepted: a second write on every action, in exchange for a pet's past being a fact the system holds rather than one it has already thrown away.

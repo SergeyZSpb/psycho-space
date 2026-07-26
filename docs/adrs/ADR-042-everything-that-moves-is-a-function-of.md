@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Everything that moves is a function of absolute time
 - **status:** Accepted · 2026-07-26
-- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-042--everything-that-moves-is-a-function-of) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-042--everything-that-moves-is-a-function-of-absolute-time) — this file is the detail behind it.
 - **related:** [ADR-038](./ADR-038-time-varying-state-is-computed-on-read-never.md)
 
 ---

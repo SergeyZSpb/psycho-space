@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Errors carry a trace id, and never carry the error text
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.7](../ARCHITECTURE.md#adr-024--errors-carry-a-trace-id-and-never-carry-the) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.7](../ARCHITECTURE.md#adr-024--errors-carry-a-trace-id-and-never-carry-the-error-text) — this file is the detail behind it.
 
 ---
 

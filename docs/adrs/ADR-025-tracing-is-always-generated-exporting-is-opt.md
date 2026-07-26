@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Tracing is always generated; exporting is opt-in
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.7](../ARCHITECTURE.md#adr-025--tracing-is-always-generated-exporting-is-opt) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.7](../ARCHITECTURE.md#adr-025--tracing-is-always-generated-exporting-is-opt-in) — this file is the detail behind it.
 
 ---
 

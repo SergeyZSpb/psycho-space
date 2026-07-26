@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** The broadcast tick renders from a cache, and position outlives the process
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-041--the-broadcast-tick-renders-from-a-cache-and) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-041--the-broadcast-tick-renders-from-a-cache-and-position-outlives-the-process) — this file is the detail behind it.
 
 ---
 

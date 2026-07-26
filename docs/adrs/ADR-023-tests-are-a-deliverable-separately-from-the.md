@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Tests are a deliverable, separately from the suite passing
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.6](../ARCHITECTURE.md#adr-023--tests-are-a-deliverable-separately-from-the) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.6](../ARCHITECTURE.md#adr-023--tests-are-a-deliverable-separately-from-the-suite-passing) — this file is the detail behind it.
 
 ---
 

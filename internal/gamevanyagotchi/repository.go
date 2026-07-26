@@ -65,6 +65,28 @@ type Repository interface {
 	// alone would silently erase damage — see decay.go.
 	WriteStats(ctx context.Context, q db.DBTX, petID string, rows []StatRow) error
 
+	// AppendEvents adds verbs to a pet's history, in the order given, and
+	// returns them stamped with the sequence numbers they were assigned.
+	//
+	// The log is append-only and this is what keeps it so: the next `seq` is
+	// computed inside the statement from the pet's current maximum, and a
+	// unique index on (pet_id, seq) means two connections racing to act on the
+	// same pet cannot take the same slot — the loser gets a constraint
+	// violation and retries rather than silently overwriting a sibling event.
+	//
+	// Written in the SAME transaction as the snapshot it produces (see
+	// Service.Do), so the log and the stat rows can never disagree about what
+	// happened. `at` is the server's instant for the whole batch: a batch is one
+	// acceptance, so its verbs share a time and are ordered by seq alone.
+	AppendEvents(ctx context.Context, q db.DBTX, petID string, verbs []string, at time.Time) ([]Event, error)
+
+	// Events returns a pet's history in order, oldest first.
+	//
+	// Not on the read path — the stat rows are the snapshot and are current, so
+	// a plain read never folds. This exists for replay: reproducing a pet from
+	// its history, and applying a retuned catalogue retroactively.
+	Events(ctx context.Context, q db.DBTX, petID string) ([]Event, error)
+
 	// MarkDied records the moment of death, exactly once. Reports whether this
 	// call was the one that wrote it — so the first read to observe a death is
 	// the one that records it, and every later read is a no-op.

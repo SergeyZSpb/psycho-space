@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Game content is a Go catalogue, and the schema stores only its keys
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-039--game-content-is-a-go-catalogue-and-the-schema) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-039--game-content-is-a-go-catalogue-and-the-schema-stores-only-its-keys) — this file is the detail behind it.
 
 ---
 

@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Time-varying state is computed on read, never ticked
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-038--time-varying-state-is-computed-on-read-never) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-038--time-varying-state-is-computed-on-read-never-ticked) — this file is the detail behind it.
 
 ---
 

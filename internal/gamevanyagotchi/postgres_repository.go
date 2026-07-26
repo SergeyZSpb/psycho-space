@@ -3,6 +3,7 @@ package gamevanyagotchi
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
@@ -229,4 +230,80 @@ func (PostgresRepository) Revive(ctx context.Context, q db.DBTX, petID string) e
 		petID,
 	)
 	return err
+}
+
+// AppendEvents writes a batch of verbs as one contiguous run of sequence
+// numbers.
+//
+// The sequence is computed INSIDE the statement, from the pet's current
+// maximum, so no read-then-write window exists for two connections to race in.
+// `WITH ORDINALITY` is what preserves the caller's order: a batch of verbs
+// arrives as a list whose order is meaningful — drink-then-relieve is a
+// different pet from relieve-then-drink — and unnest alone promises nothing
+// about the order rows come back in.
+func (PostgresRepository) AppendEvents(ctx context.Context, q db.DBTX, petID string, verbs []string, at time.Time) ([]Event, error) {
+	if len(verbs) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx,
+		`WITH base AS (
+		     SELECT COALESCE(MAX(seq), 0) AS n FROM game_vanyagotchi_events WHERE pet_id = $1::uuid
+		 )
+		 INSERT INTO game_vanyagotchi_events (pet_id, seq, verb, at)
+		 SELECT $1::uuid, base.n + v.ord, v.verb, $3::timestamptz
+		   FROM unnest($2::text[]) WITH ORDINALITY AS v(verb, ord), base
+		 RETURNING seq, verb, at`,
+		petID, verbs, at,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]Event, 0, len(verbs))
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.Seq, &e.Verb, &e.At); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// RETURNING does not promise an order, and a caller replaying these must
+	// see them in the order they were applied.
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}
+
+// Events reads a pet's whole history, oldest first.
+//
+// Ordered by seq rather than by at, because a batch shares one instant and only
+// seq distinguishes the verbs inside it. Soft-deleted rows are excluded like
+// everywhere else, though nothing deletes an event today — the log is
+// append-only by design and the column exists for consistency with every other
+// table rather than for a use anybody has.
+func (PostgresRepository) Events(ctx context.Context, q db.DBTX, petID string) ([]Event, error) {
+	rows, err := q.Query(ctx,
+		`SELECT seq, verb, at
+		   FROM game_vanyagotchi_events
+		  WHERE pet_id = $1::uuid AND deleted_at IS NULL
+		  ORDER BY seq`,
+		petID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.Seq, &e.Verb, &e.At); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

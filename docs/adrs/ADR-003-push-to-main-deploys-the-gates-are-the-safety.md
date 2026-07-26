@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Push to main deploys; the gates are the safety net
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.1](../ARCHITECTURE.md#adr-003--push-to-main-deploys-the-gates-are-the-safety) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.1](../ARCHITECTURE.md#adr-003--push-to-main-deploys-the-gates-are-the-safety-net) — this file is the detail behind it.
 
 ---
 

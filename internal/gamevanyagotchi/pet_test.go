@@ -58,6 +58,15 @@ type fakeRepo struct {
 	// while every stat is re-stamped together, and a response cannot show that.
 	writes  int
 	written [][]StatRow
+	// appended is the pet's event log, in the order the fake was handed it.
+	// The verbs AND their order are what a test checks: a batch is folded in
+	// sequence, so drink-then-relieve is a different pet from the reverse, and
+	// the log is what a replay would read back.
+	appended []Event
+	// AppendErr, when set, fails the append — so a test can prove the snapshot
+	// and the log are written together and neither survives the other failing.
+	appendErr error
+
 	// markDiedCalls counts every call; died records the instant of the calls that
 	// actually wrote. Both are needed: a second read must not even ask.
 	markDiedCalls int
@@ -1203,4 +1212,24 @@ func TestAReadThatRecordsADeathLeavesThePlaneShowingHimDead(t *testing.T) {
 	if peers[0].Pose != PoseDead {
 		t.Fatalf("the plane draws a dead Ваня as %q; want %q", peers[0].Pose, PoseDead)
 	}
+}
+
+// AppendEvents records the batch, assigning sequence numbers the way the real
+// table's statement does — from the current maximum, in the order given.
+func (f *fakeRepo) AppendEvents(_ context.Context, _ db.DBTX, _ string, verbs []string, at time.Time) ([]Event, error) {
+	if f.appendErr != nil {
+		return nil, f.appendErr
+	}
+	out := make([]Event, 0, len(verbs))
+	for _, verb := range verbs {
+		e := Event{Seq: int64(len(f.appended) + 1), Verb: verb, At: at}
+		f.appended = append(f.appended, e)
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// Events replays what was appended, oldest first.
+func (f *fakeRepo) Events(_ context.Context, _ db.DBTX, _ string) ([]Event, error) {
+	return append([]Event(nil), f.appended...), nil
 }

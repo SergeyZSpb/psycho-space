@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** A session cookie is issued even for pending and blocked accounts
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.2](../ARCHITECTURE.md#adr-007--a-session-cookie-is-issued-even-for-pending) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.2](../ARCHITECTURE.md#adr-007--a-session-cookie-is-issued-even-for-pending-and-blocked-accounts) — this file is the detail behind it.
 
 ---
 

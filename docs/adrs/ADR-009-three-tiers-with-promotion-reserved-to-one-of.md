@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Three tiers, with promotion reserved to one of them
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.3](../ARCHITECTURE.md#adr-009--three-tiers-with-promotion-reserved-to-one-of) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.3](../ARCHITECTURE.md#adr-009--three-tiers-with-promotion-reserved-to-one-of-them) — this file is the detail behind it.
 
 ---
 

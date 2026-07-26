@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** VK tokens are discarded after the profile fetch
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.2](../ARCHITECTURE.md#adr-006--vk-tokens-are-discarded-after-the-profile) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.2](../ARCHITECTURE.md#adr-006--vk-tokens-are-discarded-after-the-profile-fetch) — this file is the detail behind it.
 
 ---
 

@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Game art lives in Postgres, not in git or the binary
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.7](../ARCHITECTURE.md#adr-026--game-art-lives-in-postgres-not-in-git-or-the) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.7](../ARCHITECTURE.md#adr-026--game-art-lives-in-postgres-not-in-git-or-the-binary) — this file is the detail behind it.
 
 ---
 

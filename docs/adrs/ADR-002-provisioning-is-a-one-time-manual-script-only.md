@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Provisioning is a one-time manual script; only the app deploys from CI
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.1](../ARCHITECTURE.md#adr-002--provisioning-is-a-one-time-manual-script-only) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.1](../ARCHITECTURE.md#adr-002--provisioning-is-a-one-time-manual-script-only-the-app-deploys-from-ci) — this file is the detail behind it.
 - **code:** `scripts/bootstrap.sh` · `scripts/harden-finalize.sh`
 
 ---

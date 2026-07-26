@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** The broadcast tick is injected, and belongs to the game
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.5](../ARCHITECTURE.md#adr-034--the-broadcast-tick-is-injected-and-belongs-to) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.5](../ARCHITECTURE.md#adr-034--the-broadcast-tick-is-injected-and-belongs-to-the-game) — this file is the detail behind it.
 
 ---
 

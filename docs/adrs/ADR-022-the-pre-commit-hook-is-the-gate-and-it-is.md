@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** The pre-commit hook is the gate, and it is never skipped
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.6](../ARCHITECTURE.md#adr-022--the-pre-commit-hook-is-the-gate-and-it-is) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.6](../ARCHITECTURE.md#adr-022--the-pre-commit-hook-is-the-gate-and-it-is-never-skipped) — this file is the detail behind it.
 
 ---
 

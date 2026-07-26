@@ -17,6 +17,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/realtime"
+	"github.com/jackc/pgx/v5"
 )
 
 // BroadcastInterval is how often the plane is published: 5 Hz.
@@ -819,74 +820,111 @@ func (s *Service) State(ctx context.Context, accountID string) (State, error) {
 // deliberately from the first game, which carries its tension counter
 // client-side: a run there is ephemeral and unrecorded until it ends, and a pet
 // here is persistent.
-func (s *Service) Act(ctx context.Context, accountID, actionKey string) (State, error) {
-	action, ok := ActionByKey(actionKey)
-	if !ok {
-		return State{}, fmt.Errorf("%w: %q", ErrUnknownAction, actionKey)
+// Do is the single funnel every verb passes through, whatever delivered it.
+//
+// One place interprets a verb, so a rule — refused while dead, too far from the
+// vendor, the stock is empty — is written once and cannot be enforced on one
+// path and forgotten on another. The HTTP handler is a thin adapter onto this,
+// and an inbound socket frame is a second one.
+//
+// A BATCH IS THE GENERAL CASE AND A SINGLE ACTION IS A BATCH OF ONE. The verbs
+// are folded in order against one snapshot, so drink-then-relieve is a
+// different pet from relieve-then-drink, and the whole batch is written in one
+// transaction with the events that produced it. `at` is supplied rather than
+// taken so that the read, the fold, the write and the answer all happen at a
+// single instant — and so that the caller can hand over the broadcast tick's
+// clock, which is the one clock the rest of this game measures against.
+//
+// The whole batch is refused if ANY verb in it is refused, and nothing is
+// written. Partially applying a list is the behaviour nobody can reason about:
+// the player sees some of what they pressed take effect with no way to tell
+// which, and a replay of the log would not reproduce it.
+func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at time.Time) (State, error) {
+	if len(verbs) == 0 {
+		return s.state(ctx, accountID, at)
 	}
-	for _, e := range action.Effects {
-		if _, ok := StatByKey(e.StatKey); !ok {
-			// A catalogue that disagrees with itself — an action moving a stat
-			// that was removed. Caught here rather than silently doing nothing,
-			// because the alternative is a button that appears to work and does
-			// not.
-			return State{}, fmt.Errorf("%w: action %q moves %q", ErrUnknownStat, action.Key, e.StatKey)
+	if len(verbs) > maxBatch {
+		return State{}, ErrBatchTooLong
+	}
+
+	// Every verb is checked against the catalogue BEFORE any storage is touched.
+	// `apply` would reject an unknown one too, but only after the read path had
+	// already created the pet and seeded its stats — so a nonsense verb from a
+	// hostile client would conjure rows for an account that has never opened the
+	// game. The check is a pure catalogue lookup, and doing it here keeps the
+	// property that a rejected batch leaves nothing behind at all.
+	for _, verb := range verbs {
+		action, ok := ActionByKey(verb)
+		if !ok {
+			return State{}, fmt.Errorf("%w: %q", ErrUnknownAction, verb)
+		}
+		for _, effect := range action.Effects {
+			if _, ok := StatByKey(effect.StatKey); !ok {
+				return State{}, fmt.Errorf("%w: action %q moves %q", ErrUnknownStat, action.Key, effect.StatKey)
+			}
 		}
 	}
 
-	now := time.Now().UTC()
-	before, err := s.state(ctx, accountID, now)
+	// The read path runs FIRST, and not merely to fetch. It creates the pet,
+	// seeds any stat the catalogue has gained, and — the part that matters here
+	// — MATERIALISES a death that has already happened. A Ваня who ran out of
+	// health while nobody was looking must be recorded dead before a verb is
+	// judged against him, or reviving him would be clearing a death that was
+	// never written down.
+	before, err := s.state(ctx, accountID, at)
 	if err != nil {
 		return State{}, err
 	}
-	if !before.Alive && !action.RevivesFatal {
-		return State{}, ErrPetDead
-	}
-
-	// EVERY stat is written, not only the ones this action moves, and all of
-	// them carry the same instant. That is the invariant the coupled decay
-	// rests on: hp's drain is a function of the other stats' trajectories, so a
-	// window whose start predates a driver's own as_of has a stretch of history
-	// nobody can reconstruct. Emptying the bladder and writing only the bladder
-	// would erase the morning's damage — the value would be re-derived later
-	// from a pair that says it was never full.
-	next := make([]StatRow, 0, len(before.Stats))
-	for _, cur := range before.Stats {
-		def, ok := StatByKey(cur.Key)
-		if !ok {
-			continue
-		}
-		value := cur.Value
-		for _, e := range action.Effects {
-			if e.StatKey == cur.Key {
-				value = def.Clamp(value + e.Delta)
-			}
-		}
-		next = append(next, StatRow{Key: cur.Key, Value: value, AsOf: now})
-	}
-	if err := s.repo.WriteStats(ctx, s.q, before.Pet.ID, next); err != nil {
+	stored, err := s.storedStats(ctx, before.Pet.ID, at)
+	if err != nil {
 		return State{}, err
 	}
 
-	// Bringing him round.
+	// Folded BEFORE anything is written, so a refused batch costs no rows.
+	after := snapshotOf(stored, before.Pet.DiedAt)
+	for i, verb := range verbs {
+		next, err := apply(after, Event{Seq: int64(i + 1), Verb: verb, At: at})
+		if err != nil {
+			return State{}, err
+		}
+		after = next
+	}
+
+	// The snapshot and the events that produced it are written TOGETHER or not
+	// at all. They are two statements, and a crash between them is the one
+	// failure this model cannot absorb: a snapshot with no matching events is a
+	// pet whose history silently disagrees with its state, and no read would
+	// ever notice. Repository methods take a db.DBTX precisely so they compose
+	// this way — this is the first caller that needed it.
 	//
-	// Death is recoverable in this game, and that is a design decision rather
-	// than an unfinished one: an irreversible loss in a fifteen-person friend
-	// group is how you lose a player permanently, whereas a Ваня who has to be
-	// revived is a story somebody tells. What death costs is the fright and
-	// whatever decayed while nobody was looking — the moment of it stays
-	// recorded until he is actually back on his feet.
-	//
-	// Only if the action actually lifted the fatal stat off its floor: an action
-	// allowed on a corpse that failed to move the thing that killed him has not
-	// revived anybody.
-	if !before.Alive && action.RevivesFatal && revives(next) {
+	// A fake in a unit test is not a pool and cannot begin anything, so the
+	// transaction is taken when the handle supports one and skipped when it does
+	// not. That is not a silent downgrade in production: the composition root
+	// always passes the pool.
+	if err := s.inTx(ctx, func(q db.DBTX) error {
+		if err := s.repo.WriteStats(ctx, q, before.Pet.ID, rowsAt(after)); err != nil {
+			return err
+		}
+		_, err := s.repo.AppendEvents(ctx, q, before.Pet.ID, verbs, at)
+		return err
+	}); err != nil {
+		return State{}, err
+	}
+	// Only the CLEARING belongs here: a death is recorded by the read path, and
+	// only a verb can undo one.
+	if !before.Alive && after.Alive() {
 		if err := s.repo.Revive(ctx, s.q, before.Pet.ID); err != nil {
 			return State{}, err
 		}
 	}
+	return s.state(ctx, accountID, at)
+}
 
-	return s.state(ctx, accountID, now)
+// Act applies exactly one verb. Kept as the name the HTTP handler and the tests
+// already use, and now a batch of one — which is the same property the fold
+// itself rests on.
+func (s *Service) Act(ctx context.Context, accountID, actionKey string) (State, error) {
+	return s.Do(ctx, accountID, []string{actionKey}, time.Now().UTC())
 }
 
 // revives reports whether the rows about to be written leave every fatal stat
@@ -1029,4 +1067,61 @@ func (s *Service) statsByKey(ctx context.Context, petID string) (map[string]Stat
 		byKey[r.Key] = r
 	}
 	return byKey, nil
+}
+
+// beginner is a handle that can start a transaction. pgxpool.Pool satisfies it;
+// a fake in a unit test does not, which is the whole reason it is an assertion
+// rather than a field on Service.
+type beginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// inTx runs fn inside a transaction when the handle can provide one, and
+// directly otherwise.
+//
+// The rollback is deferred unconditionally: a commit makes it a no-op, and
+// every early return is then covered without a naked-return dance around each
+// one.
+func (s *Service) inTx(ctx context.Context, fn func(q db.DBTX) error) error {
+	b, ok := s.q.(beginner)
+	if !ok {
+		return fn(s.q)
+	}
+	tx, err := b.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// Replay recomputes a pet from its history, ignoring the stored snapshot.
+//
+// This is what the event log is FOR, and the reason a verb is recorded rather
+// than only folded into a number. Two uses, both real: reproducing a pet's
+// exact state to diagnose it, and retro-tuning — change a decay rate in the
+// catalogue and a replay produces what every pet WOULD have been under the new
+// number, instead of carrying its old history forward for ever.
+//
+// It reads nothing but the pet's creation instant and its events, and folds
+// them over `genesis` with the CURRENT catalogue. The result is deliberately
+// not written anywhere: deciding to adopt a replay is a separate act from
+// computing one, and a function that silently rewrote every pet would be a
+// migration wearing the clothes of a query.
+//
+// `to` is the instant to bring the result up to, so a caller can ask what a pet
+// looked like at any point rather than only now.
+func (s *Service) Replay(ctx context.Context, accountID string, to time.Time) (Snapshot, error) {
+	pet, ok, err := s.repo.FindPet(ctx, s.q, accountID)
+	if err != nil || !ok {
+		return Snapshot{}, err
+	}
+	events, err := s.repo.Events(ctx, s.q, pet.ID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return advance(fold(genesis(pet.CreatedAt), events), to), nil
 }

@@ -397,6 +397,15 @@ const (
 	idleChance = 0.25
 )
 
+// maxBatch is how many verbs one message may carry.
+//
+// Eight is far past what a person presses at once and far short of what makes a
+// single frame an interesting way to load the database. The cap exists because
+// a verb writes and movement does not: the socket's ten-messages-a-second bound
+// is sized for taps, and without a length limit one frame inside that bound
+// could ask for any number of transactions' worth of work.
+const maxBatch = 8
+
 // sleeperLimit is how many absent Ваняs the yard renders lying about.
 //
 // The point of them is that a solo visit is a place rather than a menu, and

@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** The close reason travels as a frame, not as a close code
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.5](../ARCHITECTURE.md#adr-018--the-close-reason-travels-as-a-frame-not-as-a) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.5](../ARCHITECTURE.md#adr-018--the-close-reason-travels-as-a-frame-not-as-a-close-code) — this file is the detail behind it.
 
 ---
 

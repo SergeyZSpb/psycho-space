@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** The prompt is laid out for prefix caching, and history is replayed as JSON
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.4](../ARCHITECTURE.md#adr-013--the-prompt-is-laid-out-for-prefix-caching-and) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.4](../ARCHITECTURE.md#adr-013--the-prompt-is-laid-out-for-prefix-caching-and-history-is-replayed-as-json) — this file is the detail behind it.
 
 ---
 

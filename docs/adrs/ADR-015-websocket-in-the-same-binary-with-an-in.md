@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** WebSocket, in the same binary, with an in-memory hub
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.5](../ARCHITECTURE.md#adr-015--websocket-in-the-same-binary-with-an-in) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.5](../ARCHITECTURE.md#adr-015--websocket-in-the-same-binary-with-an-in-memory-hub) — this file is the detail behind it.
 
 ---
 

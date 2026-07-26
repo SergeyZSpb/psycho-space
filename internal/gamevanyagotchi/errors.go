@@ -33,3 +33,12 @@ var (
 	// an action that can revive him is allowed through.
 	ErrPetDead = errors.New("gamevanyagotchi: pet is dead")
 )
+
+// ErrBatchTooLong rejects a frame carrying more verbs than maxBatch.
+//
+// A batch is folded and written in one transaction, so its length is the amount
+// of work one message can ask for. Uncapped, a single frame at the socket's
+// permitted rate is an arbitrarily large multiplier on database writes — which
+// is exactly the property movement does not have, because movement writes
+// nothing.
+var ErrBatchTooLong = errors.New("gamevanyagotchi: too many verbs in one batch")

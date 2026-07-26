@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** Game asset storage is shared infrastructure, not a game's property
 - **status:** Accepted · 2026-07-25
-- **summary:** one paragraph in [ARCHITECTURE.md §8.4](../ARCHITECTURE.md#adr-031--game-asset-storage-is-shared-infrastructure) — this file is the detail behind it.
+- **summary:** one paragraph in [ARCHITECTURE.md §8.4](../ARCHITECTURE.md#adr-031--game-asset-storage-is-shared-infrastructure-not-a-games-property) — this file is the detail behind it.
 - **code:** `internal/gameassets`
 
 ---
