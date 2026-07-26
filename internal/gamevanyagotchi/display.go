@@ -34,6 +34,12 @@ type display struct {
 	// pose below checks both.
 	diedAt *time.Time
 	stats  map[string]StatRow
+	// avatar is the OWNER's picture, not the pet's. It has a different lifecycle
+	// from everything else here — it belongs to the account, changes when the
+	// person changes it on VK, and is re-read when a client says hello — which is
+	// exactly why `remember` carries it over rather than rebuilding it: a verb
+	// that rewrites the pet's stats must not blank the face on the plane.
+	avatar string
 }
 
 // pose works out how this pet should be drawn at now.
@@ -93,6 +99,28 @@ func (s *Service) remember(accountID string, pet Pet, rows []StatRow) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The avatar survives, because it is not part of what a pet read tells us.
+	// This is called by every verb and every HTTP read, and none of them fetches
+	// an account — so rebuilding the entry from the pet alone would drop the
+	// picture the moment its owner did anything, and put it back only on their
+	// next hello. Read under the same lock that writes it, so there is no window
+	// where a concurrent setAvatar is lost.
+	entry.avatar = s.display[accountID].avatar
+	s.display[accountID] = entry
+}
+
+// setAvatar records the picture to draw on one account's Ваня.
+//
+// Separate from remember because the two have different sources and different
+// lifecycles: a pet comes from this game's own tables, an avatar from the
+// account service. Called only at hello, which is a fresh socket and therefore
+// human-paced — the tick never reaches this, and that is the rule display.go
+// exists to keep.
+func (s *Service) setAvatar(accountID, url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.display[accountID]
+	entry.avatar = url
 	s.display[accountID] = entry
 }
 
@@ -124,6 +152,19 @@ func (s *Service) load(ctx context.Context, accountID string) {
 	// The yard's furniture comes first, so the arriving player sees everybody
 	// who is asleep in it rather than an empty field followed by a pop-in.
 	s.ensureSleepers(ctx)
+
+	// The picture, before the pet, and deliberately not fatal. A hello is the one
+	// human-paced moment this is read — the tick must never reach the account
+	// service any more than it reaches Postgres — and an account service that is
+	// slow or unhappy costs this player his face for one connection rather than
+	// costing the yard its frame.
+	if s.profiles != nil {
+		if url, err := s.profiles.AvatarURL(ctx, accountID); err != nil {
+			slog.WarnContext(ctx, "gamevanyagotchi: avatar load failed", "err", err)
+		} else {
+			s.setAvatar(accountID, url)
+		}
+	}
 
 	pet, ok, err := s.repo.FindPet(ctx, s.q, accountID)
 	if err != nil {

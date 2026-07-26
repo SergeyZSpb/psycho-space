@@ -1477,3 +1477,102 @@ func TestVanyagotchiAВаняStandingAboutMuttersOverTheWire(t *testing.T) {
 		}
 	}
 }
+
+// TestVanyagotchiTheRosterCarriesTheOwnersFace drives the avatar end to end:
+// out of an encrypted column, through the account service, into the display
+// cache at hello, and onto the OTHER player's screen.
+//
+// It has to be an integration test and it has to be read on B's socket. The
+// value starts life as `avatar_url_enc` — AES-256-GCM, per-row nonce — so a unit
+// test with a fake can only prove the plumbing downstream of the decrypt; and
+// the whole point of a shared yard is that everyone sees everyone, so the
+// assertion that matters is the one made from the other end of the room.
+//
+// The URL is whatever the fake VK server handed back at login, taken from the
+// same place the production one would be rather than written in here twice.
+func TestVanyagotchiTheRosterCarriesTheOwnersFace(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, _, tick := buildAppRealtimeGame(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	cliA := loginAs(t, app.URL, "7311", "user")
+	cliB := loginAs(t, app.URL, "7312", "user")
+	for who, cli := range map[string]*http.Client{"A": cliA, "B": cliB} {
+		if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+			t.Fatalf("%s opening the game: status=%d body=%v", who, s, body)
+		}
+	}
+
+	// What the account service says A's avatar is, decrypted — the same call the
+	// game makes. Read rather than hardcoded so that changing the fake VK
+	// server's fixture cannot leave this asserting a string nothing produces.
+	want, err := newAccountService().AvatarURL(context.Background(), accountIDByUID(t, "7311"))
+	if err != nil {
+		t.Fatalf("reading A's avatar: %v", err)
+	}
+	if want == "" {
+		t.Fatal("the fake VK server gave A no avatar, so this test would assert nothing")
+	}
+
+	connA, _, err := dialRealtime(t, app.URL, cookieHeader(t, cliA, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialRealtime(t, app.URL, cookieHeader(t, cliB, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	defer connB.CloseNow()
+
+	framesA, framesB := readFrames(t, connA), readFrames(t, connB)
+	waitRegistered(t, hub, framesA)
+	waitRegistered(t, hub, framesB)
+	// A's hello is the one moment the account service is asked. Nothing on the
+	// tick reads it, which is the boundary display.go exists to keep.
+	handleA := helloAndWaitForTheLoad(t, connA, framesA)
+
+	r := expectRosterAt(t, tick, framesB, time.Now())
+	if _, ok := peerByID(r, handleA); !ok {
+		t.Fatalf("B's roster does not mention A at all: %+v", r)
+	}
+
+	// B asks for A's face by the handle B was given, over ordinary HTTP. The
+	// roster carries no URL — a couple of hundred characters five times a second
+	// for something that never changes, and the one durable thing on a frame
+	// whose identity is deliberately per-process.
+	res := getNoRedirect(t, cliB, app.URL+"/api/game-vanyagotchi/avatar/"+handleA)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusFound {
+		t.Fatalf("asking for A's face: status=%d; want 302 to the picture on his account", res.StatusCode)
+	}
+	if loc := res.Header.Get("Location"); loc != want {
+		t.Errorf("B is sent to %q for A's face; want the avatar stored on his account, %q", loc, want)
+	}
+
+	// And an entity nobody owns is an ordinary 404 rather than an error — the
+	// answer every NPC gets, and what the client falls back from.
+	miss := getNoRedirect(t, cliB, app.URL+"/api/game-vanyagotchi/avatar/npc-tungtung")
+	defer miss.Body.Close()
+	if miss.StatusCode != http.StatusNotFound {
+		t.Errorf("asking for an NPC's face: status=%d; want 404", miss.StatusCode)
+	}
+}
+
+// getNoRedirect performs one GET without following the redirect, because the
+// redirect IS the assertion — a client that followed it would leave this test
+// asserting whatever VK's CDN happened to answer.
+func getNoRedirect(t *testing.T, cli *http.Client, url string) *http.Response {
+	t.Helper()
+	noFollow := &http.Client{
+		Jar:           cli.Jar,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	res, err := noFollow.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	return res
+}

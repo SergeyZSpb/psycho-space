@@ -160,6 +160,16 @@ Two habits, and they pull in the same direction — both are about not paying to
 
 The two rules resolve any apparent conflict between them the same way: **when in doubt, do the smaller thing.** It is easier to add a seam to code that is simple than to remove one from code that is not, and the version you actually understand is the one you can change when the second use finally shows up.
 
+**Bytes on the wire are a design constraint — the audience is on a phone, on mobile data**
+
+This is played on phones, outdoors, on whatever signal the person has. So the size and frequency of what crosses the network is a first-class design input, not something to measure afterwards — and the realtime socket is where it bites, because a frame repeats forever.
+
+- **Nothing that never changes may ride on a repeating frame.** The 5 Hz roster is idempotent full state, which is the right shape (a dropped frame costs nothing) and also the expensive one: every byte in it is re-sent per player, per tick, per viewer, so the cost is quadratic in the yard. A field that is constant for the life of a session — a URL, a display name, anything derived from a durable row — is the wrong thing to put there. Publish an **identifier** and let the client fetch the constant thing once.
+- **A one-off cached request beats a repeating payload, and that is the tie-break.** These two rules pull against each other: fewer round trips is better, *and* smaller frames are better. When they conflict, prefer the request — the browser caches it and it happens once per peer, where a frame payload happens five times a second forever. A ~250-character avatar URL on the roster was about a megabit a second at ten players; the same picture fetched by peer id is zero on the socket and one cached GET per face. (ADR-037.)
+- **Then be un-chatty about the requests too.** Don't make a client issue N calls where one payload would do, don't poll for something the socket already reports, and don't send a field nobody reads. The catalogue is fetched once and everything is derived from it; keep that shape.
+- **Prefer omitting to sending empty.** `omitempty` on every optional field, absent rather than `""`, and no field that exists only to say "there is nothing here".
+- **When a payload has to grow, say what it costs** in the commit or the comment: bytes × rate × players × viewers. A number in the reasoning is what stops the next person guessing.
+
 **No legacy code — the codebase carries one way of doing each thing**
 
 When a change supersedes something, **the superseded thing goes in the same commit**. Not next week, not behind a flag, not "once the client has moved". A codebase that carries both the old and the new way of doing something is one where every reader has to work out which is live, and every future change has to be made twice or made wrong.

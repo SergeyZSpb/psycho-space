@@ -169,6 +169,10 @@ func (s *Server) Handler() http.Handler {
 			// in agreement with the first.
 			r.Get("/config", s.handleGameVanyagotchiConfig)
 			r.Get("/state", s.handleGameVanyagotchiState)
+			// The face to draw on one entity, asked for by the pseudonym the
+			// roster already published. A redirect or a 404, and the 404 is the
+			// ordinary answer for every NPC.
+			r.Get("/avatar/{peer}", s.handleGameVanyagotchiAvatar)
 		})
 
 		// Game art — shared infrastructure, NOT a game. The blob store has

@@ -274,7 +274,7 @@ func (f *fakeRepo) lastBatch(t *testing.T) []StatRow {
 // halves of Service never meet — nothing on the pet path touches the position
 // map and nothing on the plane path touches storage — so both are genuinely
 // unused here rather than being stubbed out.
-func petService(repo Repository) *Service { return NewService(nil, "yard", nil, repo) }
+func petService(repo Repository) *Service { return NewService(nil, "yard", nil, repo, nil) }
 
 // playedFor builds a repository already holding a pet and the rows it was left
 // with: the shape of an account that has been playing for a while, which is the

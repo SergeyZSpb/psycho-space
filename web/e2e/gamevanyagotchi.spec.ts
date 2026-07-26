@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 
 // «Ванягоччи» — the shared plane, at phone widths, with the socket faked.
 //
@@ -124,6 +124,64 @@ const SAY_MAX = 24;
 const SAY_FIXTURE = 'устал';
 
 /**
+ * Where the client asks for the face of the person behind an entity. Mirrored
+ * from avatarEndpoint in src/lib/vanyagotchiPlane.ts, and from the route in
+ * internal/httpapi/router.go, for the reason everything else in this file is
+ * mirrored: an address that quietly moved should fail here rather than be
+ * followed along to.
+ *
+ * The id is the LAST segment, which is the property the assertions below lean
+ * on — a client that asked for the wrong entity's face, or for one shared
+ * address for the whole yard, would draw one person on every Ваня and would
+ * otherwise look perfectly correct.
+ */
+const AVATAR_PATH = '/api/game-vanyagotchi/avatar/';
+
+/**
+ * The bytes the stub hands back for somebody who has a picture: a 1x1 PNG,
+ * base64, decoded into the response body.
+ *
+ * BYTES RATHER THAN A URL, and that is the shape of the whole iteration rather
+ * than a detail of the fixture. A face is no longer a string on a frame that
+ * this fake server could simply hand over — no roster frame carries one, because
+ * a couple of hundred unchanging characters have no business being re-sent five
+ * times a second and because a URL out of Postgres would be the one durable
+ * thing on a deliberately per-process frame. The client derives the address from
+ * the id it is drawing and fetches it, so the only way to give somebody a face
+ * here is to answer that request, exactly as the real server does.
+ *
+ * A 1x1 PNG served from this stub rather than an https URL followed to a CDN,
+ * so the suite stays deterministic and needs no network at all: pointing the
+ * fixture at a real avatar would make this a check of somebody else's uptime.
+ * The same bytes as PAINTED_IMAGE in gamevanyagotchi-pet.spec.ts.
+ */
+const FACE_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+/**
+ * What a dot draws for an art key the catalogue does not describe. Mirrored from
+ * UNKNOWN_ART in src/lib/vanyagotchiPlane.ts — a silhouette rather than a blank,
+ * because the entity is real and standing there and the only thing missing is
+ * this client's idea of what it looks like.
+ *
+ * It is what the fallbacks in this suite land on, because the stub answers the
+ * catalogue request with an empty object: no skins, so no sprite and no skin
+ * emoji either. That is the placeholder, and what the assertions using it mean
+ * is "a glyph was drawn here rather than a picture".
+ */
+const UNKNOWN_ART = '👤';
+
+/**
+ * How far a picture is inset inside its dot, in world units: `--unit * 0.136`,
+ * which is the 6/44 the rim always was.
+ *
+ * The inset IS the rim, and the rim is what stops a yard of avatars losing the
+ * one thing that says which Ваня is which. Mirrored rather than measured, so a
+ * picture quietly grown to fill its dot fails here instead of being agreed with.
+ */
+const PEER_SPRITE_INSET_UNITS = 6 / 44;
+
+/**
  * Which band an entity at this height belongs to. Mirrored from `bandFor`.
  *
  * Re-derived here rather than read off the element, so that a test asserting
@@ -169,6 +227,11 @@ interface Peer {
    * distinction: a pose is how he LOOKS and this is something he SAID.
    */
   say?: string;
+  // THERE IS NO AVATAR FIELD, and a test that gave a peer one would be
+  // describing a server that no longer exists. A face is fetched by id from
+  // AVATAR_PATH rather than broadcast, so the way this suite gives somebody a
+  // picture is stubFaces below — which is also the only way the real client can
+  // be given one, and therefore the only shape worth asserting against.
 }
 
 /**
@@ -322,8 +385,68 @@ async function stubBackend(page: Page): Promise<void> {
         },
       });
     }
+    // NOBODY HAS A FACE UNLESS A TEST SAYS SO. The client asks for one for every
+    // entity it draws — it holds no notion of what an NPC is and cannot tell a
+    // person from a regular — so without this every dot in every test in this
+    // file would fetch an avatar and be handed the catch-all's JSON, which is a
+    // 200 the browser then fails to decode. That is a slower and much stranger
+    // route to the same fallback than the answer the real server gives, which
+    // for an entity nobody has a picture of is exactly this 404.
+    if (path.startsWith(AVATAR_PATH)) return noFace(route);
     return json({});
   });
+}
+
+/**
+ * The answer the real endpoint gives for an entity with no picture: 404, and
+ * cacheable, so the browser stops asking.
+ *
+ * Mirrored from internal/httpapi/gamevanyagotchi.go, including the header,
+ * because a 404 that a shared cache could keep would be a real bug there and a
+ * stub that quietly dropped the header would let this suite agree with it.
+ */
+function noFace(route: Route): Promise<void> {
+  return route.fulfill({
+    status: 404,
+    contentType: 'application/json',
+    headers: { 'Cache-Control': 'private, max-age=300', 'X-Trace-Id': 'e2e-trace-id' },
+    body: JSON.stringify({ error: 'no_avatar', trace_id: 'e2e-trace-id' }),
+  });
+}
+
+/**
+ * Gives a named few entities a face, and records every id the client asked
+ * about.
+ *
+ * The recording is half the point. What tells "the yard drew a photograph" from
+ * "the yard drew SOMEBODY'S photograph" is which address was fetched, and the
+ * address is now derived from an id rather than sent — so a client that built
+ * it from the viewer's own id, or from the first peer in the frame, would paint
+ * one person's face onto everybody and look entirely correct in a screenshot.
+ *
+ * Registered AFTER stubBackend on purpose: Playwright tries the most recently
+ * added route first, so this one wins for the faces it knows and the catch-all's
+ * 404 covers the rest.
+ */
+async function stubFaces(page: Page, withFace: readonly string[]): Promise<{ asked: string[] }> {
+  const asked: string[] = [];
+  await page.route(`**${AVATAR_PATH}*`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const id = decodeURIComponent(path.slice(path.lastIndexOf('/') + 1));
+    asked.push(id);
+    if (!withFace.includes(id)) return noFace(route);
+    return route.fulfill({
+      status: 200,
+      contentType: 'image/png',
+      headers: { 'Cache-Control': 'private, max-age=300' },
+      // The real route answers a 302 to VK's CDN. A redirect to a `data:` URI is
+      // blocked by the browser and a redirect to a real host would put this
+      // suite on the network, so the stub serves the bytes the redirect would
+      // have led to — which is what the client actually renders either way.
+      body: Buffer.from(FACE_PNG_BASE64, 'base64'),
+    });
+  });
+  return { asked };
 }
 
 /** Copied, not imported — see the header. */
@@ -522,6 +645,21 @@ const face = (page: Page, id: string) =>
 /** One entity's name, if it has one — the element is absent when it does not. */
 const nameTag = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-label"]`);
+/**
+ * The person's own photograph on a dot, if one is being drawn.
+ *
+ * There is ONE img element on a dot and it carries either kind of picture — a
+ * VK avatar or the catalogue's sprite — so what tells them apart is the
+ * `data-test`, not the tag or the class. That distinction is the whole point of
+ * the attribute: `img.peer-sprite` would match either, so a suite written
+ * against it could not tell "the avatar reached the screen" from "a picture
+ * did", which is precisely the regression this iteration can produce.
+ */
+const avatarOf = (page: Page, id: string) =>
+  page.locator(`[data-peer="${id}"] [data-test="peer-avatar"]`);
+/** The catalogue's picture for an entity's skin, drawn when there is no avatar. */
+const spriteOf = (page: Page, id: string) =>
+  page.locator(`[data-peer="${id}"] [data-test="peer-sprite"]`);
 
 /**
  * The stylesheet's cap on a name's WIDTH, in world units: `--unit * 1.818`.
@@ -1583,6 +1721,217 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     const move = socket.sent.filter((m) => m.t === TYPE_MOVE)[0];
     expect(move.x as number).toBeCloseTo((tapX - (planeBox?.x ?? 0)) / (planeBox?.width ?? 1), 2);
     expect(move.y as number).toBeCloseTo((tapY - (planeBox?.y ?? 0)) / (planeBox?.height ?? 1), 2);
+  });
+});
+
+test.describe('«Ванягоччи» — a yard of faces, not a yard of the same face', () => {
+  // Everybody in the yard wears the same skin, so the only thing telling two
+  // players apart used to be the hashed colour under their Ваня. Each person's
+  // own VK photograph answers the question the yard actually exists to answer —
+  // which of these is my friend — and the whole of this suite is about the way
+  // it gets there.
+  //
+  // IT IS NOT ON THE WIRE. No roster frame carries a URL: a couple of hundred
+  // characters that change perhaps once a year, re-sent for every entity five
+  // times a second to everybody watching, is most of what the socket would cost
+  // at ten players on mobile data — and a URL out of Postgres would be the one
+  // thing on a deliberately per-process frame that survived a restart, linking
+  // two frames from either side of a deploy that nothing else could. So the
+  // client derives `/api/game-vanyagotchi/avatar/<id>` from the id it is already
+  // drawing and fetches it.
+  //
+  // The consequence these tests exist to pin is that it asks for EVERYTHING it
+  // draws. It holds no notion of what an NPC is and no list of who is a person,
+  // so 404 is not an error path here — it is the ordinary other half of the
+  // yard, and what it means is "draw the catalogue art".
+
+  test("a player's own face is drawn on their Ваня, and one without keeps its art", async ({
+    page,
+  }) => {
+    await stubBackend(page);
+    const faces = await stubFaces(page, ['photographed']);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    // Both at the same height, so the two are drawn at the same scale and any
+    // difference between them is the photograph rather than the depth band.
+    const Y = 0.6;
+    await socket.push(
+      roster(
+        { id: 'photographed', x: 0.3, y: Y, art: 'vanya', label: 'сосед', pose: 'fine' },
+        { id: 'anonymous', x: 0.7, y: Y, art: 'vanya', label: 'аноним', pose: 'fine' },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(2);
+
+    // The photograph, marked as a photograph. The `data-test` is what carries
+    // the distinction — one img element draws either kind of picture, so a
+    // selector on the tag or the class could not tell an avatar from a sprite.
+    await expect(avatarOf(page, 'photographed')).toHaveCount(1);
+    // ASKED FOR UNDER HIS OWN NAME. This is the assertion with teeth: the
+    // address is derived rather than delivered, so a client that derived it from
+    // the wrong thing — the viewer's id, the first peer in the frame, a single
+    // shared route — would hang one person's face on the whole yard and look
+    // perfectly right until two people with pictures stood in it at once.
+    await expect(avatarOf(page, 'photographed')).toHaveAttribute(
+      'src',
+      `${AVATAR_PATH}photographed`,
+    );
+    // The request starts here and ends at a CDN, and no part of that journey
+    // tells anybody which page of this site the viewer is on.
+    await expect(avatarOf(page, 'photographed')).toHaveAttribute(
+      'referrerpolicy',
+      'no-referrer',
+    );
+    // It is the photograph and not the catalogue's own sprite, and there is
+    // exactly one picture — nothing was drawn a second time underneath it.
+    await expect(spriteOf(page, 'photographed')).toHaveCount(0);
+    await expect(page.locator('[data-peer="photographed"] img')).toHaveCount(1);
+    // And no glyph behind it: the emoji is the fallback, not a backdrop.
+    await expect(face(page, 'photographed')).toHaveText('');
+
+    // The Ваня nobody has a picture of falls back to the art he would have had
+    // anyway — a glyph, drawn by the same element the photograph is not in. The
+    // stub answers the catalogue with an empty object, so the glyph here is the
+    // placeholder; what the assertion means is that a character was drawn rather
+    // than a picture.
+    await expect(page.locator('[data-peer="anonymous"] img')).toHaveCount(0);
+    await expect(avatarOf(page, 'anonymous')).toHaveCount(0);
+    await expect(face(page, 'anonymous')).toHaveText(UNKNOWN_ART);
+
+    // KIND-AGNOSTIC, which is the property that lets an NPC arrive with no
+    // client deploy: it asked about the entity that turned out to have no face
+    // just as readily as about the one that had. A client that decided in
+    // advance which ids were worth asking about would be carrying the cast list
+    // in the browser, and would never have made this request at all.
+    await expect.poll(() => faces.asked).toContain('anonymous');
+    expect(faces.asked).toContain('photographed');
+
+    // Both are still whole entities standing where the server put them, which is
+    // the thing a rendering change is most likely to quietly cost.
+    expect(await peerPosition(page, 'photographed')).toEqual({ x: '0.3', y: String(Y) });
+    await expect(nameTag(page, 'photographed')).toHaveText('сосед');
+    await expect(nameTag(page, 'anonymous')).toHaveText('аноним');
+  });
+
+  test('a photographed Ваня keeps the identity colour as a rim around his face', async ({
+    page,
+  }) => {
+    // THE property that makes avatars affordable at all. A picture answers "who
+    // is that" far better than a hue does — but only if you can see it, and at
+    // one world unit across a photograph is a thumbnail. The hue is what still
+    // reads from the other side of the yard, and it survives because the picture
+    // is inset rather than filling the dot: the colour is the rim, always, for
+    // an avatar exactly as it already was for a catalogue sprite.
+    await stubBackend(page);
+    await stubFaces(page, ['photographed']);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    const Y = 0.6;
+    await socket.push(roster({ id: 'photographed', x: 0.5, y: Y, art: 'vanya', pose: 'fine' }));
+    await expect(avatarOf(page, 'photographed')).toHaveCount(1);
+
+    // Every box at one instant, for the reason the unit test above the depth
+    // suite states: read as separate round trips they can straddle a reflow, and
+    // a face measured before one against a picture measured after is a mismatch
+    // that looks exactly like the bug this asserts against.
+    const drawn = await page.evaluate((id) => {
+      const dot = document.querySelector<HTMLElement>(`[data-peer="${id}"]`);
+      const faceEl = dot?.querySelector<HTMLElement>('[data-test="peer-face"]');
+      const img = dot?.querySelector<HTMLImageElement>('[data-test="peer-avatar"]');
+      if (!dot || !faceEl || !img) throw new Error(`no photograph on ${id}`);
+      const style = getComputedStyle(img);
+      return {
+        face: faceEl.getBoundingClientRect().width,
+        img: img.getBoundingClientRect().width,
+        colour: getComputedStyle(dot).backgroundColor,
+        radius: style.borderRadius,
+        fit: style.objectFit,
+        // Whether the browser really decoded the picture, rather than reserving
+        // a box for one it never got. Without this every assertion below would
+        // pass just as happily for a broken image.
+        loaded: img.naturalWidth > 0,
+      };
+    }, 'photographed');
+
+    expect(drawn.loaded, 'the browser never decoded the avatar it was given').toBe(true);
+    expect(
+      drawn.colour,
+      'the dot lost the identity colour that the photograph is supposed to be rimmed with',
+    ).not.toBe('rgba(0, 0, 0, 0)');
+    expect(drawn.colour, `the dot is painted ${drawn.colour}`).toMatch(/^rgba?\(/);
+
+    // The inset, against the stylesheet's own number rather than against
+    // "smaller than the dot": a picture one pixel in from the edge is
+    // technically inset and shows no rim a player could see.
+    const planeBox = await plane(page).boundingBox();
+    expect(planeBox, 'the plane has no box').not.toBeNull();
+    const inset =
+      PEER_SPRITE_INSET_UNITS * unitFor(planeBox?.width ?? 1) * DEPTH_SCALES[bandFor(Y)];
+    expect(
+      drawn.img,
+      'the photograph fills its dot edge to edge, leaving no identity rim at all',
+    ).toBeLessThan(drawn.face);
+    expect(
+      Math.abs(drawn.face - drawn.img - inset),
+      `the rim is ${(drawn.face - drawn.img).toFixed(1)}px against the ${inset.toFixed(1)}px the stylesheet asks for`,
+    ).toBeLessThanOrEqual(1);
+
+    // Round and cropped rather than square and squashed: a VK avatar is not
+    // necessarily square, and `object-fit: cover` is what stops a wide one being
+    // drawn as a wide face.
+    expect(drawn.radius, 'a square photograph on a round Ваня').not.toBe('0px');
+    expect(drawn.fit, 'a photograph that is not square is being distorted to fit').toBe('cover');
+  });
+
+  test('a face nobody has leaves a Ваня rather than a hole, and is asked for once', async ({
+    page,
+  }) => {
+    // A MISSING FACE MUST NEVER LEAVE A HOLE WHERE A ВАНЯ IS, and missing is the
+    // common case rather than the exceptional one: 404 is what the endpoint says
+    // about every NPC in the yard and about every player VK has no picture of.
+    // Left to itself the browser answers that with its broken-image mark, which
+    // reads as a bug in the yard rather than as a face nobody has. The `error`
+    // handler forgets the entity's picture, and the dot falls back to exactly
+    // what it would have drawn had there never been one to fetch.
+    await stubBackend(page);
+    const faces = await stubFaces(page, []);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    const standing = { id: 'faceless', x: 0.5, y: 0.6, art: 'vanya', label: 'сосед', pose: 'fine' };
+    await socket.push(roster(standing));
+    await expect(dots(page)).toHaveCount(1);
+
+    // The img goes and the glyph takes its place — not an empty face, and not an
+    // img still sitting there with nothing in it.
+    await expect(face(page, 'faceless')).toHaveText(UNKNOWN_ART);
+    await expect(page.locator('[data-peer="faceless"] img')).toHaveCount(0);
+    await expect.poll(() => faces.asked).toEqual(['faceless']);
+
+    // ASKED ONCE, and this is the assertion that costs the most to get wrong.
+    // Frames arrive five times a second and every one of them describes the same
+    // entity; a client that re-derived the fallback per frame, or that let a
+    // re-render put the img back with the same address in it, would keep the
+    // whole yard's worth of 404s on the wire for as long as the yard was open —
+    // and most of the yard is regulars, for whom the answer will never change.
+    //
+    // The frames below say something DIFFERENT each time on purpose. A frame
+    // that repeats the last one is stopped by the appearance guard and never
+    // reaches Vue at all, so a suite that pushed ten identical rosters would be
+    // asserting that nothing happened rather than that a re-render kept the
+    // fallback. A line appearing and going is the cheapest real change there is.
+    for (let i = 0; i < 10; i += 1) {
+      await socket.push(roster({ ...standing, say: i % 2 ? SAY_FIXTURE : undefined }));
+      await expect(page.locator('[data-peer="faceless"] img')).toHaveCount(0);
+    }
+    await expect(face(page, 'faceless')).toHaveText(UNKNOWN_ART);
+    expect(faces.asked, 'the yard is re-asking for a face that is not there').toEqual(['faceless']);
+
+    // He is otherwise untouched: same place, same name, still on the plane.
+    expect(await peerPosition(page, 'faceless')).toEqual({ x: '0.5', y: '0.6' });
+    await expect(nameTag(page, 'faceless')).toHaveText('сосед');
   });
 });
 

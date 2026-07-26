@@ -304,6 +304,51 @@ export interface PeerAppearance {
    * thing, which a locally-derived line could not manage.
    */
   say?: string;
+  // THERE IS NO AVATAR FIELD HERE, and its absence is a decision rather than an
+  // omission — the picture of the person behind an entity is fetched by ID, over
+  // ordinary HTTP, from GET /api/game-vanyagotchi/avatar/{id}, and never travels
+  // on a frame at all. Two reasons, and they point the same way.
+  //
+  // A URL on the wire would be re-sent for every entity five times a second for
+  // as long as anybody is looking: a couple of hundred characters that change
+  // perhaps once a year, multiplied by everybody standing in the yard and again
+  // by everybody watching it, at an audience holding phones on mobile data. And
+  // it would be the one DURABLE thing on a frame whose identity is deliberately
+  // ephemeral — a VK URL comes out of Postgres and survives a restart, while the
+  // `id` beside it is a per-process pseudonym that on purpose does not, so two
+  // frames from either side of a deploy would be linkable by the picture even
+  // though nothing else on them was.
+  //
+  // Fetching by id costs nothing on the wire and puts the picture behind the
+  // same pseudonym everything else about a person is behind. It also keeps this
+  // module kind-agnostic, which is the property the whole appearance half is
+  // built around: the client asks for every entity it draws and lets the answer
+  // decide, so a 404 — which is what every NPC and every player VK has no
+  // picture for replies — is an ordinary fallback to the catalogue art rather
+  // than a case anybody here has to recognise. Putting the field back would undo
+  // all three at once.
+}
+
+/**
+ * Where this client asks for the picture of the person behind an entity.
+ *
+ * DERIVED FROM THE ID RATHER THAN SENT WITH IT — the note in PeerAppearance
+ * above says why a URL has no business on a frame that repeats five times a
+ * second. What the derivation buys a caller is the useful half: there is no
+ * such thing as an entity this client cannot ask about, so it asks about every
+ * entity it draws and lets the answer decide, instead of reading a field whose
+ * absence it would have to interpret. A 404 is the ordinary reply — every NPC
+ * gets one, and so does every player VK has no picture of — and it means "draw
+ * the catalogue art", not "something went wrong".
+ *
+ * The id is escaped even though every one this server mints today is hex out of
+ * a hash. It is a value off the wire being pasted into a URL path, and on the
+ * day that stops being true — a pseudonym scheme carrying a slash or a question
+ * mark — an unescaped one would ask for a different route entirely rather than
+ * fail in any way that looks like a bad id.
+ */
+export function avatarEndpoint(id: string): string {
+  return `/api/game-vanyagotchi/avatar/${encodeURIComponent(id)}`;
 }
 
 /**
@@ -422,6 +467,12 @@ export function sameAppearance(
     // a frame that happened to change something else, which in a quiet yard is
     // never — the balloon would simply not appear.
     if (was.say !== look.say) return false;
+    // There is nothing here about a picture of a person, and there must not be:
+    // a face is fetched by id rather than sent, so it is not on either side of
+    // this comparison and cannot change between two frames. What DOES change —
+    // an entity arriving, leaving, or having its picture fail to load — is a
+    // change of membership or of this screen's own state, and both of those
+    // reach the DOM without a frame having to differ.
   }
   return true;
 }

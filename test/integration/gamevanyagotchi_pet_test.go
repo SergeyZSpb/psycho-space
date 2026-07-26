@@ -84,7 +84,7 @@ func petBuildApp(vkBaseURL string) (http.Handler, *gamevanyagotchi.Service) {
 		Env: "dev",
 		VK:  config.VK{AppID: "app-1", ServiceToken: "svc", RedirectURI: vkRedirect, BaseURL: vkBaseURL},
 	}
-	game := gamevanyagotchi.NewService(nil, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository())
+	game := gamevanyagotchi.NewService(nil, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository(), newAccountService())
 	h := httpapi.NewServer(httpapi.Deps{
 		Config:          cfg,
 		Pool:            pool,

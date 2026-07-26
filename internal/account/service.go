@@ -93,6 +93,21 @@ func (s *Service) GetByID(ctx context.Context, id string) (*Account, error) {
 	return s.toAccount(row)
 }
 
+// AvatarURL returns one account's avatar, decrypted, or "" when it has none.
+//
+// A narrow read for callers that want the picture and nothing else — the
+// realtime yard draws it on a Ваня. Returning the one field rather than the
+// whole Account is the point: everything else on that struct is personal data
+// the caller has no business holding, and the smallest thing that satisfies the
+// need is the one least likely to end up somewhere it should not.
+func (s *Service) AvatarURL(ctx context.Context, id string) (string, error) {
+	acc, err := s.GetByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return acc.AvatarURL, nil
+}
+
 // ListByStatus returns decrypted accounts in a given allowlist state.
 func (s *Service) ListByStatus(ctx context.Context, status string) ([]*Account, error) {
 	rows, err := s.repo.ListByStatus(ctx, s.q, status)

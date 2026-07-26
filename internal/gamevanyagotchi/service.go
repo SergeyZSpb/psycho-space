@@ -46,6 +46,24 @@ type Transport interface {
 	Members(ctx context.Context, room string) ([]realtime.Member, error)
 }
 
+// Profiles is what this game needs from the account service, and nothing more:
+// the picture to draw on somebody's Ваня.
+//
+// One method rather than the whole account, because everything else on an
+// account is personal data this package has no business holding — the narrowest
+// thing that satisfies the need is the one least likely to end up somewhere it
+// should not. Declared here so the dependency points at shared infrastructure
+// and can be faked in a test, the same shape gamekhimki uses for the asset
+// store (ADR-031).
+//
+// Nil is a supported state: a service constructed without one draws the
+// catalogue art for everybody, which is exactly what the plane did before
+// avatars existed.
+type Profiles interface {
+	// AvatarURL returns the account's avatar, or "" when it has none.
+	AvatarURL(ctx context.Context, accountID string) (string, error)
+}
+
 // How an account is named on the wire. See (*Service).pseudonym.
 const (
 	// pseudonymKeyBytes is the size of the per-process HMAC key — 32, matching
@@ -79,6 +97,10 @@ type Service struct {
 	// the composition root always supplies them.
 	q    db.DBTX
 	repo Repository
+
+	// profiles is where an avatar comes from. Read once per hello, never on the
+	// tick — see display.go for why that boundary is the whole design.
+	profiles Profiles
 
 	// pseudonymKey turns an account id into the handle that goes on the wire.
 	// Read-only after construction, so it needs no lock. See pseudonym.
@@ -225,7 +247,7 @@ type placement struct {
 // accepts frames from; the caller supplies it so the game does not hardcode a
 // name the platform's allowlist also owns. q and repo are the durable half and
 // may both be nil for a caller that only drives the plane.
-func NewService(transport Transport, room string, q db.DBTX, repo Repository) *Service {
+func NewService(transport Transport, room string, q db.DBTX, repo Repository, profiles Profiles) *Service {
 	key := make([]byte, pseudonymKeyBytes)
 	// crypto/rand, never math/rand: this key is the only thing standing between
 	// a broadcast handle and the account id behind it, so a guessable one would
@@ -238,6 +260,7 @@ func NewService(transport Transport, room string, q db.DBTX, repo Repository) *S
 		room:         room,
 		q:            q,
 		repo:         repo,
+		profiles:     profiles,
 		pseudonymKey: key,
 		pos:          make(map[string]placement),
 		display:      make(map[string]display),
@@ -271,6 +294,37 @@ func NewService(transport Transport, room string, q db.DBTX, repo Repository) *S
 func (s *Service) pseudonym(accountID string) string {
 	sum := crypto.HMACSHA256(s.pseudonymKey, []byte(accountID))
 	return base64.RawURLEncoding.EncodeToString(sum)[:pseudonymChars]
+}
+
+// AvatarFor returns the picture to draw on the entity the roster calls handle,
+// and reports whether there is one.
+//
+// THE PSEUDONYM IS THE LOOKUP KEY, and that is what keeps a durable identifier
+// off the broadcast entirely. A URL on the frame would be a couple of hundred
+// characters re-sent for every player five times a second, and — worse — the one
+// thing on an ephemeral frame that survives a restart. Asking for it by the
+// handle the client already has costs nothing on the wire and puts the picture
+// behind exactly the same per-process pseudonym everything else about a person
+// is behind.
+//
+// A linear scan rather than a reverse map, for the same reason the hub does one
+// per id: a yard is tens of entities, the derivation is one HMAC each, and a
+// second map would be a second thing to keep in step with the first — with a
+// stale entry serving one person's face for another, which is the worst bug this
+// code could have.
+//
+// An unknown handle is not an error. It is the ordinary answer for every NPC —
+// none of them is a person and none has an account — and for anybody whose hello
+// has not landed yet.
+func (s *Service) AvatarFor(handle string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for accountID, d := range s.display {
+		if d.avatar != "" && s.pseudonym(accountID) == handle {
+			return d.avatar, true
+		}
+	}
+	return "", false
 }
 
 // HandleInbound implements realtime.Handler.

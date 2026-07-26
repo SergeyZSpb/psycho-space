@@ -115,6 +115,21 @@ type Peer struct {
 	// pool arrives later on this same field, which is why it is a string rather
 	// than a second pose: a pose is how he looks, and this is something he said.
 	Say string `json:"say,omitempty"`
+	// THERE IS NO AVATAR FIELD, and its absence is a decision rather than an
+	// omission. A picture is fetched by ID over ordinary HTTP — see
+	// Service.AvatarFor and GET /api/game-vanyagotchi/avatar/{peer} — for two
+	// reasons that point the same way.
+	//
+	// A URL on this frame would be re-sent for every player five times a second
+	// forever: a couple of hundred characters that never change, multiplied by
+	// the number of people in the yard and again by the number watching. And it
+	// would be the one DURABLE thing on an otherwise ephemeral frame — a VK URL
+	// comes from Postgres and survives a restart, while ID beside it is a
+	// per-process pseudonym that deliberately does not, so two frames from
+	// either side of a deploy would be linkable by it.
+	//
+	// Fetching by ID costs nothing on the wire and puts the picture behind the
+	// same pseudonym everything else about a person is behind (ADR-037).
 }
 
 // You tells one client which entity in the roster is its own. It is the answer

@@ -119,7 +119,35 @@
                from numbers only its owner can see, so your Ваня would look ill
                to you and fine to everybody standing next to him. -->
           <span class="peer-face" data-test="peer-face" :data-condition="peer.pose">
-            <img v-if="peer.image" class="peer-sprite" :src="peer.image" alt="" />
+            <!-- ONE element for both kinds of picture — the person's own VK
+                 avatar and the catalogue's sprite — because they are the same
+                 thing to draw: a round picture inset by a world unit so the
+                 identity colour survives as a rim. A second img would be a
+                 second place to keep that true.
+                 What the two are NOT is the same thing to a test, so the
+                 `data-test` says which one this is rather than merely that a
+                 picture is there. That is the difference between "the avatar
+                 reached the screen" and "something did", and a selector on the
+                 class could not tell them apart at all.
+                 `referrerpolicy="no-referrer"`: this request starts at our own
+                 origin but does not end there — the endpoint answers a redirect
+                 to a third-party CDN, and the policy travels with the fetch
+                 across it, so the CDN is never told which page of this site the
+                 viewer is on. It costs nothing and it is the whole of what the
+                 browser would otherwise volunteer.
+                 A face that does not arrive — a 404, which is the ordinary
+                 answer for an NPC and for anybody VK has no picture of, or a
+                 CDN that is down — falls back to the catalogue art rather than
+                 drawing the browser's broken-image mark; see onArtError. -->
+            <img
+              v-if="peer.image"
+              class="peer-sprite"
+              :data-test="peer.avatar ? 'peer-avatar' : 'peer-sprite'"
+              :src="peer.image"
+              alt=""
+              referrerpolicy="no-referrer"
+              @error="onArtError(peer)"
+            />
             <template v-else>{{ peer.emoji }}</template>
           </span>
           <!-- Absent until a Ваня has been named, which is most of them today. -->
@@ -206,6 +234,7 @@ import { useGameVanyagotchiStore } from '../stores/gameVanyagotchi';
 import {
   applyFrame,
   applyPosition,
+  avatarEndpoint,
   isRenderablePosition,
   readAppearances,
   readHere,
@@ -487,6 +516,47 @@ const appearance = shallowRef<readonly PeerAppearance[]>([]);
 const here = ref(0);
 
 /**
+ * The entities whose face this browser has already asked for and not got.
+ *
+ * Keyed by the entity's id, which is now the same thing as keying by the URL,
+ * because the URL is derived from the id rather than sent alongside it: one
+ * entity has exactly one address for as long as the process it lives in does.
+ * What that costs is worth naming rather than discovering — a picture that
+ * appears mid-session, for somebody who had none when the yard first asked, is
+ * not picked up until the page is reloaded. That is the right way round anyway,
+ * because the alternative is asking again for a picture that is not there, and
+ * most of the yard is NPCs, for whom 404 is not a temporary condition.
+ *
+ * Reactive because `drawn` reads it; it is the one thing in this screen's
+ * imperative half that has to notify.
+ */
+const brokenAvatars = ref(new Set<string>());
+
+/**
+ * A face that did not arrive, remembered so the fallback can take over.
+ *
+ * A MISSING AVATAR MUST NEVER LEAVE A HOLE WHERE A ВАНЯ IS, and missing is the
+ * common case rather than the exceptional one: the endpoint answers 404 for
+ * every NPC in the yard and for every player VK has no picture of, and beyond
+ * that the picture itself comes from a CDN this project neither runs nor can
+ * repair. Left to itself the browser answers all of those with its broken-image
+ * mark, which reads as a bug in the yard rather than as a face nobody has.
+ *
+ * Remembering it is also what stops the asking repeating. The browser is told
+ * to cache the answer for five minutes, 404s included, but a cache is a
+ * courtesy and the keyed list rebuilds an element every time the yard's
+ * membership changes; this makes the fallback a fact of the render rather than
+ * something re-derived from a request that may go out again.
+ */
+function onArtError(peer: { id: string; avatar: boolean }): void {
+  // False when the picture that failed was a catalogue sprite rather than a
+  // face. That is this server's own asset store and its own bug to fix, and
+  // there is no third picture to fall back to, so it is left alone.
+  if (!peer.avatar || brokenAvatars.value.has(peer.id)) return;
+  brokenAvatars.value.add(peer.id);
+}
+
+/**
  * Everybody, ready to draw: the wire's appearance with its art key resolved
  * against the catalogue this screen already fetched.
  *
@@ -494,9 +564,41 @@ const here = ref(0);
  * plane runs on the socket and the catalogue comes over HTTP, so the yard is
  * routinely populated before it lands, and every dot is a placeholder until it
  * does.
+ *
+ * THREE THINGS CAN BE DRAWN ON A DOT AND THEY ARE RANKED, most personal first:
+ * the person's own VK avatar, then the catalogue's sprite for their skin, then
+ * the catalogue's emoji. The avatar wins because it answers the question the
+ * yard is actually for — which of these is my friend — and the skin below it
+ * answers only what kind of thing this is, which in a yard where everybody wears
+ * the same Ваня is no answer at all. The identity colour survives underneath all
+ * three as the rim, so the two questions are still layered rather than traded.
  */
 const drawn = computed(() =>
-  appearance.value.map((peer) => ({ ...peer, ...resolveArt(config.value?.skins, peer.art) })),
+  appearance.value.map((peer) => {
+    const art = resolveArt(config.value?.skins, peer.art);
+    // ASKED FOR ON EVERY ENTITY, AND THE ADDRESS IS DERIVED RATHER THAN READ.
+    // No frame carries a URL — a couple of hundred unchanging characters
+    // re-broadcast five times a second to everybody would be most of what the
+    // socket costs, and a URL out of Postgres would also be the one thing on an
+    // otherwise per-process frame that survived a restart. So the endpoint is
+    // built from the id, which means there is no field whose absence this screen
+    // would have to interpret, which in turn is what keeps it kind-agnostic: it
+    // holds no notion of what an NPC is, asks for every face it draws, and lets
+    // the 404 be the answer. Special-casing the ids that look like regulars
+    // would put the cast list in the browser and make adding one a deploy.
+    const avatar = brokenAvatars.value.has(peer.id) ? undefined : avatarEndpoint(peer.id);
+    return {
+      ...peer,
+      ...art,
+      // Overrides `art.image`, so the template keeps its single `v-if` on one
+      // field and never has to know which of the two kinds of picture it is
+      // showing. `avatar` is what says which — see the img's `data-test` — and
+      // it is a flag rather than the URL because the URL is now recoverable
+      // from the id anywhere it is wanted.
+      image: avatar ?? art.image,
+      avatar: avatar !== undefined,
+    };
+  }),
 );
 
 let release: (() => void) | undefined;

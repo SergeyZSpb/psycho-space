@@ -121,7 +121,7 @@ func main() {
 	// so it is not the background timer this project rules out. It is created
 	// here rather than inside the service so tests can drive the same loop from a
 	// channel they control and never sleep.
-	gameVanyagotchiSvc := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository())
+	gameVanyagotchiSvc := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository(), accounts)
 	vanyaTicker := time.NewTicker(gamevanyagotchi.BroadcastInterval)
 	defer vanyaTicker.Stop()
 	go gameVanyagotchiSvc.Run(hubCtx, vanyaTicker.C)

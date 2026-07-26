@@ -13,6 +13,7 @@ import {
   Y_PROPERTY,
   applyFrame,
   applyPosition,
+  avatarEndpoint,
   bandFor,
   capLabel,
   capSay,
@@ -410,6 +411,45 @@ describe('readAppearances', () => {
     // Handed straight to a shallowRef and never mutated in place, exactly like
     // the store's peerIds.
     expect(Object.isFrozen(readAppearances([peer()]))).toBe(true);
+  });
+});
+
+describe('avatarEndpoint', () => {
+  // The other half of the wire shape above. A frame says WHO is standing in the
+  // yard and what kind of thing each one is; it deliberately says nothing about
+  // where the picture of the person behind an entity lives, because a URL that
+  // never changes has no business being re-sent five times a second and because
+  // a URL out of Postgres would be the one durable thing on an otherwise
+  // per-process frame. So the address is derived from the id instead, and these
+  // tests are what stop that derivation being quietly altered — every entity
+  // must map to its OWN face and to nobody else's.
+
+  it('asks the game for the face of the entity it names', () => {
+    expect(avatarEndpoint('c0ffee')).toBe('/api/game-vanyagotchi/avatar/c0ffee');
+  });
+
+  it('asks a different address for every entity', () => {
+    // The property that matters, and the one a template bug would break first:
+    // building the URL from anything shared — the viewer's own id, the first
+    // peer in the frame — would draw one person's face on the whole yard.
+    expect(avatarEndpoint('a')).not.toBe(avatarEndpoint('b'));
+  });
+
+  it('is a path on this origin, not an address anybody off it chose', () => {
+    // Same-origin and rooted, so the browser sends the session cookie and so
+    // that no value arriving on a socket frame can ever become the host a
+    // picture is fetched from. The redirect to the CDN is the server's decision
+    // to make and it makes it after checking; this client never has one to make.
+    expect(avatarEndpoint('c0ffee').startsWith('/api/game-vanyagotchi/avatar/')).toBe(true);
+  });
+
+  it('escapes an id, because an id is a value off the wire', () => {
+    // Hex today, and this test is about the day it is not. An id carrying a
+    // slash would otherwise ask for a route one level down rather than for a
+    // face, and a `?` would turn the rest of it into a query string — both of
+    // which fail as something other than "that entity has no picture".
+    expect(avatarEndpoint('a/b')).toBe('/api/game-vanyagotchi/avatar/a%2Fb');
+    expect(avatarEndpoint('a?b#c')).toBe('/api/game-vanyagotchi/avatar/a%3Fb%23c');
   });
 });
 

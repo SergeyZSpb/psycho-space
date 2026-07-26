@@ -340,7 +340,7 @@ func withoutNPCs(r Roster) []Peer {
 func TestBroadcastPlacesANewConnectionAtTheSpawn(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -367,7 +367,7 @@ func TestBroadcastPlacesANewConnectionAtTheSpawn(t *testing.T) {
 func TestMoveShowsUpInTheNextFrame(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	// A tick before the tap. It is what puts him at the spawn, and it is what
 	// gives the walk a clock to be measured from — a tap that arrives before the
@@ -410,7 +410,7 @@ func TestMoveShowsUpInTheNextFrame(t *testing.T) {
 func TestATapStartsAJourneyRatherThanATeleport(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -465,7 +465,7 @@ func TestATapStartsAJourneyRatherThanATeleport(t *testing.T) {
 func TestATapMidJourneyRetargetsFromWhereHeActuallyIs(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	// Standing somewhere that is NOT the spawn, so "from where he is" and "from
 	// the default" cannot look the same.
@@ -528,7 +528,7 @@ func TestATapMidJourneyRetargetsFromWhereHeActuallyIs(t *testing.T) {
 func TestGivingUpIsDecidedOnceAndShownToEverybody(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("watching"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	w := tapUntilHeGivesUp(t, svc, member("a"), Point{X: 1, Y: 1})
 	sat := lerp(w.from, w.to, w.stopAt)
@@ -616,7 +616,7 @@ func TestGivingUpIsDecidedOnceAndShownToEverybody(t *testing.T) {
 func TestEveryFrameIsFullState(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	for i := 0; i < 3; i++ {
 		if err := svc.broadcast(context.Background(), at(0)); err != nil {
@@ -654,7 +654,7 @@ func TestEveryFrameIsFullState(t *testing.T) {
 func TestLeavingRemovesAPeerFromTheFrameAtOnce(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -684,7 +684,7 @@ func TestLeavingRemovesAPeerFromTheFrameAtOnce(t *testing.T) {
 // empty" question behind traffic.
 func TestAnEmptyRoomPublishesNothing(t *testing.T) {
 	tr := &fakeTransport{}
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -704,7 +704,7 @@ func TestAnEmptyRoomPublishesNothing(t *testing.T) {
 func TestAReloadKeepsYourPlace(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	svc.HandleInbound(context.Background(), member("a"), testRoom,
 		[]byte(`{"t":"vanyagotchi_move","x":0.4,"y":0.4}`))
@@ -749,7 +749,7 @@ func TestAReloadKeepsYourPlace(t *testing.T) {
 func TestAnEmptyRoomForgetsAPlacementNobodyChose(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("chose"), member("drifted"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -803,7 +803,7 @@ func TestAnEmptyRoomForgetsAPlacementNobodyChose(t *testing.T) {
 func TestComingBackAfterTheGraceWakesHimWhereHeWasLyingDown(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("watching"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -861,7 +861,7 @@ func TestComingBackAfterTheGraceWakesHimWhereHeWasLyingDown(t *testing.T) {
 func TestRejectedFramesLeaveThePositionAlone(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	svc.HandleInbound(context.Background(), member("a"), testRoom,
 		[]byte(`{"t":"vanyagotchi_move","x":0.8,"y":0.2}`))
@@ -891,7 +891,7 @@ func TestRejectedFramesLeaveThePositionAlone(t *testing.T) {
 func TestFramesFromAnotherRoomAreIgnored(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	svc.HandleInbound(context.Background(), member("a"), "somewhere-else",
 		[]byte(`{"t":"vanyagotchi_move","x":0.9,"y":0.9}`))
@@ -911,7 +911,7 @@ func TestFramesFromAnotherRoomAreIgnored(t *testing.T) {
 func TestRunPublishesOnEachTick(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -938,7 +938,7 @@ func TestRunPublishesOnEachTick(t *testing.T) {
 // dies.
 func TestRunStopsWhenTheHubIsGone(t *testing.T) {
 	tr := &fakeTransport{membersErr: realtime.ErrHubClosed}
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	tick := make(chan time.Time, 1)
 	tick <- time.Time{}
@@ -958,7 +958,7 @@ func TestRunStopsWhenTheHubIsGone(t *testing.T) {
 func TestRunSurvivesATransientPublishFailure(t *testing.T) {
 	tr := &fakeTransport{publishErr: errors.New("transient")}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -985,7 +985,7 @@ func TestRunSurvivesATransientPublishFailure(t *testing.T) {
 func TestConcurrentMovesAreSafe(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"), member("c"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	var wg sync.WaitGroup
 	for _, id := range []string{"a", "b", "c"} {
@@ -1017,7 +1017,7 @@ func TestConcurrentMovesAreSafe(t *testing.T) {
 func TestTwoConnectionsOfOneAccountAreOneEntity(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(conn("phone", "acct-1"), conn("laptop", "acct-1"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -1053,7 +1053,7 @@ func TestAMoveFromEitherDeviceMovesTheSameEntity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tr := &fakeTransport{}
 			tr.setMembers(phone, laptop)
-			svc := NewService(tr, testRoom, nil, nil)
+			svc := NewService(tr, testRoom, nil, nil, nil)
 
 			if err := svc.broadcast(context.Background(), at(0)); err != nil {
 				t.Fatalf("broadcast: %v", err)
@@ -1084,7 +1084,7 @@ func TestAnEntityOutlivesOneOfItsConnections(t *testing.T) {
 	tr := &fakeTransport{}
 	phone, laptop := conn("phone", "acct-1"), conn("laptop", "acct-1")
 	tr.setMembers(phone, laptop)
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -1136,7 +1136,7 @@ func TestTwoAccountsAreStillTwoEntities(t *testing.T) {
 		conn("a-phone", "acct-1"), conn("a-laptop", "acct-1"),
 		conn("b-phone", "acct-2"),
 	)
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -1162,7 +1162,7 @@ func TestTwoAccountsAreStillTwoEntities(t *testing.T) {
 // to not be the account id, which is the durable cross-session handle this
 // project declines to broadcast to everybody in a room.
 func TestThePseudonymIsStableAndIsNotTheAccountID(t *testing.T) {
-	svc := NewService(&fakeTransport{}, testRoom, nil, nil)
+	svc := NewService(&fakeTransport{}, testRoom, nil, nil, nil)
 	const acct = "11111111-2222-3333-4444-555555555555"
 
 	first := svc.pseudonym(acct)
@@ -1185,7 +1185,7 @@ func TestThePseudonymIsStableAndIsNotTheAccountID(t *testing.T) {
 	// A second process is a second key, so the same account is a different
 	// entity there. That is the point of a per-process key: nothing published
 	// before a restart can be correlated with anything published after it.
-	if second := NewService(&fakeTransport{}, testRoom, nil, nil).pseudonym(acct); second == first {
+	if second := NewService(&fakeTransport{}, testRoom, nil, nil, nil).pseudonym(acct); second == first {
 		t.Fatal("two services produced the same pseudonym; the key is not per-process")
 	}
 }
@@ -1197,7 +1197,7 @@ func TestTheRosterNeverCarriesAnAccountID(t *testing.T) {
 	tr := &fakeTransport{}
 	const acct = "11111111-2222-3333-4444-555555555555"
 	tr.setMembers(conn("c-1", acct))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -1222,7 +1222,7 @@ func TestHelloIsAnsweredOnTheAskingConnectionOnly(t *testing.T) {
 	tr := &fakeTransport{}
 	asker, bystander := conn("asker", "acct-1"), conn("bystander", "acct-2")
 	tr.setMembers(asker, bystander)
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	svc.HandleInbound(context.Background(), asker, testRoom, []byte(`{"t":"vanyagotchi_hello"}`))
 
@@ -1254,7 +1254,7 @@ func TestHelloFromASecondDeviceGetsTheSameID(t *testing.T) {
 	tr := &fakeTransport{}
 	phone, laptop := conn("phone", "acct-1"), conn("laptop", "acct-1")
 	tr.setMembers(phone, laptop)
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	svc.HandleInbound(context.Background(), phone, testRoom, []byte(`{"t":"vanyagotchi_hello"}`))
 	svc.HandleInbound(context.Background(), laptop, testRoom, []byte(`{"t":"vanyagotchi_hello"}`))
@@ -1277,7 +1277,7 @@ func TestOnlyAHelloIsAnswered(t *testing.T) {
 	tr := &fakeTransport{}
 	c := conn("c-1", "acct-1")
 	tr.setMembers(c)
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	for _, payload := range []string{
 		`{"t":"vanyagotchi_move","x":0.5,"y":0.5}`,
@@ -1318,7 +1318,7 @@ func TestEveryPeerCarriesItsArtAndPoseAndOnlyANamedPetALabel(t *testing.T) {
 
 	tr := &fakeTransport{}
 	tr.setMembers(member("named"), member("nameless"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	// Cached exactly as the two human-paced events fill it — a hello, or its
 	// owner acting over HTTP. Which of the two put it there is not this test's
@@ -1370,7 +1370,7 @@ func TestEveryPeerCarriesItsArtAndPoseAndOnlyANamedPetALabel(t *testing.T) {
 func TestAPlayerTheCacheKnowsNothingAboutIsStillDrawn(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("stranger"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -1425,7 +1425,7 @@ func (noPool) QueryRow(context.Context, string, ...any) pgx.Row {
 // waiting, no polling, and no way for a passing test to be a race that happened
 // to land the right way round.
 func planeService(tr Transport, repo Repository) *Service {
-	return NewService(tr, testRoom, noPool{}, repo)
+	return NewService(tr, testRoom, noPool{}, repo, nil)
 }
 
 // queued drains everything the plane has asked to have written down.
@@ -1879,7 +1879,7 @@ func TestTheYardsRegularsAreInEveryFrame(t *testing.T) {
 	}
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	when := []time.Time{at(0), at(3), at(11)}
 	for i, now := range when {
@@ -2016,7 +2016,7 @@ func TestTheRegularsAreNotPeople(t *testing.T) {
 func TestAnAbsentPlayerLiesDownInTheYardWhereHeStood(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("goes"), member("stays"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -2071,7 +2071,7 @@ func TestAnAbsentPlayerLiesDownInTheYardWhereHeStood(t *testing.T) {
 func TestADeadSleeperIsDrawnDeadRatherThanAsleep(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("dead"), member("stays"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	died := at(-1)
 	svc.remember(accountOf("dead"), Pet{SkinKey: SkinVanya, DiedAt: &died}, nil)
@@ -2112,7 +2112,7 @@ func TestADeadSleeperIsDrawnDeadRatherThanAsleep(t *testing.T) {
 func TestSomebodyWhoNeverStoodAnywhereDoesNotLieDown(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("drifter"), member("stays"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	// Seen by the plane, never moved, never said hello.
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
@@ -2142,7 +2142,7 @@ func TestSomebodyWhoNeverStoodAnywhereDoesNotLieDown(t *testing.T) {
 // actually here this afternoon.
 func TestTheYardShowsTheMostRecentSleepersAndNoMore(t *testing.T) {
 	tr := &fakeTransport{}
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	const extra = 5
 	total := sleeperLimit + extra
@@ -2210,7 +2210,7 @@ func TestTheYardShowsTheMostRecentSleepersAndNoMore(t *testing.T) {
 func TestAnEmptyYardPublishesNothingHoweverManyAreAsleepInIt(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -2296,7 +2296,7 @@ func slotStart(t *testing.T) time.Time {
 func TestAВаняStandingAboutTalksToHimself(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	base := slotStart(t)
 	if err := svc.broadcast(context.Background(), base); err != nil {
@@ -2331,7 +2331,7 @@ func TestAВаняStandingAboutTalksToHimself(t *testing.T) {
 func TestTheMutteringStopsWithoutAnythingStoppingIt(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 	acct := accountOf("a")
 
 	base := slotStart(t)
@@ -2375,7 +2375,7 @@ func TestTheMutteringStopsWithoutAnythingStoppingIt(t *testing.T) {
 func TestEverybodyHearsTheSameMutteringAtTheSameMoment(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("watching"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	base := slotStart(t)
 	when, say := muttering(t, svc, accountOf("a"), base)
@@ -2409,7 +2409,7 @@ func TestOnlyAВаняWhoIsStandingStillSaysAnything(t *testing.T) {
 	t.Run("a walker keeps his breath", func(t *testing.T) {
 		tr := &fakeTransport{}
 		tr.setMembers(member("a"))
-		svc := NewService(tr, testRoom, nil, nil)
+		svc := NewService(tr, testRoom, nil, nil, nil)
 		acct := accountOf("a")
 
 		// An instant at which he WOULD be muttering if he were standing there,
@@ -2442,7 +2442,7 @@ func TestOnlyAВаняWhoIsStandingStillSaysAnything(t *testing.T) {
 	t.Run("a dead Ваня has nothing to add", func(t *testing.T) {
 		tr := &fakeTransport{}
 		tr.setMembers(member("a"))
-		svc := NewService(tr, testRoom, nil, nil)
+		svc := NewService(tr, testRoom, nil, nil, nil)
 		acct := accountOf("a")
 
 		died := base.Add(-time.Hour)
@@ -2468,7 +2468,7 @@ func TestOnlyAВаняWhoIsStandingStillSaysAnything(t *testing.T) {
 	t.Run("a sleeper sleeps", func(t *testing.T) {
 		tr := &fakeTransport{}
 		tr.setMembers(member("a"))
-		svc := NewService(tr, testRoom, nil, nil)
+		svc := NewService(tr, testRoom, nil, nil, nil)
 		acct := accountOf("a")
 
 		if err := svc.broadcast(context.Background(), base); err != nil {
@@ -2502,7 +2502,7 @@ func TestOnlyAВаняWhoIsStandingStillSaysAnything(t *testing.T) {
 	t.Run("the regulars are silent", func(t *testing.T) {
 		tr := &fakeTransport{}
 		tr.setMembers(member("a"))
-		svc := NewService(tr, testRoom, nil, nil)
+		svc := NewService(tr, testRoom, nil, nil, nil)
 
 		// A SWEEP rather than one instant, and that is the whole strength of
 		// this case. Checking a single moment caught a talking NPC only about
@@ -2549,7 +2549,7 @@ func TestOnlyAВаняWhoIsStandingStillSaysAnything(t *testing.T) {
 func TestTheComplaintIsChosenOnceAndCarriedOnTheWalk(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	w := tapUntilHeGivesUp(t, svc, member("a"), Point{X: 1, Y: 1})
 	if !isTiredLine(w.say) {
@@ -2635,7 +2635,7 @@ func TestPickingALineCannotRunOffTheEndOfThePool(t *testing.T) {
 func TestWhatTheServerSaysOutranksTheYardsOwnChatter(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 	acct := accountOf("a")
 
 	base := slotStart(t)
@@ -2680,7 +2680,7 @@ func TestWhatTheServerSaysOutranksTheYardsOwnChatter(t *testing.T) {
 func TestALineIsCappedToWhatTheClientWillRender(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 	acct := accountOf("a")
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
@@ -2707,7 +2707,7 @@ func TestALineIsCappedToWhatTheClientWillRender(t *testing.T) {
 func TestSayingSomethingToNobodyDrawsNobody(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("watching"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 
 	svc.Say(accountOf("absent"), "приветик", sayFor)
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
@@ -2725,7 +2725,7 @@ func TestSayingSomethingToNobodyDrawsNobody(t *testing.T) {
 func TestVerbsAreRateLimitedPerAccount(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"), member("b"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 	now := at(0)
 
 	if !svc.allowVerb(accountOf("a"), now) {
@@ -2755,7 +2755,7 @@ func TestVerbsAreRateLimitedPerAccount(t *testing.T) {
 func TestADeadВаняStillCarriesWhatTheServerSaid(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("a"))
-	svc := NewService(tr, testRoom, nil, nil)
+	svc := NewService(tr, testRoom, nil, nil, nil)
 	acct := accountOf("a")
 
 	died := at(0).Add(-time.Hour)
@@ -2816,5 +2816,163 @@ func TestRefusalLineSaysTheRightThingOrDeliberatelyNothing(t *testing.T) {
 				t.Fatalf("refusalLine(%v) = %q, want %q", c.err, got, c.want)
 			}
 		})
+	}
+}
+
+// fakeProfiles is an account service that knows one thing.
+type fakeProfiles struct {
+	url string
+	err error
+	// calls counts how often the yard asked, which is the whole point of the
+	// cache: a tick that reached this would show up here as hundreds.
+	calls int
+}
+
+func (f *fakeProfiles) AvatarURL(context.Context, string) (string, error) {
+	f.calls++
+	return f.url, f.err
+}
+
+// TestAВаняWearsHisOwnersFace is the avatar reaching the wire at all.
+func TestAВаняWearsHisOwnersFace(t *testing.T) {
+	const face = "https://example.invalid/face.jpg"
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"), member("b"))
+	svc := NewService(tr, testRoom, nil, nil, nil)
+	withFace, without := accountOf("a"), accountOf("b")
+
+	svc.remember(withFace, Pet{SkinKey: SkinVanya}, nil)
+	svc.remember(without, Pet{SkinKey: SkinVanya}, nil)
+	svc.setAvatar(withFace, face)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	// NOT on the frame — the roster carries no URL at all, deliberately. It is
+	// looked up by the handle the roster published, which is what keeps a
+	// durable identifier off a frame whose identity is per-process.
+	frames := tr.frames()
+	last := frames[len(frames)-1]
+	if _, ok := peerOf(svc, last, withFace); !ok {
+		t.Fatal("the player with a face is not in the frame")
+	}
+	// Marshalled and searched, rather than trusting that the struct has no such
+	// field: this is the assertion that the URL never reaches the wire, and it
+	// should keep failing if somebody adds one back.
+	raw, err := json.Marshal(last)
+	if err != nil {
+		t.Fatalf("marshal roster: %v", err)
+	}
+	if strings.Contains(string(raw), face) {
+		t.Fatalf("the roster frame carries the avatar URL itself: %s", raw)
+	}
+
+	got, ok := svc.AvatarFor(svc.pseudonym(withFace))
+	if !ok || got != face {
+		t.Fatalf("AvatarFor his handle = (%q, %v), want (%q, true)", got, ok, face)
+	}
+	// And it is HIS, not the yard's. A face leaking onto everybody would be a
+	// worse bug than none at all, and one a single-player test cannot see.
+	if url, ok := svc.AvatarFor(svc.pseudonym(without)); ok {
+		t.Fatalf("a player with no avatar was given %q", url)
+	}
+	// A handle nobody in the yard has is an ordinary miss, which is the answer
+	// every NPC gets.
+	if _, ok := svc.AvatarFor("not-a-handle"); ok {
+		t.Fatal("an unknown handle was matched to somebody's face")
+	}
+}
+
+// TestAVerbDoesNotBlankTheFaceOnThePlane pins the carry-over in remember.
+//
+// The trap it exists for: `remember` rebuilds a display entry from a PET, and it
+// is called by every verb and every HTTP read — none of which fetches an
+// account. Without the carry-over, pressing a button would strip your own face
+// off the plane until your next hello, which is a page reload away. It would
+// look like an intermittent rendering bug and would be very hard to attribute.
+func TestAVerbDoesNotBlankTheFaceOnThePlane(t *testing.T) {
+	const face = "https://example.invalid/face.jpg"
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil, nil)
+	acct := accountOf("a")
+
+	svc.remember(acct, Pet{SkinKey: SkinVanya}, nil)
+	svc.setAvatar(acct, face)
+	// Exactly what a verb does to the cache after it writes.
+	svc.remember(acct, Pet{SkinKey: SkinVanya}, nil)
+
+	got, ok := svc.AvatarFor(svc.pseudonym(acct))
+	if !ok || got != face {
+		t.Fatalf("AvatarFor after a pet write = (%q, %v), want (%q, true) — a verb must not strip the face off the plane", got, ok, face)
+	}
+}
+
+// TestTheYardAsksForAFaceOnceAndThenStopsAsking is the boundary display.go
+// exists to keep, applied to the account service.
+//
+// The picture is fetched when a client says HELLO — a fresh socket, so
+// human-paced — and never again. The counter is the assertion that matters: a
+// tick that reached the account service would show up here as one call per
+// frame per player, five times a second, which is the exact shape of mistake
+// that made the display cache necessary in the first place (ADR-041). It is also
+// the reason `load` asks BEFORE it fetches the pet: a slow account service must
+// cost one player his face for one connection, never the room its frame.
+func TestTheYardAsksForAFaceOnceAndThenStopsAsking(t *testing.T) {
+	const face = "https://example.invalid/face.jpg"
+	profiles := &fakeProfiles{url: face}
+	tr := &fakeTransport{}
+	tr.setMembers(member("1")) // accountOf("1") == testAccount
+	svc := NewService(tr, testRoom, noPool{}, playedFor(), profiles)
+
+	svc.load(context.Background(), testAccount)
+	if profiles.calls != 1 {
+		t.Fatalf("hello asked the account service %d times, want exactly 1", profiles.calls)
+	}
+
+	for i := 0; i < 5; i++ {
+		if err := svc.broadcast(context.Background(), at(float64(i))); err != nil {
+			t.Fatalf("broadcast %d: %v", i, err)
+		}
+	}
+	if profiles.calls != 1 {
+		t.Fatalf("after five ticks the account service had been asked %d times; the tick must never reach it", profiles.calls)
+	}
+
+	if _, ok := peerOf(svc, tr.frames()[len(tr.frames())-1], testAccount); !ok {
+		t.Fatal("the player is not in the frame")
+	}
+	got, ok := svc.AvatarFor(svc.pseudonym(testAccount))
+	if !ok || got != face {
+		t.Fatalf("AvatarFor after hello = (%q, %v), want (%q, true)", got, ok, face)
+	}
+}
+
+// TestAFaceThatCannotBeFetchedCostsOnlyTheFace pins the failure path.
+//
+// An account service that is down must not take the yard with it: the player
+// draws as the catalogue art, everybody else is unaffected, and the next hello
+// tries again. Silent to the player and logged for the operator, which is the
+// same posture every other non-fatal read in this file takes.
+func TestAFaceThatCannotBeFetchedCostsOnlyTheFace(t *testing.T) {
+	profiles := &fakeProfiles{err: errors.New("account service is down")}
+	tr := &fakeTransport{}
+	tr.setMembers(member("1")) // accountOf("1") == testAccount
+	svc := NewService(tr, testRoom, noPool{}, playedFor(), profiles)
+
+	svc.load(context.Background(), testAccount)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	got, ok := peerOf(svc, frames[len(frames)-1], testAccount)
+	if !ok {
+		t.Fatal("a player whose avatar failed to load fell out of the yard entirely")
+	}
+	if got.Art == "" {
+		t.Fatal("he is drawn as nothing at all; the catalogue art is the fallback")
+	}
+	if url, ok := svc.AvatarFor(svc.pseudonym(testAccount)); ok {
+		t.Fatalf("a failed fetch left %q behind; the lookup must miss so the client falls back", url)
 	}
 }
