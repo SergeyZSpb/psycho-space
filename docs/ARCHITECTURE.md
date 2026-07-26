@@ -4,16 +4,14 @@
 
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
-- **topic:** psycho-space at two altitudes in one file — the structural view (§1–7: logical containers, runtime flows, package layout, data model, deployment) and the numbered decision records that say *why* it has that shape (§8, append-only). `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
-- **status:** current as of «Ванягоччи» **I6 — the first Phase 2 slice** (2026-07-25): the game now has a **pet**. `migrations/008_game_vanyagotchi.sql` adds `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (the last one written by no code yet — its shape landed with the others because migrations are immutable); `internal/gamevanyagotchi/content.go` is the content catalogue and `decay.go` the pure time arithmetic; `GET /api/game-vanyagotchi/config` and `/state` and `POST /actions/{action}` are live. Stats decay lazily from `(value, as_of)` with nothing ticking, and a death is materialised once at the derived instant (**ADR-038**, **ADR-039**). Also in this slice: a position now survives a page reload (`PositionGrace` — absence is not departure). **I6b then made health a CONSEQUENCE rather than a timer**: a `beer` stat joined `bladder` as a need the player acts on, and hp's drain is raised while either is unmet — coupling that stays exact rather than approximate under three conditions recorded in **ADR-040**, the third of which (every write re-stamps every stat) is the one that silently corrupts the maths if skipped. **I7a then joined the two halves**: the roster carries each entity's art, name and derived pose so everybody sees everybody properly, fed by an in-memory display cache so the tick still never touches Postgres, and a pet's position is now written on its owner's last disconnect (and on shutdown) so a deploy stops teleporting the yard to the middle (**ADR-041**). **I7b made the world move**: two NPCs evaluated closed-form on that same tick (which earns the motion-pattern table), a player's tap becoming a WALK with a server-decided tiredness roll so distance finally means something, and — the payoff of durable position — absent players rendered **asleep where they stood**, so the yard is never empty (**ADR-042**). Previously current as of I5, **Phase 1 complete**. One Go binary (embedded Vue SPA + `/api`) behind nginx on a single Ubuntu box, PostgreSQL 16 local. The realtime transport is shipped, carries a `bye` frame, and now has three game seams — inbound `Handler`, `Hub.Members`, and `Hub.PublishTo` for a unicast reply (ADR-033, ADR-037) — plus a 30 s revalidation sweep, so a socket can no longer outlive its own session. Two games are in play: **«Смолтолк в Химках»** (shipped — LLM-judged dialogue, `internal/gamekhimki/`, `/api/game-khimki/*`, the only paid path) and **«Ванягоччи»** (`internal/gamevanyagotchi/` — realtime, **no LLM on any path**; `/app/game-vanyagotchi` renders the shared plane, sends taps back, and **survives a deploy** — it reconnects with jittered backoff, treats a revoked session as terminal, and shows one entity per **account** under a per-process pseudonym (ADR-037). It now also has a **pet** — three tables, a content catalogue, lazily-decaying stats and a recorded death — so it is the first thing in this game that outlives the process). §8 was created on 2026-07-25 by merging `docs/DESIGN.md` into this file — 26 records, bodies moved verbatim — ADR-027…034 and ADR-037 were appended the same day, and four records were withdrawn the same day for failing the log's architecture bar, so the numbering has permanent gaps. **ADR-038, ADR-039 and ADR-040 arrived with the pet** and are the three that govern how anything time-varying and anything content-shaped is built from here on — 040 amends 038 by naming the one shape in which coupling between stats is still exact. **ADR-041 and ADR-042 arrived with the plane**: what the tick may read, and the rule that everything which moves is a function of absolute time rather than an accumulation. **A docs-only sweep on 2026-07-26 then brought §1–5 level with the shipped game** — no behaviour changed and no record was earned. Four gaps closed: `gamevanyagotchi` and the realtime hub were **absent from the §1 container diagram** along with the WebSocket path (it depicted a system with one game and no realtime); **§2.6 *One tick of the yard*** is new and is the runtime view of the plane (hello fills the cache, a tap becomes a walk, the 5 Hz broadcast, the position written on the last disconnect) — the old §2.6 Deploy is now **§2.7**; **§3 gained a structural view of the SPA**, promoting *membership is reactive, positions are not* from a prose aside into the structure that enforces it; and **§5 gained the realtime wire contract**, which existed only in Go structs and a hand-mirrored TypeScript copy.
-- **rename complete (2026-07-25):** game 1 moved off generic `game` naming onto the `Game<Name>` convention (ADR-030) — package `internal/game/` → `internal/gamekhimki/` (types inside keep plain names, so `gamekhimki.Service`), table `game_runs` → `game_khimki_runs` via `migrations/007_game_khimki_rename.sql` (**`game_assets` deliberately NOT renamed** — the blob store is shared infrastructure, ADR-031), routes `/api/game/*` → `/api/game-khimki/*`, SPA `GameView.vue` → `GameKhimkiView.vue` and `/app/game` → `/app/game-khimki` with a permanent redirect. `game_key` **values** are untouched (`smalltalk_khimki`) — data, not names, and the art blobs are keyed on them. **The one-deploy-cycle `/api/game/*` alias has served its cycle and is deleted**; `TestGameKhimkiLegacyPathAliasIsGone` pins its absence, and nothing may be written against that prefix again. The `/app/game` → `/app/game-khimki` SPA redirect is permanent and stays. Sections 1–7 below describe the post-rename state.
-- **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only). For the yard specifically: `internal/gamevanyagotchi/service.go` (the verbs and the tick — `broadcast`/`place`/`cast` are §2.6 in code), `message.go` (the wire contract in §5), `content.go` (every tuning constant and every character), and on the client `web/src/views/GameVanyagotchiView.vue` + `web/src/lib/vanyagotchiPlane.ts` + `web/src/realtime/socket.ts`.
-- **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `grep -n '^#### ADR-' docs/ARCHITECTURE.md` lists every decision record; `grep -n 'TypeHello\|TypeMove\|TypeRoster\|TypeYou' internal/gamevanyagotchi/message.go` re-finds the wire types if §5 drifts.
-- **adr:** §8 is an **append-only** decision log. Never edit an accepted record's decision or reasoning. A retired decision gets a **new** record and the old one is marked `_Superseded by ADR-0NN · date_` with its body untouched; a decision that still stands but whose *mechanism* changed keeps its record with `· amended by [ADR-0NN](#anchor) — what changed` appended to the status line, and the amending record carries `· amends ADR-0NN` (ADR-017 / ADR-018 are the worked example). Status vocabulary is `Accepted` and `Superseded` only — no `Proposed`. **The bar is architecture:** a decision that shapes deployment, data, a component boundary, or the cost of a whole class of change. A tuning constant, a UI behaviour or a test-harness fix does **not** get a record however subtle its reasoning — that goes in a comment beside the code. Four records were withdrawn on 2026-07-25 for failing this bar, so **the numbering has gaps and a number is never reused**; existing references therefore never shift. Numbers are identifiers, not an ordering and not a sequence: take the next global one, wherever the group. Highest record when this was written: **ADR-042** — confirm with `grep -o 'ADR-[0-9]\{3\}' docs/ARCHITECTURE.md | sort -u | tail -1`. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id or a dead anchor, and deliberately permits gaps.
-- **done:** auth/accounts/allowlist, wishlist + comments (both upvotable), the LLM-judged game, admin + settings, tracing, rate limiting keyed on a trusted client IP — §1–7 describe all of it, §8 records the decisions behind it.
-- **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff is appended to §8 as a **new** record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
-- **related:** `../CLAUDE.md` (rules), `RUNBOOK.md` (operations — and the owner of the measurements and operational economics, notably the game's per-turn cost, which is re-measured rather than superseded), the owner's local living doc (roadmap, TODO, private operational detail). `docs/DESIGN.md` was merged into §8 here on 2026-07-25 and deleted; `git log -- docs/DESIGN.md` still resolves its history.
-- **decisions / constraints:** SPA is embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; migrations are immutable once shipped; no test-only code in production paths; **each game is a self-contained module that shares no DB or service code with any other game** — duplication between games is deliberate, and shared code is platform only (ADR-028; `CLAUDE.md` → *Games are self-contained modules*); **every game module is named `Game<Name>` at every layer** and platform packages are deliberately unprefixed (ADR-030) — with the boundary drawn at rule-versus-mechanism, so a game owns its state but not generic capabilities like the art blob store (ADR-031). Each of these has a record in §8 carrying its reasoning; do not relitigate one there by editing it.
+- **topic:** psycho-space at two altitudes — the structural view (§1–7: logical containers, runtime flows, package layout, data model, API map, security) and, in §8, a one-paragraph summary of every decision that produced that shape, each linking to its full record in `docs/adrs/`. `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
+- **status:** a current-state snapshot, deliberately not a history — `git log` holds how it got here. **One Go binary** (embedded Vue SPA + `/api` + a WebSocket) behind nginx on one Ubuntu box, PostgreSQL 16 local, no Redis and no scheduler of any kind. Login is VK ID, access is allowlist-gated. Live sections: **wishlist** (items + threaded comments, both upvotable), **admin/settings**, and **two games**. **«Смолтолк в Химках»** (`internal/gamekhimki/`) is LLM-judged dialogue and the only paid path. **«Ванягоччи»** (`internal/gamevanyagotchi/`) is realtime with **no LLM on any path**: a shared plane broadcast at 5 Hz over the hub, a Postgres-backed **pet** whose stats decay lazily from `(value, as_of)`, three closed-form NPCs, walking with server-decided tiredness, absent players drawn asleep where they stood, and speech balloons. Its splash screen is a **rules cheatsheet generated from the served catalogue**. The realtime transport carries a `bye` frame, exposes three game seams (`Handler`, `Hub.Members`, `Hub.PublishTo`), and revalidates sessions every 30 s so a socket cannot outlive its own.
+- **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only, immutable once shipped). For the yard: `internal/gamevanyagotchi/service.go` (the verbs and the tick), `message.go` (the wire contract in §5), `content.go` (every tuning constant, character and phrase), and on the client `web/src/views/GameVanyagotchiView.vue` + `web/src/lib/vanyagotchi{Plane,Pet,Rules}.ts` + `web/src/realtime/socket.ts`.
+- **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `ls docs/adrs/` lists every decision record; `grep -n 'TypeHello\|TypeMove\|TypeRoster\|TypeYou' internal/gamevanyagotchi/message.go` re-finds the wire types if §5 drifts.
+- **adr:** §8 is a **summary layer**; the records themselves are one file each in `docs/adrs/ADR-0NN-<slug>.md`. **A record states the decision as it stands TODAY and is rewritten in place when it changes** — there is no append-only rule any more, no `Superseded by`, and no amendment chains. The history of a decision lives in `git log -p docs/adrs/ADR-0NN-*.md`, which is a better record of how the thinking moved than a status line was. Adding one: create the file, add a one-paragraph summary + link under the right `### 8.x` group, take the **next global number** wherever the group. **Numbers are never reused and gaps are permanent**, so existing references never shift. Status vocabulary is `Accepted` and nothing else. **The bar is architecture** — deployment, data, a component boundary, or the cost of a whole class of change; a tuning constant, a UI behaviour or a test-harness fix gets a comment beside the code instead. Highest record: **ADR-042** — confirm with `ls docs/adrs/ | tail -1`. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id, a summary with no file, a file with no summary, and a dead link.
+- **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff gets a record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
+- **related:** `../CLAUDE.md` (rules), `RUNBOOK.md` (operations, and the owner of measurements and operational economics — notably the game's per-turn cost, which is re-measured rather than recorded here), `adrs/` (the records), the owner's local living doc (roadmap, TODO, private operational detail).
+- **decisions / constraints:** SPA embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; **migrations are immutable once shipped**; no test-only code in production paths; **nothing runs on a timer** — time-varying state is computed on read (ADR-038) and everything that moves is a function of absolute time (ADR-042); the 5 Hz tick renders from an in-memory cache and never touches Postgres (ADR-041); **each game is a self-contained module** sharing no DB or service code with any other, named `Game<Name>` at every layer, with shared *capabilities* unprefixed (ADR-028/030/031). Each has a record carrying its reasoning — read it before arguing with the rule.
 - **diagram authoring constraint:** the Mermaid blocks here must parse on GitHub, and a `;` anywhere in sequence-diagram message or note text is a **statement separator**, not punctuation — it silently breaks the whole diagram (`Parse error … got 'NEWLINE'`). Use `<br/>` or an em dash instead. Quotes, braces, `=`, and parentheses (including in a `participant X as Name (alias)`) are all safe. Validate a diagram change by rendering it, not by eye: extract each mermaid fence to its own `.mmd` file and run `npx -y @mermaid-js/mermaid-cli@latest -p pconf.json -i b.mmd -o b.svg`, where `pconf.json` is `{"args":["--no-sandbox"]}` (Chrome cannot sandbox in this environment).
 
 ---
@@ -138,9 +136,9 @@ sequenceDiagram
 
 The prompt order is load-bearing, and so is the shape of the history: static system prompt → each past turn replayed as the JSON the judge returned → one volatile message last. See [§8 → ADR-013](#adr-013--the-prompt-is-laid-out-for-prefix-caching-and-history-is-replayed-as-json) for why. Measurements and per-turn costs: `RUNBOOK.md` → *Working on the game*.
 
-### 2.4 Reading the pet in «Ванягоччи» (a GET that writes, and why)
+### 2.4 The pet in «Ванягоччи» — a GET that writes, and an action that re-stamps everything
 
-**This flow is specific to «Ванягоччи»** and is the shape every time-varying thing in the system takes ([§8 → ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked)). Nothing runs on a timer: the pet is created, its stats are seeded, they are decayed, and a death is recorded — all by the request that happened to look.
+**This flow is specific to «Ванягоччи»** and is the shape every time-varying thing in the system takes ([§8 → ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked)). It covers both halves of the pet's HTTP surface, because they are two ends of one rule rather than two features. Nothing runs on a timer, so the **read** is what creates the pet, seeds its stats, decays them and records a death — all by the request that happened to look. And an **action** is what writes: it sends a verb with no value, and the server answers with the state it computed, having re-stamped *every* stat rather than only the ones the verb moved.
 
 ```mermaid
 sequenceDiagram
@@ -210,7 +208,7 @@ The reason arrives as a **frame**, not as a WebSocket close code — a browser s
 
 ### 2.6 One tick of the yard
 
-**This flow is «Ванягоччи»** and it is the other half of the game — §2.4 above is the pet in Postgres, this is the plane in memory. Three things happen at three different rates, and keeping them apart is the whole design: the **database is read once**, when a client says hello; a **tap** is accepted whenever one arrives; and the **broadcast runs five times a second and touches nothing but memory**.
+**This flow is «Ванягоччи»** and it is the other half of the game — [§2.4](#24-the-pet-in-ванягоччи--a-get-that-writes-and-an-action-that-re-stamps-everything) is the pet in Postgres, this is the plane in memory. Three things happen at three different rates, and keeping them apart is the whole design: the **database is read once**, when a client says hello; a **tap** is accepted whenever one arrives; and the **broadcast runs five times a second and touches nothing but memory**.
 
 ```mermaid
 sequenceDiagram
@@ -490,7 +488,7 @@ erDiagram
     }
 ```
 
-`game_assets` and `app_settings` stand apart — neither references an account. The art bytes live in Postgres, not in git and not in the binary. See [§8 → ADR-026](#adr-026--game-art-lives-in-postgres-not-in-git-or-the-binary) for why (that record predates the rename and names the table `game_assets`; [ADR-030](#adr-030--game-modules-are-named-gamename) is the amendment).
+`game_assets` and `app_settings` stand apart — neither references an account. The art bytes live in Postgres, not in git and not in the binary. See [§8 → ADR-026](#adr-026--game-art-lives-in-postgres-not-in-git-or-the-binary) for why, and [ADR-031](#adr-031--game-asset-storage-is-shared-infrastructure-not-a-games-property) for why the table stayed unprefixed while every other game table gained its game's name.
 
 The three `game_vanyagotchi_*` tables are **«Ванягоччи»**, and they are shaped by two decisions worth knowing before changing them. **Every `*_key` column is `text` whose meaning lives in the Go catalogue, never a Postgres enum** — an enum makes each new stat, skin, location or object kind an `ALTER TYPE`, i.e. a permanent migration, which is exactly the cost the catalogue exists to remove ([§8 → ADR-039](#adr-039--game-content-is-a-go-catalogue-and-the-schema-stores-only-its-keys)). And **stats are tall while world objects are wide, on purpose**: stats are a homogeneous collection of `(value, as_of)` pairs that one decay expression covers, whereas world objects are heterogeneous rows carrying contended invariants — `claimed_by`, `remaining`, `exhausted_at` — that have to be indexable and `CHECK`-able. The tall shape pays for itself again in the coupling: a stat that raises another's drain is a catalogue entry naming a key, and adding one costs no column ([§8 → ADR-040](#adr-040--a-stat-may-drive-another-stats-rate-and-it-is-still-exact)). It also carries the invariant that coupling depends on — **every write touches every row of a pet, with one shared `as_of`** — so there is deliberately no single-stat write path. There is no JSONB in either. `game_vanyagotchi_world_objects` is written by no code yet; its shape landed with the other two because migrations are immutable, and the one-active-per-kind invariant is a partial unique index that an integration test pins today.
 
@@ -585,16 +583,20 @@ The code says *what*, and comments say *why this line*. Neither says why the sys
 
 Four records were withdrawn on 2026-07-25 for failing that bar — an animation speed, a nav-drawer flourish, a test-harness race, and a note about defensive code that was correctly absent. Each one's reasoning still exists as a comment beside the code, which is where it was always more useful. **Withdrawal leaves a permanent gap in the numbering:** a number is never reused, so every existing reference keeps meaning what it meant, and `git log` still has the withdrawn text.
 
-Sections 1–7 above are the structural view — what the system is made of and how it behaves. The records below are the other altitude: the durable decisions that produced that shape, each with the reasoning, and where one exists the measurement or the failure that settled it. They are grouped by subject, and a record describes a decision rather than the current code, which the sections above already cover.
+Sections 1–7 above are the structural view — what the system is made of and how it behaves. The records below are the other altitude: the durable decisions that produced that shape, each with the reasoning, and where one exists the measurement or the failure that settled it. They are grouped by subject.
 
-**Records are append-only.** Never edit an accepted record's decision or its reasoning. The whole value of the log is that it says what was decided and why *at the time*; a record that has been quietly rewritten cannot be relied on for that. A decision is revisited by adding a record, never by editing one:
+**Each record is one paragraph here and a file of its own under [`docs/adrs/`](adrs/).** The paragraph says what was decided and why it matters; the file carries the full reasoning, the measurements, the alternatives that were rejected and the failures that settled it. The split exists because §8 grew to be the bulk of this document and started crowding out the structure that most readers came for — and because a decision's detail is read rarely and deliberately, while its *existence* needs to be visible at a glance.
 
-- **Retired** — the decision no longer holds. Write a new record, and leave the old one's body untouched, appending `_Superseded by ADR-0NN · <date>_` to its status line.
-- **Amended** — the decision still stands, but the mechanism that implements it changed. Keep the record, and append `· amended by [ADR-0NN](#anchor) — <what changed>` to its status line; the new record carries `· amends ADR-0NN` in its own. ADR-017 and ADR-018 are the worked example.
+**A record describes the decision as it stands today, and is rewritten in place when it changes.** This is the opposite of the append-only discipline the log used to carry, and the change is deliberate: a chain of `_Superseded by_` and `_amended by_` breadcrumbs meant that answering "what do we actually do about X?" required reading three records in the right order and working out which parts of the first two were still true. The current answer should be the thing you read first. **The history has not been lost — it moved to where history belongs:** `git log -p docs/adrs/ADR-0NN-*.md` shows every version of a decision with the commit that changed it and the message explaining why, which is a better record of *how the thinking moved* than a status line ever was.
+
+Two rules survive the change, and both are about references:
+
+- **A number is never reused, and gaps are permanent.** A withdrawn record's number stays retired, so every reference that already exists keeps meaning what it meant.
+- **A record that no longer applies at all is deleted, not repurposed** — the number goes with it into the gap list rather than being handed to a new decision.
 
 Fixing a typo or a rotted link inside a record is fine. Changing what it decided, or why, is not.
 
-**The status vocabulary is `Accepted` and `Superseded`, and nothing else.** There is no `Proposed`: a record here is written in the same commit as the change it describes, so by the time one exists the decision has already shipped. Proposals belong in the owner's living doc.
+**The status vocabulary is `Accepted`, and nothing else.** There is no `Proposed`, because a record is written in the same commit as the change it describes — by the time one exists the decision has already shipped, and proposals belong in the owner's living doc. There is no `Superseded` either, now that a record is rewritten rather than retired: a record that is still here is current, which is the whole point of the change.
 
 **The date on a record is when the record was written, not when the decision was taken.** They are usually the same day, and when they are not, the record's own commit in `git log` is the authority on the former.
 
@@ -614,25 +616,25 @@ Records 001–026 were written on 2026-07-25 when this log was created, from `do
 
 _Accepted · 2026-07-25_
 
-`go:embed internal/web/dist` compiles the built frontend into the executable, so a release is one file. nginx does TLS, headers, and a proxy — it never serves an asset or knows a path.
+The built frontend is compiled into the executable with `go:embed`, so a release is one file and nginx never serves an asset or knows a path. The cost is that a CSS-only change still rebuilds and redeploys the binary — cheaper, for one box and one maintainer, than operating a second artifact with its own cache-busting and deploy order.
 
-_Consequence:_ a CSS-only change still rebuilds and redeploys the binary. For one box and one maintainer that is cheaper than operating a second artifact with its own cache-busting and deploy order.
+[Full record → `docs/adrs/ADR-001-the-spa-is-embedded-in-the-go-binary.md`](adrs/ADR-001-the-spa-is-embedded-in-the-go-binary.md)
 
 #### ADR-002 · Provisioning is a one-time manual script; only the app deploys from CI
 
 _Accepted · 2026-07-25_
 
-`scripts/bootstrap.sh` installs Postgres, nginx, certbot, systemd units, the `deploy` user, and the CI key, then hardens SSH. It is run once, by hand, over the existing root access — and it deliberately leaves SSH listening on **both** the old and the new port so a mistake cannot lock the operator out. `scripts/harden-finalize.sh` closes the old port afterwards, once the new one is proven from a second terminal.
+`scripts/bootstrap.sh` installs the whole box — Postgres, nginx, certbot, systemd, the deploy user and the CI key — and is run once, by hand, over the existing root access. It leaves SSH on both the old and the new port so a mistake cannot lock the operator out; `harden-finalize.sh` closes the old one afterwards. The lockout-sensitive part of provisioning is exactly the part that must not run unattended from a pipeline.
 
-_Reasoning:_ the lockout-sensitive part of provisioning is exactly the part that should not run unattended from a pipeline.
+[Full record → `docs/adrs/ADR-002-provisioning-is-a-one-time-manual-script-only.md`](adrs/ADR-002-provisioning-is-a-one-time-manual-script-only.md)
 
 #### ADR-003 · Push to `main` deploys; the gates are the safety net
 
 _Accepted · 2026-07-25_
 
-There is one environment (production), one maintainer, and no staging. Feature branches are optional. What keeps that safe is that the mandatory pre-commit hook and the deploy workflow run the same suite — build, lint, unit, web, both e2e suites, integration — and the deploy is followed by an external health check.
+One environment, one maintainer, no staging: pushing to `main` deploys to production. What makes that safe is that the mandatory pre-commit hook and the deploy workflow run the same suite, followed by an external health check — so a red deploy means production is stale, which is treated as unfinished work rather than as a notification.
 
-_Consequence:_ a red deploy means production is stale. That is treated as unfinished work, not as a notification.
+[Full record → `docs/adrs/ADR-003-push-to-main-deploys-the-gates-are-the-safety.md`](adrs/ADR-003-push-to-main-deploys-the-gates-are-the-safety.md)
 
 ### 8.2 Identity and personal data
 
@@ -640,41 +642,41 @@ _Consequence:_ a red deploy means production is stale. That is treated as unfini
 
 _Accepted · 2026-07-25_
 
-A 32-byte `crypto/rand` token is delivered in an `httpOnly; Secure; SameSite=Strict` cookie; only its HMAC is stored, alongside `expires_at`.
+A 32-byte `crypto/rand` token in an `httpOnly; Secure; SameSite=Strict` cookie, stored only as its HMAC. The allowlist needs **instant** revocation — blocking someone must end their access now, not at the next expiry — and a stateless token cannot do that without a revocation list, which is a session table wearing a disguise.
 
-_Reasoning:_ the allowlist needs **instant revocation** — blocking someone has to end their access now, not at the next token expiry. A stateless token cannot do that without a revocation list, which is a session table wearing a disguise.
+[Full record → `docs/adrs/ADR-004-server-side-opaque-sessions-not-jwt.md`](adrs/ADR-004-server-side-opaque-sessions-not-jwt.md)
 
 #### ADR-005 · Personal data is encrypted at rest, and looked up through a blind index
 
 _Accepted · 2026-07-25_
 
-Profile fields are AES-256-GCM with a per-row nonce. Lookups (login, dedupe, allowlist) go through a deterministic `HMAC-SHA256(vk_user_id)` blind index, never plaintext and never a reversible identifier.
+Profile fields are AES-256-GCM with a per-row nonce, and every equality lookup goes through a deterministic `HMAC-SHA256(vk_user_id)` blind index rather than plaintext. 152-ФЗ minimisation, and its practical form: a database dump on its own should not be a list of who uses the site. The keys are load-bearing — rotating the HMAC key orphans every account and losing the encryption key makes stored profiles unrecoverable.
 
-_Reasoning:_ 152-ФЗ minimisation, and the practical version of it — a database dump on its own should not be a list of who uses the site. The cost is that equality is the only query available on those columns, which is all the application needs.
-
-_Consequence, learned the hard way:_ the keys are load-bearing. Rotating `APP_HMAC_KEY` breaks every blind index; losing `APP_ENC_KEY` makes stored profiles unrecoverable. A single row that cannot be decrypted makes the whole admin list fail — which is how the full-stack e2e suite caught its own environment reusing a database across runs with fresh keys.
+[Full record → `docs/adrs/ADR-005-personal-data-is-encrypted-at-rest-and-looked.md`](adrs/ADR-005-personal-data-is-encrypted-at-rest-and-looked.md)
 
 #### ADR-006 · VK tokens are discarded after the profile fetch
 
 _Accepted · 2026-07-25_
 
-The code exchange happens on the server with the service token; the resulting access/refresh tokens are used once to read `user_info` and then dropped.
+The code exchange happens on the server, and the resulting VK access and refresh tokens are used once to read the profile and then dropped. We never act on the user's behalf at VK, so storing a credential that would let us is pure liability.
 
-_Reasoning:_ we never act on the user's behalf at VK, so storing a credential that would let us is pure liability.
+[Full record → `docs/adrs/ADR-006-vk-tokens-are-discarded-after-the-profile.md`](adrs/ADR-006-vk-tokens-are-discarded-after-the-profile.md)
 
 #### ADR-007 · A session cookie is issued even for pending and blocked accounts
 
 _Accepted · 2026-07-25_
 
-_Reasoning:_ the SPA needs an identity to poll `/api/auth/me` with, so a waiting user's screen comes alive the instant an admin approves them, and a blocked user gets told what happened instead of a bare login screen. Authorization is unaffected — `requireAuth` still demands `status == approved`.
+A cookie is issued even to `pending` and `blocked` accounts, because the SPA needs an identity to poll `/api/auth/me` with — so a waiting user's screen comes alive the moment an admin approves them, and a blocked one is told what happened instead of seeing a bare login. It identifies without authorizing: `requireAuth` still demands `approved`.
+
+[Full record → `docs/adrs/ADR-007-a-session-cookie-is-issued-even-for-pending.md`](adrs/ADR-007-a-session-cookie-is-issued-even-for-pending.md)
 
 #### ADR-008 · Consent is a gate, not a checkbox on a form
 
 _Accepted · 2026-07-25_
 
-The VK widget is not mounted until the consent box is ticked; `consent_at` and `consent_version` are recorded server-side, and the version is bumped whenever the disclosed data set changes.
+The VK widget is not mounted until the consent box is ticked, and `consent_at` / `consent_version` are recorded server-side. Consent has to precede processing to mean anything; mounting the widget first and recording consent afterwards would reverse that order.
 
-_Reasoning:_ consent has to precede processing to mean anything. Mounting the widget first and recording consent afterwards would reverse that order.
+[Full record → `docs/adrs/ADR-008-consent-is-a-gate-not-a-checkbox-on-a-form.md`](adrs/ADR-008-consent-is-a-gate-not-a-checkbox-on-a-form.md)
 
 ### 8.3 Roles and access
 
@@ -682,17 +684,17 @@ _Reasoning:_ consent has to precede processing to mean anything. Mounting the wi
 
 _Accepted · 2026-07-25_
 
-`user < admin < superadmin`. Admins approve and block; only the superadmin promotes or demotes, and the superadmin cannot be blocked.
+`user < admin < superadmin`. Admins approve and block, only the superadmin promotes or demotes, and the superadmin cannot be blocked. One unrevokable root is the simplest structure with no state in which an admin locks out the owner or two admins demote each other.
 
-_Reasoning:_ the failure this prevents is an admin locking out the owner, or a mutual-demotion standoff. One unrevokable root is the simplest structure that has no such state.
+[Full record → `docs/adrs/ADR-009-three-tiers-with-promotion-reserved-to-one-of.md`](adrs/ADR-009-three-tiers-with-promotion-reserved-to-one-of.md)
 
 #### ADR-010 · Open registration is a toggle, not a rebuild
 
 _Accepted · 2026-07-25_
 
-`app_settings.open_registration` auto-approves new accounts as plain users when on; existing accounts are untouched either way.
+`app_settings.open_registration` auto-approves brand-new accounts when on, and touches nothing that already exists — the login upsert's `ON CONFLICT` never writes `status` or `role`. So the toggle is reversible in both directions with no migration, no redeploy and no existing account moving because it flipped.
 
-_Reasoning:_ the setting is a row read at login time and it only ever supplies the status of a **brand-new** account — the login upsert's `ON CONFLICT` clause never touches `status` or `role` — so the toggle is reversible in either direction with no migration and no redeploy, and no existing account moves because it flipped.
+[Full record → `docs/adrs/ADR-010-open-registration-is-a-toggle-not-a-rebuild.md`](adrs/ADR-010-open-registration-is-a-toggle-not-a-rebuild.md)
 
 ### 8.4 The games
 
@@ -702,83 +704,65 @@ Records 011–014 and 029 are all about **«Смолтолк в Химках»**
 
 _Accepted · 2026-07-25_
 
-An unconfigured LLM answers `503` rather than falling back to canned replies.
+An unconfigured LLM answers `503` rather than serving canned replies. A mock judge would be test-only code on a production path — forbidden here — and a fallback that quietly produces worse dialogue is harder to notice than an outage.
 
-_Reasoning:_ a mock judge would be test-only code on a production path — forbidden here — and a fallback that quietly produces worse dialogue is harder to notice than an outage.
+[Full record → `docs/adrs/ADR-011-the-judge-is-an-llm-and-there-is-no-mock.md`](adrs/ADR-011-the-judge-is-an-llm-and-there-is-no-mock.md)
 
 #### ADR-012 · Theme progress steers the options but never awards the win
 
 _Accepted · 2026-07-25_
 
-The server tracks which of the character's deep themes the conversation has genuinely opened, uses that to aim one answer slot at a still-closed theme, and marks a theme open by itself when the conversation has engaged it enough times.
+The server tracks which of the character's deep themes the conversation has genuinely opened and aims one answer slot at a still-closed one, but the **win is the judge's reading of the dialogue**, never theme state. Two failures forced both halves: steering at the last remaining theme collapsed the conversation onto one subject, and making theme state the win condition would let a tampering client award itself the ending.
 
-_Reasoning:_ two separate failures. Steering the slot at the *last* remaining theme every turn made the conversation collapse onto one subject and the run unwinnable — measured at 15 of 20 option sets having all four options on the same topic. And making theme state the win condition would let a tampering client award itself the ending, so `achieved` stays the judge's reading of the dialogue.
+[Full record → `docs/adrs/ADR-012-theme-progress-steers-the-options-but-never.md`](adrs/ADR-012-theme-progress-steers-the-options-but-never.md)
 
 #### ADR-013 · The prompt is laid out for prefix caching, and history is replayed as JSON
 
 _Accepted · 2026-07-25_
 
-Static system prompt → history → one volatile message last. Each past turn is replayed as the JSON object the judge returned.
+Static system prompt → history → one volatile message last, with each past turn replayed as the JSON the judge returned. Both halves were measured: the provider bills a cached prefix at a quarter rate and the first volatile byte invalidates everything after it, and the model imitates whatever format it is shown — given prose history it answered in prose and no JSON at all.
 
-_Reasoning, both measured:_ the provider bills a cached prefix at a quarter rate, and the first volatile byte invalidates everything after it — the tension value used to sit near the top of the system prompt, so nothing downstream could ever be cached, for any player. And the model imitates whatever format it sees: given prose history with a bracketed footer, it answered in prose with a bracketed footer and no JSON at all.
+[Full record → `docs/adrs/ADR-013-the-prompt-is-laid-out-for-prefix-caching-and.md`](adrs/ADR-013-the-prompt-is-laid-out-for-prefix-caching-and.md)
 
 #### ADR-014 · The third theme is alcohol, deliberately, and must not become drugs
 
 _Accepted · 2026-07-25_
 
-The provider's content filter answered substance-use turns with prose instead of JSON, which players saw as an error. `TestContentAvoidsDrugFlavouredPrompts` guards the whole prompt surface against the regression.
+The third theme is alcohol and must not drift towards drugs: the provider's content filter answered substance-use turns with prose instead of JSON, which players saw as an error. A test guards the whole prompt surface against the regression.
+
+[Full record → `docs/adrs/ADR-014-the-third-theme-is-alcohol-deliberately-and.md`](adrs/ADR-014-the-third-theme-is-alcohol-deliberately-and.md)
 
 #### ADR-028 · Games are self-contained modules
 
 _Accepted · 2026-07-25_
 
-Each game owns its Go package, its `<game>_*` tables, its routes, its views and its leaderboard code, and **no game imports another — not even where the code would be identical.** There is no shared games layer: no common game service, repository or table, no extracted game-UI shell, no generic board building. What is shared is *platform* — `realtime`, `session`, `account`, `crypto`, `db`, `logging`, `observability`, the `httpapi` router and middleware, and on the front end `apiFetch`, the error store, the theme and the app shell — and none of those may know that a game exists. The boundary test is blunt: deleting a game must be deleting its package, its migration, its routes and its views, and nothing else.
+Each game owns its package, its `game_<name>_*` tables, its routes and its views, and **no game imports another even where the code would be identical**. These games are jokes for a small group whose realistic future is deletion, not extension — and premature sharing bills you at exactly the wrong moment, when you want something gone and find it welded to something you are keeping. The boundary test is blunt: deleting a game must be deleting its own files and nothing else.
 
-_Reasoning:_ these games are jokes for a small group, with a short and unpredictable life. The realistic future of any one of them is deletion, not extension — and premature sharing bills you at exactly the wrong moment, when you want something gone and find it welded to something you are keeping. A few duplicated files are far cheaper than that, so the duplication between games is the design and not debt to be cleaned up later.
-
-_Consequence:_ the WebSocket is addressed as the game-agnostic `/api/realtime?room=…`, and a game's own message types live in that game's package and are published *through* the hub rather than added to it. `CLAUDE.md` → *Games are self-contained modules* carries the same rule as a working rule; that duplication is deliberate too, because that file has to stand on its own.
+[Full record → `docs/adrs/ADR-028-games-are-self-contained-modules.md`](adrs/ADR-028-games-are-self-contained-modules.md)
 
 #### ADR-029 · The judge runs on DeepSeek V4 Flash
 
-_Accepted · 2026-07-25 · amended by [ADR-030](#adr-030--game-modules-are-named-gamename) — the endpoint is now `/api/game-khimki/attempt`_
+_Accepted · 2026-07-25_
 
-«Смолтолк в Химках» judges its turns with `deepseek-v4-flash` over the OpenAI-compatible endpoint (`PSYCHOSPACE_LLM_MODEL` carries the full folder-specific model URI), replacing `yandexgpt-5-lite` — and it runs with **`reasoning_effort: "none"`**.
+«Смолтолк в Химках» judges with `deepseek-v4-flash` over the OpenAI-compatible endpoint, with `reasoning_effort: "none"`. It costs more per turn than the model it replaced and visibly plays better; reasoning is off because this model bills thinking at the output rate and twice spent the entire budget on it and returned nothing. The turn cost is why `/api/game-khimki/attempt` is limited to 5/min per IP.
 
-_Reasoning:_ DeepSeek costs more per turn than the model it replaced, and the difference buys visibly better play — it produced the first winning run seen in any audit. Its content filter is also not the one that pushed the third theme off substance use (ADR-014), so the character can swear in character. Reasoning is off because this model bills `reasoning_content` as output, the dearest rate, and twice it spent the entire completion budget thinking and returned an empty reply — `finish_reason: length`, 1500 completion tokens, zero characters of dialogue, a turn lost and billed in full. Judging is a rule-following task, not a puzzle, so the chain of thought was buying nothing that the failure class cost. (`thinking` and `enable_thinking` are rejected by this endpoint; `reasoning_effort` is the knob it accepts.)
-
-_Consequence:_ the `/api/game/attempt` limit was halved from 10/min to **5/min per client IP**, because a turn costs about twice what it did — and there is still no per-account cap, so one determined player remains the real cost exposure. The salvage path stays even though this model rarely returns malformed JSON, because a bad turn costs a player their move.
-
-Per-turn economics — the price table, the current cost per turn and how it got there — stay in `RUNBOOK.md` → *Working on the game*, to be re-measured as models and prices move rather than superseded here.
+[Full record → `docs/adrs/ADR-029-the-judge-runs-on-deepseek-v4-flash.md`](adrs/ADR-029-the-judge-runs-on-deepseek-v4-flash.md)
 
 #### ADR-030 · Game modules are named `Game<Name>`
 
-_Accepted · 2026-07-25 · amends ADR-029_
+_Accepted · 2026-07-25_
 
-Every game module carries its own name at every layer: package `internal/game<name>/`, tables `game_<name>_*`, routes `/api/game-<name>/*`, view `Game<Name>View.vue` served at `/app/game-<name>`, and any exported identifier that names the game from outside its package. Game 1 moved onto the convention from generic `game` naming in this change — `internal/gamekhimki/`, `game_khimki_runs` (`migrations/007_game_khimki_rename.sql`), `/api/game-khimki/*`, `GameKhimkiView.vue` at `/app/game-khimki` — and game 2 is `gamevanyagotchi` throughout. **Shared infrastructure is deliberately not prefixed:** `realtime`, `session`, `account`, `crypto`, `db`, `logging`, `observability`, `httpapi`.
+Every game module carries its name at every layer — package, tables, routes, view, URL. That turns ADR-028's boundary test from a judgement call into a command: `git grep -il game<name>` enumerates the whole module for someone who has never read the codebase, and the same grep run in reverse says immediately if the boundary is already broken. Shared infrastructure is deliberately left unprefixed, because the missing prefix is the signal that it is game-agnostic.
 
-_Reasoning:_ ADR-028 makes deleting a game the design centre, and its boundary test — "removing a game is removing its package, its migration, its routes and its views, and nothing else" — was a judgement call that required knowing the codebase. Spelling the name out at every layer turns that test into a command: `git grep -il game<name>` enumerates the module, across Go, SQL, routes and the SPA, for someone who has never read it. The check also runs in the other direction, which is the more valuable half: if that list ever contains a file another game needs, the boundary is *already* broken and the grep has just said so. Generic `game` naming could not do either — it matched the platform, the other game, and the word "game" in prose.
-
-The unprefixed platform names are load-bearing, not an omission. The *absence* of a game's name is the signal that a module is game-agnostic, which is why the socket is addressed `/api/realtime?room=…` rather than per-game and why game-specific message types live in the game's package rather than in `realtime` (ADR-028, ADR-016). Prefixing one of those would be a lie, and dropping the prefix from a game module would erase the signal. `wishlist` and `settings` are a third class — non-game **sections**, neither games nor platform — and stay unprefixed too; this convention is about game modules, not about every domain package.
-
-_The one exception is inside a game's own package,_ where Go convention wins: `GameKhimkiService` in package `gamekhimki` stutters, `revive` flags it, and the linter is mandatory. Types inside a game package therefore keep plain names and read as `gamekhimki.Service` at the call site, where the package qualifier already carries the prefix. The prefix belongs to the package and to every layer outside it.
-
-_Consequence:_ `game_key` **values** did not move with the table — `smalltalk_khimki` is data, already unambiguous, and the art blobs are keyed on it. `/api/game/*` is kept as an alias for exactly one deploy cycle so a stale SPA does not break mid-run, and `/app/game` redirects permanently. One earlier record names an identifier this rename retired and is amended rather than edited: ADR-029's `/api/game/attempt` is now `/api/game-khimki/attempt`. That decision stands exactly as written — only the name changed.
-
-_What this rule does **not** reach_ is the asset blob store, which is shared infrastructure rather than any game's property — see ADR-031. Only the game's own *state* moved namespace.
+[Full record → `docs/adrs/ADR-030-game-modules-are-named-gamename.md`](adrs/ADR-030-game-modules-are-named-gamename.md)
 
 #### ADR-031 · Game asset storage is shared infrastructure, not a game's property
 
 _Accepted · 2026-07-25_
 
-Art blobs live in one unprefixed `game_assets` table, read through one unprefixed package (`internal/gameassets`) and served from one game-agnostic route (`GET /api/game-assets/{game}/{key}`). A game supplies its own `game_key` and nothing else. Migration 007 therefore renamed `game_runs` to `game_khimki_runs` but deliberately left `game_assets` alone.
+Art blobs live in one unprefixed `game_assets` table behind one game-agnostic route, and a game supplies only its `game_key`. This is the line ADR-028 was missing: **a game's state is a rule of that game, but storing bytes under a key is a mechanism any game would want.** The test to apply at the next boundary decision is exactly that — a decay rate is a rule, an asset store is a capability.
 
-_Reasoning:_ ADR-028 refuses shared code between games, and the first pass at ADR-030 applied that to the asset table too — which was wrong, and the schema had already said so: `game_assets` has carried a `game_key` discriminator since migration 006, so it was always a multi-game store. Making it per-game would have thrown that away and duplicated the blob query, the content-type allowlist and the caching handler once per game.
-
-The line ADR-028 was missing, and which this record supplies, is **rule versus mechanism**. A game's *state* is a rule of that game — its runs, its scores, its pet, its world objects — and sharing it couples two games' lifecycles, which is exactly what ADR-028 forbids. Storing bytes under a key and serving them with a validated content type is a *mechanism* any game needs and none of them defines. The test to apply at the next boundary decision: **does it encode a rule of this game, or is it a capability any game would want?** Assets are a capability. A decay rate is a rule.
-
-_Consequence:_ adding art for a new character, NPC or location is an upload against an existing table — no migration, no new route, no serving code, and no schema change per game. The dependency runs one way only: `gamekhimki` declares a narrow `AssetPresence` interface that the shared service satisfies, so a game depends on infrastructure and infrastructure never learns a game exists (ADR-028). The store being shared is also why its content-type allowlist matters more than it looks: it is one control protecting every game's origin at once.
-
-_Note the asymmetry is deliberate and will read as inconsistent at a glance:_ two tables created in adjacent migrations, one renamed per-game and one not. The reason is above, and the distinction is worth more than the symmetry.
+[Full record → `docs/adrs/ADR-031-game-asset-storage-is-shared-infrastructure.md`](adrs/ADR-031-game-asset-storage-is-shared-infrastructure.md)
 
 ### 8.5 Realtime
 
@@ -786,89 +770,65 @@ _Note the asymmetry is deliberate and will read as inconsistent at a glance:_ tw
 
 _Accepted · 2026-07-25_
 
-There is one process, so the hub is a map guarded by a single goroutine and messages reach every client in the room in microseconds. Presence lives only in memory, because it is meaningless after a restart — persisting it would let it lie.
+One process, so the hub is a map guarded by a single goroutine, and presence lives only in memory because it is meaningless after a restart. WebSocket rather than SSE is decided by rate limiting rather than by latency: every client→server action over SSE is a fresh HTTP request through the same blanket per-IP limiter that protects the paid LLM endpoint, and loosening that would be loosening exactly the wrong thing.
 
-_Reasoning for WebSocket over SSE:_ at this scale neither latency nor efficiency decides it. What decides it is that every client→server action over SSE is a fresh HTTP request through the blanket per-IP limiter — and that limiter is the same mechanism protecting the paid LLM endpoint. Loosening it for chat-frequency traffic would be loosening exactly the wrong thing. A WebSocket spends one token at the handshake and then bounds itself.
+[Full record → `docs/adrs/ADR-015-websocket-in-the-same-binary-with-an-in.md`](adrs/ADR-015-websocket-in-the-same-binary-with-an-in.md)
 
 #### ADR-016 · No realtime message may reach the LLM
 
 _Accepted · 2026-07-25_
 
-_Reasoning:_ the LLM is the only paid dependency, and its cost is currently bounded by human turn-taking behind a 5/min per-IP limit. A broadcast or a timer can multiply one player's action into many calls, which is unbounded in a way the first game never was. If a feature needs the judge, it goes through the existing HTTP endpoint. This is written in the package doc comment because it is the sort of rule that erodes silently.
+No realtime message may reach the LLM. Its cost is bounded today by human turn-taking behind a per-IP limit, and a broadcast or a timer can multiply one player's action into many calls — unbounded in a way the first game never was. Written in the package doc comment, because it is the sort of rule that erodes silently.
+
+[Full record → `docs/adrs/ADR-016-no-realtime-message-may-reach-the-llm.md`](adrs/ADR-016-no-realtime-message-may-reach-the-llm.md)
 
 #### ADR-017 · Shutdown drains the hub before the HTTP server
 
-_Accepted · 2026-07-25 · amended by [ADR-018](#adr-018--the-close-reason-travels-as-a-frame-not-as-a-close-code) — the drain delivers its reason as a `bye` frame, not as close code 1001 (`aec6b63`)_
+_Accepted · 2026-07-25_
 
-_Reasoning:_ `http.Server.Shutdown` does not close or wait for hijacked connections — its own documentation says so. This service restarts on every deploy, several times a day, so without an explicit drain each one would reset every player's socket with no warning at all. Draining first gives every connected client a reason before the socket goes away, which is what lets it distinguish a planned restart from a network failure and reconnect promptly instead of backing off.
+SIGTERM drains the hub before `http.Server.Shutdown`, which by its own documentation neither closes nor waits for hijacked connections. This service restarts several times a day, so without an explicit drain every deploy would reset every socket with no warning — and the drain is what lets a client tell a planned restart from a network failure and reconnect promptly instead of backing off.
+
+[Full record → `docs/adrs/ADR-017-shutdown-drains-the-hub-before-the-http-server.md`](adrs/ADR-017-shutdown-drains-the-hub-before-the-http-server.md)
 
 #### ADR-018 · The close *reason* travels as a frame, not as a close code
 
-_Accepted · 2026-07-25 · amends ADR-017_
+_Accepted · 2026-07-25_
 
-A server-initiated close sends one last text frame — `{"t":"bye","code":1001,"reason":"restart"}` — immediately before dropping the socket. The transport close itself stays abrupt, so a browser reports `1006 / wasClean:false` for every disconnect. The client branches on the `code` in that frame, not on `CloseEvent.code`.
+A server-initiated close writes one last `{"t":"bye",…}` text frame and then drops the socket abruptly, so the browser sees `1006` and reads the reason from the frame. Emitting a real close code means a full close handshake — seconds of stall on the hub goroutine and the 5 s drain, the two paths that must never stall. Nothing safety-critical rests on the frame arriving: a revoked session is refused at `requireAuth` with a 401, and that status is what the client treats as terminal.
 
-_Reasoning:_ emitting a real close code means calling the library's `Conn.Close`, and that runs a full close handshake: a 5 s write, then a 5 s wait for the peer's reply which needs the read lock our own read pump is already holding while blocked in `Read`, then a join bounded by a 15 s timer. That is seconds of stall on the two paths that must never stall — the single hub goroutine, which would freeze the whole room, and a shutdown drain budgeted at 5 s for every connection at once. The unexported `writeClose`, which would emit the code without waiting, is not reachable. So the choice is between a code that arrives late enough to hurt and a frame that arrives on time; the frame wins, and it can carry more than a number.
-
-_Nothing safety-critical rests on that frame arriving._ Blocking an account also revokes its sessions, so its reconnect is refused by `requireAuth` with a 401 before any upgrade — and **that HTTP status, not the frame, is what the client treats as terminal.** The `bye` only makes the stop immediate.
+[Full record → `docs/adrs/ADR-018-the-close-reason-travels-as-a-frame-not-as-a.md`](adrs/ADR-018-the-close-reason-travels-as-a-frame-not-as-a.md)
 
 #### ADR-019 · The read pump must not observe shutdown
 
 _Accepted · 2026-07-25_
 
-Reads run on `context.WithoutCancel`, so cancelling the hub context does not cancel them.
+Reads run on `context.WithoutCancel`, because `coder/websocket` installs an `AfterFunc` on the read context that tears down the whole connection when it fires. Handing it the hub context meant the read pump destroyed the socket on every deploy before the write pump could say why. Recorded because it is invisible in the API — nothing in `Read`'s signature suggests the context outlives the call, and the first version passed its test by winning a goroutine race.
 
-_Reasoning:_ `coder/websocket`'s `setupReadTimeout` installs a `context.AfterFunc` on the read context that calls `c.close()` when it fires. So a read whose context is cancelled does not merely return an error — **it tears down the whole connection.** Handing it the hub context meant that on every deploy the read pump destroyed the socket before the write pump could say why, silently degrading the most common disconnect in production into an unexplained network error. The loop still always terminates, because every path out of `Serve` calls `hardClose` and that makes the read fail.
-
-_Recorded because it is invisible in the API:_ nothing in `Read`'s signature suggests the context outlives the call, and the first version of this code passed its own test by winning a goroutine race. The regression test now inserts a deliberate gap between the cancellation and the close request so it cannot pass by luck.
+[Full record → `docs/adrs/ADR-019-the-read-pump-must-not-observe-shutdown.md`](adrs/ADR-019-the-read-pump-must-not-observe-shutdown.md)
 
 #### ADR-033 · A game reads the socket through a game-agnostic `Handler`, and pulls presence
 
-_Accepted · 2026-07-25 · amended by [ADR-037](#adr-037--one-account-is-one-entity-and-the-wire-carries-a-pseudonym) — the roster identifies an entity per **account**, under a derived pseudonym, and a third seam (`PublishTo`) was added_
+_Accepted · 2026-07-25_
 
-`internal/realtime` gained exactly two seams: a `Handler` interface (`HandleInbound(ctx, Member, room, payload)`) called on the connection's own read pump, and `Hub.Members(ctx, room) []Member`. The handler is supplied by the composition root through `httpapi.Deps.RealtimeHandler`, which is typed as the interface, so no platform file names a game. «Ванягоччи» owns its own wire types in its own package and publishes through `Hub.Publish`.
+`internal/realtime` exposes exactly two game-agnostic seams: a `Handler` called on the connection's own read pump, and `Hub.Members` for presence. Inbound dispatch runs on the read pump and never on the hub goroutine, so a slow game handler delays one client rather than freezing the room; the rate check runs before the handler, so a game inherits the socket's bound for free. Presence is **pulled, not pushed**, because a hub that notified a service on join and leave would make presence a thing two components each believe they know.
 
-_Reasoning:_ before this, the read pump discarded every payload — it read frames only to enforce the read limit and the rate limit — so no inbound message could reach any domain service at all, and the hub had no way to say who was in a room. Both were needed, and the shape of each was the decision.
-
-**Inbound dispatch runs on the read pump, never on the hub goroutine.** That goroutine owns every room and fans out to every client; a game handler that blocked there would freeze the whole yard behind one player, which is precisely what the hub's non-blocking fanout exists to prevent. One read pump per connection means a slow handler delays only the client that sent the frame. The rate check runs *before* the handler for a second reason worth stating: it means a game inherits the socket's bound for free instead of every game having to remember to limit itself.
-
-**Presence is pulled, not pushed.** The tempting alternative — the hub notifying a service on join and leave — makes presence a thing two components each believe they know, and the bug is then a service whose roster has quietly drifted from the hub's. Rebuilding the roster from `Members` on every broadcast cannot drift, needs no join/leave bookkeeping, and prunes departed connections by construction. It also composes with the backpressure design: a roster built from the current member set *is* idempotent full state, so a dropped frame costs nothing.
-
-`Member` is a value type carrying a connection id and an account id, deliberately not the `Sink` — a service should be able to ask who is present without acquiring the ability to write to, or close, somebody's socket.
-
-_Consequence:_ the roster broadcast to peers identifies entities by **connection** id, which is a per-socket UUID that means nothing once the socket is gone. Two tabs are two entities, and no durable per-person identifier is fanned out to the room — so the frame carries no personal data and needs no redaction step.
+[Full record → `docs/adrs/ADR-033-a-game-reads-the-socket-through-a-game.md`](adrs/ADR-033-a-game-reads-the-socket-through-a-game.md)
 
 #### ADR-034 · The broadcast tick is injected, and belongs to the game
 
 _Accepted · 2026-07-25_
 
-`gamevanyagotchi.Service.Run(ctx, tick <-chan time.Time)` takes its tick as a parameter. `main` passes a `time.Ticker`; tests pass a channel they fire themselves. The hub has no tick of its own.
+The 5 Hz broadcast tick is a parameter — `main` passes a `time.Ticker`, tests pass a channel they fire. It is a **render** tick, not the background timer this project rules out: it writes nothing, owns nothing and sends a full-state snapshot, so a late, early, skipped or duplicated tick produces the same correct frame. Injecting it removes every timing sleep from the realtime tests.
 
-_Reasoning:_ two separate things, both load-bearing.
-
-**It is a render tick, not the background timer this project rules out.** The rule that nothing runs on a timer is about *state*: no cron, no per-entity goroutine, nothing that writes to the database because time passed. This loop writes nothing, owns nothing and decides nothing — it reads the hub's current members and sends a snapshot. Because the frame is full state rather than a step forward from the last one, a tick that is late, early, skipped or duplicated produces the same correct frame. That property is what makes the distinction safe rather than a euphemism.
-
-**Injecting it removes every timing sleep from the tests.** The repository has no clock injection anywhere, and determinism has so far come from substituting network dependencies. A test that fires the tick and then reads the frame it caused has no race to lose; the alternative is `time.Sleep(250ms)` in every realtime test, which is slow when it works and flaky when it does not. It is an ordinary constructor-style parameter, not test-only code on a production path — the same shape as `session.NewManager`'s injected TTL.
-
-_Consequence:_ the rate lives in `gamevanyagotchi.BroadcastInterval` and is half of a two-part decision — the other half is the CSS transition duration on the client, chosen to be slightly longer so consecutive segments overlap. Changing one without the other makes motion either stutter or lag, which is why the constant is documented as a pair rather than exposed as a knob.
+[Full record → `docs/adrs/ADR-034-the-broadcast-tick-is-injected-and-belongs-to.md`](adrs/ADR-034-the-broadcast-tick-is-injected-and-belongs-to.md)
 
 #### ADR-037 · One account is one entity, and the wire carries a pseudonym
 
-_Accepted · 2026-07-25 · amends ADR-033_
+_Accepted · 2026-07-25_
 
-A game's roster contains **one entity per account**, not one per connection, and the id it publishes is a **pseudonym derived per process** — `HMAC-SHA256(processKey, accountID)`, base64url, truncated — where `processKey` is 32 bytes of `crypto/rand` minted when the service is constructed and never persisted or configured. `Hub.PublishTo(ctx, connID, msg)` is added as a third game-agnostic seam so a service can answer one connection; a game learns which entity a client is by sending a hello and being told, over that unicast.
+A roster carries **one entity per account**, not per connection, and publishes a **per-process pseudonym** rather than `accounts.id`. Signing in on a second device used to produce a second Ваня — an identity bug the game must fix in its own state, leaving `realtime` correct that presence is per connection. The account id is deliberately not used: a roster is broadcast to the whole room, so publishing it would hand every player a permanent handle on every other player for the sake of drawing a circle.
 
-_Reasoning:_ three separate things forced it, and one mechanism settles all three.
-
-**Signing in on a second device produced a second Ваня.** The hub allows three connections per account, and the roster was keyed by connection, so a phone and a laptop were two dots that could stand in different places and be moved independently. That is a bug about *identity*, not about presence: the hub is right that presence is per connection, and the game is what decides an account is one thing in its world. Keying the game's own state by account fixes it where the decision belongs and leaves `realtime` unchanged.
-
-**The obvious id to use instead was the account's, and it must not be.** `accounts.id` is a durable cross-session identifier, and a roster is broadcast to everybody else in the room — so publishing it would hand every player a stable handle on every other player, permanently, for the sake of drawing a circle. The pseudonym is stable exactly as long as it needs to be (one process) and no longer, which is the same lifetime presence already has: the key dies with the process that minted it, so nothing correlates across a restart. It needs no configuration, and there is no key to rotate wrongly.
-
-**A client cannot recognise itself from a pseudonym**, by construction — that is what makes it one. So the server has to say, and saying it to one connection rather than to the room is what `PublishTo` is for. The request arrives through the existing inbound `Handler` (the client sends a hello, the reply goes back to the connection that asked), so no join/leave lifecycle hook was needed and ADR-033's seam count grew by exactly one.
-
-_Consequence:_ ADR-033's closing paragraph — that entities are identified by connection id, and that two tabs are two entities — no longer describes the system, and is amended rather than edited. The hub's own `Member` still carries both ids and still decides nothing; what changed is what a game does with them. A pseudonym also changes on every reconnect, so a client asks again each time it opens a socket rather than caching the answer.
-
-_Found while fixing it:_ the connection-cap rejection never actually delivered its `bye`. `Register` runs after the 101, and the refusal path called `Conn.Close`, which only queues onto a channel that the write pump drains — and `Serve`, which starts that pump, is never reached for a refused connection. So the frame explaining "too many connections" was written to nobody and the socket was dropped bare. `Conn.Refuse` now writes it on the calling goroutine, which is safe precisely because no pump exists yet to race it.
+[Full record → `docs/adrs/ADR-037-one-account-is-one-entity-and-the-wire.md`](adrs/ADR-037-one-account-is-one-entity-and-the-wire.md)
 
 ### 8.6 Testing
 
@@ -876,25 +836,25 @@ _Found while fixing it:_ the connection-cap rejection never actually delivered i
 
 _Accepted · 2026-07-25_
 
-`web/e2e/` stubs `/api` in the browser and asserts **layout** at phone widths; `web/e2e-stack/` drives the **real binary against a real PostgreSQL** and asserts that actions persisted.
+`web/e2e/` stubs `/api` in the browser and asserts layout at phone widths; `web/e2e-stack/` drives the real binary against a real PostgreSQL and asserts that an action persisted. They fail for different reasons and each is bad at the other's job — only stubbing makes awkward states cheap to render, and only the real stack can prove an upvote became a row.
 
-_Reasoning:_ they fail for different reasons, and each is bad at the other's job. Stubbing makes awkward states (pending, blocked, a 90-character unbroken word) trivial to render and keeps the responsive matrix fast; only the real stack can prove that an upvote became a row. Both are in the pre-commit gate.
-
-_Consequence:_ the full-stack suite runs one viewport and one worker — every project would replay the whole suite against the same database, and the first to approve the seeded pending account would leave the next with nothing to approve.
+[Full record → `docs/adrs/ADR-021-two-playwright-suites-on-purpose.md`](adrs/ADR-021-two-playwright-suites-on-purpose.md)
 
 #### ADR-022 · The pre-commit hook is the gate, and it is never skipped
 
 _Accepted · 2026-07-25_
 
-`./dev.sh pre-commit` runs build → lint (including `golangci-lint`, pinned in `mise.toml`) → unit → web → e2e → integration → full-stack e2e. `dev.sh` re-points `core.hooksPath` on every invocation, because that setting is per-clone and a fresh clone silently has no hook.
+`./dev.sh pre-commit` runs build → lint → unit → web → e2e → integration → full-stack e2e, and `--no-verify` is forbidden. Pushing to `main` deploys, so a skipped hook is a broken production site. `dev.sh` re-points `core.hooksPath` on every run, because that setting is per-clone and a fresh clone silently has no hook.
 
-_Reasoning:_ pushing to `main` deploys. A skipped hook is a broken production site, and `--no-verify` is forbidden for that reason. Making the linter mandatory rather than "recommended if installed" closed the gap where a finding was invisible on one machine and blocking on another.
+[Full record → `docs/adrs/ADR-022-the-pre-commit-hook-is-the-gate-and-it-is.md`](adrs/ADR-022-the-pre-commit-hook-is-the-gate-and-it-is.md)
 
 #### ADR-023 · Tests are a deliverable, separately from the suite passing
 
 _Accepted · 2026-07-25_
 
-Running the existing tests green proves nothing was broken; it does not prove the change was tested. Every code-touching change extends the suite — unit tests for the logic, and an integration or e2e test when there is an end-to-end path.
+Running the existing suite green proves nothing was broken; it does not prove the change was tested. Every code-touching change extends the suite — unit tests for the logic, and an integration or e2e test wherever there is an end-to-end path.
+
+[Full record → `docs/adrs/ADR-023-tests-are-a-deliverable-separately-from-the.md`](adrs/ADR-023-tests-are-a-deliverable-separately-from-the.md)
 
 ### 8.7 Operations
 
@@ -902,35 +862,33 @@ Running the existing tests green proves nothing was broken; it does not prove th
 
 _Accepted · 2026-07-25_
 
-Every non-2xx returns `{error: "<stable_code>", trace_id}` and every response sets `X-Trace-Id`. The SPA shows the id in a copyable modal.
+Every non-2xx returns `{error: "<stable_code>", trace_id}` and sets `X-Trace-Id`, and the SPA shows the id in a copyable modal. The user can report something actionable without describing symptoms, and internal error text never reaches a client.
 
-_Reasoning:_ the user can report something actionable, and a support conversation never requires them to describe symptoms. Internal error text stays internal.
+[Full record → `docs/adrs/ADR-024-errors-carry-a-trace-id-and-never-carry-the.md`](adrs/ADR-024-errors-carry-a-trace-id-and-never-carry-the.md)
 
 #### ADR-025 · Tracing is always generated; exporting is opt-in
 
 _Accepted · 2026-07-25_
 
-OpenTelemetry spans and trace ids exist unconditionally; export only happens if `PSYCHOSPACE_OTLP_ENDPOINT` is set.
+Spans and trace ids are generated unconditionally; only export is gated on `PSYCHOSPACE_OTLP_ENDPOINT`. Trace ids are the identifier users quote back, so they cannot be conditional — but a collector on a one-box deployment usually is not worth running.
 
-_Reasoning:_ trace ids are the identifier above, so they cannot be conditional. A collector on a one-box deployment usually is not worth running, so exporting is the part that is optional.
+[Full record → `docs/adrs/ADR-025-tracing-is-always-generated-exporting-is-opt.md`](adrs/ADR-025-tracing-is-always-generated-exporting-is-opt.md)
 
 #### ADR-026 · Game art lives in Postgres, not in git or the binary
 
 _Accepted · 2026-07-25_
 
-`game_assets` holds the image bytes; the config endpoint advertises an image URL only for keys that actually have a blob, and everything else falls back to an emoji placeholder.
+Image bytes live in Postgres rather than in git or the binary, and the config endpoint advertises a URL only for keys that actually have a blob, everything else falling back to an emoji placeholder. Art would otherwise inflate the repository and the binary forever, and a partial upload degrades into a placeholder instead of a broken image.
 
-_Reasoning:_ art would otherwise inflate the repository and the binary forever, and partial uploads degrade gracefully instead of producing broken images.
+[Full record → `docs/adrs/ADR-026-game-art-lives-in-postgres-not-in-git-or-the.md`](adrs/ADR-026-game-art-lives-in-postgres-not-in-git-or-the.md)
 
 #### ADR-027 · The client IP comes from `X-Real-IP`, trusted only from a loopback peer
 
 _Accepted · 2026-07-25_
 
-`clientIP` supplies the key for every per-IP rate limit. It reads `X-Real-IP`, and **only** when the request's own TCP peer is a loopback address; a request that arrived any other way, or one whose `X-Real-IP` is missing or unparsable, is keyed by that peer address instead. `X-Forwarded-For` is never consulted, and chi's `middleware.RealIP` is deliberately not installed.
+Per-IP rate limits are keyed on `X-Real-IP`, and **only** when the request's own TCP peer is loopback. `X-Forwarded-For` is never consulted and chi's `middleware.RealIP` is deliberately not installed — it trusted the leftmost, attacker-controlled entry and overwrote `RemoteAddr` with it, which made every per-IP limit forgeable by varying one header, the paid LLM endpoint included. Both halves are pinned by tests, because the failure is silent.
 
-_Reasoning:_ nginx passes `X-Forwarded-For: $proxy_add_x_forwarded_for`, which *appends* the peer to whatever the client already sent, so the header's leftmost entry is attacker-controlled. `middleware.RealIP` trusted exactly that entry and overwrote `r.RemoteAddr` with it — which made every per-IP limit forgeable by varying one header per request, the login limiter and the limiter guarding the paid LLM endpoint included. `X-Real-IP` is safe in the same position for two reasons that have to hold together: nginx sets it from `$remote_addr`, overwriting whatever the client sent, and the loopback check means a value that reached the app by any other route is not believed.
-
-_Consequence:_ the limits are only meaningful while the app sits behind that proxy, which is already the deployment (it listens on loopback). Both halves are pinned by tests, because the failure is silent: `TestClientIPTrustsProxyHeaderOnlyFromLoopback` covers the trust rule, and `TestRateLimitNotBypassableByForwardedHeader` drives a client rotating `X-Forwarded-For` and requires it to still be counted as one client.
+[Full record → `docs/adrs/ADR-027-the-client-ip-comes-from-x-real-ip-trusted.md`](adrs/ADR-027-the-client-ip-comes-from-x-real-ip-trusted.md)
 
 ### 8.8 The pet
 
@@ -938,76 +896,38 @@ _Consequence:_ the limits are only meaningful while the app sits behind that pro
 
 _Accepted · 2026-07-25_
 
-Anything that changes with the clock is stored as the pair `(value, as_of)` and evaluated when somebody reads it — `clamp(value − rate × hoursSince(as_of), min, max)`. There is no cron, no background goroutine, no per-entity timer and no scheduler anywhere in the system. Facts that a passage of time *creates* rather than merely alters — a pet's death — are **materialised lazily and idempotently by the first read that observes them**, at the instant derived from the pair rather than at the moment somebody happened to look. The 5 Hz realtime broadcast is not an exception to this: it renders, and writes nothing.
+Anything that changes with the clock is stored as `(value, as_of)` and evaluated on read; a fact that time *creates*, such as a death, is materialised lazily and idempotently at the instant derived from the pair rather than when somebody happened to look. There is no cron, no background goroutine and no scheduler anywhere. The alternative — a job walking every pet every minute — costs a leader problem, a write rate proportional to the population, and a class of bug where the job stops and the world silently freezes; the closed form costs one subtraction, and offline progression is not a feature anybody built but simply what the expression already means.
 
-_Reasoning:_ the obvious alternative is a job that walks every pet every minute and decrements. It costs a scheduler, a leader problem the day there are two processes, a per-entity write rate proportional to the population, and a class of bug where the job stops and the world silently freezes. The closed form costs one subtraction, and reading a value after a month away is exactly as cheap as reading it a second later, because it *is* the same subtraction. Offline progression is then not a feature anybody built — it is what the expression already means.
-
-_Two properties are load-bearing, and both are easy to break by accident._ First, the result is **exact, not an approximation of ticking**: linear decay evaluated at an instant is precisely what a continuous simulation would have produced, so there is no divergence between "was away" and "was watching" and nothing to gain by choosing when to look. **That safety is a property of linearity, not of the pattern.** The moment a rate depends on another decaying value — compounding, one stat draining another — the closed form becomes an approximation whose *error sign* decides whether being absent beats playing; a shipped idle game had exactly that bug and made not playing strictly better. If non-linear decay is ever wanted, derive the closed form from the continuous model and check the direction of its error deliberately. Second, **server time is the only clock**: `now` is the server's and `as_of` is a column, so a device with a wound-forward clock changes nothing, and the client is sent `server_now` so its own drawing can correct for its skew.
-
-_Consequence:_ a `GET` is allowed to write, which reads oddly in a route table and is the honest shape here — the write is idempotent and conditional (`UPDATE … WHERE died_at IS NULL`), so concurrent observers converge and the loser of the race can report the winner's timestamp without reading it back, because both derive the identical instant from the identical pair. It also means **nothing happens to a world nobody is looking at**, which is correct rather than a compromise: an event no player could have witnessed is not an event.
+[Full record → `docs/adrs/ADR-038-time-varying-state-is-computed-on-read-never.md`](adrs/ADR-038-time-varying-state-is-computed-on-read-never.md)
 
 #### ADR-039 · Game content is a Go catalogue, and the schema stores only its keys
 
 _Accepted · 2026-07-25_
 
-A game's content — the stats and their rates and bounds, the actions, the skins, the locations, the labels — lives in one Go file inside that game's package (`content.go`) and is served whole to the SPA by that game's `GET /config`. The database stores **keys as `text`**, never Postgres enums, and holds none of the meaning. The SPA hardcodes no key, no label and no threshold: it renders whatever the config describes.
+A game's content lives in one Go file in that game's package and is served whole to the SPA; the database stores **`text` keys and none of the meaning**, never Postgres enums. Migrations here are immutable, so this is a permanent decision about the cost of a class of change: with enums every new stat or skin is an `ALTER TYPE` forever, whereas the catalogue makes it a Go-file edit with no migration and no client deploy. The homogeneous half gets rows and the heterogeneous half gets columns — stats are tall, world objects are explicit.
 
-_Reasoning:_ this is a decision about the cost of a whole class of change, and migrations here are **immutable**, so getting it wrong is permanent. With enums, every new stat, skin, location or object kind is an `ALTER TYPE` — a migration, forever, for a value whose entire meaning is a label and a number. With a column per stat, every new stat is an `ALTER TABLE`. With the catalogue plus `text` keys, adding one is a Go-file edit: no migration, no client deploy, and the value's rate, bounds, label and rendering are all defined in the single place that can validate them against content anyway. A row whose key has left the catalogue is unrenderable and is skipped on read, which is the correct failure for a value only content can define.
-
-_The homogeneous half gets rows; the heterogeneous half gets columns._ A pet's stats are all the same shape — a scalar with a rate and an `as_of` — so they are rows in a tall table, one decay expression covers every one of them, and adding a stat needs no schema at all. A **stat whose rate is zero is a lifetime counter**, which is how this game gets its records without a second runs table. World objects are the opposite: heterogeneous rows carrying contended invariants (`claimed_by`, `remaining`, `exhausted_at`) that must be indexable, `NOT NULL`-able and `CHECK`-able, because a typo silently reading as NULL is the one bug class a contested claim can least afford. Choosing differently in the two tables is the decision, not an inconsistency.
-
-_And there is no JSONB, deliberately._ Both candidate uses were cosmetic and derive better from `hash(id)` against the catalogue — zero storage, and unable to drift out of step with the content. A JSONB column added now would ship unused, and an unused escape hatch is where load-bearing state goes to hide from constraints. _The trigger to revisit is named:_ the first kind that needs a persisted, kind-specific, non-derivable value earns either that column or a narrow side table **then**, decided with the concrete case in hand.
-
-_Consequence:_ the property is testable rather than aspirational, and is tested — the stubbed Playwright suite serves a config containing a stat and an action the SPA has never heard of and asserts both render, labelled from the config. A client that had learned a content key fails that test. The same rule is why an invariant that must live in the database cannot name a content value in DDL: the "at most one active event of a kind" index is predicated on a `singleton` boolean the catalogue sets at insert time, not on `kind IN ('key', 'beer_crate')`, which would have put content into an immutable migration.
+[Full record → `docs/adrs/ADR-039-game-content-is-a-go-catalogue-and-the-schema.md`](adrs/ADR-039-game-content-is-a-go-catalogue-and-the-schema.md)
 
 #### ADR-040 · A stat may drive another stat's rate, and it is still exact
 
-_Accepted · 2026-07-25 · amends [ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked)_
+_Accepted · 2026-07-25_
 
-A stat's drain may be raised while **another** stat sits in a named range — health falls faster while beer is empty and faster while the bladder is full. ADR-038 said the closed form is exact "only because the decay is linear" and warned that a rate depending on another decaying value turns it into an approximation. That warning stands as written; what this record adds is the **narrow shape in which the coupling is still exact**, and the three conditions that make it so. Outside them, ADR-038's warning applies unchanged.
+A stat's drain may be raised while **another** stat sits in a named range, and it stays exact rather than becoming an approximation — but only inside three conditions, all required: the coupling is one-directional and one layer deep, every driver is linear and monotone between writes, and **every write re-stamps every stat with one shared `as_of`**. Each penalty is then a suffix of the window described by a single onset instant, so the penalised stat is piecewise-linear and both its value and its death instant are computed by walking segments. Outside those conditions ADR-038's warning applies unchanged, and the third is the one that silently corrupts the arithmetic if skipped.
 
-The conditions, all three required:
-
-**The coupling is one-directional, and the graph is one layer deep.** Beer and bladder drive health; nothing drives them but time and the player, and health drives nothing. There is no feedback term, so no differential equation — just one integrand that depends on functions already known in closed form. A stat with penalties may never itself be a driver, and that is asserted by a test rather than left to care.
-
-**Every driver is linear and monotone between writes.** So the instant it crosses a threshold is solvable directly, and once crossed it stays crossed — the clamp at the bound only holds it there. A penalty is therefore a **suffix** of the integration window, described by a single instant: its **onset**. The penalised stat becomes piecewise-linear with one breakpoint per penalty, and both its value and the instant it reaches zero are computed by walking those segments. Exact, `O(penalties)`, nothing stored.
-
-**Every write re-stamps every stat.** This is the one that is easy to skip and expensive to get wrong. Health is integrated from its own `as_of`, and the drivers' trajectories have to be known across that whole window — so all the pairs must share one instant. Write a single stat alone and the maths silently **erases damage**: relieve yourself at noon, and the morning's full bladder is re-derived from the post-reset pair, which says it was never full. Nothing errors; the number is just quietly wrong in the player's favour. The repository therefore exposes `WriteStats` (plural) and no single-stat setter, so the invariant is hard to violate by accident, and a unit test asserts that an action writes every row with one `as_of` — a property invisible from the response.
-
-_Consequence:_ the client cannot interpolate from the catalogue rate any more, because the effective rate is a function of state it would have to re-derive. Rather than ship a second implementation of this arithmetic in TypeScript — kept honest by nothing, and the exact mistake refused for NPC motion — each stat is sent with the **effective rate it is suffering right now**, and the browser draws a straight line from it. That is correct until the next onset, which is hours away, and every action answers with freshly computed server state regardless.
-
-_And it earns its keep in the design, not just the maths:_ health stops being a chore of its own and becomes the readable consequence of two needs the player can actually act on. The bar you cannot press is driven by the two you can, each threshold is the same number as the driving bar's warning mark, and the drink that keeps him alive is what fills his bladder — so the two loops are one system rather than two timers.
+[Full record → `docs/adrs/ADR-040-a-stat-may-drive-another-stats-rate-and-it-is.md`](adrs/ADR-040-a-stat-may-drive-another-stats-rate-and-it-is.md)
 
 #### ADR-041 · The broadcast tick renders from a cache, and position outlives the process
 
 _Accepted · 2026-07-25_
 
-The 5 Hz roster carries each entity's **appearance** — art key, name, and a pose derived from that pet's own stats — so every player sees every Ваня properly rather than only their own. That data is durable and the tick is not allowed to read it: appearance comes from an **in-memory display cache**, filled when a client says hello and refreshed by the HTTP read path, and the tick reads nothing but memory. Separately, a pet's **position becomes durable** — written once when its owner's last connection goes away, and on shutdown for everybody still standing — so a deploy no longer teleports the yard back to the middle.
+The roster carries every entity's appearance so all players see each other properly, and the 5 Hz tick is **not allowed to read the database** for it — appearance comes from an in-memory cache filled at hello and refreshed by the HTTP path. What is cached is the raw `(value, as_of)` pairs and **not the pose**, which is the whole subtlety: a pose expires, so a cached one would keep drawing a comfortable Ваня who has been at death's door since lunchtime. Separately, position became durable, written on the owner's last disconnect and on shutdown, so a deploy no longer teleports the yard to the middle.
 
-_Reasoning:_ the tick is a render step, and ADR-034 and ADR-038 both rest on it owning nothing: that is what makes a late, early, skipped or duplicated tick harmless. A query per tick would be five a second per room forever, to re-fetch a name and a skin key that change roughly never — and it would put a database round trip inside the one loop that must never block, where a slow query becomes a frozen yard for everyone.
-
-**What is cached is the pairs, not the pose.** This is the whole subtlety. A pose is a function of the clock, so caching one would be caching an answer that expires — an hour later the plane would still be drawing a comfortable Ваня who has been at death's door since lunchtime, and nothing would be obviously wrong. Caching `(value, as_of)` and deriving the pose on each tick costs one subtraction per stat, needs no invalidation, and stays correct indefinitely, for exactly the reason ADR-038 gives: the value is a function of the pair and the clock rather than an accumulation. The cache is therefore refreshed for *correctness of identity* (a rename, a new skin) and never for *freshness of derived state*.
-
-**The two moments the durable half is read are both human-paced.** A hello is a fresh socket, and it arrives on that connection's own read pump — so a slow query delays one client's next frame and never the room's. An action is an HTTP request that already touches the database. There is deliberately no join/leave callback for this: the hub stays game-agnostic and presence is still pulled rather than pushed (ADR-033).
-
-**Position is written on departure, never on movement.** Thirty players moving at the socket's ten messages a second would be three hundred writes a second to persist something read only when they come back. The tick *notices* a departure and hands it to a writer goroutine down a buffered channel — a full queue drops rather than blocks, because the plane must keep running and the cost is one Ваня reappearing where he was last written. `saved` on the placement is what makes an absence cost one write rather than one per tick for the whole grace period.
-
-_Consequence, and it is the part that only fails in production:_ a graceful shutdown cancels the context that the tick loop, the writer and every socket share, so without care a deploy would write nothing at all — the exact case durable position exists for. `Run` therefore flushes every held position on its way out, under a fresh bounded context, because the context that just ended is the reason it is flushing. A crash still loses the last position, and that is accepted: it is the same thing a dropped queue costs, and it is an acceptable failure for a nap.
+[Full record → `docs/adrs/ADR-041-the-broadcast-tick-renders-from-a-cache-and.md`](adrs/ADR-041-the-broadcast-tick-renders-from-a-cache-and.md)
 
 #### ADR-042 · Everything that moves is a function of absolute time
 
 _Accepted · 2026-07-26_
 
-Nothing on the plane accumulates. An NPC's position is `pattern(params, now − epoch)`; a player's is a point along a walk with a known start; a pose is derived from stats and the clock. All of it is evaluated on the existing 5 Hz render tick, none of it is stored, and **the tick still writes nothing**. NPCs consequently have no rows, no accounts and no placements — adding one is a catalogue entry, and because the client renders whatever entities it is sent, no client deploy either.
+Nothing on the plane accumulates: an NPC's position is `pattern(params, now − epoch)`, a player's is a point along a walk with a known start, and a balloon is a phrase pool indexed by a time slot. The alternative — advancing everything by a velocity each tick — fails invisibly, because a GC pause or a missed tick would permanently displace the world and two players would slowly stop seeing the same yard with nothing reporting a fault. It is ADR-038's self-correcting shape applied to space, and it is why an NPC needs no row, no account and no client deploy.
 
-_Reasoning:_ the alternative is a simulation — advance each thing by its velocity on every tick — and it fails in a way that is invisible until it is not. A GC pause, a slow publish or a missed tick would permanently displace the world, so two players would slowly stop seeing the same yard with nothing anywhere reporting a fault. Because position depends only on `now`, a tick that is late, early, skipped, duplicated or served to a client that has just reconnected produces the identical correct answer. It is the same self-correcting shape as computing decay from timestamps instead of counting ticks ([ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked)), applied to space.
-
-**Motion is a keyed function table, and it lands with its second implementation.** `wander` and `patrol` arrive together, which is what earns the map; with one pattern it would have been a function and a map with a single key. The three axes of a character — appearance, motion, and (later) what tapping it does — are separate keys, so N characters × M ways of moving costs N + M rather than N × M, and a character reusing an existing pattern with new numbers costs no code at all.
-
-**The epoch is fixed, not process start.** Two processes — or the same one after a deploy — have to agree about where a character is, and a per-process epoch would teleport the entire cast on every restart, several times a day.
-
-**The walk is what makes distance mean anything.** Until now the position *was* the tap: the far side of the plane was 220 ms away, so distance was decorative. It is not decorative — the beer delivery is a race to *arrive*. A tap now starts `(from, to, startedAt)` and retargets from the **current interpolated position**, so changing your mind feels like changing your mind rather than queueing a second errand. Speed is in plane-widths per second, which is why the plane has a fixed 3:4 shape: a speed in plane-widths only means the same thing to two players if a plane-width does.
-
-**Tiredness is decided once, server-side, at accept time.** For an ambitious tap the server may decide he gives up part way, and stores that in the walk — so everybody watches him sit down in the same spot at the same moment. A per-viewer roll would desynchronise the world and a client-side one would be forgeable. It is derived by hashing (account, destination, instant) rather than drawn from a generator: no seed, no injection, no stored state, and a test can assert an exact outcome. It also converts a limitation into content, which is the point — a speed cap alone reads as a tax, whereas a Ваня who sits down halfway across the yard and announces that he is tired *is* the game.
-
-_Consequence — the yard is never empty, and that is why position had to become durable first._ A player past the reconnect grace is no longer removed: they are rendered **asleep where they stood**. With five to thirty friends the yard is almost never occupied by two people at once, so without this a solo visit is a bare field — and the real absent friends are a far better answer to that than filler characters would have been. The sleepers cost one lazy query per process (triggered by a human saying hello, never a timer), are capped and newest-first so the roster grows with the size of the group rather than the age of the game, and are counted separately from the people: the frame carries an explicit `here` count so the client can say how many are in the yard **without ever learning to tell a person from an NPC**.
+[Full record → `docs/adrs/ADR-042-everything-that-moves-is-a-function-of.md`](adrs/ADR-042-everything-that-moves-is-a-function-of.md)
