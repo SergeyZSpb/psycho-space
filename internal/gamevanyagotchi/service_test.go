@@ -2621,3 +2621,125 @@ func TestPickingALineCannotRunOffTheEndOfThePool(t *testing.T) {
 		t.Fatalf("an even sweep of the draw reached %d of %d lines; some are unreachable", len(seen), len(pool))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Verbs over the socket. The wire owes no reply, so what a player is told
+// arrives as STATE — a line over their own Ваня that the whole yard can see.
+// ---------------------------------------------------------------------------
+
+// TestWhatTheServerSaysOutranksTheYardsOwnChatter. A refusal or a confirmation
+// is an answer to something the player just did, and both of the other lines —
+// the tiredness complaint and the idle muttering — are ambient. Losing an answer
+// behind ambience would make the socket's lack of a reply channel actually cost
+// something.
+func TestWhatTheServerSaysOutranksTheYardsOwnChatter(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+	acct := accountOf("a")
+
+	base := slotStart(t)
+	if err := svc.broadcast(context.Background(), base); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	// An instant at which he WOULD be muttering, so this proves the server's
+	// line wins rather than that the slot happened to be quiet.
+	when, idle := muttering(t, svc, acct, base)
+	if err := svc.broadcast(context.Background(), when); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	svc.Say(acct, "он не встаёт", sayFor)
+
+	if err := svc.broadcast(context.Background(), when); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	p, ok := peerOf(svc, frames[len(frames)-1], acct)
+	if !ok {
+		t.Fatal("the player is not in the frame")
+	}
+	if p.Say != "он не встаёт" {
+		t.Fatalf("he says %q; want the server's answer, not the slot's line %q", p.Say, idle)
+	}
+
+	// And it expires by arithmetic, with nothing scheduled to remove it.
+	if err := svc.broadcast(context.Background(), when.Add(sayFor)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames = tr.frames()
+	p, _ = peerOf(svc, frames[len(frames)-1], acct)
+	if p.Say == "он не встаёт" {
+		t.Fatal("the answer is still up past its window; it expires by comparison, so nothing should have to clear it")
+	}
+}
+
+// TestALineIsCappedToWhatTheClientWillRender. The browser caps by code point, so
+// a longer line would be silently shortened on the way in — and a player reading
+// half a sentence is worse served than by one written to fit.
+func TestALineIsCappedToWhatTheClientWillRender(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+	acct := accountOf("a")
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	long := "это очень длинная фраза которую никто не станет читать целиком"
+	svc.Say(acct, long, sayFor)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	p, _ := peerOf(svc, frames[len(frames)-1], acct)
+	if n := len([]rune(p.Say)); n > sayMax {
+		t.Fatalf("the line is %d code points; the client renders at most %d", n, sayMax)
+	}
+	if p.Say == "" {
+		t.Fatal("capping removed the line entirely")
+	}
+}
+
+// TestSayingSomethingToNobodyDrawsNobody. A verb can arrive from a client with
+// an HTTP session and no place in the yard, and hanging a balloon on that would
+// put a Ваня on the plane who never walked into it.
+func TestSayingSomethingToNobodyDrawsNobody(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("watching"))
+	svc := NewService(tr, testRoom, nil, nil)
+
+	svc.Say(accountOf("absent"), "приветик", sayFor)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	if _, ok := peerOf(svc, frames[len(frames)-1], accountOf("absent")); ok {
+		t.Fatal("an account with no placement was drawn into the yard by being spoken to")
+	}
+}
+
+// TestVerbsAreRateLimitedPerAccount. The socket's own limit is ten frames a
+// second, which is right for taps because a tap writes nothing. A verb writes a
+// transaction, so it needs a bound of its own.
+func TestVerbsAreRateLimitedPerAccount(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"), member("b"))
+	svc := NewService(tr, testRoom, nil, nil)
+	now := at(0)
+
+	if !svc.allowVerb(accountOf("a"), now) {
+		t.Fatal("the first batch was refused")
+	}
+	if svc.allowVerb(accountOf("a"), now.Add(verbInterval/2)) {
+		t.Fatal("a second batch inside the interval was accepted")
+	}
+	if !svc.allowVerb(accountOf("a"), now.Add(verbInterval)) {
+		t.Fatal("a batch after the interval was refused")
+	}
+	// And the limit is per ACCOUNT, so one player hammering does not lock out
+	// anybody else.
+	if !svc.allowVerb(accountOf("b"), now) {
+		t.Fatal("one account's rate limit refused another account")
+	}
+}

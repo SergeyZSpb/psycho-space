@@ -42,3 +42,9 @@ var (
 // is exactly the property movement does not have, because movement writes
 // nothing.
 var ErrBatchTooLong = errors.New("gamevanyagotchi: too many verbs in one batch")
+
+// ErrNoVerbs rejects a verb frame that asks for nothing, or for a blank verb.
+//
+// Separate from ErrUnknownAction because it is a SHAPE failure rather than a
+// content one: the frame is malformed, and no catalogue lookup would help.
+var ErrNoVerbs = errors.New("gamevanyagotchi: no verbs in the frame")

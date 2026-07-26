@@ -29,6 +29,23 @@ const (
 	TypeHello = "vanyagotchi_hello"
 	// TypeYou is the unicast answer to TypeHello — see You.
 	TypeYou = "vanyagotchi_you"
+	// TypeDo is the client asking for one or more verbs to be applied to its own
+	// pet. It carries a LIST because a batch is the general case and a single
+	// press is a batch of one — the same shape the fold takes, so nothing has to
+	// special-case the common path.
+	//
+	// It carries no instant. The server stamps every event, because a client
+	// time would be forgeable and everything in this game is integrated against
+	// timestamps — a drink backdated six hours would rewrite the decay after it.
+	TypeDo = "vanyagotchi_do"
+	// TypeStateFrame is the owner's own pet, pushed after it changes.
+	//
+	// NOT an acknowledgement, and the distinction is the whole design: it carries
+	// no correlation to a request, it is sent for any change including one made
+	// on the player's other device, and nothing waits for it. It is the same
+	// "state, never a reply" rule the roster follows, applied to the half of the
+	// game that is per-player rather than shared.
+	TypeStateFrame = "vanyagotchi_state"
 )
 
 // Roster is the whole plane, every tick.
@@ -157,4 +174,58 @@ func parseInbound(payload []byte) (Point, error) {
 		return Point{}, fmt.Errorf("%w: coordinates must be finite", ErrInvalidPosition)
 	}
 	return Point{X: x, Y: y}, nil
+}
+
+// do is the inbound verb frame: a list, applied in order.
+type do struct {
+	T     string   `json:"t"`
+	Verbs []string `json:"verbs"`
+}
+
+// StateFrame carries a player their own pet after it changes.
+//
+// The same State the HTTP read answers with, so the client has one shape to
+// render and cannot drift between the two paths. Sent only to the connections of
+// the account it belongs to — a pet's numbers are its owner's, and the shared
+// roster deliberately publishes only a derived pose.
+type StateFrame struct {
+	T     string `json:"t"`
+	State State  `json:"state"`
+}
+
+// parseVerbs turns a raw frame into the verbs it asks for.
+//
+// Pure, like parseInbound, so every rejection is a table row rather than
+// something needing a socket. It validates SHAPE only — that the frame is the
+// right type and carries a plausible list. Whether a verb exists, and whether
+// this pet may take it, is the service's business and is decided against the
+// catalogue and the pet's own state.
+func parseVerbs(payload []byte) ([]string, error) {
+	var env envelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrMalformedMessage, err)
+	}
+	if env.T != TypeDo {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownMessage, env.T)
+	}
+
+	var d do
+	if err := json.Unmarshal(payload, &d); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrMalformedMessage, err)
+	}
+	if len(d.Verbs) == 0 {
+		return nil, fmt.Errorf("%w: verbs is required and must not be empty", ErrNoVerbs)
+	}
+	// Checked here as well as in Do, because this is the edge: a frame asking
+	// for a thousand verbs must be refused before anything reads a database,
+	// not after.
+	if len(d.Verbs) > maxBatch {
+		return nil, fmt.Errorf("%w: %d verbs, limit %d", ErrBatchTooLong, len(d.Verbs), maxBatch)
+	}
+	for _, v := range d.Verbs {
+		if v == "" {
+			return nil, fmt.Errorf("%w: an empty verb", ErrNoVerbs)
+		}
+	}
+	return d.Verbs, nil
 }

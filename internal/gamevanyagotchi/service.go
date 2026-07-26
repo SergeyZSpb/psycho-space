@@ -204,6 +204,21 @@ type placement struct {
 	// racing a real one and be discarded, and a returning Ваня would silently
 	// teleport to the middle exactly as he did before any of this was built.
 	provisional bool
+	// says is a line to draw over this Ваня until `saysUntil`.
+	//
+	// STATE WITH AN EXPIRY, never a message. A verb owes the player an answer —
+	// "too far", «пиво кончилось», «хорошо пошло» — and the socket deliberately
+	// has no reply channel, so the answer is put in the world where the next
+	// full-state frame carries it. It expires by comparison against the tick's
+	// clock, so nothing schedules its removal and nothing has to be cleaned up.
+	says      string
+	saysUntil time.Time
+	// lastVerb is when this account's last batch of verbs was accepted.
+	//
+	// The socket's own limit is ten frames a second, which is right for taps
+	// because a tap writes nothing. A verb writes — a transaction each — so it
+	// needs its own bound, and this is it.
+	lastVerb time.Time
 }
 
 // NewService builds the game. room is the transport room it publishes to and
@@ -290,6 +305,8 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 		// connection's own read pump, so a slow query delays one client's next
 		// frame and never the yard's.
 		s.load(ctx, m.AccountID)
+	case TypeDo:
+		s.handleVerbs(ctx, m, payload)
 	case TypeMove:
 		p, err := parseInbound(payload)
 		if err != nil {
@@ -503,6 +520,12 @@ func (s *Service) place(members []realtime.Member, now time.Time) ([]Peer, int) 
 		switch {
 		case pose == PoseDead:
 			// A dead Ваня has nothing to add.
+		case p.says != "" && now.Before(p.saysUntil):
+			// Something the SERVER decided to tell him — a refusal, or what the
+			// verb he just pressed did. It outranks both the tiredness line and
+			// the idle muttering because it is the only one of the three that is
+			// an answer to something he did.
+			say = p.says
 		case p.walk.gaveUp(now):
 			// Decided once, at accept time, and broadcast — so everybody watches
 			// him give up in the same spot at the same moment, saying the same
@@ -1124,4 +1147,182 @@ func (s *Service) Replay(ctx context.Context, accountID string, to time.Time) (S
 		return Snapshot{}, err
 	}
 	return advance(fold(genesis(pet.CreatedAt), events), to), nil
+}
+
+// verbInterval is the shortest gap between two accepted batches from one
+// account.
+//
+// The socket already bounds frames at ten a second, and that is right for taps
+// because a tap writes nothing at all. A verb writes — one transaction, a
+// snapshot and an append — so it needs a bound of its own, and pressing a button
+// once a second is far past what a person does deliberately.
+const verbInterval = time.Second
+
+// sayFor is how long a line stays over a Ваня's head.
+const sayFor = 4 * time.Second
+
+// handleVerbs applies a batch of verbs arriving over the socket.
+//
+// THE WIRE OWES NO REPLY, and that is the design rather than a shortcut. The
+// 5 Hz full-state frame is the reconciliation channel — exactly as it already is
+// for movement, where a tap is answered by the next roster and not by an
+// acknowledgement — so a verb that is dropped is simply re-pressed. What the
+// player IS owed is knowing what happened, and that arrives as state: the line
+// over their own Ваня, which every other player can see too, and a push of their
+// own pet so the bars move.
+func (s *Service) handleVerbs(ctx context.Context, m realtime.Member, payload []byte) {
+	verbs, err := parseVerbs(payload)
+	if err != nil {
+		// Malformed shape, dropped in silence like every other bad frame: at ten
+		// frames a second a log line per bad one is a flood lever, and there is
+		// nobody to reply to.
+		return
+	}
+	if s.repo == nil || s.q == nil {
+		return
+	}
+
+	now := s.tickClock()
+	if !s.allowVerb(m.AccountID, now) {
+		// Deliberately silent. A client hammering the button is not owed an
+		// explanation, and a balloon would make the flood visible to the whole
+		// yard rather than costing only the sender.
+		return
+	}
+
+	state, err := s.Do(ctx, m.AccountID, verbs, now)
+	if err != nil {
+		s.Say(m.AccountID, refusalLine(err), sayFor)
+		return
+	}
+	if line := doneLine(verbs); line != "" {
+		s.Say(m.AccountID, line, sayFor)
+	}
+	s.pushState(ctx, m.AccountID, state)
+}
+
+// tickClock is the instant this game measures everything against.
+//
+// The broadcast tick's, borrowed — the same clock a tap is stamped with, for the
+// same reason: two clocks in one game is a bug that is invisible in production
+// and nonsense in a test. Before the first tick there is nothing to borrow, so a
+// verb arriving that early takes the wall clock.
+func (s *Service) tickClock() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastTick.IsZero() {
+		return time.Now().UTC()
+	}
+	return s.lastTick
+}
+
+// allowVerb reports whether this account may act now, and records it if so.
+func (s *Service) allowVerb(accountID string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	held := s.pos[accountID]
+	if !held.lastVerb.IsZero() && now.Sub(held.lastVerb) < verbInterval {
+		return false
+	}
+	held.lastVerb = now
+	s.pos[accountID] = held
+	return true
+}
+
+// Say puts a line over an account's Ваня for a while.
+//
+// Exported because it is the game's one way of telling a player something: a
+// refusal, a confirmation, and later the winner of a key. State with an expiry
+// rather than a message, so a late joiner sees whatever is currently true and
+// nothing has to be replayed to them.
+//
+// Capped to the same length the client caps at, so the server never sends a line
+// that would be silently truncated on the way in — a message the player only
+// half receives is worse than a shorter one written to fit.
+func (s *Service) Say(accountID, text string, forHow time.Duration) {
+	if text == "" {
+		return
+	}
+	if r := []rune(text); len(r) > sayMax {
+		text = string(r[:sayMax])
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	held, ok := s.pos[accountID]
+	if !ok {
+		// Nobody to draw it over. A verb can arrive from a client that has an
+		// HTTP session but no place in the yard, and inventing a placement to
+		// hang a balloon on would put a Ваня on the plane who never walked in.
+		return
+	}
+	held.says = text
+	held.saysUntil = s.lastTick.Add(forHow)
+	if s.lastTick.IsZero() {
+		held.saysUntil = time.Now().UTC().Add(forHow)
+	}
+	s.pos[accountID] = held
+}
+
+// pushState sends an account its own pet, on every connection it has open.
+//
+// Not a reply: it carries no correlation, and a second device gets it too — which
+// is the point, because that device's bars would otherwise sit stale until it
+// happened to re-read. A failed send is ignored; the socket may have gone away,
+// and the next HTTP read will answer with the same thing anyway.
+func (s *Service) pushState(ctx context.Context, accountID string, state State) {
+	members, err := s.transport.Members(ctx, s.room)
+	if err != nil {
+		return
+	}
+	frame, err := json.Marshal(StateFrame{T: TypeStateFrame, State: state})
+	if err != nil {
+		return
+	}
+	for _, m := range members {
+		if m.AccountID != accountID {
+			continue
+		}
+		_ = s.transport.PublishTo(ctx, m.ConnID, frame)
+	}
+}
+
+// refusalLine turns a refusal into something a player can read over their own
+// Ваня's head.
+//
+// The catalogue does not own these because they are not content about a verb —
+// they are what the SERVER decided about this attempt, and the same sentence
+// serves whichever verb was refused.
+func refusalLine(err error) string {
+	switch {
+	case errors.Is(err, ErrPetDead):
+		return "он не встаёт"
+	case errors.Is(err, ErrBatchTooLong):
+		return "не части"
+	case errors.Is(err, ErrUnknownAction), errors.Is(err, ErrUnknownStat):
+		// A verb the catalogue does not have can only come from a client that
+		// invented one, so there is nothing useful to say and nothing to fix.
+		return ""
+	default:
+		// A database failure or anything else unexpected. The player gets
+		// something honest and vague; the operator gets the real reason in the
+		// log, with a trace id, which is where an error of this kind belongs.
+		slog.WarnContext(context.Background(), "gamevanyagotchi: a verb failed", "err", err)
+		return "чёт не вышло"
+	}
+}
+
+// doneLine is what the catalogue says the last verb of a batch announces.
+//
+// The last one, because that is what just happened as far as the player is
+// concerned — showing all of them would need a queue of balloons, and a batch is
+// one press-and-a-bit in practice rather than a programme of work.
+func doneLine(verbs []string) string {
+	if len(verbs) == 0 {
+		return ""
+	}
+	action, ok := ActionByKey(verbs[len(verbs)-1])
+	if !ok {
+		return ""
+	}
+	return action.Done
 }

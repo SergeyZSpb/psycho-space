@@ -397,6 +397,13 @@ const (
 	idleChance = 0.25
 )
 
+// sayMax is the longest line the server will put over a Ваня's head.
+//
+// The client caps at the same number by code point. Capping here as well means
+// the server never sends a line that would be silently shortened on the way in:
+// a message the player half receives is worse than one written to fit.
+const sayMax = 24
+
 // maxBatch is how many verbs one message may carry.
 //
 // Eight is far past what a person presses at once and far short of what makes a

@@ -138,3 +138,52 @@ func TestClampUnitRejectsNonFinite(t *testing.T) {
 		}
 	}
 }
+
+// TestParsingAVerbFrameRejectsEveryBadShape. The edge is here: a frame asking
+// for a thousand verbs must be refused before anything reads a database, so the
+// batch cap is enforced in the parser as well as in Do.
+func TestParsingAVerbFrameRejectsEveryBadShape(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    error
+		why     string
+	}{
+		{name: "not json", payload: `{`, want: ErrMalformedMessage},
+		{name: "another type", payload: `{"t":"vanyagotchi_move","x":0.5,"y":0.5}`, want: ErrUnknownMessage,
+			why: "the parser is total over any frame, not only the ones the switch routes here"},
+		{name: "no verbs field", payload: `{"t":"vanyagotchi_do"}`, want: ErrNoVerbs},
+		{name: "empty list", payload: `{"t":"vanyagotchi_do","verbs":[]}`, want: ErrNoVerbs,
+			why: "asking for nothing is a malformed frame, not a no-op worth a transaction"},
+		{name: "a blank verb", payload: `{"t":"vanyagotchi_do","verbs":["drink",""]}`, want: ErrNoVerbs},
+		{name: "verbs is not a list", payload: `{"t":"vanyagotchi_do","verbs":"drink"}`, want: ErrMalformedMessage},
+		{name: "past the batch cap", payload: `{"t":"vanyagotchi_do","verbs":["drink","drink","drink","drink","drink","drink","drink","drink","drink"]}`,
+			want: ErrBatchTooLong,
+			why:  "nine verbs against a cap of eight — refused at the edge, before any storage is touched"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseVerbs([]byte(tc.payload)); !errors.Is(err, tc.want) {
+				t.Fatalf("parseVerbs(%s) = %v; want %v — %s", tc.payload, err, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestParsingAVerbFrameKeepsTheOrder. Order inside a batch is meaningful — the
+// fold applies them in sequence — so a parser that returned a set would silently
+// change what the player asked for.
+func TestParsingAVerbFrameKeepsTheOrder(t *testing.T) {
+	got, err := parseVerbs([]byte(`{"t":"vanyagotchi_do","verbs":["drink","relieve","drink"]}`))
+	if err != nil {
+		t.Fatalf("parseVerbs: %v", err)
+	}
+	want := []string{ActionDrink, ActionRelieve, ActionDrink}
+	if len(got) != len(want) {
+		t.Fatalf("got %d verbs; want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("position %d is %q; want %q — the batch order is the fold order", i, got[i], want[i])
+		}
+	}
+}
