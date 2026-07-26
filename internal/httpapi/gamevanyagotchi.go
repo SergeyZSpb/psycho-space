@@ -81,8 +81,8 @@ func (s *Server) handleGameVanyagotchiState(w http.ResponseWriter, r *http.Reque
 // Cacheable, and privately: the answer is about one person, so a shared cache
 // must not keep it.
 //
-// HOW STALE A FACE CAN GET, stated because the five minutes below invites the
-// wrong conclusion. Three things cache: the browser (five minutes, here), the
+// HOW STALE A FACE CAN GET, stated because the half hour below invites the
+// wrong conclusion. Three things cache: the browser (thirty minutes, here), the
 // display cache (refreshed on every hello, so a reconnect re-reads it), and
 // `accounts.avatar_url_enc` itself — which is written by `UpsertOnLogin` AT
 // LOGIN AND NOWHERE ELSE. The third dominates: until its owner signs in again we
@@ -121,12 +121,14 @@ func (s *Server) handleGameVanyagotchiAvatar(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	// Private, because the answer is about one person and a shared cache must not
-	// keep it. Five minutes is long enough that a browser asks once per visit to
-	// the yard rather than once per entity per reconnect, and short enough that
-	// changing your VK picture shows up the same session. Set on the miss as well
-	// as the hit, or every NPC would be re-asked five times a second by a client
+	// keep it. THIRTY MINUTES, which is long relative to a session on purpose: a
+	// face is the most static thing this game serves, the miss is permanent for
+	// every NPC, and re-asking costs a request per entity per player. It is not
+	// the limit on freshness anyway — the paragraph above explains why the login
+	// is — so a shorter window would buy traffic without buying currency. Set on
+	// the miss as well as the hit, or every NPC would be re-asked by a client
 	// that cannot tell an NPC from a person.
-	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("Cache-Control", "private, max-age=1800")
 	if !ok {
 		writeError(w, r, http.StatusNotFound, "no_avatar")
 		return

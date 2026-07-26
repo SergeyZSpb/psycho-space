@@ -409,7 +409,7 @@ function noFace(route: Route): Promise<void> {
   return route.fulfill({
     status: 404,
     contentType: 'application/json',
-    headers: { 'Cache-Control': 'private, max-age=300', 'X-Trace-Id': 'e2e-trace-id' },
+    headers: { 'Cache-Control': 'private, max-age=1800', 'X-Trace-Id': 'e2e-trace-id' },
     body: JSON.stringify({ error: 'no_avatar', trace_id: 'e2e-trace-id' }),
   });
 }
@@ -438,7 +438,7 @@ async function stubFaces(page: Page, withFace: readonly string[]): Promise<{ ask
     return route.fulfill({
       status: 200,
       contentType: 'image/png',
-      headers: { 'Cache-Control': 'private, max-age=300' },
+      headers: { 'Cache-Control': 'private, max-age=1800' },
       // The real route answers a 302 to VK's CDN. A redirect to a `data:` URI is
       // blocked by the browser and a redirect to a real host would put this
       // suite on the network, so the stub serves the bytes the redirect would
