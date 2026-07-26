@@ -24,6 +24,10 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 /** Mirrored from internal/gamevanyagotchi/message.go. */
 const TYPE_ROSTER = 'vanyagotchi_roster';
 const TYPE_YOU = 'vanyagotchi_you';
+/** A verb frame on its way to the server. Mirrored from message.go. */
+const TYPE_DO = 'vanyagotchi_do';
+/** The owner's own pet, pushed after it changes. */
+const TYPE_STATE = 'vanyagotchi_state';
 
 /** The routes the SPA calls, spelled out rather than built from a helper. */
 const CONFIG_PATH = '/api/game-vanyagotchi/config';
@@ -332,6 +336,7 @@ interface PetCalls {
  * of this.
  */
 async function stubBackend(page: Page, pet: PetStub = {}): Promise<PetCalls> {
+  stubbedPet = pet;
   const calls: PetCalls = { posts: [], states: 0 };
   await page.addInitScript(() => {
     try {
@@ -395,6 +400,8 @@ async function stubBackend(page: Page, pet: PetStub = {}): Promise<PetCalls> {
 interface SocketHarness {
   /** Pushes a frame to the page. Resolves once a socket exists to push it to. */
   push: (payload: string) => Promise<void>;
+  /** The verb batches the page actually sent, in order. */
+  asked: () => string[][];
 }
 
 /**
@@ -402,15 +409,44 @@ interface SocketHarness {
  * needs the trailing `*` — the client appends `?room=yard`, and a glob without
  * it does not match a query string.
  */
-async function stubSocket(page: Page): Promise<SocketHarness> {
+// The world the last stubBackend described, so the socket fake can answer a
+// verb the same way the HTTP fake answers a read. A test states its world once
+// and both halves of the app agree about it — which is exactly the property the
+// real server has, both paths going through one Service.Do.
+let stubbedPet: PetStub = {};
+
+async function stubSocket(page: Page, pet: PetStub = stubbedPet): Promise<SocketHarness> {
   let ws: { send: (m: string) => void } | undefined;
   let resolveReady: () => void;
   const ready = new Promise<void>((r) => {
     resolveReady = r;
   });
+  const asked: string[][] = [];
 
   await page.routeWebSocket('**/api/realtime*', (route) => {
     ws = route;
+    // Verbs travel over the socket now, so the fake has to behave the way the
+    // server does: apply them and PUSH the resulting state back. It is not a
+    // reply — there is no correlation and nothing waits for it — which is why
+    // this is a plain send rather than anything resembling a response.
+    route.onMessage((raw) => {
+      let frame: { t?: string; verbs?: unknown };
+      try {
+        frame = JSON.parse(typeof raw === 'string' ? raw : String(raw));
+      } catch {
+        return;
+      }
+      if (frame?.t !== TYPE_DO || !Array.isArray(frame.verbs)) return;
+      const verbs = frame.verbs as string[];
+      asked.push(verbs);
+
+      // The same stub that answers the HTTP read, so a test describes its world
+      // once and both paths agree about it.
+      const verb = verbs[verbs.length - 1];
+      const answer = pet.acted ? pet.acted(verb) : pet.state?.();
+      if (!answer || 'refusal' in (answer as object)) return;
+      route.send(JSON.stringify({ t: TYPE_STATE, state: answer }));
+    });
     resolveReady();
   });
 
@@ -419,6 +455,7 @@ async function stubSocket(page: Page): Promise<SocketHarness> {
       await ready;
       ws?.send(payload);
     },
+    asked: () => asked.map((v) => [...v]),
   };
 }
 
@@ -662,7 +699,7 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
         return stateOf({ hp: 61, beer: 88, bladder: 47 });
       },
     });
-    await stubSocket(page);
+    const socket = await stubSocket(page);
     await enterYard(page);
     await expect(statValue(page, 'hp')).toHaveText('26');
     await expect(statValue(page, 'beer')).toHaveText('4');
@@ -672,11 +709,16 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(statValue(page, 'hp')).toHaveText('61');
     await expect(statValue(page, 'beer')).toHaveText('88');
     await expect(statValue(page, 'bladder')).toHaveText('47');
-    // The line under the bars is the action's own `done` text, straight from the
-    // catalogue — another string the SPA does not know.
-    await expect(petLine(page)).toHaveText('хорошо пошло');
-    // Exactly one POST, to the verb that was pressed.
-    expect(calls.posts).toEqual([DRINK_PATH]);
+    // What the verb DID is the server's to say, and it says it in the BALLOON —
+    // where the rest of the yard reads it too — rather than in a caption only
+    // its owner sees. The catalogue's own `done` string, which the SPA does not
+    // know and could not have invented.
+    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, say: 'хорошо пошло' }));
+    await expect(page.locator('[data-test="peer-say"]')).toHaveText('хорошо пошло');
+    // Exactly one verb, over the SOCKET — and no HTTP at all, which is the
+    // whole of the move: the action endpoint is gone.
+    expect(socket.asked()).toEqual([['drink']]);
+    expect(calls.posts).toEqual([]);
     // The bar followed the number rather than staying where it was. Polled
     // rather than measured once: the fill animates its width over 400 ms, so a
     // single reading taken the instant the number changed catches it part-way
@@ -688,10 +730,10 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
       .toBeGreaterThan(0.5);
   });
 
-  test('relieving posts to its own verb and empties the bladder', async ({ page }) => {
+  test('relieving sends its own verb and empties the bladder', async ({ page }) => {
     // The second verb, and the proof the row is really iterating the catalogue:
-    // the path is built from the action's own key, so pressing the second button
-    // must reach `/actions/relieve` and nothing else.
+    // the frame carries the action's own key, so pressing the second button
+    // must send `relieve` and nothing else.
     let acted = false;
     const calls = await stubBackend(page, {
       config: CATALOGUE,
@@ -704,7 +746,7 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
         return stateOf({ hp: 70, beer: 50, bladder: 0 });
       },
     });
-    await stubSocket(page);
+    const socket = await stubSocket(page);
     await enterYard(page);
     await expect(statValue(page, 'bladder')).toHaveText('92');
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(1);
@@ -712,103 +754,72 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await actionBtn(page, 'relieve').click();
 
     await expect(statValue(page, 'bladder')).toHaveText('0');
-    await expect(petLine(page)).toHaveText('полегчало');
-    expect(calls.posts).toEqual([RELIEVE_PATH]);
+    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, say: 'полегчало' }));
+    await expect(page.locator('[data-test="peer-say"]')).toHaveText('полегчало');
+    expect(socket.asked()).toEqual([['relieve']]);
+    expect(calls.posts).toEqual([]);
     // And the bar stopped reading as trouble, because 0 is the good end of a
     // stat whose `good_high` is false.
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(0);
   });
 
-  test('a refused action shows the death line rather than the global error modal', async ({
-    page,
-  }) => {
-    // THIS PATH IS NEWLY REACHABLE. Until relieving himself existed, every verb
-    // in the catalogue could revive, so the server had no way to refuse one and
-    // the branch that handles a 409 was dead code kept on faith. A dead Ваня
-    // does not go to the toilet, so now it is live — and what the player must
-    // see is the screen's own instruction to bring him round, NOT the generic
-    // "something went wrong" modal for a situation the game is already
-    // explaining in words.
-    //
-    // He is alive to begin with and dies while the page is holding a stale
-    // state, which is the honest way this happens: nothing re-reads between
-    // actions, so the first the client hears of it is the refusal.
-    let dead = false;
-    const calls = await stubBackend(page, {
+  test('a refusal reaches the player as a line, never as the global modal', async ({ page }) => {
+    // A VERB OWES NO REPLY, so a refusal cannot be an error code the client
+    // catches — it arrives the way everything else in this game does, as STATE:
+    // a line over the player's own Ваня that the whole yard can read. What must
+    // never happen is the generic "something went wrong" modal appearing over a
+    // situation the game is already explaining in words.
+    await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        dead
-          ? stateOf(
-              { hp: 0, beer: 0, bladder: 96 },
-              // A truthful rate for a Ваня with both needs unmet: 1 of his own
-              // plus 6 for the beer plus 6 for the bladder.
-              { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
-            )
-          : stateOf({ hp: 4, beer: 1, bladder: 96 }, { rates: { hp: 13 } }),
-      acted: (verb) => {
-        if (verb === 'relieve') {
-          dead = true;
-          return { status: 409, code: 'pet_dead' };
-        }
-        return stateOf({ hp: 15, beer: 40, bladder: 96 });
-      },
+        stateOf(
+          { hp: 0, beer: 0, bladder: 96 },
+          // A truthful rate for a Ваня with both needs unmet: 1 of his own plus
+          // 6 for the beer plus 6 for the bladder.
+          { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
+        ),
+      // The server refuses the toilet to a corpse and says so instead of
+      // answering with a state, which is why the socket fake sends nothing back.
+      acted: (verb) => (verb === 'relieve' ? { status: 409, code: 'pet_dead' } : stateOf({ hp: 15, beer: 40, bladder: 96 })),
     });
-    await stubSocket(page);
+    const socket = await stubSocket(page);
     await enterYard(page);
-
-    // A press that succeeds first, so the line has something on it that the
-    // refusal has to clear — otherwise "the death notice appeared" would be
-    // indistinguishable from "the line never changed".
-    await actionBtn(page, 'drink').click();
-    await expect(petLine(page)).toHaveText('хорошо пошло');
-
-    const statesBefore = calls.states;
     await actionBtn(page, 'relieve').click();
+    expect(socket.asked(), 'the verb never left the page').toEqual([['relieve']]);
 
-    // The refusal is handled: the line says what to do about it, and the modal
-    // never opens.
-    await expect(petLine(page)).toHaveText(DEATH_LINE);
+    // The server's answer, in the world rather than in a response body.
+    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, pose: 'dead', say: 'он не встаёт' }));
+    await expect(page.locator('[data-test="peer-say"]')).toHaveText('он не встаёт');
     await expect(page.getByText('Ой, ошибка')).toHaveCount(0);
-    // And it re-read the world rather than merely swapping a string, which is
-    // the only reason the screen now knows he is dead at all.
-    expect(calls.states, 'the refusal did not re-read the state').toBeGreaterThan(statesBefore);
-    expect(calls.posts).toEqual([DRINK_PATH, RELIEVE_PATH]);
 
     // Still playable: the verb that CAN revive him is still there to press.
     await expect(actionBtn(page, 'drink')).toBeEnabled();
   });
 
-  test('an action in flight cannot be fired twice', async ({ page }) => {
-    // A double-fire is a real bug on a touchscreen, and the guard is a flag the
-    // whole row shares. Proved by holding the response open rather than by
-    // racing two clicks: the disabled state is otherwise one Vue flush wide and
-    // an assertion about it would be a coin toss.
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+  test('a double-tap sends one verb, not two', async ({ page }) => {
+    // A double-fire is a real bug on a touchscreen. There is no request to hold
+    // open any more — the verb is a socket send and returns immediately — so the
+    // guard is a short cooldown rather than an in-flight flag, and what is worth
+    // asserting is the only thing that matters: the server heard one verb.
     const calls = await stubBackend(page, {
       config: CATALOGUE,
       state: () => stateOf({ hp: 40, beer: 30, bladder: 20 }),
       acted: () => stateOf({ hp: 55, beer: 70, bladder: 45 }),
-      hold: held,
     });
-    await stubSocket(page);
+    const socket = await stubSocket(page);
     await enterYard(page);
     await expect(statValue(page, 'hp')).toHaveText('40');
 
-    await actionBtn(page, 'drink').click();
+    const drink = actionBtn(page, 'drink');
+    await drink.click();
+    await drink.click({ force: true });
+    await drink.click({ force: true });
 
-    // Both buttons, not just the pressed one: one request is in flight and the
-    // answer is a whole new world, so relieving mid-drink would be acting on a
-    // state that is already gone.
-    await expect(actionBtn(page, 'drink')).toBeDisabled();
-    await expect(actionBtn(page, 'relieve')).toBeDisabled();
-
-    release();
+    // The state still arrives, from the one verb that got through.
     await expect(statValue(page, 'hp')).toHaveText('55');
-    await expect(actionBtn(page, 'drink')).toBeEnabled();
-    expect(calls.posts).toEqual([DRINK_PATH]);
+    expect(socket.asked(), 'a double-tap became more than one verb').toEqual([['drink']]);
+    // And nothing went over HTTP at all — the action endpoint is gone.
+    expect(calls.posts).toEqual([]);
   });
 
   test('a stat in its warning range says so, and one outside does not', async ({ page }) => {

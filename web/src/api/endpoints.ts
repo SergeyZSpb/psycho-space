@@ -135,14 +135,9 @@ export const gameVanyagotchiApi = {
   // why a plain GET is allowed to change things.
   state: () => apiFetch<VanyagotchiState>('/api/game-vanyagotchi/state'),
 
-  // Apply one catalogue action. The verb goes in the path and the body is empty:
-  // the client says "heal", never "set hp to 80", so there is no number in the
-  // request to forge. The answer is the server's own recomputed state, which is
-  // also what corrects any drift in the bar the screen has been interpolating.
-  act: (action: string) =>
-    apiFetch<VanyagotchiState>(`/api/game-vanyagotchi/actions/${encodeURIComponent(action)}`, {
-      method: 'POST',
-    }),
+  // There is no `act` here on purpose: a verb travels over the SOCKET now, as
+  // one frame carrying a list, and the server answers with state rather than a
+  // response body. See GameVanyagotchiView's act().
 };
 
 export const adminApi = {

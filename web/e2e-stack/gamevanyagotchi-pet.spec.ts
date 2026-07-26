@@ -382,7 +382,7 @@ test('one drink moves three stats, and all three survive a reload', async ({ bro
     await expect.poll(() => shownHp(page)).toBeLessThanOrEqual(21);
 
     await actionBtn(page, 'drink').click();
-    await expect(page.locator('[data-test="pet-line"]')).toHaveText('хорошо пошло');
+    await expect(page.locator('[data-test="peer-say"]')).toHaveText('хорошо пошло');
 
     const after = {
       hp: await shownHp(page),
@@ -463,7 +463,7 @@ test('relieving himself empties the bladder and leaves the rest alone', async ({
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(1);
 
     await actionBtn(page, 'relieve').click();
-    await expect(page.locator('[data-test="pet-line"]')).toHaveText('полегчало');
+    await expect(page.locator('[data-test="peer-say"]')).toHaveText('полегчало');
 
     await expect.poll(() => shown(page, 'bladder')).toBe(0);
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(0);
@@ -505,6 +505,14 @@ test('a dead Ваня refuses the toilet and accepts a beer', async ({ browser, 
     await page.goto(`${base}/app/game-vanyagotchi`);
 
     await readState(page);
+    // Into the yard BEFORE the pet is put on the floor, and that ordering is
+    // load-bearing now. A verb is a socket send with no reply, so one issued by
+    // an earlier test can still be in flight when this one starts — and it
+    // landed on this pet, drinking it back off the floor between the setup and
+    // the assertion. Entering first, then killing him, closes that window: any
+    // straggler has already been applied by the time hp goes to zero.
+    await enterYardFrom(page);
+
     // On the floor. The death is not written by this UPDATE — it is recorded by
     // the first READ that observes hp at zero, which is the lazy-materialisation
     // shape the rest of this game uses too.
@@ -521,15 +529,16 @@ test('a dead Ваня refuses the toilet and accepts a beer', async ({ browser, 
     expect((await refused.json()) as { error: string }).toMatchObject({ error: 'pet_dead' });
 
     // And now on screen, where the death has to read without anybody parsing a
-    // number.
-    await enterYardFrom(page);
+    // number. The page is already in the yard, so it is nudged into re-reading
+    // the row this test changed behind its back.
+    await refreshTheYardsIdeaOf(page);
     await expect(page.locator('[data-test="pet-line"]')).toHaveText(DEATH_LINE);
 
     // The beer is the way back, and it is in character that it is. `revives`
     // requires the action to actually lift the fatal stat off its floor, so this
     // is a real revival rather than a flag being cleared.
     await actionBtn(page, 'drink').click();
-    await expect(page.locator('[data-test="pet-line"]')).toHaveText('хорошо пошло');
+    await expect(page.locator('[data-test="peer-say"]')).toHaveText('хорошо пошло');
     await expect.poll(() => shownHp(page)).toBeGreaterThanOrEqual(DRINK_HP - 2);
 
     const revived = await readState(page);
@@ -544,19 +553,31 @@ test('a dead Ваня refuses the toilet and accepts a beer', async ({ browser, 
     // the client hears of a death is the server turning an action down.
     //
     // Killing him a second time rather than pressing relieve while the screen
-    // already said he was dead, because that assertion would have been vacuous —
-    // the line was ALREADY the death notice, so it would have passed however the
-    // refusal was handled. Here the line has to CHANGE, from the drink's own
-    // `done` text to the notice, and only the handled 409 can do that.
+    // already said so, because that assertion would have been vacuous — the
+    // balloon has to CHANGE, from the drink's own `done` text to the refusal,
+    // and only a genuinely refused verb can do that.
     setStats(seeded[PLAYER_A], { hp: 0 });
 
+    // Wait for the drink's own line to expire before pressing again. Two
+    // reasons, and both are real behaviour rather than test hygiene: a verb is
+    // rate-limited to one a second per account and would otherwise be dropped
+    // in silence, and starting from an empty balloon is what makes the next
+    // assertion mean something — the line has to APPEAR, not merely differ.
+    await expect(page.locator('[data-test="peer-say"]')).toHaveCount(0, { timeout: 15_000 });
+
     await actionBtn(page, 'relieve').click();
-    // The refusal is answered by the line that says what to do about it — and
+    // The refusal arrives the way everything else does: as STATE, in the world.
+    // There is no reply to catch — the socket owes none — so what the player
+    // gets is a line over his own Ваня that the rest of the yard reads too, and
     // the global "something went wrong" modal never opens over a situation the
     // game is already explaining in words.
-    await expect(page.locator('[data-test="pet-line"]')).toHaveText(DEATH_LINE);
+    await expect(page.locator('[data-test="peer-say"]')).toHaveText('он не встаёт');
     await expect(page.getByText('Ой, ошибка')).toHaveCount(0);
     expect((await readState(page)).alive, 'he should still be dead').toBe(false);
+    // And the panel catches up on the next read, which is the honest cost of
+    // having no reply: the bars are stale until something re-reads them.
+    await refreshTheYardsIdeaOf(page);
+    await expect(page.locator('[data-test="pet-line"]')).toHaveText(DEATH_LINE);
   } finally {
     await context.close();
   }
@@ -664,7 +685,13 @@ test('two accounts have two Ваняs, and an action on one does not touch the o
     await expect.poll(() => shownHp(pageB)).toBeLessThanOrEqual(41);
 
     await actionBtn(pageA, 'drink').click();
-    await expect(pageA.locator('[data-test="pet-line"]')).toHaveText('хорошо пошло');
+    // Scoped to A's OWN Ваня, and this is the one test in the file where that
+    // matters: B is a second real player standing in the same yard, and a Ваня
+    // who is standing still is entitled to mutter on a schedule of his own
+    // (idleSays, one slot in four). An unscoped balloon locator therefore
+    // resolves to two elements whenever B happens to be talking, which is a
+    // failure about the yard being alive rather than about what A's verb did.
+    await expect(pageA.locator('.peer--you [data-test="peer-say"]')).toHaveText('хорошо пошло');
     expect(await shownHp(pageA)).toBeGreaterThanOrEqual(20 + DRINK_HP - 2);
 
     // B's Ваня is untouched — re-read from the server rather than trusting the

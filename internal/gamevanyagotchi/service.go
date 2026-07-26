@@ -518,14 +518,18 @@ func (s *Service) place(members []realtime.Member, now time.Time) ([]Peer, int) 
 		pose := d.pose(now)
 		say := ""
 		switch {
-		case pose == PoseDead:
-			// A dead Ваня has nothing to add.
 		case p.says != "" && now.Before(p.saysUntil):
 			// Something the SERVER decided to tell him — a refusal, or what the
-			// verb he just pressed did. It outranks both the tiredness line and
-			// the idle muttering because it is the only one of the three that is
-			// an answer to something he did.
+			// verb he just pressed did. It outranks all three of the others,
+			// INCLUDING death, and that ordering is the point rather than an
+			// accident: the moment a player most needs to be told «он не встаёт»
+			// is exactly the moment his Ваня is dead, and a dead-first branch
+			// swallowed the only answer a refused verb ever gets. He is not
+			// speaking — the server is telling his owner something — so being
+			// dead does not disqualify him from carrying it.
 			say = p.says
+		case pose == PoseDead:
+			// Nothing of his own to add, though.
 		case p.walk.gaveUp(now):
 			// Decided once, at accept time, and broadcast — so everybody watches
 			// him give up in the same spot at the same moment, saying the same

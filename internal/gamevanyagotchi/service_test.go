@@ -2743,3 +2743,40 @@ func TestVerbsAreRateLimitedPerAccount(t *testing.T) {
 		t.Fatal("one account's rate limit refused another account")
 	}
 }
+
+// TestADeadВаняStillCarriesWhatTheServerSaid pins the ordering bug this cost.
+//
+// The dead branch used to come first, so a corpse said nothing at all — and the
+// one moment a player most needs to be told «он не встаёт» is exactly the moment
+// his Ваня is dead and a verb has just been refused. A refusal is the server
+// talking to the owner, not the Ваня talking, so being dead does not disqualify
+// him from carrying it. Found by a full-stack test, pinned here where it is
+// cheap.
+func TestADeadВаняStillCarriesWhatTheServerSaid(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := NewService(tr, testRoom, nil, nil)
+	acct := accountOf("a")
+
+	died := at(0).Add(-time.Hour)
+	svc.remember(acct, Pet{SkinKey: SkinVanya, DiedAt: &died}, nil)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	svc.Say(acct, "он не встаёт", sayFor)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	frames := tr.frames()
+	p, ok := peerOf(svc, frames[len(frames)-1], acct)
+	if !ok {
+		t.Fatal("the dead player is not in the frame")
+	}
+	if p.Pose != PoseDead {
+		t.Fatalf("pose is %q; this test asserts nothing unless he is actually dead", p.Pose)
+	}
+	if p.Say != "он не встаёт" {
+		t.Fatalf("a dead Ваня says %q; the server's answer to a refused verb must reach the player who pressed it", p.Say)
+	}
+}

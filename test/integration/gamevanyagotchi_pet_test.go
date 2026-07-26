@@ -73,10 +73,23 @@ const petStatEpsilon = 0.5
 // transport, which is precisely the separation the service's own doc comment
 // claims — so passing nil is a small assertion of that in itself.
 func petBuildApp(vkBaseURL string) http.Handler {
+	h, _ := petBuildAppWithGame(vkBaseURL)
+	return h
+}
+
+// petBuildAppWithGame is petBuildApp plus the service itself.
+//
+// Verbs travel over the socket now, and these tests are about what a verb does
+// to a pet in a real Postgres rather than about how it arrived — so they call
+// Service.Do, which is the single funnel the socket handler itself goes
+// through. Driving a websocket here would test the transport twice and the
+// durable half not at all.
+func petBuildAppWithGame(vkBaseURL string) (http.Handler, *gamevanyagotchi.Service) {
 	cfg := config.Config{
 		Env: "dev",
 		VK:  config.VK{AppID: "app-1", ServiceToken: "svc", RedirectURI: vkRedirect, BaseURL: vkBaseURL},
 	}
+	game := gamevanyagotchi.NewService(nil, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository())
 	h := httpapi.NewServer(httpapi.Deps{
 		Config:          cfg,
 		Pool:            pool,
@@ -84,10 +97,10 @@ func petBuildApp(vkBaseURL string) http.Handler {
 		VK:              vk.New(vkBaseURL, "app-1", "svc", vkRedirect),
 		Accounts:        newAccountService(),
 		Sessions:        session.NewManager(pool, key(3), time.Hour, false),
-		GameVanyagotchi: gamevanyagotchi.NewService(nil, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository()),
+		GameVanyagotchi: game,
 		Settings:        settings.NewService(pool),
 	}).Handler()
-	return observability.WrapHandler(h, "http.server")
+	return observability.WrapHandler(h, "http.server"), game
 }
 
 // petApp starts a server for one test and returns it with its base URL.

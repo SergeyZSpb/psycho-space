@@ -218,8 +218,6 @@ import { decayedValue, inTrouble, skewMs, statFraction } from '../lib/vanyagotch
 import { YARD_PROSE, buildRules } from '../lib/vanyagotchiRules';
 import { gameVanyagotchiApi } from '../api/endpoints';
 import type { VanyagotchiAction, VanyagotchiConfig, VanyagotchiState } from '../api/types';
-import { ApiError } from '../api/client';
-import { useErrorStore } from '../stores/error';
 
 // «Ванягоччи» — the shared plane.
 //
@@ -245,13 +243,16 @@ const TYPE_MOVE = 'vanyagotchi_move';
 /** Asks the server which entity we are; it unicasts a `you` back. */
 const TYPE_HELLO = 'vanyagotchi_hello';
 const TYPE_YOU = 'vanyagotchi_you';
+/** A verb, or a batch of them, on their way to the server. */
+const TYPE_DO = 'vanyagotchi_do';
+/** Our own pet, pushed after it changes. Not a reply — see onFrame. */
+const TYPE_STATE = 'vanyagotchi_state';
 
 type Phase = 'intro' | 'play';
 const phase = ref<Phase>('intro');
 
 const store = useGameVanyagotchiStore();
 const client = realtimeClient();
-const errorStore = useErrorStore();
 
 // ---------------------------------------------------------------------------
 // The pet. Everything below is ordinary HTTP against a persistent thing, and it
@@ -273,7 +274,16 @@ const config = ref<VanyagotchiConfig | null>(null);
 const rules = computed(() => buildRules(config.value));
 const petState = ref<VanyagotchiState | null>(null);
 const acting = ref(false);
-/** The line under the bars — what just happened, or that he is dead. */
+/**
+ * The line under the bars. Now only ever the death notice.
+ *
+ * It used to carry the action's `done` text too, and no longer does: what a
+ * verb did is the SERVER's to say, and it says it in the balloon over your own
+ * Ваня, where the rest of the yard can read it as well. Duplicating that here
+ * would be two renderings of one fact that can disagree — and the one line this
+ * element must never lose is the death notice, which is the client's own and is
+ * the instruction for getting out of it.
+ */
 const flash = ref('');
 
 /**
@@ -298,6 +308,14 @@ let displayTimer: number | undefined;
  * and the values it produces are the same closed form the server would compute.
  */
 const DISPLAY_TICK_MS = 1_000;
+/**
+ * How long a button stays disabled after a verb is sent.
+ *
+ * Not a guess at a round trip — there is no round trip. It is a double-tap
+ * guard, set just under the server's own one-second bound on verbs so the
+ * button is never grey while the server would in fact accept.
+ */
+const ACT_COOLDOWN_MS = 900;
 
 const stats = computed(() => config.value?.stats ?? []);
 const actions = computed(() => config.value?.actions ?? []);
@@ -393,29 +411,33 @@ function applyPetState(next: VanyagotchiState): void {
   displayNow.value = Date.now() - clockSkew;
 }
 
-/** Applies one catalogue action. The server answers with the state it computed. */
-async function act(action: VanyagotchiAction): Promise<void> {
+/**
+ * Asks the server to apply one catalogue action.
+ *
+ * A VERB OVER THE SOCKET, AND NOTHING COMES BACK. No acknowledgement and no
+ * error reply, deliberately: the yard already reconciles from a full-state
+ * frame five times a second, exactly as it does for a tap, so a verb that never
+ * arrives is simply pressed again. What the server decided arrives as STATE
+ * instead — a line over your own Ваня that the whole yard can read, and a push
+ * of the pet itself so the bars move.
+ *
+ * There is therefore nothing to await and nothing to catch. `acting` is held
+ * only long enough to stop a double-tap becoming two verbs.
+ */
+function act(action: VanyagotchiAction): void {
   if (acting.value) return;
+  // Dropped rather than queued when the socket is down, the same rule a tap
+  // follows: the server stamps every event, so a verb queued now and delivered
+  // in a minute would be applied at the wrong instant.
+  if (!client.send({ t: TYPE_DO, verbs: [action.key] })) return;
+  // Cleared rather than set. What the verb DID is the server's to say, and it
+  // says it in the balloon; leaving the old line up would caption the new
+  // action with the previous one's result.
+  flash.value = '';
   acting.value = true;
-  try {
-    applyPetState(await gameVanyagotchiApi.act(action.key));
-    flash.value = action.done;
-  } catch (err) {
-    if (err instanceof ApiError && err.code === 'pet_dead') {
-      // Live now that a verb exists which cannot revive him: a dead Ваня does
-      // not go to the toilet, and the server refuses with a 409. The remedy is
-      // already written on the screen — the line below the bars says to bring
-      // him round — so this clears the stale `done` text and re-reads, rather
-      // than popping the global "something went wrong" modal over a situation
-      // the player is being told how to fix.
-      flash.value = '';
-      await loadPet();
-    } else {
-      errorStore.report(err);
-    }
-  } finally {
+  window.setTimeout(() => {
     acting.value = false;
-  }
+  }, ACT_COOLDOWN_MS);
 }
 
 /**
@@ -613,6 +635,14 @@ function setPeerEl(id: string, el: Element | null) {
 function onFrame(frame: RealtimeFrame) {
   if (frame.t === TYPE_YOU) {
     if (typeof frame.id === 'string' && frame.id) store.setYou(frame.id);
+    return;
+  }
+  if (frame.t === TYPE_STATE) {
+    // Our own pet, after it changed. NOT a reply to anything: it also arrives
+    // when this same account acts on another device, which is the point —
+    // that screen's bars would otherwise sit stale until it re-read.
+    const next = (frame as { state?: VanyagotchiState }).state;
+    if (next && typeof next === 'object') applyPetState(next);
     return;
   }
   if (frame.t !== TYPE_ROSTER) return;

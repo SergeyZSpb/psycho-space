@@ -63,6 +63,11 @@ func (s *Server) handleGameVanyagotchiState(w http.ResponseWriter, r *http.Reque
 // is no number in the request to forge — and because the allowlist is the
 // catalogue rather than a switch in here, an action added to content.go is
 // reachable without touching this file or the SPA.
+// DEBT, and named rather than left to drift (CLAUDE.md → *No legacy code*).
+// The SPA no longer calls this: verbs travel over the socket, through the same
+// Service.Do this handler calls. It survives only because six integration tests
+// drive a verb through it, and moving them to Service.Do is the one thing
+// between this route and deletion. Nothing new may be built on it.
 func (s *Server) handleGameVanyagotchiAction(w http.ResponseWriter, r *http.Request) {
 	if !s.gameVanyagotchiAvailable(w, r) {
 		return
