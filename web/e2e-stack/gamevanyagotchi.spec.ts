@@ -88,7 +88,7 @@ const npcDots = (page: Page) => page.locator('[data-test="peer"][data-peer^="npc
 /** Everybody lying about the yard: an account whose owner is not here. */
 const sleeperDots = (page: Page) =>
   page.locator(
-    '[data-test="peer"]:not([data-peer^="npc-"]):has([data-test="peer-face"][data-condition="asleep"])',
+    '[data-test="peer"]:not([data-peer^="npc-"]):not([data-peer^="obj-"]):has([data-test="peer-face"][data-condition="asleep"])',
   );
 
 /**
@@ -102,7 +102,13 @@ const sleeperDots = (page: Page) =>
  */
 const playerDots = (page: Page) =>
   page.locator(
-    '[data-test="peer"]:not([data-peer^="npc-"]):not(:has([data-test="peer-face"][data-condition="asleep"]))',
+    // Neither the regulars nor the things lying about. The `obj-` exclusion
+    // joined the `npc-` one the day the yard gained world objects: a lost key
+    // and a deposit are entities on the plane exactly as a Ваня is — that is the
+    // whole point of the kind-agnostic frame — so a helper that means PEOPLE has
+    // to say which prefixes are not, and every count in this file was silently
+    // one too many until it did.
+    '[data-test="peer"]:not([data-peer^="npc-"]):not([data-peer^="obj-"]):not(:has([data-test="peer-face"][data-condition="asleep"]))',
   );
 
 /** The catalogue the server actually served, so nothing here invents content. */
@@ -127,7 +133,7 @@ async function xs(page: Page): Promise<number[]> {
   return page.evaluate(() =>
     [
       ...document.querySelectorAll<HTMLElement>(
-        '[data-test="peer"]:not([data-peer^="npc-"]):not(:has([data-test="peer-face"][data-condition="asleep"]))',
+        '[data-test="peer"]:not([data-peer^="npc-"]):not([data-peer^="obj-"]):not(:has([data-test="peer-face"][data-condition="asleep"]))',
       ),
     ].map((el) => Number.parseFloat(getComputedStyle(el).getPropertyValue('--x'))),
   );
@@ -978,7 +984,14 @@ test('the yard has regulars, and both players see the same ones', async ({ brows
     await expect(pageA.getByText('во дворе: 2')).toBeVisible();
     await expect(pageB.getByText('во дворе: 2')).toBeVisible();
     expect(await here(pageA), 'the regulars were counted as people').toBe(2);
-    expect(await dots(pageA).count()).toBe(2 + npcs.length);
+    // Everything drawn: the two people, the whole cast, and whatever is lying
+    // about. The last term is the one that keeps changing — a key hunt is always
+    // running, so the yard is never bare — which is exactly why this counts the
+    // objects on screen rather than asserting a number somebody has to remember
+    // to bump. What it still pins is that nothing is drawn TWICE and nothing a
+    // player should see is missing.
+    const props = await pageA.locator('[data-test="peer"][data-peer^="obj-"]').count();
+    expect(await dots(pageA).count()).toBe(2 + npcs.length + props);
   } finally {
     await ctxA.close();
     await ctxB.close();

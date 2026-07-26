@@ -153,6 +153,18 @@ func apply(s Snapshot, e Event) (Snapshot, error) {
 		return s, ErrPetDead
 	}
 
+	// The catalogue's own precondition, checked against the DECAYED value rather
+	// than the stored one — the bladder the player is looking at, not the one
+	// written down an hour ago. Enforced here, in the single place a verb means
+	// anything, so it holds for a replay as well as for a press and cannot be
+	// skipped by a client that decided not to grey its button out.
+	if action.NeedsStat != "" {
+		row, ok := next.Rows[action.NeedsStat]
+		if !ok || row.Value < action.NeedsAtLeast {
+			return s, ErrNotYet
+		}
+	}
+
 	// A RESET IGNORES THE DELTAS, because coming back from the dead is coming
 	// back as a new Ваня rather than as the old one plus a number. Every stat
 	// goes to its catalogue Start — except a lifetime counter, which is exempt

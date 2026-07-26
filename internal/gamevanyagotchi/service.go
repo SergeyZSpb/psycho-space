@@ -230,6 +230,12 @@ type placement struct {
 	// racing a real one and be discarded, and a returning Ваня would silently
 	// teleport to the middle exactly as he did before any of this was built.
 	provisional bool
+	// mood is a COSMETIC pose to draw until `moodUntil` — the happy face of
+	// somebody who just found the keys, or the sad one of everybody who did not.
+	// In memory and expiring by arithmetic, because winning and losing move no
+	// stat and there is therefore nothing to write down.
+	mood      string
+	moodUntil time.Time
 	// says is a line to draw over this Ваня until `saysUntil`.
 	//
 	// STATE WITH AN EXPIRY, never a message. A verb owes the player an answer —
@@ -521,7 +527,7 @@ func (s *Service) broadcast(ctx context.Context, now time.Time) error {
 	// is: a deposit is not somebody who is in the yard.
 	peers = append(peers, s.props(now)...)
 
-	frame, err := json.Marshal(Roster{T: TypeRoster, Peers: peers, Here: here})
+	frame, err := json.Marshal(Roster{T: TypeRoster, Peers: peers, Here: here, Hunt: s.hunt()})
 	if err != nil {
 		return err
 	}
@@ -577,6 +583,12 @@ func (s *Service) place(members []realtime.Member, now time.Time) ([]Peer, int) 
 		d := s.display[m.AccountID]
 		at := p.walk.at(now)
 		pose := d.pose(now)
+		// A cosmetic mood outranks the derived pose, but NOT death: a corpse
+		// grinning because he happened to be in the yard when somebody found the
+		// keys would be funny once and wrong every time after.
+		if pose != PoseDead && p.mood != "" && now.Before(p.moodUntil) {
+			pose = p.mood
+		}
 		say := ""
 		switch {
 		case p.says != "" && now.Before(p.saysUntil):
@@ -997,6 +1009,7 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 	// above this line, beside the catalogue checks, where a refusal still costs
 	// no rows.
 	leavings := worldLeavings(verbs)
+	claimed := false
 
 	if err := s.inTx(ctx, func(q db.DBTX) error {
 		if err := s.repo.WriteStats(ctx, q, before.Pet.ID, rowsAt(after)); err != nil {
@@ -1010,6 +1023,36 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 		// event explains and no snapshot accounts for — and this is already the
 		// one place in the game where a multi-statement atomic write exists, so
 		// it costs nothing to be honest here.
+		// THE CONTESTED CLAIM, and it is inside the transaction on purpose: a
+		// player who lost the race must not have his stats written either, and
+		// returning an error here rolls the whole batch back. That is also how
+		// "no stat moves for losing" falls out for free rather than as a special
+		// case — a refused batch writes nothing at all.
+		for _, verb := range verbs {
+			kind, ok := contested(verb)
+			if !ok {
+				continue
+			}
+			won, err := s.repo.ClaimSingleton(ctx, q, kind, before.Pet.LocationKey, accountID, at)
+			if err != nil {
+				return err
+			}
+			if !won {
+				return ErrClaimLost
+			}
+			claimed = true
+			// Exhausting it and starting the next hunt in the SAME transaction,
+			// so the very next frame already carries a fresh key rather than an
+			// empty yard somebody has to be told about.
+			def, ok := ObjectKindByKey(kind)
+			if !ok {
+				continue
+			}
+			if err := s.repo.InsertWorldObject(ctx, q, kind, before.Pet.LocationKey, s.hidingPlace(), "", def.Singleton, nil); err != nil {
+				return err
+			}
+		}
+
 		for _, kind := range leavings {
 			def, ok := ObjectKindByKey(kind)
 			if !ok {
@@ -1032,7 +1075,12 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 	}); err != nil {
 		return State{}, err
 	}
-	if len(leavings) > 0 {
+	if claimed {
+		// Cosmetic, and only now that the write has committed: one happy face
+		// and everybody else's sad, for a few seconds.
+		s.settleHunt(ctx, accountID, at)
+	}
+	if len(leavings) > 0 || claimed {
 		// The world changed, so the cache the tick renders from is refreshed —
 		// here, on the verb's own goroutine, which is human-paced. The tick
 		// still reads nothing.
@@ -1382,6 +1430,10 @@ func refusalLine(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, ErrPetDead):
 		return "он не встаёт"
+	case errors.Is(err, ErrNotYet):
+		return "рано ещё"
+	case errors.Is(err, ErrClaimLost):
+		return "кто-то успел раньше"
 	case errors.Is(err, ErrBatchTooLong):
 		return "не части"
 	case errors.Is(err, ErrUnknownAction):

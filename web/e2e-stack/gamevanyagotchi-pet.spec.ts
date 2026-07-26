@@ -225,7 +225,7 @@ const dots = (page: Page) => page.locator('[data-test="peer"]');
  * same rule to `querySelectorAll` inside the page.
  */
 const PLAYER_ONLY =
-  '[data-test="peer"]:not([data-peer^="npc-"]):not(:has([data-test="peer-face"][data-condition="asleep"]))';
+  '[data-test="peer"]:not([data-peer^="npc-"]):not([data-peer^="obj-"]):not(:has([data-test="peer-face"][data-condition="asleep"]))';
 
 /** The caller's own dot, and everybody else's — the plane marks which is which. */
 const yourDot = (page: Page) => page.locator('[data-test="peer"][data-you="1"]');
@@ -787,13 +787,25 @@ test('reading the state twice returns the same pet, and a server clock with it',
     // the screen does not draw them as one — so this asserts the PREFIX rather
     // than the whole list, and the tallies are checked as tallies below.
     expect(parsed.stats.map((s) => s.key).slice(0, 3)).toEqual(['hp', 'beer', 'bladder']);
-    expect(parsed.stats.filter((s) => (s as { counter?: boolean }).counter).map((s) => s.key)).toEqual(
-      ['beers_drunk', 'shits_taken'],
-    );
+    // The tallies, whichever they are: named by the catalogue rather than by
+    // this list, because a counter is added the day a verb exists that can move
+    // one and a hand-written pair goes stale the moment that happens — which it
+    // did, when finding the keys arrived.
+    const tallies = parsed.stats.filter((s) => (s as { counter?: boolean }).counter);
+    expect(tallies.length, 'the catalogue serves no lifetime tallies at all').toBeGreaterThan(0);
+    for (const t of tallies) {
+      expect(wireStat(first, t.key).value, `${t.key} is not on the pet`).toBeGreaterThanOrEqual(0);
+    }
     // The revival comes last, and it is the only action that starts him over —
     // asserted here because this is the one place the REAL server's catalogue is
     // read over the wire, and a stub cannot notice the shipped one changing.
-    expect(parsed.actions.map((a) => a.key)).toEqual(['drink', 'relieve', 'revive']);
+    // The two the pet loop is made of come first and in this order, because
+    // display order is content: the drink that keeps him alive, then the thing
+    // it makes necessary. Asserted as a PREFIX — verbs about the wider world
+    // arrive after them and a hand-written full list goes stale the day one
+    // does, which it already has twice.
+    expect(parsed.actions.map((a) => a.key).slice(0, 2)).toEqual(['drink', 'relieve']);
+    expect(parsed.actions.map((a) => a.key)).toContain('revive');
     // An action carries a LIST of effects, and drinking is why: one press moves
     // three stats and keeps a tally.
     expect(parsed.actions[0].effects.map((e) => e.stat_key).sort()).toEqual([

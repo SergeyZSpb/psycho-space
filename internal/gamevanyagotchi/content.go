@@ -60,6 +60,9 @@ const (
 	// with the thing that can increment it.
 	StatBeersDrunk = "beers_drunk"
 	StatShitsTaken = "shits_taken"
+	// StatKeysFound is the third tally, and it arrives with the thing that can
+	// increment it.
+	StatKeysFound = "keys_found"
 )
 
 // Action keys.
@@ -80,6 +83,9 @@ const (
 	// research settled on — mildly annoying and cheaply reversible, never
 	// irreversible.
 	ActionRevive = "revive"
+	// ActionClaim is finding the key — the first CONTESTED verb, where the
+	// database rather than the hub decides who won.
+	ActionClaim = "claim"
 )
 
 // World-object kinds.
@@ -90,6 +96,11 @@ const (
 	// "at most one active" index keyed on kind alone would have forbidden a
 	// second player from relieving himself.
 	KindRelief = "relief"
+	// KindKey is the lost key exactly one player can find. The SINGLETON kind:
+	// at most one is active in the whole world, enforced by a partial unique
+	// index rather than by a rule in Go, so two concurrent restarts cannot
+	// produce two keys.
+	KindKey = "key"
 )
 
 // Skin and location keys.
@@ -217,6 +228,16 @@ type Action struct {
 	// something behind" is content like every other axis of this game — and so
 	// the sentence in the rules cheatsheet can be derived rather than typed.
 	Leaves string `json:"leaves,omitempty"`
+	// NeedsStat and NeedsAtLeast gate the verb on one of the pet's own numbers:
+	// there is no point going to the toilet on an empty bladder.
+	//
+	// Served so the CLIENT can grey the button out — a control that is visibly
+	// unavailable is kinder than one that looks ready and then refuses — but the
+	// SERVER enforces it regardless, because a greyed button is a suggestion and
+	// anything a client can decline to honour is not a rule. Empty means the
+	// verb is always available.
+	NeedsStat    string  `json:"needs_stat,omitempty"`
+	NeedsAtLeast float64 `json:"needs_at_least,omitempty"`
 }
 
 // Skin is one look for a pet: an art key resolved against the shared blob store,
@@ -386,6 +407,11 @@ const (
 	// the lifetime is what stops the roster growing without limit — see
 	// worldLimit for the hard cap behind it.
 	reliefLifetime = 10 * time.Minute
+
+	// How full he has to be before going to the toilet is worth a button press.
+	// Low enough that it is rarely in the way, high enough that «покакать» stops
+	// being a thing you press absently while nothing is happening.
+	relieveNeedsBladder = 15.0
 
 	// What the verbs do.
 	drinkBeer    = 40.0
@@ -615,6 +641,19 @@ var catalogue = Config{
 			Fatal:        false,
 		},
 		{
+			Key:          StatKeysFound,
+			Label:        "найдено ключей",
+			Emoji:        "🔑",
+			Min:          0,
+			Max:          counterMax,
+			Start:        0,
+			DecayPerHour: 0,
+			GoodHigh:     true,
+			WarnAt:       0,
+			Counter:      true,
+			Fatal:        false,
+		},
+		{
 			Key:          StatShitsTaken,
 			Label:        "покакано раз",
 			Emoji:        "🧻",
@@ -665,7 +704,27 @@ var catalogue = Config{
 			Done: "полегчало",
 			// And it stays where he left it, for everybody to walk past.
 			Leaves: KindRelief,
+			// Nothing to do on an empty bladder.
+			NeedsStat:    StatBladder,
+			NeedsAtLeast: relieveNeedsBladder,
 			// A dead Ваня does not go to the toilet.
+			RevivesFatal: false,
+		},
+		{
+			Key:   ActionClaim,
+			Label: "искать ключи",
+			Emoji: "🔑",
+			// The tally is the only thing that moves, and only for the winner:
+			// LOSING COSTS NOTHING. That is the settled ruling and it is what
+			// makes another player turning up never bad news — the loser's Ваня
+			// simply looks sad for a moment.
+			//
+			// It works out that way for free rather than by a special case: a
+			// claim that loses the race returns ErrClaimLost, the whole batch is
+			// refused, and a refused batch writes nothing at all.
+			Effects: []StatDelta{{StatKey: StatKeysFound, Delta: 1}},
+			Done:    "нашёл ключи",
+			// A dead Ваня finds nothing.
 			RevivesFatal: false,
 		},
 		{
@@ -697,6 +756,12 @@ var catalogue = Config{
 		// not an error, but it is worse than it sounds — the placeholder is a
 		// PERSON-shaped silhouette, so a deposit with no entry would draw as
 		// somebody standing there rather than as something lying on the ground.
+		{
+			Key:      "obj_key",
+			Label:    "ключи",
+			Emoji:    "🔑",
+			Gradient: "linear-gradient(160deg, #7a6a2f, #3a3320)",
+		},
 		{
 			Key:   "obj_relief",
 			Label: "куча",
@@ -747,6 +812,20 @@ var catalogue = Config{
 			// which is precisely why migration 008's index is predicated on this
 			// flag rather than on `exhausted_at IS NULL` alone.
 			Singleton: false,
+		},
+		{
+			Key:   KindKey,
+			Art:   "obj_key",
+			Label: "ключи",
+			// Forever, until somebody claims it. A hunt that timed out would
+			// need a timer, and there is none — it ends when it is won.
+			Lifetime:        0,
+			LifetimeSeconds: 0,
+			// THE SINGLETON. One active key in the world, as a database
+			// invariant: the winning claim sets `exhausted_at` and inserts the
+			// replacement in the same statement, so the next frame already
+			// carries a fresh hunt and two racing restarts cannot make two.
+			Singleton: true,
 		},
 	},
 

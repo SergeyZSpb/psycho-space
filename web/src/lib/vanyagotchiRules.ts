@@ -224,6 +224,13 @@ function actionRow(
   revivers: number,
 ): RuleAction {
   const notes: string[] = [];
+  // FIRST, because it is the only note that says when the button will do
+  // NOTHING. A player who presses «покакать» on an empty bladder is answered
+  // «рано ещё» and nothing happens, and a cheatsheet that listed what the verb
+  // moves without saying what it needs would have taught him a rule that is
+  // false three times out of four.
+  const needs = needsNote(def, byKey);
+  if (needs) notes.push(needs);
   const leaves = leavesNote(def, objectKinds);
   if (leaves) notes.push(leaves);
   // `revives_fatal` says both things at once: the action that carries it is the
@@ -243,6 +250,39 @@ function actionRow(
     effects: def.starts_over ? resetText(bars) : effectsText(def, byKey),
     notes,
   };
+}
+
+/**
+ * What the pet must already have before this verb will do anything, or nothing
+ * for a verb with no such condition.
+ *
+ * DERIVED FROM THE SERVED PAIR, so retuning the threshold in
+ * internal/gamevanyagotchi/content.go changes this sentence on its own. That is
+ * the whole reason it is here rather than in `YARD_PROSE`: «нужно 15» typed by
+ * hand would be wrong the first afternoon somebody decided a quarter of a
+ * bladder was too little, and nothing would ever compare the two.
+ *
+ * NAMED FROM THE STAT'S OWN LABEL, and yielding NO NOTE when the catalogue does
+ * not describe the stat — the same discipline `leavesNote` follows below. A
+ * client older than the server can be handed a gate on a stat it has never heard
+ * of, and «нужно: bladder от 15» is worse than silence: it exposes a wire key to
+ * a player as though it were a word.
+ *
+ * A threshold of nought yields no note either, and that is the honest reading
+ * rather than an omission: the server compares `>=`, so a gate at nought is
+ * satisfied by every value a stat can hold and is therefore not a rule at all.
+ * Printing it would tell the player about a condition that can never fail.
+ */
+function needsNote(
+  def: VanyagotchiAction,
+  byKey: Map<string, VanyagotchiStat>,
+): string | null {
+  if (!def.needs_stat) return null;
+  const amountNeeded = def.needs_at_least;
+  if (!Number.isFinite(amountNeeded) || (amountNeeded ?? 0) <= 0) return null;
+  const stat = byKey.get(def.needs_stat);
+  if (!stat) return null;
+  return `нужно накопить: ${stat.label || def.needs_stat} от ${amount(amountNeeded as number)}`;
 }
 
 /**
@@ -424,6 +464,19 @@ function signed(value: number): string {
  *      excluded from it, and that exclusion appears nowhere in the catalogue.
  *      What one of them is and how long it lasts is derived instead, one section
  *      up, off the verb that leaves it.
+ *   5. the key hunt, which is the one rule where the derived half is actively
+ *      misleading on its own. The catalogue says the claiming verb adds one to a
+ *      tally and is refused on a corpse, and stops there — so a player reading
+ *      only the derived rows would take it for another button he may press
+ *      whenever he likes. What is missing is every part that makes it a race:
+ *      that there is exactly ONE key in the world at a time (the singleton
+ *      invariant is a partial unique index in migration 008, not a catalogue
+ *      flag), that the first press takes it and the rest are refused, that
+ *      losing costs nothing but a sad face for a few seconds — no stat moves,
+ *      deliberately, so nothing about the loss can be derived from `effects` —
+ *      and that a replacement is lost the instant the old one is found. The verb
+ *      carries no `leaves` kind either, so even «где-то на земле» has to be said
+ *      here rather than coming off the object kind the way a deposit's does.
  *
  * If one of those numbers or behaviours moves, this text is what goes wrong. Keep
  * it honest, keep it short, and resist adding anything here that the config
@@ -436,4 +489,5 @@ export const YARD_PROSE: readonly string[] = [
   'Стоит без дела — бормочет себе под нос.',
   'Остальные во дворе — живые люди. Кто ушёл, тот лежит спит там, где стоял. А пара местных вообще ничьи.',
   'Не всё во дворе — люди. Что кто-то оставил на земле, то там и лежит: видно всем, но в счётчике народу не числится.',
+  'Ключи одни на весь двор и всегда где-то на земле: кто первым нажал, тот их и нашёл. Опоздавшему не будет ничего — только грустная морда на пару секунд. И новые ключи теряются сразу же, так что искать можно вечно.',
 ];

@@ -67,6 +67,23 @@ type Roster struct {
 	// teaching the browser to tell a person from a character, which is exactly
 	// the content knowledge the entity frame exists to keep out of it.
 	Here int `json:"here"`
+	// Hunt is the id of the key hunt currently running, or empty.
+	//
+	// STATE, NEVER AN ANNOUNCEMENT, and that distinction has teeth: a one-shot
+	// «ключи снова потерялись» is exactly what somebody who opened the app
+	// thirty seconds later misses. Riding the idempotent full-state frame means
+	// joining at any instant shows the world as it is, and a late joiner can
+	// take part in a hunt already in progress.
+	//
+	// The FLAVOUR LINE IS A TRANSITION rather than a message: a client that sees
+	// this id change knows a fresh hunt started and says so; one that has just
+	// connected simply finds a hunt already running and says nothing, which is
+	// correct.
+	//
+	// Twelve characters, the same truncation everything else on this frame uses —
+	// about 20 bytes a frame, 100 B/s to each phone, for a field that changes a
+	// few times an evening.
+	Hunt string `json:"hunt,omitempty"`
 }
 
 // Peer is one entity on the plane: one ACCOUNT, not one connection. Signing in
@@ -115,6 +132,18 @@ type Peer struct {
 	// pool arrives later on this same field, which is why it is a string rather
 	// than a second pose: a pose is how he looks, and this is something he said.
 	Say string `json:"say,omitempty"`
+	// Expires is when this entity stops existing, as unix seconds, or absent for
+	// one that does not.
+	//
+	// An ABSOLUTE instant rather than "seconds left", and that is the whole
+	// reason it can be on the frame at all: an absolute expiry is CONSTANT for
+	// the life of the object, so it does not churn the client's appearance guard
+	// five times a second, whereas a countdown would change on every tick and
+	// re-render every deposit in the yard. The client subtracts it from the
+	// server clock it already tracks and fades the thing out itself — the same
+	// division of labour the stat bars use, where the server sends a rate and
+	// the browser does the interpolating.
+	Expires int64 `json:"expires,omitempty"`
 	// THERE IS NO AVATAR FIELD, and its absence is a decision rather than an
 	// omission. A picture is fetched by ID over ordinary HTTP — see
 	// Service.AvatarFor and GET /api/game-vanyagotchi/avatar/{peer} — for two

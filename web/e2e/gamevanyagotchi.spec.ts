@@ -42,25 +42,36 @@ const LABEL_MAX = 16;
  *
  * The FIRST entry being 1 is the load-bearing part, and it is why this is
  * written down here rather than measured: depth can only make an entity bigger,
- * so the 44 px tap-target floor is the CSS size itself rather than a product of
- * two numbers that could drift apart. A change that scaled the far band DOWN
- * would still draw a perfectly plausible yard, and should fail here.
+ * so the legibility floor is the CSS size itself rather than a product of two
+ * numbers that could drift apart. A change that scaled the far band DOWN would
+ * still draw a perfectly plausible yard, and should fail here.
  */
 const DEPTH_SCALES = [1, 1.08, 1.16, 1.24] as const;
 
 /**
  * The SMALLEST a dot is ever drawn — the floor of `--unit`, not the size.
  *
- * `.peer` is `var(--unit)` and `--unit` is `clamp(44px, 13cqw, 88px)` on
- * `.plane`, so an entity grows with the yard and 44 is the bottom of that clamp.
- * It is a LEGIBILITY floor rather than a tap-target one, which matters for
- * reading the assertions that name it: `.peer` is `pointer-events: none` and the
- * plane takes every tap, so a dot has never been tappable.
+ * `.peer` is `var(--unit)` and `--unit` is `clamp(32px, 9cqw, 64px)` on
+ * `.plane`, so an entity grows with the yard and 32 is the bottom of that clamp.
+ *
+ * IT IS A LEGIBILITY FLOOR AND NEVER A TAP TARGET, which is what made lowering
+ * it from 44 allowed at all: `.peer` is `pointer-events: none` and the plane
+ * takes every tap, so no dot in this yard has ever been tappable and the 44 that
+ * some assertion names below is not the WCAG number it resembles. It bounds how
+ * small a face may be drawn and still be read across a phone-sized yard, and
+ * nothing else.
+ *
+ * WHAT THE WHOLE CLAMP MOVED FOR: the owner, on a phone, reported everything in
+ * the yard as too big — not the yard, the things standing in it. The plane's own
+ * size is untouched (`min(100cqw, 75cqh)`, unchanged), and only the fraction of
+ * it an entity occupies came down, from 13% to 9%. So the yard is the same box
+ * with more room in it, which is the point: a dozen deposits and four players
+ * now fit without covering each other.
  */
-const PEER_BASE_PX = 44;
+const PEER_BASE_PX = 32;
 /** The top of the clamp, and the fraction of the plane between the two. */
-const PEER_UNIT_MAX_PX = 88;
-const PEER_UNIT_PLANE_FRACTION = 0.13;
+const PEER_UNIT_MAX_PX = 64;
+const PEER_UNIT_PLANE_FRACTION = 0.09;
 
 /**
  * `--unit` at a given plane width, mirroring the stylesheet's clamp.
@@ -91,13 +102,15 @@ const SAY_FLIP_Y = 0.15;
  * It used to be `min(96px, 34cqw)`, and the two branches were asserted
  * separately because they could each be the binding one. There is one branch
  * now: `--unit` is itself clamped, so the balloon cannot grow past legible
- * without a second ceiling to stop it. 2.182 is 96/44 — the same cap a phone
- * always had, now expressed as what it was a proportion OF.
+ * without a second ceiling to stop it. 2.182 is 96/44 — the proportion a
+ * balloon has always been drawn at, expressed as what it is a proportion OF, so
+ * it followed the unit down when the world shrank instead of leaving a balloon
+ * two and a half Ваняs wide.
  *
  * The plane-fraction bound below is kept as an independent second opinion. It is
- * now the looser of the two everywhere (2.182 x 0.13 = 28.4% of the plane at
- * most), which is the point: it is derived from a different quantity, so it
- * still fails if the unit rule itself is wrong.
+ * now the looser of the two everywhere by a wide margin (2.182 x 0.09 = 19.6% of
+ * the plane at most, against a 34% bound), which is the point: it is derived
+ * from a different quantity, so it still fails if the unit rule itself is wrong.
  */
 const SAY_MAX_UNITS = 96 / 44;
 const SAY_MAX_PLANE_FRACTION = 0.34;
@@ -122,6 +135,19 @@ const SAY_MAX = 24;
  * on the wire.
  */
 const SAY_FIXTURE = 'устал';
+
+/**
+ * What the screen says when a fresh key hunt has started.
+ *
+ * MIRRORED, unlike the balloon above, and the difference is worth keeping
+ * straight. A balloon is the server's words and this client draws whatever it is
+ * sent, so pinning one here would assert a coupling that does not exist; this
+ * line is the CLIENT's own — it is written in GameVanyagotchiView.vue precisely
+ * because the wire carries which hunt is running and never that one has begun —
+ * so a copy of it here is a copy of the thing under test, and it should fail if
+ * somebody changes the wording without meaning to.
+ */
+const HUNT_LINE = 'нам повезло, ключи снова потерялись';
 
 /**
  * Where the client asks for the face of the person behind an entity. Mirrored
@@ -213,11 +239,21 @@ interface Peer {
   /** The pet's name. Left out, never empty, when it has none. */
   label?: string;
   /**
-   * 'fine' | 'poorly' | 'dead' | 'asleep', as the SERVER decided it.
+   * 'fine' | 'poorly' | 'dead' | 'asleep' | 'happy' | 'sad', as the SERVER
+   * decided it.
    *
    * `asleep` is a Ваня whose owner is away, lying where he last stood. It is
    * what makes a solo visit a place rather than an empty field, and it is why an
    * entry in this list stopped meaning "a player who is here".
+   *
+   * The last two are a different KIND of thing and it is worth knowing which
+   * while reading the fixtures below. The first four are CONDITIONS, derived
+   * from the stats and the clock and true for as long as the numbers are;
+   * `happy` and `sad` are MOODS — the outcome of a contested claim, held in
+   * memory on the server for a few seconds and then simply absent. Since winning
+   * and losing a key move no stat whatsoever, the mood is the ENTIRE consequence
+   * of the race, which is why this suite asserts on how the two are drawn rather
+   * than only on the attribute reaching the DOM.
    */
   pose?: string;
   /**
@@ -227,6 +263,30 @@ interface Peer {
    * distinction: a pose is how he LOOKS and this is something he SAID.
    */
   say?: string;
+  /**
+   * When this entity stops existing, as unix SECONDS. Absent for anything that
+   * does not stop, which is every person, every sleeper and every NPC.
+   *
+   * THE ONLY THING ON THE WIRE THAT DISTINGUISHES A THING FROM A PERSON, and it
+   * does so without naming a kind — which is why the client is allowed to draw
+   * an entity that has one differently (half size, no circle, shrinking as it
+   * runs out) while still holding no notion of what world objects are. There is
+   * deliberately no `kind` field to put here, and adding one would be the
+   * regression: it would put the catalogue's cast list in the browser and make
+   * adding a kind a client deploy (ADR-028).
+   *
+   * ABSOLUTE rather than a countdown, which is what lets it ride a frame that
+   * repeats five times a second: it is identical on every frame of the thing's
+   * life, so it never churns the client's appearance guard. A fixture that wrote
+   * "seconds remaining" here would be describing a much more expensive protocol.
+   *
+   * Note the one world object that does NOT get one: the key at the centre of a
+   * hunt lasts until somebody finds it, so the server sends it no expiry and the
+   * client draws it as an ordinary full-size dot. That is intended — the thing
+   * this distinction exists to shrink is litter, and the key is the one object
+   * meant to be spotted.
+   */
+  expires?: number;
   // THERE IS NO AVATAR FIELD, and a test that gave a peer one would be
   // describing a server that no longer exists. A face is fetched by id from
   // AVATAR_PATH rather than broadcast, so the way this suite gives somebody a
@@ -267,6 +327,26 @@ function rosterHere(here: number, ...peers: Peer[]): string {
  */
 function rosterWithoutHere(...peers: Peer[]): string {
   return JSON.stringify({ t: TYPE_ROSTER, peers });
+}
+
+/**
+ * A roster frame with a key hunt running on it.
+ *
+ * `hunt` is the id of the key currently lying in the yard, and it is STATE
+ * rather than an announcement — which is why it rides this frame five times a
+ * second instead of arriving once as an event of its own. That is the whole
+ * shape the tests below exist to pin: a client sees an id, not a notification,
+ * so «a fresh hunt has started» is a DIFFERENCE between two frames and exists
+ * nowhere but in a client that watched the previous one. A late joiner, who has
+ * no previous one, therefore has nothing to be told.
+ *
+ * The empty string is a frame with no hunt on it — `omitempty` drops the field
+ * on the wire, and this helper reproduces that rather than sending `""`, so what
+ * arrives is the shape a real server sends between a key being won and its
+ * replacement being lost.
+ */
+function rosterHunt(hunt: string, ...peers: Peer[]): string {
+  return JSON.stringify({ t: TYPE_ROSTER, peers, here: peers.length, ...(hunt ? { hunt } : {}) });
 }
 
 /** Everything the socket handler hands back to the test. */
@@ -526,6 +606,68 @@ async function peerDepth(
   );
 }
 
+/**
+ * How big an entity is ACTUALLY drawn, in CSS pixels.
+ *
+ * Read through `getBoundingClientRect` in the page rather than through
+ * Playwright's `boundingBox()`, and the difference is the whole reason this
+ * exists: `boundingBox()` answers null for an element with no area, and a thing
+ * that has run out is drawn at exactly no area. The one measurement this helper
+ * is most needed for would therefore be the one it could not make.
+ *
+ * The rect is the TRANSFORMED box, so it includes the depth band's scale.
+ * Comparisons across entities have to put them at the same height or divide it
+ * out; comparisons of one entity against itself over time do not.
+ */
+async function peerDrawnBox(page: Page, id: string): Promise<{ width: number; height: number }> {
+  return page.evaluate((peerId) => {
+    const el = document.querySelector(`[data-peer="${peerId}"]`);
+    if (!el) throw new Error(`no dot for ${peerId}`);
+    const r = el.getBoundingClientRect();
+    return { width: r.width, height: r.height };
+  }, id);
+}
+
+/**
+ * The circle an entity is drawn on, or the absence of one.
+ *
+ * Four separate declarations make that circle — a background colour, a
+ * background image, a rim and a shadow — and a thing lying on the ground must
+ * have none of them, so all four are read. Asserting only on the background
+ * would pass against a deposit still wearing a white rim and a drop shadow,
+ * which is most of what made the litter look like people.
+ *
+ * Read out of the USED values, so this fails if a rule stops applying for any
+ * reason rather than only if somebody deletes it — the background in particular
+ * is an inline binding that the stylesheet could not override even if it tried,
+ * which is exactly the sort of thing a computed-style read catches and a source
+ * read does not.
+ */
+async function peerSkin(
+  page: Page,
+  id: string,
+): Promise<{
+  background: string;
+  image: string;
+  borderWidth: string;
+  boxShadow: string;
+}> {
+  return page.evaluate((peerId) => {
+    const el = document.querySelector(`[data-peer="${peerId}"]`);
+    if (!el) throw new Error(`no dot for ${peerId}`);
+    const s = getComputedStyle(el);
+    return {
+      background: s.backgroundColor,
+      image: s.backgroundImage,
+      borderWidth: s.borderTopWidth,
+      boxShadow: s.boxShadow,
+    };
+  }, id);
+}
+
+/** What a computed background colour reads as when there is not one. */
+const TRANSPARENT = 'rgba(0, 0, 0, 0)';
+
 /** One entity's balloon, if the server is currently giving it one. */
 const sayBubble = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-say"]`);
@@ -562,6 +704,45 @@ async function faceTilt(page: Page, id: string): Promise<number> {
     const parts = t.slice(t.indexOf('(') + 1, t.lastIndexOf(')')).split(',').map(Number);
     // matrix(a, b, c, d, e, f): the first column is the rotated x axis.
     return (Math.atan2(parts[1] ?? 0, parts[0] ?? 1) * 180) / Math.PI;
+  }, id);
+}
+
+/**
+ * How a face is actually being DRAWN: the size and vertical offset the transform
+ * resolved to, the tone the filter applies, and whether anything is animating it.
+ *
+ * The two moods are the entire consequence of a contested claim — no stat moves
+ * for either — so "it is drawn differently" is not decoration here, it IS the
+ * outcome, and an assertion that only checked the attribute would pass against a
+ * stylesheet that drew a winner and a loser identically.
+ *
+ * Read out of the USED values rather than off the declarations, exactly like
+ * `faceTilt` above: the browser has already composed the transform, so this
+ * fails if a rule stops applying for any reason rather than only if somebody
+ * deletes it. `animationName` is read for the opposite reason — a mood lasts
+ * about as long as one cycle of `poorly`'s wobble, so it has to be legible in
+ * its first frame and under `prefers-reduced-motion`, which means the right
+ * answer is that there is no animation at all.
+ */
+async function faceShape(
+  page: Page,
+  id: string,
+): Promise<{ scale: number; dy: number; filter: string; animation: string }> {
+  return page.evaluate((peerId) => {
+    const el = document.querySelector<HTMLElement>(
+      `[data-peer="${peerId}"] [data-test="peer-face"]`,
+    );
+    if (!el) throw new Error(`no face for ${peerId}`);
+    const style = getComputedStyle(el);
+    const shape = { filter: style.filter, animation: style.animationName };
+    const t = style.transform;
+    if (!t || t === 'none') return { ...shape, scale: 1, dy: 0 };
+    const parts = t.slice(t.indexOf('(') + 1, t.lastIndexOf(')')).split(',').map(Number);
+    // matrix(a, b, c, d, e, f). The first column is the rotated, scaled x axis,
+    // so its LENGTH is the scale however much rotation was composed on top of
+    // it; `f` is the vertical translation, which is unaffected because the
+    // translate is applied first.
+    return { ...shape, scale: Math.hypot(parts[0] ?? 1, parts[1] ?? 0), dy: parts[5] ?? 0 };
   }, id);
 }
 
@@ -625,6 +806,66 @@ async function recordStale(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Records every line the status row under the bars has shown, from before the
+ * app boots.
+ *
+ * The same technique as `recordStale`, and a sharper version of the same reason.
+ * The hunt line is up for six seconds and its whole claim is that it appears
+ * ONCE per fresh hunt — so what has to be asserted is not "is it there now" but
+ * "how many times has it been put there", and a polled assertion measures
+ * neither. An observer installed before boot cannot miss a write, so the tests
+ * assert the recorded SEQUENCE.
+ *
+ * WHAT IT CANNOT SEE is worth stating, because it decides the shape of the tests
+ * below: writing the SAME line a second time is not a DOM change, so a client
+ * that re-announced an unchanged hunt would leave a log identical to a correct
+ * one's. That case is therefore pinned where the line has never been up at all —
+ * a repeated hunt id from a clean start must leave this log empty — which is
+ * also the shape the realistic bug takes, since announcing on every frame that
+ * merely CARRIES a hunt would fire on the first one too.
+ */
+async function recordPetLine(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const log: string[] = [];
+    (window as unknown as { __petLineLog: string[] }).__petLineLog = log;
+    // Whether the recorder attached at all. An empty log is a legitimate result
+    // — silence is what most of these sequences expect — so without this flag
+    // "nothing was ever announced" and "nothing was ever watching" are the same
+    // observation, and every silence assertion would pass for want of evidence.
+    (window as unknown as { __petLineWatching: boolean }).__petLineWatching = false;
+    const read = () => document.querySelector('[data-test="pet-line"]')?.textContent?.trim() ?? '';
+    let last = '';
+    new MutationObserver(() => {
+      const now = read();
+      if (now !== last) {
+        last = now;
+        log.push(now);
+      }
+    }).observe(document, {
+      // THE DOCUMENT, for the reason spelled out in `recordStale`: an init script
+      // can run before `documentElement` exists, and observing null throws and
+      // leaves a recorder that quietly records nothing.
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+    (window as unknown as { __petLineWatching: boolean }).__petLineWatching = true;
+  });
+}
+
+/** Every line the status row has shown so far, in order. See `recordPetLine`. */
+function petLineLog(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window as unknown as { __petLineLog: string[] }).__petLineLog ?? []);
+}
+
+/** Whether the line recorder ever attached. See `recordPetLine`. */
+function petLineWatching(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () => (window as unknown as { __petLineWatching: boolean }).__petLineWatching === true,
+  );
+}
+
 /** The recorded stale/live transitions so far. */
 function staleLog(page: Page): Promise<boolean[]> {
   return page.evaluate(() => (window as unknown as { __staleLog: boolean[] }).__staleLog ?? []);
@@ -646,6 +887,15 @@ const face = (page: Page, id: string) =>
 const nameTag = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-label"]`);
 /**
+ * The status line under the bars — the only text on this screen the CLIENT
+ * writes rather than the server.
+ *
+ * Always present, empty or not, so that the plane above it does not resize as a
+ * line comes and goes. An assertion that it is empty is therefore an assertion
+ * about its text and never about the element existing.
+ */
+const petLine = (page: Page) => page.locator('[data-test="pet-line"]');
+/**
  * The person's own photograph on a dot, if one is being drawn.
  *
  * There is ONE img element on a dot and it carries either kind of picture — a
@@ -664,10 +914,13 @@ const spriteOf = (page: Page, id: string) =>
 /**
  * The stylesheet's cap on a name's WIDTH, in world units: `--unit * 1.818`.
  *
- * Was `min(80px, 30cqw)`. 1.818 is 80/44, so a phone is unchanged and every
- * wider screen now grows the name with the yard instead of leaving it behind —
- * the same correction `--unit` makes to the dot itself. The plane-fraction bound
- * is kept as an independent second opinion, derived from a different quantity.
+ * Was `min(80px, 30cqw)`. 1.818 is 80/44 — the proportion a name has always been
+ * drawn at, now expressed as a proportion of the unit, so a name grows and
+ * shrinks with the yard instead of being left behind by it. That is the same
+ * correction `--unit` makes to the dot itself, and it is what carried the labels
+ * down with everything else when the world scale dropped. The plane-fraction
+ * bound is kept as an independent second opinion, derived from a different
+ * quantity.
  */
 const LABEL_MAX_UNITS = 80 / 44;
 const LABEL_MAX_PLANE_FRACTION = 0.3;
@@ -867,7 +1120,9 @@ test.describe('«Ванягоччи» — the shared plane', () => {
     expect((hudBox?.y ?? 0) + (hudBox?.height ?? 0)).toBeLessThanOrEqual(viewportHeight);
   });
 
-  test('a dot is a full-size tap target even though the plane takes the tap', async ({ page }) => {
+  test('a dot is never drawn below the legibility floor, small though the world is', async ({
+    page,
+  }) => {
     await stubBackend(page);
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -875,10 +1130,16 @@ test.describe('«Ванягоччи» — the shared plane', () => {
     await expect(dots(page)).toHaveCount(1);
 
     if (isMobile(page)) {
-      // The 44 px rule binds the sprite size. Depth scaling has since arrived
-      // and can only ever make a dot BIGGER — the far band's scale is 1 — so
-      // this stays the floor rather than becoming an average. The band-by-band
-      // version of the check is in the depth suite below.
+      // NOT A TAP-TARGET ASSERTION, and it never was one despite the wording it
+      // used to carry: a dot is `pointer-events: none` and the plane takes every
+      // tap, so nothing here is tappable and no 44px rule reaches it. What the
+      // clamp's floor bounds is how small a face may be drawn and still be read
+      // across a phone-sized yard — which is why it could come down to 32 when
+      // the whole world scale did, and why this assertion is still worth making
+      // at the new number rather than deleted along with the old one.
+      // Depth scaling can only ever make a dot BIGGER — the far band's scale is
+      // 1 — so this stays the floor rather than becoming an average. The
+      // band-by-band version of the check is in the depth suite below.
       const box = await dots(page).first().boundingBox();
       expect(box).not.toBeNull();
       expect(Math.round(Math.min(box?.width ?? 0, box?.height ?? 0))).toBeGreaterThanOrEqual(
@@ -1459,23 +1720,29 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     await expect(page.getByText('во дворе: 1')).toBeVisible();
   });
 
-  test('a thing somebody left behind is drawn like anybody else and counted like nobody', async ({
+  test('a thing somebody left behind is placed and counted by the machinery that handles people', async ({
     page,
   }) => {
     // THE TEST THAT PROVES THE CLIENT STAYED KIND-AGNOSTIC, and the reason it is
-    // worth one of its own: «покакать» now leaves a deposit standing where the
-    // server thinks you were, and the browser gained NO code for it. A world
+    // worth one of its own: «покакать» leaves a deposit standing where the server
+    // thinks you were, and the browser holds NO idea of what one is. A world
     // object reaches this page as an ordinary roster entry — an id, a position,
-    // an art key and a pose — with nothing anywhere on the wire saying it is a
-    // thing rather than a person. So this pushes one at a client that has never
-    // heard of world objects and asserts it is drawn, placed and forgotten by
-    // exactly the machinery that draws, places and forgets a Ваня.
+    // an art key, a pose and an expiry — with nothing anywhere on the wire naming
+    // a kind. So this pushes one at a client that has never heard of world
+    // objects and asserts it is drawn, placed, asked about and forgotten by
+    // exactly the machinery that draws, places, asks about and forgets a Ваня.
     //
-    // A client carrying a `kind` field, or a `switch` over kinds, would pass none
-    // of this by accident: it would have to be taught the kind first, and that is
-    // precisely the deploy coupling the entity frame is bought to avoid. This is
-    // the same shape as the assertions about an art key the catalogue does not
-    // describe, one suite down, and for the same reason.
+    // IT USED TO SAY «drawn like anybody else» AND THAT HALF IS NO LONGER TRUE,
+    // which is the one thing to read carefully here. A thing on the ground is now
+    // drawn at half size with no circle round it and shrinks as it runs out — the
+    // sibling test below is where that is pinned — because a yard of deposits
+    // drawn as full-size coloured discs looked like a yard of people. What did
+    // NOT change is everything this test is about: the client still cannot tell
+    // what the thing IS. It keys off the entity having an EXPIRY, which is a fact
+    // about the frame rather than a content key, so a kind added on the server
+    // still needs no client deploy (ADR-028). A `kind` field, or a lookup of the
+    // art key against the catalogue's object kinds, would pass none of this by
+    // accident — it would have to be taught the kind first.
     await stubBackend(page);
     const faces = await stubFaces(page, []);
     const socket = await stubSocket(page);
@@ -1485,7 +1752,19 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     // have sent: two. `obj-` and twelve characters is the id the server mints —
     // the same length a player's pseudonym uses — and it is a fixture here rather
     // than a mirror, because nothing in this client parses an id.
-    const DEPOSIT = { id: 'obj-a1b2c3d4e5f6', x: 0.35, y: 0.8, art: 'obj_relief', pose: 'fine' };
+    //
+    // The expiry is what the real server puts on a deposit: an absolute instant,
+    // ten minutes out, in unix seconds. Sent here because a fixture without one
+    // would be quietly testing the drawing of a PERSON while claiming to test a
+    // thing — the whole distinction lives in this field.
+    const DEPOSIT = {
+      id: 'obj-a1b2c3d4e5f6',
+      x: 0.35,
+      y: 0.8,
+      art: 'obj_relief',
+      pose: 'fine',
+      expires: Math.floor(Date.now() / 1_000) + 600,
+    };
     const PEOPLE = [
       { id: 'me', x: 0.5, y: 0.5, art: 'vanya', label: 'я', pose: 'fine' },
       { id: 'neighbour', x: 0.2, y: 0.3, art: 'vanya', label: 'сосед', pose: 'fine' },
@@ -1528,14 +1807,185 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     // takes the 404 as «draw the catalogue art».
     await expect.poll(() => faces.asked).toContain(DEPOSIT.id);
 
-    // And it goes when the server stops sending it, which is the whole of what
-    // this client does about a ten-minute lifetime: expiry is decided server-side
-    // and arrives as an absence, so there is no timer here to get wrong and no
-    // second implementation of the TTL to disagree with the one in world.go.
+    // And it goes when the server stops sending it. The client draws the thing
+    // shrinking towards its expiry, but it never DELETES one on a timer of its
+    // own: removal is still an absence from a full-state frame, so there is no
+    // second implementation of the TTL here to disagree with the one in world.go
+    // — the local arithmetic decides only how big to draw a thing the server is
+    // still sending.
     await socket.push(rosterHere(2, ...PEOPLE));
     await expect(dots(page)).toHaveCount(2);
     await expect(page.locator(`[data-peer="${DEPOSIT.id}"]`)).toHaveCount(0);
     await expect(page.getByText('во дворе: 2')).toBeVisible();
+  });
+
+  test('a thing on the ground is half a Ваня and has no circle round it', async ({ page }) => {
+    // WHAT THE OWNER SAW ON A PHONE: a yard whose deposits were drawn exactly
+    // like people — a full-size coloured disc with a glyph on it — so a busy
+    // evening's litter read as a crowd, and each piece of it, wearing a hue
+    // hashed from its id, read as somebody in particular. Both are wrong in the
+    // same direction, and this pins the fix in the only terms that mean anything
+    // to a player: how big is it next to a person, and does it look like one.
+    //
+    // BOTH FIXTURES STAND AT THE SAME HEIGHT, which is load-bearing rather than
+    // tidy. A drawn box includes the depth band's scale, so a deposit measured
+    // one band nearer the viewer than the Ваня it is compared with would be 24%
+    // out and the ratio would mean nothing.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    const Y = 0.8;
+    const PERSON = { id: 'me', x: 0.7, y: Y, art: 'vanya', pose: 'fine' };
+    const DEPOSIT = {
+      id: 'obj-a1b2c3d4e5f6',
+      x: 0.3,
+      y: Y,
+      art: 'obj_relief',
+      pose: 'fine',
+      // Ten minutes out, which is what the server really sends: a whole life
+      // ahead of it, so the size measured here is the half and not the half
+      // times some fraction of an ageing that has already begun.
+      expires: Math.floor(Date.now() / 1_000) + 600,
+    };
+    expect(bandFor(PERSON.y), 'the fixtures are no longer in the same band').toBe(
+      bandFor(DEPOSIT.y),
+    );
+    await socket.push(rosterHere(1, PERSON, DEPOSIT));
+    await expect(dots(page)).toHaveCount(2);
+
+    const person = await peerDrawnBox(page, PERSON.id);
+    const deposit = await peerDrawnBox(page, DEPOSIT.id);
+    expect(person.width, 'the Ваня this is measured against was not drawn').toBeGreaterThan(0);
+    const ratio = deposit.width / person.width;
+    // Half, with a whisker of tolerance UNDER it and none over. The whisker is
+    // the ageing: the fixture's expiry was stamped a second or so before the
+    // browser drew it, so the thing is already an imperceptible fraction into
+    // its life. Being over half would be a different matter — that is the ageing
+    // running backwards, or the halving not applying at all.
+    expect(
+      ratio,
+      `a deposit is ${Math.round(deposit.width)}px against a ${Math.round(person.width)}px Ваня — ${(ratio * 100).toFixed(1)}% rather than 50%`,
+    ).toBeGreaterThan(0.49);
+    expect(ratio).toBeLessThanOrEqual(0.501);
+    // Square, so the shrink came off the world unit both entities are built from
+    // rather than off one axis of the box.
+    expect(deposit.height / person.height).toBeCloseTo(ratio, 2);
+
+    // NO CIRCLE, in all four of the ways there is to draw one. Asserting only the
+    // background would pass a deposit still wearing a white rim and a drop
+    // shadow, which is most of what made the litter look like people.
+    const litter = await peerSkin(page, DEPOSIT.id);
+    expect(litter.background, 'a deposit is still filled with a colour').toBe(TRANSPARENT);
+    expect(litter.image).toBe('none');
+    expect(litter.borderWidth).toBe('0px');
+    expect(litter.boxShadow).toBe('none');
+
+    // And a person still has every one of them, so this is a DIFFERENCE rather
+    // than the stylesheet having quietly lost the circle for the whole yard. The
+    // identity colour is the sharpest of the four: it is an inline binding that
+    // no stylesheet rule could take away, so the only thing that can put a
+    // deposit at transparent is the binding itself declining to emit one.
+    const mine = await peerSkin(page, PERSON.id);
+    expect(mine.background, 'nobody is wearing an identity colour any more').not.toBe(TRANSPARENT);
+    expect(Number.parseFloat(mine.borderWidth)).toBeGreaterThan(0);
+    expect(mine.boxShadow).not.toBe('none');
+
+    // The glyph is still there. A thing with no circle must not become a thing
+    // with nothing — the whole point is that it is smaller and quieter, not that
+    // it is gone.
+    await expect(face(page, DEPOSIT.id)).toHaveText(UNKNOWN_ART);
+    await expect(page.locator(`[data-peer="${DEPOSIT.id}"][data-prop="1"]`)).toHaveCount(1);
+    await expect(page.locator(`[data-peer="${PERSON.id}"][data-prop="1"]`)).toHaveCount(0);
+  });
+
+  test('a deposit shrinks as it ages, and is drawn at nothing once it has run out', async ({
+    page,
+  }) => {
+    // THE CLOCK IS DRIVEN RATHER THAN WAITED FOR, and that is what makes this a
+    // test of ageing rather than a test of arithmetic. Three deposits of
+    // different ages measured side by side would prove the size follows the
+    // EXPIRY; only advancing time under a single one proves it follows the CLOCK,
+    // which is the actual claim — a deposit sized once when it arrived and never
+    // again would pass the first check and fail the player.
+    //
+    // A real wait could not make the same claim at any tolerable cost: a thing
+    // shrinks over ten minutes, so a second of real waiting moves it by 0.17% of
+    // its size, which is under the noise of a layout measurement. Playwright's
+    // clock fakes `Date.now` and the timers together, so the once-a-second redraw
+    // this screen already runs for the stat bars fires exactly as it would have,
+    // just sooner.
+    const START = new Date('2026-07-26T12:00:00Z');
+    await page.clock.install({ time: START });
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    // A ten-minute life, which is what the server gives a deposit, so the whole
+    // range of the drawing is covered by advancing through it.
+    const LIFE_S = 600;
+    const DEPOSIT = {
+      id: 'obj-a1b2c3d4e5f6',
+      x: 0.5,
+      y: 0.8,
+      art: 'obj_relief',
+      pose: 'fine',
+      expires: Math.floor(START.getTime() / 1_000) + LIFE_S,
+    };
+    // A person standing beside it, unchanging, as the control. Without one, a
+    // stylesheet that shrank the WHOLE YARD as time passed — or a plane that
+    // resized under the fake clock for some unrelated reason — would look exactly
+    // like a deposit ageing correctly.
+    const PERSON = { id: 'me', x: 0.2, y: 0.8, art: 'vanya', pose: 'fine' };
+
+    /** Pushes the frame again and answers how big the two are drawn now. */
+    const measure = async () => {
+      await socket.push(rosterHere(1, PERSON, DEPOSIT));
+      await expect(dots(page)).toHaveCount(2);
+      return {
+        deposit: (await peerDrawnBox(page, DEPOSIT.id)).width,
+        person: (await peerDrawnBox(page, PERSON.id)).width,
+      };
+    };
+
+    const fresh = await measure();
+    expect(fresh.deposit, 'a fresh deposit was not drawn at all').toBeGreaterThan(0);
+
+    // Halfway through its life, drawn at half of what it was. The comparison is
+    // against the FIRST measurement rather than against a pixel count, so it
+    // stays true at every viewport this suite runs at.
+    await page.clock.fastForward(LIFE_S * 500);
+    await expect
+      .poll(async () => (await measure()).deposit / fresh.deposit, {
+        message: 'five minutes in, the deposit is not half the size it was',
+      })
+      .toBeCloseTo(0.5, 1);
+
+    // Nearly out: a tenth left, and still visible — it fades away rather than
+    // snapping out of existence one frame before the server drops it.
+    await page.clock.fastForward(LIFE_S * 400);
+    const nearlyGone = await measure();
+    expect(nearlyGone.deposit / fresh.deposit).toBeGreaterThan(0);
+    expect(nearlyGone.deposit / fresh.deposit).toBeLessThan(0.2);
+
+    // Past its expiry, drawn at nothing. The server stops sending it on its own
+    // tick and the two clocks are not the same clock, so this is the state that
+    // covers the gap between them — and it has to be NOTHING rather than
+    // something small, or every deposit the yard ever had would leave a permanent
+    // speck behind it.
+    await page.clock.fastForward(LIFE_S * 200);
+    const gone = await measure();
+    expect(gone.deposit, 'a deposit past its expiry is still being drawn').toBe(0);
+
+    // And the Ваня beside it never moved, at any of the four instants — so what
+    // was measured is one thing ageing and not the whole world shrinking.
+    for (const [label, m] of [
+      ['fresh', fresh],
+      ['nearly gone', nearlyGone],
+      ['gone', gone],
+    ] as const) {
+      expect(m.person, `the control Ваня changed size at "${label}"`).toBeCloseTo(fresh.person, 1);
+    }
   });
 
   test('a sleeping Ваня reads as dormant rather than as somebody standing still', async ({
@@ -2147,9 +2597,17 @@ test.describe('«Ванягоччи» — further down the plane is nearer', () 
     }
 
     // What the stylesheet says, asserted at every width INCLUDING the ones where
-    // the clamp binds: `--unit: clamp(44px, 13cqw, 88px)`, and `cqw` inside a
+    // the clamp binds: `--unit: clamp(32px, 9cqw, 64px)`, and `cqw` inside a
     // `.peer` resolves against the plane. Written as the formula rather than as
     // measured numbers so it stays true when the plane's own sizing changes.
+    //
+    // THE RATIO THIS PINS IS THE ONE THAT MOVED, and reading it the wrong way
+    // round is the mistake worth guarding against: the fix for "everything in the
+    // yard is too big" was to lower the FRACTION an entity occupies, from 13% of
+    // the plane to 9%, while the plane itself kept exactly the size it had. If a
+    // change ever makes this test pass by resizing `.plane`, the yard shrank
+    // instead of its contents and the constants below are being followed rather
+    // than checked.
     for (const s of seen) {
       const want = unitFor(s.plane);
       expect(
@@ -2286,12 +2744,19 @@ test.describe('«Ванягоччи» — further down the plane is nearer', () 
     ).toBeGreaterThan(Number(mine.zIndex));
   });
 
-  test('the furthest band is still a 44 px tap target', async ({ page }) => {
+  test('the furthest band is still drawn at the legibility floor', async ({ page }) => {
     // The floor, band by band. It holds without arithmetic because the FIRST
-    // depth scale is 1: depth can only ever make an entity bigger, so 44 px is
-    // the smallest anything is ever drawn rather than the product of two numbers
-    // that could drift apart. A change that scaled the far band DOWN instead
-    // would draw a perfectly plausible yard and quietly break the mobile rule.
+    // depth scale is 1: depth can only ever make an entity bigger, so the clamp's
+    // floor is the smallest anything is ever drawn rather than the product of two
+    // numbers that could drift apart. A change that scaled the far band DOWN
+    // instead would draw a perfectly plausible yard and quietly put the furthest
+    // entities under the size a face can be read at.
+    //
+    // It says LEGIBILITY rather than tap target, which is a correction and not a
+    // softening: these dots are `pointer-events: none` and the plane takes every
+    // tap, so the 44 the assertion used to name was never an accessibility floor
+    // — which is exactly what made it safe to lower to 32 with the rest of the
+    // world scale.
     await stubBackend(page);
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -2314,9 +2779,190 @@ test.describe('«Ванягоччи» — further down the plane is nearer', () 
         const min = Math.round(Math.min(box?.width ?? 0, box?.height ?? 0));
         expect(
           min,
-          `band ${bandFor(y)} draws a ${Math.round(box?.width ?? 0)}x${Math.round(box?.height ?? 0)} tap target`,
+          `band ${bandFor(y)} draws a ${Math.round(box?.width ?? 0)}x${Math.round(box?.height ?? 0)} entity, under the ${PEER_BASE_PX}px legibility floor`,
         ).toBeGreaterThanOrEqual(PEER_BASE_PX);
       }
     }
+  });
+});
+
+test.describe('«Ванягоччи» — the key hunt', () => {
+  // A key is always lost somewhere in the yard, and the roster says WHICH one is
+  // lying there rather than that a new one has been lost. That is the design,
+  // and it is what these tests are about: state repeated five times a second
+  // means joining at any instant shows the world as it is and a hunt already in
+  // progress can be taken part in — where a one-shot «ключи снова потерялись»
+  // is exactly what somebody who opened the app thirty seconds later would never
+  // see.
+  //
+  // What that choice costs is that «a fresh hunt has started» exists nowhere on
+  // the wire. It is a DIFFERENCE between two frames, so only a client that
+  // watched the previous hunt can tell there is one, and a client that has just
+  // connected must say nothing whatsoever. Getting that backwards is invisible
+  // to every other test in this file, because the yard looks identical either
+  // way — which is the entire reason this suite exists.
+  //
+  // THE KEY ITSELF NEEDS NO TEST HERE, and adding one would be a regression. It
+  // reaches this page as an ordinary entity with an art key, drawn and placed
+  // and forgotten by the same machinery that handles a Ваня and a deposit; the
+  // suite above already pins that the client stayed kind-agnostic, and teaching
+  // this file what a `key` is would be undoing precisely that.
+
+  test('a fresh hunt is announced, and one already running is joined in silence', async ({
+    page,
+  }) => {
+    await recordPetLine(page);
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    expect(await petLineWatching(page), 'the line recorder never attached').toBe(true);
+
+    const YARD: Peer[] = [{ id: 'me', x: 0.5, y: 0.5, art: 'vanya', label: 'я', pose: 'fine' }];
+    // Twelve characters, the truncation everything else on this frame uses. The
+    // VALUES are arbitrary — nothing in the client parses an id, it only ever
+    // compares one with the last — which is the property worth having in a
+    // fixture: two ids that differ is the whole of what the client is told.
+    const FIRST = 'a1b2c3d4e5f6';
+    const SECOND = 'f6e5d4c3b2a1';
+
+    // We arrive to find a hunt already under way. Nothing has happened while we
+    // were watching, so there is nothing to say — and the dot appearing is what
+    // proves the frame was really processed, rather than the assertion below
+    // arriving before it and passing on an empty screen.
+    await socket.push(rosterHunt(FIRST, ...YARD));
+    await expect(dots(page)).toHaveCount(1);
+    await expect(petLine(page)).toHaveText('');
+
+    // Somebody found them, and a fresh pair went missing in the same instant.
+    // THIS is the transition, and it is the only thing that is one.
+    await socket.push(rosterHunt(SECOND, ...YARD));
+    await expect(petLine(page)).toHaveText(HUNT_LINE);
+
+    // The same hunt again is the same world, so nothing is written a second
+    // time. A peer arrives on this frame so that it is provably DELIVERED before
+    // the log is read — otherwise "nothing more was announced" would also be
+    // true of a frame still sitting in the socket.
+    //
+    // What this can catch is a client that cleared and rewrote the line, or one
+    // that wrote a different line. Two identical writes are indistinguishable in
+    // the DOM, so the repetition rule is really pinned by the sibling test
+    // below, where the line has never been up at all.
+    await socket.push(
+      rosterHunt(SECOND, ...YARD, {
+        id: 'later',
+        x: 0.2,
+        y: 0.7,
+        art: 'vanya',
+        label: 'сосед',
+        pose: 'fine',
+      }),
+    );
+    await expect(dots(page)).toHaveCount(2);
+    await expect(petLine(page)).toHaveText(HUNT_LINE);
+    expect(await petLineLog(page), 'the same hunt was announced more than once').toEqual([
+      HUNT_LINE,
+    ]);
+  });
+
+  test('the same hunt, frame after frame, says nothing at all', async ({ page }) => {
+    // THE assertion with teeth, and the one that catches the bug worth catching:
+    // announcing on every frame that merely CARRIES a hunt rather than on a
+    // change. A player who opens the app while a key is lying in the yard — the
+    // ordinary case, since a key is always lying in the yard — would then be told
+    // it had just been lost, five times a second, forever.
+    await recordPetLine(page);
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    expect(await petLineWatching(page), 'the line recorder never attached').toBe(true);
+
+    // Eight frames, one hunt. The yard grows by one on each so that every frame
+    // is provably delivered rather than merely sent — a silence assertion
+    // against frames that never arrived would pass for the wrong reason.
+    const HUNT = 'a1b2c3d4e5f6';
+    for (let i = 0; i < 8; i += 1) {
+      await socket.push(
+        rosterHunt(
+          HUNT,
+          ...Array.from({ length: i + 1 }, (_, n) => ({
+            id: `peer-${n}`,
+            x: 0.1 + n * 0.1,
+            y: 0.5,
+            art: 'vanya',
+            pose: 'fine',
+          })),
+        ),
+      );
+      await expect(dots(page)).toHaveCount(i + 1);
+    }
+
+    await expect(petLine(page)).toHaveText('');
+    expect(
+      await petLineLog(page),
+      'the yard announced a hunt that nobody watching it saw start',
+    ).toEqual([]);
+  });
+
+  test('winning and losing a key are drawn as two different faces', async ({ page }) => {
+    // Winning and losing move NO STAT AT ALL — that is the settled ruling, and it
+    // is what makes another player turning up never bad news — so these two
+    // faces are the entire consequence of the race. If they are drawn alike, the
+    // game has no visible outcome; if either falls back to `fine`, losing is
+    // indistinguishable from never having pressed the button.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      rosterHunt(
+        'a1b2c3d4e5f6',
+        { id: 'winner', x: 0.3, y: 0.5, art: 'vanya', label: 'везунчик', pose: 'happy' },
+        { id: 'loser', x: 0.7, y: 0.5, art: 'vanya', label: 'опоздал', pose: 'sad' },
+        { id: 'bystander', x: 0.5, y: 0.2, art: 'vanya', label: 'мимо', pose: 'fine' },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(3);
+
+    // Both poses came off the wire and reached the DOM. Asserted explicitly
+    // because the fallback is deliberate and would otherwise hide a client that
+    // had never heard of either: an unknown pose is drawn as `fine`, silently.
+    await expect(face(page, 'winner')).toHaveAttribute('data-condition', 'happy');
+    await expect(face(page, 'loser')).toHaveAttribute('data-condition', 'sad');
+    await expect(face(page, 'bystander')).toHaveAttribute('data-condition', 'fine');
+
+    const happy = await faceShape(page, 'winner');
+    const sad = await faceShape(page, 'loser');
+    const plain = await faceShape(page, 'bystander');
+
+    // Neither mood is the ordinary face, and they are not merely different from
+    // it in the same direction.
+    expect(happy.scale, `a winner is drawn at ${happy.scale}× — no bigger than anybody`).toBeGreaterThan(1.05);
+    expect(sad.scale, `a loser is drawn at ${sad.scale}× — no smaller than anybody`).toBeLessThan(0.95);
+    expect(plain.scale, 'an ordinary face is no longer drawn at its own size').toBeCloseTo(1, 2);
+
+    // And far enough apart to tell across a plane 231px wide, which is what
+    // "at a glance, on somebody else's dot" actually means here.
+    expect(
+      happy.scale / sad.scale,
+      `the two moods are only ${(happy.scale / sad.scale).toFixed(2)}× apart`,
+    ).toBeGreaterThan(1.3);
+
+    // Lifted against slumped: opposite along the one axis, rather than two sizes
+    // of the same picture.
+    expect(happy.dy, 'a winner is not lifted off his dot').toBeLessThan(0);
+    expect(sad.dy, 'a loser does not slump').toBeGreaterThan(0);
+
+    // A second channel as well, so the difference survives a squint and a
+    // greyscale screenshot has something left.
+    expect(happy.filter, 'both moods are drawn in the same tone').not.toBe(sad.filter);
+    expect(plain.filter, 'an ordinary face grew a filter').toBe('none');
+
+    // NEITHER ANIMATES, which is where they part company with `poorly`. A mood is
+    // on the wire for about as long as one cycle of that wobble lasts, so an
+    // animated one would be legible only to whoever happened to be watching that
+    // dot at the top of it — and would vanish entirely under
+    // prefers-reduced-motion, where this stylesheet switches animations off.
+    expect(happy.animation, 'the happy face animates, so it can be missed').toBe('none');
+    expect(sad.animation, 'the sad face animates, so it can be missed').toBe('none');
   });
 });

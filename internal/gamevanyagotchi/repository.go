@@ -113,4 +113,12 @@ type Repository interface {
 	// sweeps, because a sweeper would be the background timer this design does
 	// not have. The cap is what bounds the frame the caller is about to build.
 	LiveWorldObjects(ctx context.Context, q db.DBTX, locationKey string, limit int) ([]WorldObject, error)
+
+	// ClaimSingleton hands the one active object of a kind to one account, and
+	// reports whether this caller is the one who got it. False means somebody
+	// else was first — a lost race rather than an error.
+	ClaimSingleton(ctx context.Context, q db.DBTX, kind, locationKey, accountID string, at time.Time) (bool, error)
+
+	// ActiveSingleton returns the id of the active object of a kind.
+	ActiveSingleton(ctx context.Context, q db.DBTX, kind, locationKey string) (string, bool, error)
 }

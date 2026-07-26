@@ -325,6 +325,30 @@ export interface VanyagotchiAction {
    * a server that predates the field sends none at all.
    */
   leaves?: string;
+  /**
+   * A stat this verb is GATED on, and the amount of it the pet needs, or absent
+   * for a verb that can be pressed whenever.
+   *
+   * «покакать» carries `bladder` / 15: press it on an empty bladder and the
+   * server answers «рано ещё» and applies nothing. THE GATE IS THE SERVER'S AND
+   * IS NOT ENFORCED HERE — the button is not disabled, the verb is sent, and the
+   * refusal comes back as a line — for the same reason nothing else in this
+   * client applies `effects`: a second implementation of a rule is a second
+   * implementation to disagree with the first, and this one would disagree
+   * constantly, because a bladder fills continuously and the browser is drawing
+   * an interpolation of it rather than the number the server will read.
+   *
+   * What the pair is read for is the SPLASH CHEATSHEET, which says what a verb
+   * needs so that «рано ещё» is a rule the player was told rather than a button
+   * that mysteriously does nothing. Derived, so retuning the 15 in
+   * internal/gamevanyagotchi/content.go changes what the player is told with no
+   * edit here.
+   *
+   * Optional because both halves are `omitempty`: most verbs are ungated, and a
+   * server that predates the fields sends neither.
+   */
+  needs_stat?: string;
+  needs_at_least?: number;
 }
 
 /** One look for a pet. `image` (a URL) wins when set; otherwise emoji over gradient. */

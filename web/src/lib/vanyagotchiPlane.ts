@@ -102,13 +102,13 @@ export function isRenderablePosition(peer: unknown): peer is PeerPosition {
  * What each band multiplies an entity's size by, from the back of the plane to
  * the front.
  *
- * THE FIRST ENTRY IS 1 ON PURPOSE, and it is what keeps the mobile suite's 44 px
- * tap-target floor satisfied without anybody having to redo the arithmetic:
+ * THE FIRST ENTRY IS 1 ON PURPOSE, and it is what keeps the mobile suite's
+ * legibility floor satisfied without anybody having to redo the arithmetic:
  * depth can only ever make an entity BIGGER than its unscaled size, so the floor
- * is the CSS size itself (44 px, `.peer` in GameVanyagotchiView.vue) rather than
- * a product of two numbers that could drift apart. Scaling the far band DOWN
- * instead would have meant every future change to either number re-deriving
- * whether the smallest entity was still tappable.
+ * is the CSS size itself (`PEER_BASE_PX`, `.peer` in GameVanyagotchiView.vue)
+ * rather than a product of two numbers that could drift apart. Scaling the far
+ * band DOWN instead would have meant every future change to either number
+ * re-deriving whether the smallest entity was still readable.
  *
  * 8% a band: enough that two entities a band apart read as at different
  * distances, small enough that the jump at a boundary is not a pop.
@@ -116,27 +116,36 @@ export function isRenderablePosition(peer: unknown): peer is PeerPosition {
 export const DEPTH_SCALES: readonly number[] = [1, 1.08, 1.16, 1.24];
 
 /**
- * The SMALLEST an entity is ever drawn, in CSS pixels.
+ * The SMALLEST a WHOLE entity is ever drawn, in CSS pixels.
  *
  * A floor, not the size. `.peer` is `var(--unit)` and the unit is
- * `clamp(44px, 13cqw, 88px)`, so an entity grows with the yard and this is the
- * bottom of that clamp — which is what a 360px phone draws and what every wider
- * screen used to draw as well, before the plane started scaling and the dot did
- * not.
+ * `clamp(32px, 9cqw, 64px)`, so an entity grows with the yard and this is the
+ * bottom of that clamp.
+ *
+ * IT USED TO BE 44, AND LOWERING IT WAS ALLOWED PRECISELY BECAUSE IT IS NOT A
+ * TAP TARGET. `.peer` is `pointer-events: none` and the plane takes every tap
+ * (see `.peer` in GameVanyagotchiView.vue), so no dot on this plane has ever
+ * been tappable and the 44 that several assertions still name was never the
+ * WCAG number it looks like — it is how small a face can be drawn and still be
+ * read across a phone-sized yard. The owner, playing on a phone, reported the
+ * whole yard as too big; a third off every length in it is a legibility
+ * judgement, which is the only kind this number was ever making.
  *
  * It mirrors the stylesheet rather than driving it: the stylesheet owns the
  * size, and this exists so the floor can be asserted in a unit test. The e2e
  * suite measures the real box at mobile widths, so the two cannot drift apart
  * silently.
  *
- * The floor is LEGIBILITY rather than accessibility, which is worth stating
- * because the tests around it are older than the distinction: `.peer` is
- * `pointer-events: none` and the plane takes every tap, so a dot has never been
- * a tap target. It stays 44 while `DEPTH_SCALES[0] === 1` keeps depth from ever
- * shrinking anybody; the day a far band draws smaller than a near one, this
+ * It is the floor for an entity drawn at its full world unit. A world OBJECT is
+ * drawn at half of it (see `propScale` and `.peer--prop`), deliberately and for
+ * the same legibility reason inverted: a thing lying on the ground must not
+ * compete with the people standing on it.
+ *
+ * It stays a floor at all only while `DEPTH_SCALES[0] === 1` keeps depth from
+ * ever shrinking anybody; the day a far band draws smaller than a near one, this
  * becomes `base * minScale` and the assertions naming it have to be re-argued.
  */
-export const PEER_BASE_PX = 44;
+export const PEER_BASE_PX = 32;
 
 /**
  * Which band an entity at this height belongs to.
@@ -154,10 +163,16 @@ export function bandFor(y: number): number {
 /**
  * How far up the plane a speech balloon stops fitting above its entity.
  *
- * The balloon hangs off the top of a 44 px dot that is centred on its own
- * coordinates, so it needs roughly 45 px of plane above that point; on the
- * shortest plane we support (about 308 px tall, at 320x568) that is 0.145 of the
- * height. Normalised rather than measured, deliberately — measuring would mean
+ * The balloon hangs off the top of a dot that is centred on its own coordinates,
+ * so it needs roughly a dot's height of plane above that point; on the shortest
+ * plane we support (about 308 px tall, at 320x568) a 44 px dot made that 0.145 of
+ * the height, and the number was chosen against it.
+ *
+ * The dot is 32 px now, which needs 0.107 — so this is LOOSER than it has to be
+ * rather than wrong, and it is left alone: over-flipping costs a balloon nothing
+ * (below the entity is a perfectly good place for it, and where it goes for the
+ * whole bottom 85% anyway) whereas under-flipping clips it away to nothing.
+ * Normalised rather than measured, deliberately — measuring would mean
  * caching the plane's box in JavaScript, which is the one thing this module is
  * built not to do. On a tall screen it therefore flips a balloon that would just
  * have fitted, which costs nothing: below the entity is a perfectly good place
@@ -274,11 +289,21 @@ function clamp01(v: number): number {
  * Not computed here, and deliberately not computed here even for your own Ваня:
  * the yard has to show everybody the same world, and a pose worked out locally
  * would be worked out from state only its owner can see.
+ *
+ * Two of them mean something different in kind from the other four, and it is
+ * worth knowing which while reading the stylesheet. `fine`, `poorly`, `dead` and
+ * `asleep` are CONDITIONS — the server derives each from the stats and the clock,
+ * so one is true for as long as the numbers behind it are. `happy` and `sad` are
+ * MOODS: the outcome of a contested claim, held in memory on the server for a few
+ * seconds and then simply absent again. Nothing here has to know the difference —
+ * a pose is a pose to this module and to the template — but the drawing does,
+ * which is why neither mood animates: a state that lasts three seconds must be
+ * legible in the first frame of it rather than at the top of a cycle.
  */
-export type PeerPose = 'fine' | 'poorly' | 'dead' | 'asleep';
+export type PeerPose = 'fine' | 'poorly' | 'dead' | 'asleep' | 'happy' | 'sad';
 
 /** The poses this client knows how to draw. Anything else falls back to fine. */
-const POSES: readonly string[] = ['fine', 'poorly', 'dead', 'asleep'];
+const POSES: readonly string[] = ['fine', 'poorly', 'dead', 'asleep', 'happy', 'sad'];
 
 /**
  * What one entity looks like this frame.
@@ -304,6 +329,36 @@ export interface PeerAppearance {
    * thing, which a locally-derived line could not manage.
    */
   say?: string;
+  /**
+   * When this entity stops existing, as unix SECONDS, or absent for one that
+   * does not stop.
+   *
+   * THE ONLY THING ON A FRAME THAT SAYS «THIS IS NOT A PERSON», and it says it
+   * without naming a kind, which is the whole reason the drawing is allowed to
+   * key off it. Only a world object is ever given an expiry — a pet, a sleeper
+   * and an NPC are all open-ended — so its PRESENCE is an honest signal that
+   * something is lying on the ground rather than standing on it, and reading it
+   * teaches this client nothing about what the thing IS. A `kind` field, or a
+   * lookup of the art key against the catalogue's object kinds, would teach it
+   * exactly that, and would put the cast list in the browser where adding to it
+   * becomes a deploy (ADR-028).
+   *
+   * What it costs is stated rather than discovered: an object with no expiry —
+   * today, the key, which lasts until somebody finds it — is drawn as an
+   * ordinary full-size dot. That is the right way round anyway. The thing this
+   * distinction is FOR is litter, which the owner asked to stop dominating the
+   * yard, and the one object that is meant to be spotted is the one that keeps
+   * its circle.
+   *
+   * ABSOLUTE, which is what lets it sit on a frame that repeats five times a
+   * second: an instant is CONSTANT for the life of the object, so it never
+   * churns `sameAppearance` and never re-renders the yard, whereas a countdown
+   * would change on every tick and re-render every deposit in it. The client
+   * subtracts it from the server clock it already tracks and does the shrinking
+   * itself — the same division of labour the stat bars use, where the server
+   * sends a rate and the browser interpolates.
+   */
+  expires?: number;
   // THERE IS NO AVATAR FIELD HERE, and its absence is a decision rather than an
   // omission — the picture of the person behind an entity is fetched by ID, over
   // ordinary HTTP, from GET /api/game-vanyagotchi/avatar/{id}, and never travels
@@ -408,6 +463,73 @@ function capText(raw: unknown, max: number): string | undefined {
 }
 
 /**
+ * Reads an expiry off the wire, or reports that this entity does not have one.
+ *
+ * Everything that is not a positive finite number reads as "no expiry", which
+ * collapses four cases that must not be told apart into one: a field the server
+ * omitted, a 0 an older server sent instead of omitting it, a `null`, and
+ * anything malformed. All four describe an entity that is not going anywhere,
+ * and the failure mode of getting this wrong is not subtle — an entity wrongly
+ * given an expiry is drawn as half-sized litter that shrinks away, and if the
+ * value is in the past it is drawn at nothing at all, i.e. a player who has
+ * become invisible.
+ */
+function readExpires(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
+  return raw;
+}
+
+/**
+ * How long an ageing thing is drawn shrinking for, in milliseconds.
+ *
+ * A PRESENTATION WINDOW, NOT A COPY OF THE SERVER'S LIFETIME, and the difference
+ * matters because nothing on the wire could make it a copy: a frame carries the
+ * instant a thing expires and never the instant it appeared, so the client knows
+ * how much life is LEFT and cannot know how much there was. Deriving the total
+ * from the catalogue's object kinds is the one thing that is not allowed here —
+ * it would mean matching an entity's art key against a list of kinds, which is
+ * precisely the content knowledge `expires` exists to keep out of the browser.
+ *
+ * So this says how much remaining life is drawn as "full size", and everything
+ * below it is drawn proportionally smaller. Ten minutes because that is what the
+ * only expiring thing in the game happens to live for, which makes the drawing
+ * exactly right today — but it is not READ from anywhere, and it does not have
+ * to track a retune, because it degrades gracefully in both directions rather
+ * than breaking: too long a window and a fresh deposit starts part-shrunk, too
+ * short and it sits at full size for a while before it starts ageing. Both are
+ * honest pictures of a thing that is on its way out.
+ */
+export const PROP_LIFE_MS = 10 * 60 * 1_000;
+
+/**
+ * How big to draw an entity that is on its way out, as a fraction of its size.
+ *
+ * 1 for anything with no expiry, which is every person, every sleeper and every
+ * NPC — so this is safe to apply to the whole yard without first asking what
+ * anything is, and there is no branch anywhere that has to know which entities
+ * are things.
+ *
+ * INTERPOLATED HERE RATHER THAN SENT. The server could publish a size on every
+ * frame and it would be strictly worse: a number that changes five times a
+ * second for every deposit in the yard, on the one frame whose repetition is
+ * what makes it cheap, to say something both ends can work out from one
+ * timestamp. The same division of labour as the stat bars, where a rate crosses
+ * the wire and the browser does the arithmetic.
+ *
+ * `now` is the SERVER's clock as the view tracks it (skew-corrected, see
+ * `skewMs`), not `Date.now()`. A phone whose clock is a minute fast would
+ * otherwise draw every deposit in the yard a minute nearer death than it is, and
+ * one that is far enough out would draw them all at nothing — the yard would
+ * simply have no litter in it, on that device alone.
+ */
+export function propScale(expires: number | undefined, now: number): number {
+  if (expires === undefined || !Number.isFinite(now)) return 1;
+  const remaining = expires * 1_000 - now;
+  if (!(remaining > 0)) return 0;
+  return Math.min(1, remaining / PROP_LIFE_MS);
+}
+
+/**
  * Reads the appearance of every entity in a frame.
  *
  * Filtered through the SAME renderability guard the positions use, so the keyed
@@ -428,6 +550,7 @@ export function readAppearances(peers: readonly unknown[]): readonly PeerAppeara
     const raw = peer as unknown as Record<string, unknown>;
     const label = capLabel(raw.label);
     const say = capSay(raw.say);
+    const expiresAt = readExpires(raw.expires);
     const appearance: PeerAppearance = {
       id: peer.id,
       art: typeof raw.art === 'string' ? raw.art : '',
@@ -438,6 +561,14 @@ export function readAppearances(peers: readonly unknown[]): readonly PeerAppeara
     };
     if (label !== undefined) appearance.label = label;
     if (say !== undefined) appearance.say = say;
+    // Read with the same "absent, never zero" discipline the two strings above
+    // use, and for a sharper reason: absence is what tells a thing on the ground
+    // from a person standing on it, so a 0 read as an expiry would draw every
+    // Ваня in the yard as a deposit that had already run out. `omitempty` on the
+    // Go side means an entity that does not expire sends no field at all, and a
+    // server that sent one anyway would be sending 0 — so both shapes have to
+    // mean the same thing here.
+    if (expiresAt !== undefined) appearance.expires = expiresAt;
     out.push(appearance);
   }
   return Object.freeze(out);
@@ -467,6 +598,14 @@ export function sameAppearance(
     // a frame that happened to change something else, which in a quiet yard is
     // never — the balloon would simply not appear.
     if (was.say !== look.say) return false;
+    // Compared, and it costs nothing to compare, which is the entire reason an
+    // ABSOLUTE instant is on the wire instead of a countdown. An expiry is fixed
+    // for the life of the entity that has one, so this test is false on the
+    // frame a deposit arrives and true on every one of the three thousand frames
+    // after it; a "seconds left" field in its place would differ on every single
+    // tick and re-render the whole yard five times a second, which is the exact
+    // cost this guard exists to avoid.
+    if (was.expires !== look.expires) return false;
     // There is nothing here about a picture of a person, and there must not be:
     // a face is fetched by id rather than sent, so it is not on either side of
     // this comparison and cannot change between two frames. What DOES change —
@@ -495,6 +634,48 @@ export function sameAppearance(
 export function readHere(raw: unknown, entities: number): number {
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return entities;
   return raw;
+}
+
+/**
+ * Which key hunt is running, as the frame states it — or the empty string when
+ * none is.
+ *
+ * The field is STATE AND NOT AN ANNOUNCEMENT, which is the whole reason it rides
+ * the roster rather than arriving as an event of its own: a one-shot «ключи
+ * снова потерялись» is exactly what somebody who opened the app thirty seconds
+ * too late never sees, whereas an id repeated five times a second means that
+ * joining at any instant shows the world as it is and a hunt already in progress
+ * can be taken part in.
+ *
+ * Anything that is not a string reads as no hunt — which is the honest reading of
+ * a server too old to send the field, and of a frame that omits it because the
+ * hunt has just been won and the replacement has not been published yet.
+ */
+export function readHunt(raw: unknown): string {
+  return typeof raw === 'string' ? raw : '';
+}
+
+/**
+ * Is there a fresh hunt to be pleased about — i.e. has the flavour line earned
+ * its place on the screen?
+ *
+ * WHAT IT REFUSES TO SAY YES TO IS THE POINT. Seeing a hunt for the first time is
+ * not news: a player who arrives after somebody else has found the keys is simply
+ * standing in a world where a hunt is running, and telling him it has just
+ * started would be announcing an event that happened before he was here. So an
+ * announcement needs BOTH ends of a transition — a hunt this screen was already
+ * watching, and a different one now — and the id changing is precisely that
+ * transition and the only thing that is.
+ *
+ * A hunt ending to nothing is silent for the same reason, and it is worth stating
+ * because it looks like a change: the winning claim exhausts the old key and
+ * inserts its replacement in one statement, so an empty value is a gap between
+ * two frames rather than a state a player ever sits in. Announcing it would put
+ * the line up at the moment the keys were FOUND, which is the opposite of what it
+ * says.
+ */
+export function huntRestarted(before: string, now: string): boolean {
+  return !!before && !!now && before !== now;
 }
 
 /**

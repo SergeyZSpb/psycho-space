@@ -124,6 +124,22 @@ type fakeRepo struct {
 	// worldErr fails the read, so a test can prove a world that cannot be loaded
 	// costs the plane its props rather than its frame.
 	worldErr error
+	// The contested claim: what it answered, what was asked of it, and — the
+	// half only a rollback can be observed against — what it LEFT BEHIND.
+	//
+	// `claims` records every attempt and is deliberately never restored, exactly
+	// like `written` and `inserted`: the attempt really was made, and a test
+	// asserting that a claim was won and then undone has to be able to see both
+	// halves of that. `claimed` is the durable half — the `claimed_by` the
+	// winning UPDATE writes — and it IS journaled, which is the only way a fake
+	// can say that a batch failing after the claim really does put the key back.
+	claims      []fakeClaim
+	claimWon    bool
+	claimErr    error
+	claimed     map[string]string
+	active      map[string]string
+	activeReads int
+	activeErr   error
 }
 
 // savedPosition is one SavePosition call, exactly as it was made.
@@ -269,6 +285,96 @@ func (f *fakeRepo) InsertWorldObject(_ context.Context, q db.DBTX, kind, locatio
 // database's own clock, and the tests this fake serves need the opposite case:
 // a cache that legitimately holds a row whose expiry has since passed, which is
 // precisely the state props exists to render correctly without asking anybody.
+// ClaimSingleton records the attempt and answers with whatever the test set up.
+// `claimWon` defaults to false, which is the LOSING answer — the right default
+// for a contested claim, because a fake that handed every caller the prize would
+// make the interesting half of this mechanic untestable by accident.
+//
+// A winning claim also writes down WHO holds the key. That is not bookkeeping for
+// its own sake: the real UPDATE sets `claimed_by` and `exhausted_at` together, so
+// the question a test has to be able to ask is whether a batch that failed
+// afterwards left the key held by somebody — a yard in which the hunt has
+// silently ended for ever.
+//
+// It registers its OWN INVERSE rather than going through journal, and that is the
+// difference between an assertion with teeth and one without. A whole-state
+// snapshot is taken by every write in the transaction, including the ones that
+// ran before this one, so it would put the key back whichever handle the UPDATE
+// had actually used — and "the claim is inside the transaction" is precisely the
+// thing under test. Undoing this one claim can only happen if this one claim was
+// made through the transaction.
+//
+// What is deliberately NOT mirrored is the race itself. Which caller wins is a
+// conditional UPDATE against a partial unique index, it is proved against a real
+// PostgreSQL in test/integration, and a second implementation of it here could
+// agree with itself while the index was wrong.
+func (f *fakeRepo) ClaimSingleton(_ context.Context, q db.DBTX, kind, locationKey, accountID string, at time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claims = append(f.claims, fakeClaim{Kind: kind, Location: locationKey, Account: accountID, At: at})
+	if f.claimErr != nil {
+		return false, f.claimErr
+	}
+	if !f.claimWon {
+		return false, nil
+	}
+	if f.claimed == nil {
+		f.claimed = make(map[string]string, 1)
+	}
+	f.claimed[kind] = accountID
+	if tx, ok := q.(*fakeTx); ok {
+		tx.undo = append(tx.undo, func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			delete(f.claimed, kind)
+		})
+	}
+	return true, nil
+}
+
+// attempts is every claim that has been made, in the order it was made.
+func (f *fakeRepo) attempts() []fakeClaim {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeClaim(nil), f.claims...)
+}
+
+// heldBy is the account that currently holds the active object of a kind, as the
+// durable state stands — empty for one nobody has claimed, and empty again after
+// a batch that claimed it was rolled back.
+func (f *fakeRepo) heldBy(kind string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.claimed[kind]
+}
+
+// ActiveSingleton answers whether a hunt is already running.
+func (f *fakeRepo) ActiveSingleton(_ context.Context, _ db.DBTX, kind, _ string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.activeReads++
+	id, ok := f.active[kind]
+	return id, ok, f.activeErr
+}
+
+// singletonReads is how many times the fake has been asked whether a hunt is
+// running. The count is the assertion in world_test.go rather than a detail: the
+// tick renders the hunt from memory and must never ask, so this is the only place
+// that rule can be broken visibly.
+func (f *fakeRepo) singletonReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.activeReads
+}
+
+// fakeClaim is one attempt at a contested claim.
+type fakeClaim struct {
+	Kind     string
+	Location string
+	Account  string
+	At       time.Time
+}
+
 func (f *fakeRepo) LiveWorldObjects(_ context.Context, _ db.DBTX, _ string, limit int) ([]WorldObject, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -321,10 +427,15 @@ func (f *fakeRepo) insertedObjects() []insertedObject {
 // ends — see fakeTx.
 //
 // A whole snapshot rather than a per-statement inverse, because the durable
-// state here is two slices and copying them cannot be got subtly wrong. The CALL
-// records — writes, written, inserted — are deliberately NOT restored: those
-// calls really were made, and a test asserting that a deposit was attempted and
-// then undone has to be able to see both halves of that.
+// state it covers is two slices and copying them cannot be got subtly wrong. The
+// CALL records — writes, written, inserted, claims — are deliberately NOT
+// restored: those calls really were made, and a test asserting that a deposit or
+// a claim was attempted and then undone has to be able to see both halves of
+// that.
+//
+// The contested claim is the one thing this does NOT cover, and it registers its
+// own inverse instead — see ClaimSingleton for why a snapshot would be the wrong
+// shape there.
 func (f *fakeRepo) journal(q db.DBTX) {
 	tx, ok := q.(*fakeTx)
 	if !ok {
@@ -483,6 +594,21 @@ func (f *fakeRepo) lastBatch(t *testing.T) []StatRow {
 // unused here rather than being stubbed out.
 func petService(repo Repository) *Service { return NewService(nil, "yard", nil, repo, nil) }
 
+// contestedService is petService for a verb that can WIN A CONTESTED CLAIM.
+//
+// It differs in exactly one thing — it has a transport — and that difference is
+// not decoration. Winning a claim PAINTS THE YARD: the winner's Ваня is drawn
+// happy and everybody else's sad, which means reading the room off the transport,
+// on the pet path, after the transaction has committed. So the durable half is no
+// longer transport-free on that one path, and handing it a nil transport there
+// panics rather than quietly doing nothing.
+//
+// Every other verb still goes through petService, which keeps stating the
+// separation the rest of this file relies on.
+func contestedService(repo Repository) *Service {
+	return NewService(&fakeTransport{}, "yard", nil, repo, nil)
+}
+
 // playedFor builds a repository already holding a pet and the rows it was left
 // with: the shape of an account that has been playing for a while, which is the
 // only shape in which decay, death and seeding gaps are observable.
@@ -574,6 +700,38 @@ func effectOn(a Action, statKey string) float64 {
 		}
 	}
 	return delta
+}
+
+// enoughFor is a stored row for the stat a verb is gated on, holding comfortably
+// more of it than the catalogue asks for and stamped at asOf.
+//
+// It is how a test whose subject is NOT the gate gets past one: seeding the pet
+// with a bladder is the direct way to say "he is in a position to use this verb"
+// where drinking first would only be a longer way of saying the same thing.
+//
+// The value is DERIVED rather than written down, for exactly the reason mustStat
+// and mustAction exist: relieveNeedsBladder is a number somebody is meant to move
+// by feel, and a fixture carrying a literal 15 would go on claiming he was full
+// enough long after the threshold had risen past it — a test that quietly stops
+// exercising its own subject and never fails to say so. It fails outright when
+// the verb carries no gate at all, because a fixture arranged for a rule the game
+// no longer has is scaffolding nobody would notice was doing nothing.
+func enoughFor(t *testing.T, verb string, asOf time.Time) StatRow {
+	t.Helper()
+	action := mustAction(t, verb)
+	if action.NeedsStat == "" {
+		t.Fatalf("the catalogue no longer gates %q on a stat of its own; this fixture is arranging for a rule the game does not have", verb)
+	}
+	def := mustStat(t, action.NeedsStat)
+	// Halfway between what the gate asks for and the top of the scale: past the
+	// threshold by a margin no rounding reaches, and short of the ceiling so the
+	// clamp is not silently doing the work the fixture claims to be doing.
+	value := action.NeedsAtLeast + (def.Max-action.NeedsAtLeast)/2
+	if value <= action.NeedsAtLeast || value > def.Max {
+		t.Fatalf("%q wants at least %v of %q, whose range is %v..%v; no stored value satisfies that gate",
+			verb, action.NeedsAtLeast, def.Key, def.Min, def.Max)
+	}
+	return StatRow{Key: def.Key, Value: value, AsOf: asOf}
 }
 
 // penaltyOn is health's penalty driven by one stat.
@@ -944,9 +1102,14 @@ func TestEveryActionRestampsEveryStatAtOneInstant(t *testing.T) {
 				rows = append(rows, StatRow{Key: def.Key, Value: def.Min + (def.Max-def.Min)/2, AsOf: asOf})
 			}
 			repo := playedFor(rows...)
+			// A CONTESTED verb has to be allowed to win, or this case would be
+			// asserting what a refused batch writes — which is nothing at all, and
+			// is world_test.go's subject rather than this one's. The fake loses by
+			// default on purpose, so saying so here is deliberate.
+			repo.claimWon = true
 
 			before := time.Now().UTC()
-			if _, err := petService(repo).Do(context.Background(), testAccount, []string{action.Key}, time.Now().UTC()); err != nil {
+			if _, err := contestedService(repo).Do(context.Background(), testAccount, []string{action.Key}, time.Now().UTC()); err != nil {
 				t.Fatalf("Do(%q): %v", action.Key, err)
 			}
 			after := time.Now().UTC()
@@ -1063,6 +1226,132 @@ func TestRelievingHimDoesNotEraseTheDamageAFullBladderAlreadyDid(t *testing.T) {
 	if hpRow := rowOf(t, repo.lastBatch(t), StatHP); !hpRow.AsOf.Equal(stored.AsOf) {
 		t.Errorf("hp was written at %v and the bladder at %v; a driver and its consequence must share one instant",
 			hpRow.AsOf, stored.AsOf)
+	}
+}
+
+// TestAVerbRefusedForWantOfWhatItNeedsWritesNothingAndFillingUpLetsItThrough is
+// the catalogue's precondition as the durable half enforces it, and the valuable
+// assertion is what is NOT in the repository afterwards.
+//
+// A refusal is not a quiet no-op that happens to change little. `apply` hands the
+// snapshot back untouched and the batch is abandoned before the transaction is
+// even opened, so a refused press leaves no stat, no event and nothing on the
+// ground. The failure that would otherwise be silent is the re-stamp: a press
+// that was refused but still wrote every row at the current instant would hand
+// the player back the hours he had just spent being neglected, and no bar would
+// look wrong afterwards.
+//
+// The second case is the same verb once he has filled up WHILE NOBODY WAS
+// LOOKING, and it is here rather than in a test of its own for two reasons. It is
+// what makes the first case mean something — a service that refused everything
+// would satisfy every assertion about what a refusal writes — and it is the
+// production shape of the rule: the stored row still says his bladder is empty,
+// and he is allowed anyway, because the number the gate reads is the one the
+// player is looking at.
+func TestAVerbRefusedForWantOfWhatItNeedsWritesNothingAndFillingUpLetsItThrough(t *testing.T) {
+	relieve := mustAction(t, ActionRelieve)
+	if relieve.NeedsStat == "" {
+		t.Fatalf("the catalogue no longer gates %q on a stat of its own; this test is about a rule the game does not have", relieve.Key)
+	}
+	hpDef := mustStat(t, StatHP)
+	def := mustStat(t, relieve.NeedsStat)
+	// A filling stat carries a negative rate, so this is how much of it an hour
+	// of being away is worth, and `full` is how many hours it takes to reach what
+	// the verb asks for from an empty start. Derived, so retuning either the rate
+	// or the threshold moves both cases below with it.
+	filling := -def.DecayPerHour
+	if filling <= 0 {
+		t.Fatalf("%q moves by %v an hour, so being away never brings %q within reach and neither case below exists",
+			def.Key, def.DecayPerHour, relieve.Key)
+	}
+	full := (relieve.NeedsAtLeast - def.Min) / filling
+
+	for _, tc := range []struct {
+		name    string
+		away    float64
+		allowed bool
+	}{
+		{name: "before there is anything to go for", away: full / 2, allowed: false},
+		{name: "once it has filled up while nobody was looking", away: full * 2, allowed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			asOf := now.Add(-time.Duration(tc.away * float64(time.Hour)))
+			// calmNeeds parks every driver of health at the end of its range
+			// furthest from the threshold that hurts — which for a stat that
+			// fills is its floor, and an empty bladder is exactly the state this
+			// test starts him in. It also fails rather than hand back a set that
+			// would not stay quiet for the window, so nothing below is competing
+			// with a penalty.
+			rows := append([]StatRow{{Key: StatHP, Value: hpDef.Max, AsOf: asOf}}, calmNeeds(t, asOf, tc.away)...)
+			stored := rowOf(t, rows, def.Key)
+			if stored.Value >= relieve.NeedsAtLeast {
+				t.Fatalf("the stored %q is %v, already past the %v %q asks for; both cases below would then be about the row rather than about the decay",
+					def.Key, stored.Value, relieve.NeedsAtLeast, relieve.Key)
+			}
+			repo := playedFor(rows...)
+			svc := petService(repo)
+
+			// Materialised first, so the rows compared against are the ones a
+			// player would already have. Seeding runs on the read path and would
+			// otherwise look like something the refused batch wrote and failed to
+			// take back.
+			if _, err := svc.State(context.Background(), testAccount); err != nil {
+				t.Fatalf("State: %v", err)
+			}
+			before := append([]StatRow(nil), repo.rows...)
+			if len(before) == 0 {
+				t.Fatal("the pet has no stat rows at all; a refusal that wrote nothing would be indistinguishable from one that wrote everything")
+			}
+
+			st, err := svc.Do(context.Background(), testAccount, []string{relieve.Key}, now)
+
+			if tc.allowed {
+				if err != nil {
+					t.Fatalf("%q after %v hours of filling was refused with %v; the stored %q still reads %v, and the gate is about the value he actually has",
+						relieve.Key, tc.away, err, def.Key, stored.Value)
+				}
+				nearlyStat(t, statOf(t, st, def.Key).Value, def.Min, "the "+def.Key+" he has just emptied")
+				if repo.writes != 1 {
+					t.Errorf("WriteStats was called %d times for one accepted verb; want once", repo.writes)
+				}
+				if n := len(repo.appended); n != 1 || repo.appended[0].Verb != relieve.Key {
+					t.Fatalf("the log holds %+v; want the one %q that was accepted", repo.appended, relieve.Key)
+				}
+				if got := repo.insertedObjects(); len(got) != 1 || got[0].kind != relieve.Leaves {
+					t.Errorf("%d objects were left behind and the catalogue says %q leaves %q: %+v", len(got), relieve.Key, relieve.Leaves, got)
+				}
+				return
+			}
+
+			if !errors.Is(err, ErrNotYet) {
+				t.Fatalf("%q with %v of %q answered %v; want ErrNotYet, because the catalogue asks for %v",
+					relieve.Key, stored.Value+filling*tc.away, def.Key, err, relieve.NeedsAtLeast)
+			}
+			if repo.writes != 0 {
+				t.Errorf("WriteStats was called %d times by a refused verb; want none", repo.writes)
+			}
+			if n := len(repo.appended); n != 0 {
+				t.Errorf("%d events were recorded for a verb that never applied; a refusal is not something that happened to the pet: %+v", n, repo.appended)
+			}
+			if got := repo.insertedObjects(); len(got) != 0 {
+				t.Errorf("%d objects were left in the world by a verb that was refused: %+v", len(got), got)
+			}
+			if len(repo.rows) != len(before) {
+				t.Fatalf("the pet has %d stat rows after a refused verb; want the %d it had before", len(repo.rows), len(before))
+			}
+			for _, want := range before {
+				got, ok := repo.row(want.Key)
+				if !ok {
+					t.Errorf("%q has no row after a refused verb", want.Key)
+					continue
+				}
+				if got.Value != want.Value || !got.AsOf.Equal(want.AsOf) {
+					t.Errorf("%q is (%v, %s) after a refused verb; want the (%v, %s) it was before — a press that was refused was still charged a re-stamp, which erases the very hours it was refused for",
+						want.Key, got.Value, got.AsOf.UTC(), want.Value, want.AsOf.UTC())
+				}
+			}
+		})
 	}
 }
 

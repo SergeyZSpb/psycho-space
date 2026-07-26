@@ -130,11 +130,27 @@
             // player who is doing badly, he is a player who is not here, and the
             // thing that has to read at a glance is that nobody is home.
             'peer--asleep': peer.pose === 'asleep',
+            // Something lying on the ground: half the size and no circle around
+            // it. Decided by the entity having an EXPIRY and never by a kind —
+            // see `drawn` and PeerAppearance.expires.
+            'peer--prop': peer.prop,
           }"
           data-test="peer"
           :data-you="peer.id === store.youId ? '1' : undefined"
           :data-peer="peer.id"
-          :style="{ background: peerColour(peer.id) }"
+          :data-prop="peer.prop ? '1' : undefined"
+          :style="{
+            // NOT EMITTED AT ALL for a thing on the ground, which is the only way
+            // to take the circle away: an inline style beats any class, so a
+            // `background: none` in the stylesheet could not undo this one. It is
+            // also the honest reading — the colour is hashed from the id to say
+            // WHO somebody is, and a deposit is not a who.
+            background: peer.prop ? undefined : peerColour(peer.id),
+            // How much of its life is left, as a fraction. Unconditional because
+            // it is 1 for everybody who is not going anywhere, and unread by any
+            // rule but `.peer--prop`'s.
+            '--life': peer.life,
+          }"
         >
           <!-- Everybody wears their own face and their own condition, and both
                come off the wire rather than out of this screen's own state. The
@@ -277,9 +293,12 @@ import {
   applyFrame,
   applyPosition,
   avatarEndpoint,
+  huntRestarted,
   isRenderablePosition,
+  propScale,
   readAppearances,
   readHere,
+  readHunt,
   resolveArt,
   sameAppearance,
   tapToPosition,
@@ -346,14 +365,19 @@ const rules = computed(() => buildRules(config.value));
 const petState = ref<VanyagotchiState | null>(null);
 const acting = ref(false);
 /**
- * The line under the bars. Now only ever the death notice.
+ * The line under the bars: the two things this SCREEN has to say rather than the
+ * server.
  *
  * It used to carry the action's `done` text too, and no longer does: what a
  * verb did is the SERVER's to say, and it says it in the balloon over your own
  * Ваня, where the rest of the yard can read it as well. Duplicating that here
- * would be two renderings of one fact that can disagree — and the one line this
- * element must never lose is the death notice, which is the client's own and is
- * the instruction for getting out of it.
+ * would be two renderings of one fact that can disagree.
+ *
+ * What is left is what nobody else can say. The death notice is the instruction
+ * for getting out of a state the player is stuck in, and the hunt line is a
+ * TRANSITION — the roster carries which hunt is running, never that one has just
+ * begun, so the only place that difference exists at all is in a client that was
+ * watching the previous one (see `huntRestarted`).
  */
 const flash = ref('');
 
@@ -588,6 +612,48 @@ const appearance = shallowRef<readonly PeerAppearance[]>([]);
 const here = ref(0);
 
 /**
+ * The hunt this screen has already seen, so that a CHANGE of hunt can be told
+ * from the first sight of one.
+ *
+ * A plain `let` rather than a ref, like `clockSkew` and for the same reason:
+ * nothing renders it. What is rendered is the line it decides to put in `flash`,
+ * and only at the instant it decides to.
+ */
+let seenHunt = '';
+
+/** What the screen says when somebody has just lost the keys again. */
+const HUNT_LINE = 'нам повезло, ключи снова потерялись';
+
+/**
+ * How long that line stays up.
+ *
+ * Long enough to be read by somebody who was looking at the plane rather than at
+ * the panel, short enough that it is gone well before the hunt it announces
+ * plausibly ends — a stale «снова потерялись» sitting under the bars while the
+ * keys are being claimed by somebody else would be describing the wrong world.
+ */
+const HUNT_FLASH_MS = 6_000;
+let huntTimer: number | undefined;
+
+/**
+ * Puts the flavour line up, briefly.
+ *
+ * The clear is conditional on the line still being OURS, which matters because
+ * three things write to `flash` and they must not undo each other: pressing a
+ * verb clears it deliberately, a death replaces it (via `petLine`), and a second
+ * hunt can start before the first line has expired. Clearing unconditionally
+ * would let a timer set six seconds ago wipe whatever happened to be there.
+ */
+function announceHunt(): void {
+  flash.value = HUNT_LINE;
+  if (huntTimer !== undefined) window.clearTimeout(huntTimer);
+  huntTimer = window.setTimeout(() => {
+    huntTimer = undefined;
+    if (flash.value === HUNT_LINE) flash.value = '';
+  }, HUNT_FLASH_MS);
+}
+
+/**
  * The entities whose face this browser has already asked for and not got.
  *
  * Keyed by the entity's id, which is now the same thing as keying by the URL,
@@ -644,9 +710,19 @@ function onArtError(peer: { id: string; avatar: boolean }): void {
  * answers only what kind of thing this is, which in a yard where everybody wears
  * the same Ваня is no answer at all. The identity colour survives underneath all
  * three as the rim, so the two questions are still layered rather than traded.
+ *
+ * IT READS THE CLOCK, which is new and is the one thing here worth defending.
+ * `displayNow` ticks once a second, so this recomputes once a second — and that
+ * is not a new render, because the stat bars have made this component re-render
+ * on that same tick since they arrived. What it buys is a deposit that visibly
+ * ages instead of standing at full size until the server drops it. What it must
+ * NOT become is a per-frame dependency: positions still bypass Vue entirely, and
+ * the guard on `appearance` is still what keeps the five frames a second that
+ * describe an unchanged yard free.
  */
-const drawn = computed(() =>
-  appearance.value.map((peer) => {
+const drawn = computed(() => {
+  const now = displayNow.value;
+  return appearance.value.map((peer) => {
     const art = resolveArt(config.value?.skins, peer.art);
     // ASKED FOR ON EVERY ENTITY, AND THE ADDRESS IS DERIVED RATHER THAN READ.
     // No frame carries a URL — a couple of hundred unchanging characters
@@ -669,9 +745,21 @@ const drawn = computed(() =>
       // from the id anywhere it is wanted.
       image: avatar ?? art.image,
       avatar: avatar !== undefined,
+      // WHETHER THIS IS A THING RATHER THAN A PERSON, AND THE CLIENT IS NOT
+      // TOLD — it works it out from the one field only a world object ever
+      // carries. Nothing here maps an art key to a kind, holds a list of kinds,
+      // or would have to be redeployed for a kind added on the server; all it
+      // knows is that this entity has an end, which people, sleepers and NPCs
+      // do not (see PeerAppearance.expires for why that is honest rather than
+      // clever, and for what it costs).
+      prop: peer.expires !== undefined,
+      // And how far through that end it is. 1 for everybody without an expiry,
+      // so the binding below is unconditional and no branch has to ask what
+      // anything is.
+      life: propScale(peer.expires, now),
     };
-  }),
-);
+  });
+});
 
 let release: (() => void) | undefined;
 
@@ -706,6 +794,13 @@ function forgetWorld() {
   store.clearRoster();
   appearance.value = [];
   here.value = 0;
+  // Forgotten with the rest of the world, so that whatever the yard looks like
+  // when it comes back is a FIRST sight again and passes in silence. We were away
+  // long enough to have missed the hunt starting, and a line claiming it has just
+  // happened would be this screen inventing the one thing the wire cannot say. The
+  // line already on the panel is left to expire on its own — the outage that gets
+  // here lasted longer than the line does.
+  seenHunt = '';
   lastPos.clear();
   peerEls.clear();
 }
@@ -828,6 +923,17 @@ function onFrame(frame: RealtimeFrame) {
   const ids = looks.map((look) => look.id);
   here.value = readHere(frame.here, ids.length);
 
+  // The one thing on a roster frame that is read as a DIFFERENCE rather than as
+  // state. Everything else here is idempotent — a frame repeated is a frame that
+  // changed nothing — and this deliberately is not, because "a fresh hunt has
+  // started" exists nowhere on the wire: the server publishes which hunt is
+  // running, and only a client that watched the previous one can tell that this
+  // is a different one. `huntRestarted` is what keeps the difference honest, and
+  // in particular keeps a late joiner quiet.
+  const hunt = readHunt(frame.hunt);
+  if (huntRestarted(seenHunt, hunt)) announceHunt();
+  seenHunt = hunt;
+
   for (const peer of peers) {
     if (!isRenderablePosition(peer)) continue;
     lastPos.set(peer.id, { x: peer.x, y: peer.y });
@@ -910,6 +1016,10 @@ onBeforeUnmount(() => {
   release?.();
   release = undefined;
   clearStaleTimer();
+  if (huntTimer !== undefined) {
+    window.clearTimeout(huntTimer);
+    huntTimer = undefined;
+  }
   if (displayTimer !== undefined) {
     window.clearInterval(displayTimer);
     displayTimer = undefined;
@@ -1140,24 +1250,43 @@ onBeforeUnmount(() => {
      two different games. The spread is also not monotonic in viewport width,
      because `min(100cqw, 75cqh)` above switches which term binds, so no
      breakpoint-keyed fix would have been correct.
-     `13cqw` is the fraction the 360px phone already drew (44 / 336 = 13.1%), so
-     phones are unchanged and everything wider catches up to them. The 44px floor
-     is LEGIBILITY, not accessibility — `.peer` is `pointer-events: none` and the
-     plane takes every tap, so a dot has never been a tap target — and it is also
-     what the mobile suite asserts. The 88px ceiling is a guard rather than an
-     active constraint (1920px draws 79.9px): it stops a very tall window drawing
-     a 120px Ваня, and 2 x 44 keeps the arithmetic readable.
+
+     THE NUMBERS WERE 44 / 13cqw / 88 AND THE WHOLE WORLD WAS TOO BIG. That is
+     the owner's report from a phone, and it is a judgement about legibility
+     rather than about accessibility, which is what made it safe to act on: a dot
+     is `pointer-events: none` and the plane takes every tap (see `.peer`), so
+     nothing in this yard has ever been a tap target and no 44px rule applies to
+     any of it. The floor here is only ever "how small can a face be and still be
+     read across a phone-sized yard", and a third off it leaves room for the yard
+     to be a place with things in it rather than four faces filling a box.
+     `9cqw` keeps the proportion the same everywhere — that is the property the
+     spread above violated and it is untouched — with 32 and 64 as the same
+     floor-and-double-it pair the old numbers were. The ceiling is still a guard
+     rather than an active constraint; it stops a very tall window drawing an
+     absurd Ваня.
+
+     TWO PROPERTIES RATHER THAN ONE, and only because a world object is drawn at
+     half scale. A custom property cannot be redefined in terms of itself — a
+     descendant writing `--unit: calc(var(--unit) * 0.5)` is a cycle and computes
+     to nothing — so the base is published separately for `.peer--prop` to halve.
+     `--unit` is what everything reads; `--unit-base` exists to be scaled.
+     Retuning the world means changing the clamp on `--unit-base` and nothing
+     else: every length inside the plane is already a fraction of `--unit`.
+
      DECLARED HERE, USED ONLY BY DESCENDANTS. `.plane` is itself the query
      container, so a `cqw` in a property ON `.plane` would resolve against
      `.plane-frame` instead. This works because a custom property substitutes as
-     a token stream and the `13cqw` is resolved at the point of use, where the
-     nearest container really is the plane. Do not use `var(--unit)` in a
-     property on this rule, and do not register it with `@property`.
+     a token stream and the `9cqw` is resolved at the point of use, where the
+     nearest container really is the plane — which holds through the indirection
+     as well, since `--unit: var(--unit-base)` is itself only a substitution. Do
+     not use `var(--unit)` in a property on this rule, and do not register either
+     of them with `@property`.
      It is deliberately INDEPENDENT of `--depth`: this says how big a Ваня is
      here, `--depth` says how much nearer this one is, and they compose by
      multiplication without either knowing about the other. Keeping them apart is
      what lets sprites arrive later without touching any of this. */
-  --unit: clamp(44px, 13cqw, 88px);
+  --unit-base: clamp(32px, 9cqw, 64px);
+  --unit: var(--unit-base);
 }
 .plane-empty {
   position: absolute;
@@ -1204,14 +1333,18 @@ onBeforeUnmount(() => {
   left: 0;
   /* One world unit — see `--unit` on `.plane`. The mobile suite measures this
      box, and the nearest band scales it UP (see DEPTH_SCALES — the far band is
-     1), so the clamp's 44px floor is the smallest an entity is ever drawn rather
-     than the largest. That floor is legibility: a dot cannot be tapped at all
-     (`pointer-events: none` below), the plane takes the tap. */
+     1), so the clamp's floor is the smallest an entity is ever drawn rather than
+     the largest. That floor is LEGIBILITY and never a tap target: a dot cannot
+     be tapped at all (`pointer-events: none` below), the plane takes the tap.
+     Which is exactly why lowering it from 44 to 32 was a drawing decision and
+     not an accessibility regression. */
   width: var(--unit);
   height: var(--unit);
   border-radius: 50%;
   /* Rim and shadow in world units too, or a big Ваня wears a hairline and a
-     small one wears a hoop. 2/44 and 6/44 of the unit, which is what they were. */
+     small one wears a hoop. The fractions are 2/44 and 6/44 — the proportions a
+     44px dot was drawn with, kept as proportions so they follow the unit
+     wherever it goes. */
   border: calc(var(--unit) * 0.045) solid rgba(255, 255, 255, 0.85);
   box-shadow: 0 calc(var(--unit) * 0.045) calc(var(--unit) * 0.136) rgba(0, 0, 0, 0.35);
   transform: translate3d(
@@ -1265,6 +1398,48 @@ onBeforeUnmount(() => {
      somebody standing nearer the viewer than he is, in a yard where that is the
      one cue for how far away anybody is. The ring already says which one is you,
      and it says it without lying about where you are standing. */
+}
+
+/* SOMETHING LYING ON THE GROUND, rather than somebody standing on it.
+
+   Half a Ваня and no circle at all — no background, no rim, no shadow, just the
+   glyph. A deposit used to be drawn exactly like a person: a full-size coloured
+   disc with an emoji on it, which in a yard of four people and a dozen deposits
+   made the litter as loud as the players and, at the identity hue, made each
+   piece of it look like somebody. Both of those are wrong in the same direction,
+   and the owner's report from a phone was the blunter version of it.
+
+   WHICH ENTITIES THESE ARE IS NOT SOMETHING THIS CLIENT WAS TOLD. The class is
+   applied when the frame gave an entity an EXPIRY, which only a world object
+   ever gets — see PeerAppearance.expires. No kind key, no lookup against the
+   catalogue's object kinds, nothing that would have to be redeployed when a kind
+   is added on the server (ADR-028). The cost is stated where the decision is: an
+   object with no expiry keeps its circle, which today means the key, and that is
+   the right way round since the key is the one thing meant to be spotted.
+
+   THE SIZE IS THE UNIT, NOT THE BOX. Halving `--unit` here halves everything
+   derived from it at once — the dot, the face inside it, the rim, the shadow,
+   the caption, the balloon — because every length in this file is a fraction of
+   it. Overriding `width`/`height` instead would have shrunk the box and left a
+   full-size glyph hanging out of it. It reads `--unit-base` rather than `--unit`
+   because a custom property defined in terms of itself is a cycle and computes
+   to nothing; that indirection is the whole reason `.plane` publishes two.
+
+   AND IT SHRINKS AS IT AGES, on the same multiplication. `--life` is the
+   fraction of its life the thing has left, written by the template once a second
+   off the server clock the stat bars already track (see `propScale`), so a
+   deposit fades out of the yard over its life and is drawn at nothing by the
+   time the server stops sending it. The default of 1 matters: an entity whose
+   life the template did not write is drawn at full half-size rather than
+   vanishing, which is the failure this must have if `--life` ever goes missing.
+
+   `border-radius` is left alone deliberately — with nothing to fill or outline
+   it, rounding is invisible, and a rule that turned it off would be one more
+   thing to keep consistent for no drawn difference. */
+.peer--prop {
+  --unit: calc(var(--unit-base) * 0.5 * var(--life, 1));
+  border: none;
+  box-shadow: none;
 }
 
 /* Everybody's face, centred on their dot. `pointer-events: none` is inherited
@@ -1387,6 +1562,38 @@ onBeforeUnmount(() => {
    — he is lying where he was standing when his owner left. */
 .peer-face[data-condition='asleep'] {
   transform: rotate(74deg);
+}
+
+/* HAPPY and SAD: the two poses that are a MOOD rather than a condition — the
+   cosmetic outcome of a contested claim, on the wire for a few seconds after
+   somebody finds the keys and then simply gone. Winning and losing move no stat
+   whatsoever, so these two rules ARE the entire consequence of the race, and
+   they have to carry it on their own.
+
+   NEITHER ANIMATES, which is where they part company with `poorly`. A wobble is
+   a fine way to draw a condition that lasts as long as the bar behind it,
+   because there is always another cycle to catch; a mood lasts about as long as
+   one cycle does, so an animated one would be legible only to whoever happened
+   to be watching that dot at the top of it — and would vanish altogether under
+   prefers-reduced-motion, where the block at the foot of this file switches
+   animations off. A static transform is the same picture in every frame it is up
+   for, for everybody, which is what a three-second state needs.
+
+   Both channels at once, because the yard is small and the player is usually
+   looking somewhere else on it. The face changes SIZE and HEIGHT — lifted and
+   grown against sunk and shrunk, which leaves the two a full 1.5× apart, and
+   which is the geometry the `asleep` rule above notes reads across a plane where
+   a change of tone does not — and it changes TONE as well, bright against
+   drained. Sad also tips forward, using the one axis happy deliberately leaves
+   alone: it is nowhere near `asleep`'s 74deg, and unlike `poorly` it is holding
+   still. */
+.peer-face[data-condition='happy'] {
+  transform: translateY(calc(var(--unit) * -0.14)) scale(1.2);
+  filter: saturate(1.4) brightness(1.25);
+}
+.peer-face[data-condition='sad'] {
+  transform: translateY(calc(var(--unit) * 0.12)) rotate(16deg) scale(0.8);
+  filter: saturate(0.35) brightness(0.8);
 }
 
 /* A line over somebody's head, for the few seconds the server keeps it on the
@@ -1537,17 +1744,60 @@ onBeforeUnmount(() => {
 }
 
 /* auto-fit so one button fills the row and four share it, each still at least a
-   thumb wide. */
+   thumb wide. 6px of gutter rather than 8 buys each of the four another pixel
+   and a half of label at 320px, which is where the row is tightest. */
 .actions {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
-/* 44px is the tap-target floor the mobile suite enforces; Vuetify's default
-   button is 36. */
+
+/* MAKING FOUR RUSSIAN VERBS FIT A 320px PHONE, which they did not.
+
+   The row is one verb per catalogue action and the catalogue now carries four —
+   «выпить пива», «покакать», «искать ключи», «восстать из мертвых» — sharing
+   about 288px. Vuetify draws a button UPPERCASE, letter-spaced, at 0.875rem,
+   inside 16px of horizontal padding, with `white-space: nowrap` on its content:
+   at ~66px a track that is roughly a third of what «ВЫПИТЬ ПИВА» needs, and the
+   overflow was simply cut. The owner read it on a phone and reported exactly
+   that.
+
+   Four changes, each undoing one of those, and NONE of them touching the words
+   themselves — the labels come from the server's catalogue, so truncating one
+   here would be this screen inventing content, and an abbreviation would go
+   stale the moment a verb is renamed. Wrapping is the honest way to fit text you
+   do not own:
+     - the type drops to 0.62rem and the tracking to nothing (uppercase Russian
+       with 0.089em of letter-spacing is the single most expensive thing here);
+     - the padding goes from 16px a side to 2, which on a 66px track is a fifth
+       of it back;
+     - `text-transform: none` — lower case is narrower, and it also matches the
+       catalogue's own wording, which is written lower case;
+     - the content is allowed to WRAP, and to break inside a word if some future
+       verb has one longer than the track.
+
+   `height: auto` is what lets a two- or three-line label make the button taller
+   instead of being clipped by a fixed 36px box; `min-height: 44px` keeps the
+   floor. Both matter: the panel is what the plane pays for, so a button that
+   grows costs the yard a few pixels, and a button that clips costs the player
+   the ability to read what he is pressing. Measured at 320 and 360 by the pet
+   suite, which asserts no content box overflows its button in either axis. */
 .action-btn {
   min-height: 44px;
+  height: auto;
+  padding: 3px 2px;
+  min-width: 0;
+  text-transform: none;
+  letter-spacing: 0;
+  text-indent: 0;
+}
+.action-btn :deep(.v-btn__content) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 0.62rem;
+  line-height: 1.12;
+  text-align: center;
 }
 
 .hud {

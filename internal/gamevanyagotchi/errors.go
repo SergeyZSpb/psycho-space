@@ -41,6 +41,15 @@ var (
 	// the player most needs to read — «он не встаёт» — because being told is also
 	// the hint about which verb to press instead.
 	ErrPetDead = errors.New("gamevanyagotchi: pet is dead")
+	// ErrClaimLost means somebody else got there first. Not a failure and not
+	// the player's fault — it is the ordinary outcome of a contested claim for
+	// everybody but one person, which is why it costs nothing but a sad face.
+	ErrClaimLost = errors.New("gamevanyagotchi: somebody claimed it first")
+	// ErrNotYet means the verb needs one of his own numbers to be further along
+	// — there is nothing to do on an empty bladder. The client greys the button,
+	// so a player should rarely meet this; it exists because a greyed button is
+	// a suggestion and the rule has to live somewhere that cannot be declined.
+	ErrNotYet = errors.New("gamevanyagotchi: not yet")
 )
 
 // ErrBatchTooLong rejects a frame carrying more verbs than maxBatch.

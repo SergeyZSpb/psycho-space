@@ -51,6 +51,14 @@ const (
 	// sleepers a solo visit is an empty field — and filler characters would have
 	// been a worse answer than the real ones, who are all still lying about.
 	PoseAsleep = "asleep"
+	// PoseHappy and PoseSad are the COSMETIC outcome of a contested claim, and
+	// they are the entire loser effect. Winning and losing move no stat — a
+	// penalty applied all day to whoever happens to be asleep is exactly the
+	// negative-sum property the design refuses — so the result is a face for a
+	// few seconds and nothing more. Held in memory, expiring by arithmetic,
+	// stored nowhere.
+	PoseHappy = "happy"
+	PoseSad   = "sad"
 )
 
 // Point is a position on the plane in normalised coordinates: 0..1 on each axis,

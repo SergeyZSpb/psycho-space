@@ -379,6 +379,88 @@ describe('buildRules — a verb that leaves something standing in the yard', () 
   });
 });
 
+describe('buildRules — a verb the pet is not always allowed to use', () => {
+  // «Покакать» is gated: the server refuses it with «рано ещё» unless the
+  // bladder is at least 15, and applies nothing. That is a rule the player meets
+  // as a button that appears to do nothing, so the cheatsheet has to state it —
+  // and state it DERIVED, because the 15 is a constant in content.go and a
+  // hand-typed copy would be wrong the first afternoon somebody retuned it.
+  //
+  // The gate is deliberately NOT on the shared `relieve()` fixture above. The
+  // block about leavings asserts exact note lists, and adding a second note to
+  // every one of them would make those tests about two rules at once; the last
+  // test here is what covers the two appearing together on the real verb.
+  const gated = (over: Partial<VanyagotchiAction> = {}) =>
+    relieve({ needs_stat: 'bladder', needs_at_least: 15, ...over });
+  const bladder = stat({ key: 'bladder', label: 'мочевой пузырь', emoji: '🚽', start: 0 });
+
+  it('says what has to be accumulated before the verb will do anything', () => {
+    const rules = buildRules(config({ stats: [bladder], actions: [gated()] }));
+    expect(rules.actions[0]?.notes[0]).toBe('нужно накопить: мочевой пузырь от 15');
+  });
+
+  // THE assertion this derivation exists for: the threshold is a backend
+  // constant, and the screen that teaches the rule has to move with it.
+  it('follows a retuned threshold, so the sentence cannot go stale', () => {
+    const rules = buildRules(
+      config({ stats: [bladder], actions: [gated({ needs_at_least: 40 })] }),
+    );
+    expect(rules.actions[0]?.notes[0]).toBe('нужно накопить: мочевой пузырь от 40');
+  });
+
+  it('names the stat as the catalogue names it, never by its wire key', () => {
+    const rules = buildRules(
+      config({ stats: [stat({ key: 'bladder', label: 'терпение' })], actions: [gated()] }),
+    );
+    expect(rules.actions[0]?.notes[0]).toBe('нужно накопить: терпение от 15');
+  });
+
+  it('says nothing for a verb that can be pressed whenever', () => {
+    const rules = buildRules(config({ stats: [bladder], actions: [action({ key: 'drink' })] }));
+    expect(rules.actions[0]?.notes).toEqual(['мёртвому нельзя']);
+  });
+
+  // A client older than the server can be handed a gate on a stat it has never
+  // heard of. Silence is honest; «нужно накопить: bladder от 15» would put a
+  // wire key in front of a player as though it were a word.
+  it('stays quiet about a stat the catalogue does not describe', () => {
+    const rules = buildRules(config({ stats: [], actions: [gated()] }));
+    expect(rules.actions[0]?.notes).toEqual(['мёртвому нельзя']);
+  });
+
+  // A gate at nought is satisfied by every value the stat can hold — the server
+  // compares `>=` — so it is not a rule at all, and printing it would describe a
+  // condition that can never fail.
+  it.each<[string, Partial<VanyagotchiAction>]>([
+    ['a threshold of nought', { needs_at_least: 0 }],
+    ['a negative threshold', { needs_at_least: -5 }],
+    ['no threshold at all', { needs_at_least: undefined }],
+    ['a threshold that is not a number', { needs_at_least: 'много' as unknown as number }],
+    ['an empty stat key', { needs_stat: '' }],
+  ])('says nothing for %s', (_name, over) => {
+    const rules = buildRules(config({ stats: [bladder], actions: [gated(over)] }));
+    expect(rules.actions[0]?.notes).toEqual(['мёртвому нельзя']);
+  });
+
+  it('states the condition before what the verb does with it, on the real verb', () => {
+    // The shipped «покакать», with both of its rules and in the order a player
+    // needs them: what it needs first, because that is the one that decides
+    // whether pressing the button does anything at all.
+    const rules = buildRules(
+      config({
+        stats: [bladder],
+        actions: [gated()],
+        object_kinds: [objectKind()],
+      }),
+    );
+    expect(rules.actions[0]?.notes).toEqual([
+      'нужно накопить: мочевой пузырь от 15',
+      'оставляет кое-что на земле: видно всем 10 минут',
+      'мёртвому нельзя',
+    ]);
+  });
+});
+
 describe('buildRules — an action that starts him over', () => {
   // The server IGNORES `effects` when `starts_over` is set, which is why the
   // reviving verb ships with an empty list. Rendered by the ordinary path that

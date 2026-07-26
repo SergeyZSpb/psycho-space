@@ -5,6 +5,7 @@ import {
   DEPTH_SCALES,
   LABEL_MAX,
   PEER_BASE_PX,
+  PROP_LIFE_MS,
   SAY_BELOW_PROPERTY,
   SAY_FLIP_Y,
   SAY_MAX,
@@ -17,9 +18,12 @@ import {
   bandFor,
   capLabel,
   capSay,
+  huntRestarted,
   isRenderablePosition,
+  propScale,
   readAppearances,
   readHere,
+  readHunt,
   resolveArt,
   sameAppearance,
   sayBelow,
@@ -145,14 +149,24 @@ describe('bandFor', () => {
 });
 
 describe('DEPTH_SCALES', () => {
-  it('never draws an entity below the 44 px tap-target floor', () => {
+  it('never draws an entity below the legibility floor', () => {
     // THE constraint, and the reason the far band is 1 rather than something
     // smaller: depth can only make an entity BIGGER, so the floor the mobile
     // suite measures is the unscaled CSS size itself. Scaling the far band down
     // instead would make this a product of two numbers that have to be re-checked
     // together every time either one moves.
+    //
+    // IT USED TO SAY 44 AND TO CALL IT A TAP TARGET, and both halves of that were
+    // wrong in a way worth recording rather than quietly editing. A dot is
+    // `pointer-events: none` and the plane takes every tap, so nothing here has
+    // ever been tappable; 44 was how small a face may be drawn and still be read.
+    // That made it a DRAWING judgement, which is what allowed the world scale to
+    // come down to 32 when the owner reported the yard's contents as too big. The
+    // invariant this test is really about — depth never shrinks anybody, so the
+    // smallest drawn size is the CSS size — is untouched by that, which is why
+    // the assertion is written against the constant rather than against a number.
     expect(Math.min(...DEPTH_SCALES)).toBe(1);
-    expect(PEER_BASE_PX * Math.min(...DEPTH_SCALES)).toBeGreaterThanOrEqual(44);
+    expect(PEER_BASE_PX * Math.min(...DEPTH_SCALES)).toBeGreaterThanOrEqual(PEER_BASE_PX);
   });
 
   it('grows towards the viewer, and only gently', () => {
@@ -383,8 +397,50 @@ describe('readAppearances', () => {
     expect(readAppearances([peer({ pose: 'asleep' })])[0]?.pose).toBe('asleep');
   });
 
+  it.each([['happy'], ['sad']])('keeps the %s a claim left behind', (pose) => {
+    // The two MOODS, and they must survive this pass rather than falling back to
+    // fine: winning and losing a key move no stat at all, so the pose is the
+    // entire outcome of the race. Read as fine, a lost key would be indis-
+    // tinguishable from never having pressed the button.
+    expect(readAppearances([peer({ pose })])[0]?.pose).toBe(pose);
+  });
+
   it('reads a line somebody said', () => {
     expect(readAppearances([peer({ say: 'устал' })])[0]?.say).toBe('устал');
+  });
+
+  it('reads the instant a thing on the ground stops existing', () => {
+    // The ONE field that says «this is not a person» without naming a kind, and
+    // therefore the only thing the half-size, no-circle, shrinking drawing is
+    // allowed to key off. Kept as the absolute unix second the server sent, not
+    // converted to a countdown here: an absolute instant is constant for the
+    // thing's whole life, which is what keeps it out of `sameAppearance`'s way.
+    expect(readAppearances([peer({ expires: 1_800_000_000 })])[0]?.expires).toBe(1_800_000_000);
+  });
+
+  it.each([
+    ['omitted', undefined],
+    ['zero, as an older server would send it', 0],
+    ['null', null],
+    ['negative', -5],
+    ['not a number', '1800000000'],
+    ['NaN', Number.NaN],
+    ['infinite', Number.POSITIVE_INFINITY],
+  ])('leaves the expiry absent when it is %s', (_name, expires) => {
+    // All of these mean the same thing — this entity is not going anywhere — and
+    // the failure mode of telling them apart is severe rather than cosmetic: an
+    // entity wrongly given an expiry is drawn at half size and shrinking, and one
+    // given an expiry in the past is drawn at nothing at all. That is a player
+    // who has become invisible, so every malformed shape has to land on "absent".
+    const [look] = readAppearances([peer({ expires })]);
+    expect(look && 'expires' in look).toBe(false);
+  });
+
+  it('leaves the expiry absent for an ordinary person', () => {
+    // The common case, stated on its own because it is what every assertion
+    // about the yard's people silently depends on.
+    const [look] = readAppearances([peer()]);
+    expect(look && 'expires' in look).toBe(false);
   });
 
   it.each([
@@ -547,6 +603,143 @@ describe('readHere', () => {
   });
 });
 
+// The key hunt. The frame carries WHICH hunt is running and never that one has
+// just started, so the announcement is a difference between two frames and lives
+// entirely on this side of the wire — which is exactly why it is a pure function
+// with a table of cases rather than something inside the component.
+
+describe('readHunt', () => {
+  it('reads the id of the hunt the server says is running', () => {
+    expect(readHunt('7f3a91')).toBe('7f3a91');
+  });
+
+  it('reads a frame with no hunt on it as no hunt', () => {
+    // Both shapes mean the same thing and neither is exceptional: a server too
+    // old to send the field, and a frame published in the instant between a key
+    // being won and its replacement being lost.
+    expect(readHunt(undefined)).toBe('');
+    expect(readHunt('')).toBe('');
+  });
+
+  it.each([
+    ['a number', 7],
+    ['null', null],
+    ['an object', { id: 'a' }],
+    ['an array', ['a']],
+  ])('reads %s as no hunt rather than passing it on', (_name, raw) => {
+    // Whatever this is, it is not an id, and treating it as one would put a
+    // value the comparison below cannot reason about into `seenHunt`.
+    expect(readHunt(raw)).toBe('');
+  });
+});
+
+describe('huntRestarted', () => {
+  it('announces a hunt that replaced the one we were watching', () => {
+    // The only case that is news: we saw the keys lying there, somebody took
+    // them, and a fresh pair has been lost.
+    expect(huntRestarted('a', 'b')).toBe(true);
+  });
+
+  it('says nothing on the first sight of a hunt', () => {
+    // THE case this function exists for. A player who arrives after the keys
+    // were found is standing in a world where a hunt is already running, and
+    // telling him it has just started would announce an event from before he was
+    // here. A late joiner takes part in silence.
+    expect(huntRestarted('', 'a')).toBe(false);
+  });
+
+  it('says nothing while the same hunt goes on', () => {
+    // Five frames a second carry the same id, and every one of them is the same
+    // world. An announcement per frame would be the whole screen.
+    expect(huntRestarted('a', 'a')).toBe(false);
+  });
+
+  it('says nothing when a hunt ends to nothing', () => {
+    // It looks like a change and is not one: the winning claim exhausts the key
+    // and inserts its replacement in one statement, so an empty value is a gap
+    // between two frames. Announcing it would put «ключи снова потерялись» up at
+    // the moment they were FOUND.
+    expect(huntRestarted('a', '')).toBe(false);
+  });
+
+  it('says nothing about a world with no hunt in it at all', () => {
+    expect(huntRestarted('', '')).toBe(false);
+  });
+});
+
+// How a thing on the ground is drawn as it runs out. The server sends the
+// instant it stops existing and never a size, so everything between "just
+// dropped" and "gone" is worked out here — the same division of labour the stat
+// bars use, where a rate crosses the wire and the browser interpolates.
+
+describe('propScale', () => {
+  /** A round instant to do arithmetic against, in the milliseconds `now` uses. */
+  const NOW = 1_800_000_000_000;
+  /** The same instant as the unix SECONDS an expiry is expressed in. */
+  const NOW_S = NOW / 1_000;
+
+  it('leaves everybody who is not going anywhere at full size', () => {
+    // The case that runs for almost every entity in the yard, which is why the
+    // function is safe to apply to all of them without first asking what
+    // anything is. There is no branch in the view that knows which entities are
+    // things, and this is what pays for that.
+    expect(propScale(undefined, NOW)).toBe(1);
+  });
+
+  it('draws a thing with its whole life ahead of it at full size', () => {
+    expect(propScale(NOW_S + PROP_LIFE_MS / 1_000, NOW)).toBe(1);
+  });
+
+  it('draws a thing halfway through its life at half size', () => {
+    // The interpolation itself. Linear on purpose: the alternative is an easing
+    // curve, which would make a deposit hold its size and then disappear in a
+    // hurry — the opposite of the "it is on its way out" reading this is for.
+    expect(propScale(NOW_S + PROP_LIFE_MS / 2_000, NOW)).toBeCloseTo(0.5, 6);
+  });
+
+  it('draws a thing that has run out at nothing', () => {
+    // Nothing, not something small. The server drops it from the roster on its
+    // own tick, so this is what covers the gap between the two clocks — and the
+    // gap has to be covered by it VANISHING rather than by it sitting at a
+    // visible minimum, which would leave a permanent speck wherever a deposit
+    // once was until the next frame arrived.
+    expect(propScale(NOW_S, NOW)).toBe(0);
+    expect(propScale(NOW_S - 60, NOW)).toBe(0);
+  });
+
+  it('never draws a thing bigger than full size, however long it has left', () => {
+    // A server whose lifetime has been retuned upward hands us more remaining
+    // life than this client draws ageing for. That is a drawing decision to
+    // degrade gracefully from — the thing simply sits at full size for a while
+    // before it starts shrinking — and not a licence to draw a deposit larger
+    // than a Ваня.
+    expect(propScale(NOW_S + 10 * PROP_LIFE_MS, NOW)).toBe(1);
+  });
+
+  it('shrinks monotonically as the clock advances', () => {
+    // The property a player actually observes, asserted over the whole life
+    // rather than at the three points above: it only ever gets smaller.
+    const expires = NOW_S + PROP_LIFE_MS / 1_000;
+    let previous = Number.POSITIVE_INFINITY;
+    for (let ms = 0; ms <= PROP_LIFE_MS; ms += PROP_LIFE_MS / 60) {
+      const scale = propScale(expires, NOW + ms);
+      expect(scale).toBeLessThanOrEqual(previous);
+      expect(scale).toBeGreaterThanOrEqual(0);
+      previous = scale;
+    }
+    expect(previous).toBe(0);
+  });
+
+  it('holds a thing at full size rather than vanishing it when the clock is unusable', () => {
+    // `now` is the server's clock as the view tracks it, and before the first
+    // state response lands there may not be one. Drawing at nothing would be the
+    // worst possible reading of "we do not know what time it is" — the yard's
+    // litter would be invisible until a pet response arrived — so an unusable
+    // clock leaves everything at full size.
+    expect(propScale(NOW_S + 60, Number.NaN)).toBe(1);
+  });
+});
+
 describe('resolveArt', () => {
   it('draws the catalogue emoji for a key it knows', () => {
     expect(resolveArt([VANYA], 'vanya')).toEqual({ emoji: '🫃' });
@@ -624,6 +817,21 @@ describe('sameAppearance', () => {
 
   it('notices somebody falling asleep', () => {
     expect(sameAppearance([look()], [look({ pose: 'asleep' })])).toBe(false);
+  });
+
+  it('notices a thing on the ground arriving, and costs nothing thereafter', () => {
+    // Both halves matter and they pull opposite ways. The guard must SEE the
+    // expiry, or a deposit would arrive drawn as a full-size person and stay that
+    // way until something else about the yard happened to change. And it must
+    // then stop seeing it, which is free only because the field is an ABSOLUTE
+    // instant: it is identical on every one of the three thousand frames that
+    // follow, where a "seconds left" countdown would differ on all of them and
+    // re-render the entire yard five times a second.
+    expect(sameAppearance([look()], [look({ expires: 1_800_000_000 })])).toBe(false);
+    expect(sameAppearance([look({ expires: 1_800_000_000 })], [look()])).toBe(false);
+    expect(
+      sameAppearance([look({ expires: 1_800_000_000 })], [look({ expires: 1_800_000_000 })]),
+    ).toBe(true);
   });
 
   it('notices somebody arriving or leaving', () => {

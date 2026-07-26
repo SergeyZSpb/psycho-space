@@ -2781,6 +2781,70 @@ func TestADeadВаняStillCarriesWhatTheServerSaid(t *testing.T) {
 	}
 }
 
+// TestAVerbHeIsNotReadyForIsRefusedOverHisOwnHead is the gate as the person who
+// pressed the button experiences it, driven down the one path a client has.
+//
+// The wire owes no reply — a verb frame is answered by the next full-state frame
+// and never by an acknowledgement — so «рано ещё» arriving as a line over his own
+// Ваня IS the answer, and it is the only one there is. The client greys the
+// button out when the served config says he is short, which means a player should
+// meet this rarely; it exists because a greyed button is a suggestion, and this
+// test is what says the suggestion is backed by something.
+//
+// The two halves belong together: the balloon has to appear AND the press has to
+// have written nothing, because a refusal that quietly charged him a re-stamp
+// while apologising politely is the worst of both.
+func TestAVerbHeIsNotReadyForIsRefusedOverHisOwnHead(t *testing.T) {
+	relieve := mustAction(t, ActionRelieve)
+	if relieve.NeedsStat == "" {
+		t.Fatalf("the catalogue no longer gates %q on a stat of its own; this test is about a rule the game does not have", relieve.Key)
+	}
+	// A pet with nothing in it, which is the state every pet is in on the first
+	// evening — and the reason this refusal is worth a sentence at all.
+	repo := playedFor()
+	tr := &fakeTransport{}
+	tr.setMembers(member("1"))
+	svc := planeService(tr, repo)
+
+	// A tick first: somebody the yard has never placed has nowhere to wear a
+	// line, so without it the balloon would go nowhere and the test would be
+	// asserting the placement rather than the refusal.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	svc.HandleInbound(context.Background(), member("1"), testRoom,
+		fmt.Appendf(nil, `{"t":%q,"verbs":[%q]}`, TypeDo, relieve.Key))
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast after the refusal: %v", err)
+	}
+	frames := tr.frames()
+	p, ok := peerOf(svc, frames[len(frames)-1], testAccount)
+	if !ok {
+		t.Fatalf("the player who pressed the button is not in the frame at all: %+v", frames[len(frames)-1])
+	}
+	if p.Say != "рано ещё" {
+		t.Errorf("his Ваня says %q after a verb he is not ready for; want «рано ещё» — the balloon is the whole of the server's answer to a refused press", p.Say)
+	}
+	if p.Say == relieve.Done {
+		t.Errorf("his Ваня announced %q, which is what the catalogue says the verb says when it LANDS; the refusal took the success path", p.Say)
+	}
+
+	// And nothing happened to the pet. Said here as well as in the pet's own
+	// tests because this is the path a player actually takes, and a refusal that
+	// still wrote would be invisible in the frame above.
+	if n := len(repo.appended); n != 0 {
+		t.Errorf("%d events were recorded for a verb that was refused: %+v", n, repo.appended)
+	}
+	if repo.writes != 0 {
+		t.Errorf("WriteStats was called %d times by a refused verb; want none", repo.writes)
+	}
+	if got := repo.insertedObjects(); len(got) != 0 {
+		t.Errorf("%d objects were left in the world by a verb that was refused: %+v", len(got), got)
+	}
+}
+
 // TestRefusalLineSaysTheRightThingOrDeliberatelyNothing pins the whole mapping
 // from a refusal to what the player reads.
 //
@@ -2801,6 +2865,8 @@ func TestRefusalLineSaysTheRightThingOrDeliberatelyNothing(t *testing.T) {
 		want string
 	}{
 		{"a dead pet is the one refusal a player must read", ErrPetDead, "он не встаёт"},
+		{"nothing to go for yet", ErrNotYet, "рано ещё"},
+		{"somebody else got to the keys first", ErrClaimLost, "кто-то успел раньше"},
 		{"too many verbs at once", ErrBatchTooLong, "не части"},
 		{"a verb outside the catalogue is answered with silence", ErrUnknownAction, ""},
 		{"a catalogue that disagrees with itself is answered with silence", ErrUnknownStat, ""},

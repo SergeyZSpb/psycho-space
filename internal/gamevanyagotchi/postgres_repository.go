@@ -369,3 +369,60 @@ func (PostgresRepository) LiveWorldObjects(ctx context.Context, q db.DBTX, locat
 	}
 	return out, rows.Err()
 }
+
+// ClaimSingleton is the contested claim: exactly one player wins, and the
+// replacement is inserted in the same statement.
+//
+// THE DATABASE DECIDES, NOT THE HUB. The guard is `claimed_by IS NULL`, so two
+// players tapping in the same millisecond are resolved by Postgres rather than
+// by whichever frame the hub happened to fan out first — and a forged client
+// claim cannot beat it, because there is nothing in the request that says who
+// should win. Zero rows affected means you lost.
+//
+// `exhausted_at` is set by the SAME statement that claims it, which is what
+// takes the row out of the partial unique index and lets the replacement below
+// exist. Doing it in two statements would leave a window in which the index
+// still held the old row and the insert silently did nothing.
+func (PostgresRepository) ClaimSingleton(ctx context.Context, q db.DBTX, kind, locationKey, accountID string, at time.Time) (bool, error) {
+	tag, err := q.Exec(ctx,
+		`UPDATE game_vanyagotchi_world_objects
+		    SET claimed_by = $3::uuid, claimed_at = $4, exhausted_at = $4, updated_at = now()
+		  WHERE kind = $1
+		    AND location_key = $2
+		    AND claimed_by IS NULL
+		    AND exhausted_at IS NULL
+		    AND deleted_at IS NULL
+		    AND spawns_at <= now()
+		    AND (expires_at IS NULL OR expires_at > now())`,
+		kind, locationKey, accountID, at,
+	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ActiveSingleton returns the id of the active object of a kind, if there is
+// one.
+//
+// Used to decide whether a hunt needs starting, and to tell the client WHICH
+// hunt is running — the id is what a client watches for a change, so the flavour
+// line is a transition rather than a message somebody who arrived late missed.
+func (PostgresRepository) ActiveSingleton(ctx context.Context, q db.DBTX, kind, locationKey string) (string, bool, error) {
+	var id string
+	err := q.QueryRow(ctx,
+		`SELECT id::text
+		   FROM game_vanyagotchi_world_objects
+		  WHERE kind = $1 AND location_key = $2
+		    AND exhausted_at IS NULL AND deleted_at IS NULL
+		  LIMIT 1`,
+		kind, locationKey,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
+}

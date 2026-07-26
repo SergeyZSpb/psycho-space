@@ -125,15 +125,32 @@ func regulars() map[string]gamevanyagotchi.NPC {
 	return out
 }
 
-// peopleIn is the entities in a roster that are not the yard's regulars: the
-// players in it, and anybody asleep in it.
+// propPrefix is what the server publishes a THING under, as opposed to somebody:
+// a deposit on the ground, the lost key.
+//
+// The same shape as the regulars' "npc-", and here for the same reason. To the
+// client there is no such thing as a world object — it resolves whatever art key
+// an entity carries against the catalogue and holds no notion of kinds — so the
+// only thing distinguishing a key lying in the grass from a player standing in
+// it, on the wire, is this prefix.
+const propPrefix = "obj-"
+
+// peopleIn is the entities in a roster that are neither the yard's regulars nor
+// the things lying about in it: the players, and anybody asleep.
+//
+// Both exclusions earn their keep, and the second one arrived the expensive way.
+// A key hunt is always running — every hello starts one if there is not one — so
+// from the first connection this suite makes, every roster carries a key drawn as
+// an ordinary entity in an ordinary pose. Counting it as a person made a yard
+// holding one player look like a yard holding two.
 func peopleIn(r gamevanyagotchi.Roster) []gamevanyagotchi.Peer {
 	npcs := regulars()
 	out := make([]gamevanyagotchi.Peer, 0, len(r.Peers))
 	for _, p := range r.Peers {
-		if _, is := npcs[p.ID]; !is {
-			out = append(out, p)
+		if _, is := npcs[p.ID]; is || strings.HasPrefix(p.ID, propPrefix) {
+			continue
 		}
+		out = append(out, p)
 	}
 	return out
 }

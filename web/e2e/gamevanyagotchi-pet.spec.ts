@@ -96,6 +96,19 @@ interface ActionDef {
    * word of it being typed into the SPA.
    */
   leaves?: string;
+  /**
+   * A stat this verb is gated on, and how much of it the pet needs, or absent
+   * for a verb that can be pressed whenever.
+   *
+   * Both `omitempty` on the wire, hence optional here. Mirrored because the pair
+   * is a RULE the player meets as a button that appears to do nothing: the
+   * server answers «рано ещё» and applies nothing, and the splash is the only
+   * place he can be told why in advance. Nothing in the client enforces it — the
+   * button is not disabled and the verb is still sent — so this pair reaching
+   * the SPA is entirely about what the cheatsheet says.
+   */
+  needs_stat?: string;
+  needs_at_least?: number;
 }
 
 /**
@@ -225,6 +238,29 @@ const BEERS_DRUNK: StatDef = {
   fatal: false,
 };
 
+/**
+ * The third tally, and it arrived with the thing that can move it.
+ *
+ * Identical in shape to the other two, which is the point worth mirroring: a key
+ * hunt is a contested race decided by a partial unique index in the database, and
+ * the whole of its reward is still an ordinary stat with a rate of nought. It
+ * cost no migration and no new kind of number, so a screen that renders a tally
+ * needs nothing new to render this one either.
+ */
+const KEYS_FOUND: StatDef = {
+  key: 'keys_found',
+  label: 'найдено ключей',
+  emoji: '🔑',
+  min: 0,
+  max: 1_000_000,
+  start: 0,
+  decay_per_hour: 0,
+  good_high: true,
+  warn_at: 0,
+  counter: true,
+  fatal: false,
+};
+
 const SHITS_TAKEN: StatDef = {
   key: 'shits_taken',
   label: 'покакано раз',
@@ -288,6 +324,55 @@ const RELIEVE: ActionDef = {
   // anything describing the thing: the sentence the splash builds out of it comes
   // from the kind, one constant up.
   leaves: RELIEF_KIND.key,
+  // And it is the one verb with a PRECONDITION: press it on an empty bladder and
+  // the server answers «рано ещё» and applies nothing. Mirrored with the shipped
+  // 15 because the splash's job is to say so in advance — a gate a player only
+  // discovers by pressing a button that does nothing is a rule nobody was told.
+  needs_stat: 'bladder',
+  needs_at_least: 15,
+  revives_fatal: false,
+  starts_over: false,
+};
+
+/**
+ * What is lying in the yard for somebody to find, with the shipped "forever".
+ *
+ * Mirrored for the shape rather than for anything derived from it, and that is
+ * exactly what makes it worth having here. A deposit's kind is reachable from the
+ * verb that leaves it (`RELIEVE.leaves`), so the splash builds a whole sentence
+ * out of it with nothing typed by hand. The claiming verb leaves NOTHING — it
+ * takes something — so no action points at this kind, nothing derives a word from
+ * it, and every rule about the hunt has to be stated by hand in `YARD_PROSE`
+ * instead. A fixture that quietly dropped it would make that look like an
+ * oversight rather than the shape of the catalogue.
+ *
+ * `lifetime_seconds: 0` is the catalogue's word for forever: a hunt ends when it
+ * is won and never by a timer.
+ */
+const KEY_KIND: ObjectKindDef = {
+  key: 'key',
+  art: 'obj_key',
+  label: 'ключи',
+  lifetime_seconds: 0,
+};
+
+/**
+ * The contested verb: one key, one winner, and a loser who pays nothing.
+ *
+ * The tally is the only thing in `effects`, and it is the only thing there CAN
+ * be — losing costs no stat at all, deliberately, so that another player turning
+ * up is never bad news. That works out for free rather than by a special case: a
+ * claim that loses the race is refused outright, and a refused batch writes
+ * nothing. Which is why the fixture for the loser's half of this verb is not
+ * here at all — it is a pose on the roster, in the sibling spec.
+ */
+const CLAIM: ActionDef = {
+  key: 'claim',
+  label: 'искать ключи',
+  emoji: '🔑',
+  effects: [{ stat_key: 'keys_found', delta: 1 }],
+  done: 'нашёл ключи',
+  // A dead Ваня finds nothing.
   revives_fatal: false,
   starts_over: false,
 };
@@ -340,8 +425,8 @@ const UNKNOWN_ART = '👤';
 const CATALOGUE: ConfigFixture = {
   game_key: 'vanyagotchi',
   title: 'Ванягоччи',
-  stats: [HP, BEER, BLADDER, BEERS_DRUNK, SHITS_TAKEN],
-  actions: [DRINK, RELIEVE, REVIVE],
+  stats: [HP, BEER, BLADDER, BEERS_DRUNK, KEYS_FOUND, SHITS_TAKEN],
+  actions: [DRINK, RELIEVE, CLAIM, REVIVE],
   skins: [
     {
       key: SKIN_VANYA,
@@ -357,7 +442,7 @@ const CATALOGUE: ConfigFixture = {
       image: PAINTED_IMAGE,
     },
   ],
-  object_kinds: [RELIEF_KIND],
+  object_kinds: [RELIEF_KIND, KEY_KIND],
   locations: [{ key: 'yard', label: 'двор', entry: { x: 0.5, y: 0.5 } }],
   default_skin: SKIN_VANYA,
   default_location: 'yard',
@@ -383,7 +468,7 @@ interface StateOptions {
 }
 
 /** Every stat fixture defined at module scope, so a state can carry a real rate. */
-const DEFS: StatDef[] = [HP, BEER, BLADDER, BEERS_DRUNK, SHITS_TAKEN];
+const DEFS: StatDef[] = [HP, BEER, BLADDER, BEERS_DRUNK, KEYS_FOUND, SHITS_TAKEN];
 
 /**
  * A state stamped at the moment the request is answered.
@@ -728,7 +813,7 @@ const actionBtn = (page: Page, key: string) => page.locator(`[data-test="action-
  * Every action the shipped catalogue carries, so a layout assertion checks the
  * whole row rather than whichever two buttons it was written against.
  */
-const ACTION_KEYS = [DRINK.key, RELIEVE.key, REVIVE.key];
+const ACTION_KEYS = [DRINK.key, RELIEVE.key, CLAIM.key, REVIVE.key];
 
 /** The death notice — the one line the screen writes rather than the catalogue. */
 const DEATH_LINE = 'Ваня не выдержал. Откачай его.';
@@ -741,23 +826,23 @@ async function enterYard(page: Page): Promise<void> {
 }
 
 test.describe('«Ванягоччи» — the pet on the yard screen', () => {
-  test('the bars, the numbers and all three actions come from the catalogue', async ({ page }) => {
+  test('the bars, the numbers and every action come from the catalogue', async ({ page }) => {
     // Nothing on this screen is spelled out in the SPA: the labels, the bounds
     // and the buttons' wording all arrive from GET /config, which is what makes
     // "adding a stat is a backend-only change" true rather than aspirational.
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        stateOf({ hp: 72, beer: 44, bladder: 18, beers_drunk: 12, shits_taken: 3 }),
+        stateOf({ hp: 72, beer: 44, bladder: 18, beers_drunk: 12, keys_found: 5, shits_taken: 3 }),
     });
     await stubSocket(page);
     await enterYard(page);
 
     await expect(page.locator('[data-test="pet-stats"]')).toBeVisible();
-    // FIVE stats on the wire and THREE bars, which is the point: the two
-    // lifetime tallies are not bars and must not be counted as though a fourth
-    // and fifth track had appeared. The three that remain are the game — hp is
-    // the consequence of what beer and the bladder do to him.
+    // SIX stats on the wire and THREE bars, which is the point: the three
+    // lifetime tallies are not bars and must not be counted as though three more
+    // tracks had appeared. The three that remain are the game — hp is the
+    // consequence of what beer and the bladder do to him.
     await expect(page.locator('.stats .stat')).toHaveCount(3);
     await expect(page.locator('[data-test="stat-hp"]')).toBeVisible();
     await expect(page.locator('[data-test="stat-beer"]')).toBeVisible();
@@ -770,12 +855,15 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(statValue(page, 'bladder')).toHaveText('18');
 
     // One button per catalogue action, labelled from it, emoji and all — the
-    // row iterates the catalogue rather than naming a verb. Three of them now,
-    // and the third arrived as a catalogue entry with no client change, which is
-    // the property this assertion is really about.
-    await expect(page.locator('.actions .v-btn')).toHaveCount(3);
+    // row iterates the catalogue rather than naming a verb. Four of them now,
+    // and the last two arrived as catalogue entries with no client change, which
+    // is the property this assertion is really about. «искать ключи» is the
+    // sharpest case of it: what happens when it is pressed is a contested race
+    // decided in the database, and the BUTTON still cost the browser nothing.
+    await expect(page.locator('.actions .v-btn')).toHaveCount(4);
     await expect(actionBtn(page, 'drink')).toContainText('выпить пива');
     await expect(actionBtn(page, 'relieve')).toContainText('покакать');
+    await expect(actionBtn(page, 'claim')).toContainText('искать ключи');
     await expect(actionBtn(page, 'revive')).toContainText('восстать из мертвых');
   });
 
@@ -788,20 +876,26 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, shits_taken: 3 }),
+        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, keys_found: 5, shits_taken: 3 }),
     });
     await stubSocket(page);
     await enterYard(page);
 
     await expect(page.locator('[data-test="pet-tallies"]')).toBeVisible();
     await expect(tallyValue(page, 'beers_drunk')).toHaveText('12');
+    await expect(tallyValue(page, 'keys_found')).toHaveText('5');
     await expect(tallyValue(page, 'shits_taken')).toHaveText('3');
     // Named from the catalogue, like everything else on this screen.
     await expect(page.locator('[data-test="tally-beers_drunk"]')).toContainText('выпито пива');
+    await expect(page.locator('[data-test="tally-keys_found"]')).toContainText('найдено ключей');
     await expect(page.locator('[data-test="tally-shits_taken"]')).toContainText('покакано раз');
 
-    // And no track anywhere for either of them.
+    // And no track anywhere for any of them. The third one is the case worth
+    // having: it is fed by a verb whose whole point is that it usually FAILS, so
+    // a screen that drew it as a bar would show a race nobody wins as an empty
+    // track next to two that fill.
     await expect(page.locator('[data-test="stat-beers_drunk"]')).toHaveCount(0);
+    await expect(page.locator('[data-test="stat-keys_found"]')).toHaveCount(0);
     await expect(page.locator('[data-test="stat-shits_taken"]')).toHaveCount(0);
     // Nor is a total ever trouble: `warn_at` sits on the floor and the value is
     // above it, which under the ordinary bar rule (`good_high`, value < warn_at)
@@ -819,12 +913,14 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     // until it moved would make the first beer look like a new feature.
     await stubBackend(page, {
       config: CATALOGUE,
-      state: () => stateOf({ hp: 65, beer: 60, bladder: 0, beers_drunk: 0, shits_taken: 0 }),
+      state: () =>
+        stateOf({ hp: 65, beer: 60, bladder: 0, beers_drunk: 0, keys_found: 0, shits_taken: 0 }),
     });
     await stubSocket(page);
     await enterYard(page);
 
     await expect(tallyValue(page, 'beers_drunk')).toHaveText('0');
+    await expect(tallyValue(page, 'keys_found')).toHaveText('0');
     await expect(tallyValue(page, 'shits_taken')).toHaveText('0');
     await expect(page.locator('[data-test="pet-tallies"] [data-trouble="1"]')).toHaveCount(0);
   });
@@ -832,16 +928,17 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
   test('the screen still never scrolls now that the pet panel is on it', async ({ page }) => {
     // The layout rule this game inherited is literal: one flexible child, the
     // rest fixed, `overflow: hidden`. The panel below the plane keeps growing —
-    // three bars, then a tally row, then a third button — so the plane has to
-    // give up the height rather than the panel being pushed off, which is
-    // exactly the regression a growing pet panel is most likely to cause. The
-    // state carries the tallies so the row under test is actually on the screen:
-    // a counter with no value is skipped, and a layout test against a panel that
-    // quietly shed a row proves nothing.
+    // three bars, then a tally row, then a third and a fourth button, then a
+    // third tally — so the plane has to give up the height rather than the panel
+    // being pushed off, which is exactly the regression a growing pet panel is
+    // most likely to cause. The state carries every tally so the row under test
+    // is actually on the screen at its full width: a counter with no value is
+    // skipped, and a layout test against a panel that quietly shed a row proves
+    // nothing.
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, shits_taken: 3 }),
+        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, keys_found: 5, shits_taken: 3 }),
     });
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -874,16 +971,27 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     // fixed rows come closest to eating the plane entirely. Set before `goto`
     // rather than resized afterwards, the same way the sibling spec pins the
     // disclaimer, so the layout is built for this size rather than reflowed into
-    // it. Three bars, a tally row and THREE buttons is the tallest the panel has
-    // ever been, and this is the assertion that decides whether the next thing
-    // added to it fits — the panel is the tightest part of this screen and the
-    // right answer to "it no longer fits" is to make the row smaller, never to
-    // relax what is checked here.
+    // it. Three bars, THREE tallies and FOUR buttons is the tallest the panel
+    // has ever been, and this is the assertion that decides whether the next
+    // thing added to it fits — the panel is the tightest part of this screen and
+    // the right answer to "it no longer fits" is to make the row smaller, never
+    // to relax what is checked here. The tally row wrapping onto a second line
+    // at this width is the DESIGNED failure rather than a defect: the plane
+    // gives up another sixteen pixels, which is a better outcome than a label
+    // truncated to something unreadable — so what this really pins is that the
+    // plane can still afford to pay.
     await page.setViewportSize({ width: 320, height: 568 });
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 128, shits_taken: 64 }),
+        stateOf({
+          hp: 61,
+          beer: 33,
+          bladder: 44,
+          beers_drunk: 128,
+          keys_found: 42,
+          shits_taken: 64,
+        }),
     });
     await stubSocket(page);
     await enterYard(page);
@@ -903,6 +1011,106 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     expect(box?.height ?? 0, 'the plane collapsed to make room for the panel').toBeGreaterThan(120);
   });
 
+  test('every verb reads in full on the narrowest phones, without spilling out of its button', async ({
+    page,
+  }) => {
+    // THE OWNER'S REPORT, ON A PHONE: the action labels did not fit. Four Russian
+    // verbs share about 288px at 320, and Vuetify draws a button UPPERCASE,
+    // letter-spaced, at 0.875rem, inside 16px of padding a side, with
+    // `white-space: nowrap` — so «ВЫПИТЬ ПИВА» needed roughly three times the
+    // ~66px it had. Nothing clipped it, which is why no existing assertion caught
+    // it: `.v-btn` sets no `overflow`, so the text simply ran out of its button
+    // and across the one beside it.
+    //
+    // MEASURED AS INK RATHER THAN AS A BOX, which is the only way to see that.
+    // A `Range` over the content's own text nodes gives the union of the
+    // rectangles the browser will actually paint glyphs into, so this fails for
+    // BOTH failure modes at once — text spilling outside the button (what was
+    // happening) and text cut off inside it (what a careless fix, an
+    // `overflow: hidden` or a `-webkit-line-clamp`, would produce instead). A
+    // check on the button's own box would notice neither.
+    //
+    // Both widths, because they fail differently: 320 is where the row is
+    // tightest, and 360 is what most of the audience is actually holding.
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () =>
+        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, keys_found: 5, shits_taken: 3 }),
+    });
+    await stubSocket(page);
+
+    for (const size of [
+      { width: 320, height: 568 },
+      { width: 360, height: 800 },
+    ]) {
+      // Sized before the page is built, then loaded fresh, rather than resized
+      // afterwards — the discipline the rest of this file's layout assertions
+      // follow, so what is measured is a layout built for this width instead of
+      // one caught mid-reflow.
+      await page.setViewportSize(size);
+      await enterYard(page);
+      const label = `${size.width}x${size.height}`;
+
+      for (const action of CATALOGUE.actions) {
+        const m = await page.evaluate((key) => {
+          const btn = document.querySelector<HTMLElement>(`[data-test="action-${key}"]`);
+          if (!btn) throw new Error(`no button for ${key}`);
+          const content = btn.querySelector<HTMLElement>('.v-btn__content');
+          if (!content) throw new Error(`no content box for ${key}`);
+          // The union of the rectangles the text is painted into — the ink, not
+          // the box that is supposed to hold it.
+          const range = document.createRange();
+          range.selectNodeContents(content);
+          const ink = range.getBoundingClientRect();
+          const box = btn.getBoundingClientRect();
+          return {
+            text: content.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+            overLeft: box.left - ink.left,
+            overRight: ink.right - box.right,
+            overTop: box.top - ink.top,
+            overBottom: ink.bottom - box.bottom,
+            width: box.width,
+            height: box.height,
+          };
+        }, action.key);
+
+        // The whole label really is in the DOM. Without this the rest would pass
+        // against a client that had "fixed" the fit by shortening the words —
+        // which it must never do: the labels are the SERVER's, out of the
+        // catalogue, so an abbreviation invented here would be this screen making
+        // up content and would go stale the moment a verb is renamed.
+        expect(m.text, `the ${action.key} button is not showing its full label at ${label}`).toBe(
+          `${action.emoji} ${action.label}`,
+        );
+
+        // A pixel of slack per edge, because a fractional layout size rounds and
+        // a glyph's ink box is not its advance box. Anything past that is text
+        // outside the button it belongs to.
+        for (const [edge, over] of [
+          ['left', m.overLeft],
+          ['right', m.overRight],
+          ['top', m.overTop],
+          ['bottom', m.overBottom],
+        ] as const) {
+          expect(
+            over,
+            `«${m.text}» runs ${over.toFixed(1)}px past the ${edge} of its ${Math.round(m.width)}x${Math.round(m.height)} button at ${label}`,
+          ).toBeLessThanOrEqual(1);
+        }
+      }
+
+      // And the fix did not buy the fit by growing the panel: the screen still
+      // does not scroll, and the plane still has a yard in it.
+      await expectNoVerticalScroll(page, `vanyagotchi yard at ${label}`);
+      await expectNoOverflow(page, `vanyagotchi yard at ${label}`);
+      const box = await plane(page).boundingBox();
+      expect(
+        box?.height ?? 0,
+        `the plane collapsed to ${Math.round(box?.height ?? 0)}px making room for the buttons at ${label}`,
+      ).toBeGreaterThan(120);
+    }
+  });
+
   test('every action is a thumb-sized target', async ({ page }) => {
     await stubBackend(page, {
       config: CATALOGUE,
@@ -914,9 +1122,11 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
 
     if (isMobile(page)) {
       // Vuetify's default button is 36px tall; the view overrides it precisely
-      // because this floor is enforced rather than requested. THREE buttons now
+      // because this floor is enforced rather than requested. FOUR buttons now
       // share one row on a 320px screen, so the width is the half that could go
       // wrong — and it is the half that gets worse every time a verb is added.
+      // The row is `auto-fit, minmax(64px, 1fr)`, so a fifth verb is the one that
+      // wraps rather than the one that shrinks anybody below the floor.
       for (const key of ACTION_KEYS) {
         await expectTapTarget(actionBtn(page, key), `${key} action`);
       }
@@ -1424,6 +1634,22 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     );
     // And only the verb that leaves something says so.
     await expect(page.locator('[data-test="rule-action-drink"]')).not.toContainText('оставляет');
+
+    // The precondition, which is the one rule a player otherwise meets as a
+    // button that does nothing: «покакать» on an empty bladder is refused with
+    // «рано ещё» and applies not a single effect. DERIVED from the pair the
+    // catalogue serves, so the threshold moving in content.go moves this line,
+    // and it is stated BEFORE what the verb does — a rule about whether the
+    // button works at all outranks a rule about what it works on.
+    await expect(page.locator('[data-test="rule-action-relieve"]')).toContainText(
+      'нужно накопить: мочевой пузырь от 15',
+    );
+    // And only the gated verb says it. «искать ключи» in particular is NOT
+    // gated — losing a race costs nothing, so there is nothing to accumulate
+    // first — and a cheatsheet that put a condition under it would be inventing
+    // a rule the server does not have.
+    await expect(page.locator('[data-test="rule-action-drink"]')).not.toContainText('нужно накопить');
+    await expect(page.locator('[data-test="rule-action-claim"]')).not.toContainText('нужно накопить');
 
     // The verb that is the whole of the death rule. Its effects list is EMPTY on
     // the wire, because `starts_over` ignores it — so a cheatsheet that rendered

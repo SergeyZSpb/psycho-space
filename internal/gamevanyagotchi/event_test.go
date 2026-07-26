@@ -132,8 +132,18 @@ func TestApplyAndAdvanceLeaveTheirInputAlone(t *testing.T) {
 // relieving empties it, so the two orders end somewhere different — which is
 // exactly why the log is ordered by seq rather than by time, a batch sharing one
 // instant.
+//
+// He starts with a bladder rather than the catalogue's empty one, and that is
+// load-bearing rather than tidiness. «покакать» is gated on having something to
+// go for, so against a fresh pet the relieve-first order would be REFUSED and
+// skipped by the fold — the two orders would still end somewhere different, and
+// this test would go on passing while asserting the gate instead of the ordering.
+// The last assertion states the difference exactly for the same reason: it is the
+// one that fails when a verb silently stops applying.
 func TestOrderInsideABatchIsMeaningful(t *testing.T) {
 	start := freshPet(eventEpoch)
+	full := enoughFor(t, ActionRelieve, eventEpoch)
+	start.Rows[full.Key] = full
 	at := eventEpoch.Add(time.Hour)
 
 	drinkThenRelieve := fold(start, []Event{
@@ -152,6 +162,13 @@ func TestOrderInsideABatchIsMeaningful(t *testing.T) {
 	}
 	if emptied != 0 {
 		t.Fatalf("relieving last left the bladder at %v; want its floor", emptied)
+	}
+	// Emptied and then refilled by exactly the drink: any other number means one
+	// of the two verbs did not land, which is what a gate refusing the first one
+	// looks like from here.
+	if want := effectOn(mustAction(t, ActionDrink), StatBladder); filled != want {
+		t.Fatalf("relieving first left the bladder at %v; want %v, the floor plus the drink's own delta — both verbs have to apply or the orders differ for the wrong reason",
+			filled, want)
 	}
 }
 
@@ -244,6 +261,238 @@ func TestEveryVerbButTheRevivalIsRefusedOnACorpseAndChangesNothing(t *testing.T)
 	}
 	if refused == 0 {
 		t.Fatal("every action in the catalogue revives, so this test asserts nothing and ErrPetDead is unreachable")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The catalogue's own precondition: a verb that needs one of his numbers to be
+// further along before it means anything.
+//
+// It is enforced in `apply` rather than in the service, which is what makes it
+// hold for a replay as well as for a press — and what stops a client that decided
+// not to grey its button out from having a rule of its own. Everything below is
+// therefore about the one `if`, and the two halves of it that would rot quietly:
+// WHICH side of the comparison the threshold falls on, and WHICH value it is
+// compared against.
+// ---------------------------------------------------------------------------
+
+// gatedActions is every verb the catalogue gates on a stat.
+//
+// Discovered rather than named, so a second gated verb is covered by the tests
+// below on the day it is added, and so a catalogue that lost the rule altogether
+// fails loudly instead of running three tests over an empty list.
+func gatedActions(t *testing.T) []Action {
+	t.Helper()
+	var out []Action
+	for _, a := range Content().Actions {
+		if a.NeedsStat != "" {
+			out = append(out, a)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("no verb in the catalogue is gated on a stat of its own; ErrNotYet is unreachable and every assertion below is about a rule the game no longer has")
+	}
+	return out
+}
+
+// TestAGatedVerbIsRefusedShortOfWhatItNeedsAndAllowedExactlyOnIt is the
+// precondition including its BOUNDARY, which is the half nothing else would
+// catch.
+//
+// The server compares `>=`, so the threshold itself is allowed: a bladder holding
+// exactly what the catalogue asks for is one he may empty. Off by one either way
+// is invisible in every other test here — the value is a float that in practice
+// is never sitting exactly on the line — and it is precisely what a later edit
+// gets wrong, so it is asserted on the line and a hair to each side of it.
+//
+// Every event is stamped at the row's own as_of, so nothing decays between the
+// value being set up and the gate reading it and the three cases differ by the
+// hair and by nothing else. What the gate does with a value that has MOVED since
+// is the next test's subject.
+func TestAGatedVerbIsRefusedShortOfWhatItNeedsAndAllowedExactlyOnIt(t *testing.T) {
+	// A hair, in the units of a 0..100 scale: far finer than anything the
+	// catalogue is tuned in, and far coarser than the precision a float64 loses
+	// at these magnitudes.
+	const hair = 0.001
+
+	for _, action := range gatedActions(t) {
+		def := mustStat(t, action.NeedsStat)
+		for _, tc := range []struct {
+			name    string
+			held    float64
+			allowed bool
+		}{
+			{name: "a hair short of it", held: action.NeedsAtLeast - hair, allowed: false},
+			{name: "exactly on it", held: action.NeedsAtLeast, allowed: true},
+			{name: "a hair past it", held: action.NeedsAtLeast + hair, allowed: true},
+		} {
+			t.Run(action.Key+" with "+tc.name, func(t *testing.T) {
+				start := freshPet(eventEpoch)
+				start.Rows[def.Key] = StatRow{Key: def.Key, Value: def.Clamp(tc.held), AsOf: eventEpoch}
+				if got := valueOf(t, start, def.Key); got != tc.held {
+					t.Fatalf("%q cannot hold %v — it clamped to %v — so this case is not the one it says it is", def.Key, tc.held, got)
+				}
+
+				out, err := apply(start, Event{Seq: 1, Verb: action.Key, At: eventEpoch})
+				if tc.allowed {
+					if err != nil {
+						t.Fatalf("%q with %v of %q was refused with %v; the catalogue asks for at least %v and the comparison is >=, so the threshold itself is allowed",
+							action.Key, tc.held, def.Key, err, action.NeedsAtLeast)
+					}
+					return
+				}
+				if !errors.Is(err, ErrNotYet) {
+					t.Fatalf("%q with %v of %q answered %v; want ErrNotYet, because the catalogue asks for %v",
+						action.Key, tc.held, def.Key, err, action.NeedsAtLeast)
+				}
+				// And the snapshot came back untouched. The live path writes
+				// whatever apply hands it, so a refusal that re-stamped the rows
+				// would hand out free hours of decay to anybody who pressed a
+				// button the client had already greyed out.
+				for _, s := range Content().Stats {
+					was, now := pairOf(t, start, s.Key), pairOf(t, out, s.Key)
+					if now.Value != was.Value || !now.AsOf.Equal(was.AsOf) {
+						t.Fatalf("the refused %q moved %q from %+v to %+v", action.Key, s.Key, was, now)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestAGateReadsTheValueAtTheInstantOfTheVerbAndNotTheOneWrittenDown is the most
+// valuable assertion in this file, because the wrong implementation passes every
+// other one.
+//
+// A gate that read the STORED number would be right whenever nothing had moved
+// since it was written — which is every test that sets a row up and immediately
+// presses the button — and wrong exactly when somebody has been away, which is
+// most of a real evening. The bladder a player is looking at is the decayed one,
+// so that is the one the rule is about: a Ваня who filled up overnight may go to
+// the bushes the moment his owner opens the app, without a drink first to make
+// the row on disk agree with him.
+func TestAGateReadsTheValueAtTheInstantOfTheVerbAndNotTheOneWrittenDown(t *testing.T) {
+	for _, action := range gatedActions(t) {
+		def := mustStat(t, action.NeedsStat)
+		t.Run(action.Key, func(t *testing.T) {
+			// A filling stat carries a negative rate — see Stat.DecayPerHour —
+			// so this is how much of it an hour of being away is worth. It has to
+			// be positive for the case to exist at all: a stat that only ever
+			// drains never comes WITHIN reach of a gate by itself, and there
+			// would be nothing to wait for.
+			filling := -def.DecayPerHour
+			if filling <= 0 {
+				t.Fatalf("%q moves by %v an hour, so no amount of being away brings %q within reach; this case cannot be set up against the current catalogue",
+					def.Key, def.DecayPerHour, action.Key)
+			}
+			if action.NeedsAtLeast <= def.Min {
+				t.Fatalf("%q asks for %v of %q, which is at or below its floor %v; the gate could never refuse anything",
+					action.Key, action.NeedsAtLeast, def.Key, def.Min)
+			}
+			// The stored pair says empty, and stays that way — a read never
+			// re-stamps — so the only thing that changes between the two cases
+			// below is how long the pet has been left alone.
+			empty := StatRow{Key: def.Key, Value: def.Min, AsOf: eventEpoch}
+			start := freshPet(eventEpoch)
+			start.Rows[empty.Key] = empty
+			full := time.Duration((action.NeedsAtLeast - def.Min) / filling * hour)
+
+			// Nine tenths of the way there: still short, and refused on a value
+			// that is nowhere in the snapshot it was computed from.
+			short := eventEpoch.Add(full * 9 / 10)
+			if _, err := apply(start, Event{Seq: 1, Verb: action.Key, At: short}); !errors.Is(err, ErrNotYet) {
+				t.Fatalf("%q after %s of filling answered %v; want ErrNotYet — %v an hour has not yet carried %q from %v to the %v the catalogue asks for",
+					action.Key, full*9/10, err, filling, def.Key, def.Min, action.NeedsAtLeast)
+			}
+
+			// And a little past it. THE ASSERTION THIS TEST EXISTS FOR: the row
+			// on disk is unchanged and still says he is empty, and the verb goes
+			// through anyway, because what the gate reads is the value at the
+			// instant of the press.
+			ready := eventEpoch.Add(full * 11 / 10)
+			if _, err := apply(start, Event{Seq: 1, Verb: action.Key, At: ready}); err != nil {
+				t.Fatalf("%q after %s of filling was refused with %v; the stored row still reads %v of %q, and a gate that believed it would refuse a player who is plainly full",
+					action.Key, full*11/10, err, def.Min, def.Key)
+			}
+			if stored := valueOf(t, start, def.Key); stored >= action.NeedsAtLeast {
+				t.Fatalf("the stored %q is %v, already past the %v the gate asks for; the case above proves nothing unless the row on disk disagrees with the answer",
+					def.Key, stored, action.NeedsAtLeast)
+			}
+		})
+	}
+}
+
+// TestRelievingHimselfTwiceInOneBreathIsRefusedTheSecondTime is the same rule in
+// the falling direction, reached through the fold rather than through the clock.
+//
+// It has to be, and that is a fact about the content rather than a shortcut: the
+// only stat the catalogue gates a verb on is one that FILLS, so there is no
+// amount of waiting that carries it back down below the threshold. What a batch
+// can do is spend it inside a single instant — and it asks the identical question
+// of the identical line of code. The second press is judged against what the
+// first one LEFT, not against the row both of them started from, which still says
+// he was full.
+func TestRelievingHimselfTwiceInOneBreathIsRefusedTheSecondTime(t *testing.T) {
+	relieve := mustAction(t, ActionRelieve)
+	if relieve.NeedsStat == "" {
+		t.Fatalf("the catalogue no longer gates %q on a stat; this test is about a rule the game does not have", relieve.Key)
+	}
+	if effectOn(relieve, relieve.NeedsStat) >= 0 {
+		t.Fatalf("%q no longer spends the %q it needs (it moves it by %v); pressing it twice would not be refused for the reason this test names",
+			relieve.Key, relieve.NeedsStat, effectOn(relieve, relieve.NeedsStat))
+	}
+
+	full := enoughFor(t, ActionRelieve, eventEpoch)
+	start := freshPet(eventEpoch)
+	start.Rows[full.Key] = full
+
+	once, err := apply(start, Event{Seq: 1, Verb: relieve.Key, At: eventEpoch})
+	if err != nil {
+		t.Fatalf("the first %q with %v of %q was refused with %v; the fixture is not set up for what this test is about",
+			relieve.Key, full.Value, full.Key, err)
+	}
+	if _, err := apply(once, Event{Seq: 2, Verb: relieve.Key, At: eventEpoch}); !errors.Is(err, ErrNotYet) {
+		t.Fatalf("the second %q in the same instant answered %v; want ErrNotYet — nothing decayed between the two, so the only thing that can refuse it is what the first one left behind",
+			relieve.Key, err)
+	}
+}
+
+// TestAVerbWithNoPreconditionOfItsOwnIsAlwaysAvailable is the other side of the
+// catalogue lookup, and it is what stops the gate becoming a rule about the PET.
+//
+// A precondition belongs to the verb that carries one. Implemented as "is this
+// Ваня in a fit state to do things" it would refuse the lot of them, and a new
+// player's first screen — every stat on its catalogue start, every counter at
+// nought — would open with no button he is allowed to press.
+func TestAVerbWithNoPreconditionOfItsOwnIsAlwaysAvailable(t *testing.T) {
+	start := freshPet(eventEpoch)
+	at := eventEpoch.Add(time.Minute)
+
+	free := 0
+	for _, action := range Content().Actions {
+		if action.NeedsStat != "" {
+			continue
+		}
+		free++
+		t.Run(action.Key, func(t *testing.T) {
+			if _, err := apply(start, Event{Seq: 1, Verb: action.Key, At: at}); err != nil {
+				t.Fatalf("%q on a pet holding nothing but its starting values was refused with %v; the catalogue gives it no precondition to fail",
+					action.Key, err)
+			}
+		})
+	}
+	if free == 0 {
+		t.Fatal("every verb in the catalogue is gated on something, so a new player's first screen has no button he may press at all")
+	}
+
+	// And on the SAME pet the gated ones are refused, which is what gives the
+	// loop above its teeth: a gate that had quietly stopped being enforced would
+	// satisfy every line of it.
+	for _, action := range gatedActions(t) {
+		if _, err := apply(start, Event{Seq: 1, Verb: action.Key, At: at}); !errors.Is(err, ErrNotYet) {
+			t.Fatalf("%q on a pet holding nothing answered %v; want ErrNotYet, or the freedom asserted above is not freedom from anything",
+				action.Key, err)
+		}
 	}
 }
 
@@ -427,7 +676,13 @@ func TestTheCountersCountWhatTheVerbsDid(t *testing.T) {
 			StatShitsTaken, got)
 	}
 
-	relieved := fold(start, []Event{{Seq: 1, Verb: ActionRelieve, At: at}})
+	// A drink first, because going to the bushes now needs something to go for:
+	// the catalogue gates «покакать» on the bladder, and a fresh pet's is empty.
+	// The drink is what fills it, which is the loop the two verbs make.
+	relieved := fold(start, []Event{
+		{Seq: 1, Verb: ActionDrink, At: at},
+		{Seq: 2, Verb: ActionRelieve, At: at},
+	})
 	if got := valueOf(t, relieved, StatShitsTaken); got != 1 {
 		t.Errorf("%q = %v after one visit to the bushes; want 1", StatShitsTaken, got)
 	}

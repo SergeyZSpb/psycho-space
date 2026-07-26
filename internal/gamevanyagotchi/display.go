@@ -155,6 +155,11 @@ func (s *Service) load(ctx context.Context, accountID string) {
 	// And whatever is lying about in it, for the same reason: a hello is a fresh
 	// socket and therefore human-paced, which is the only kind of moment allowed
 	// to read the world.
+	// A hunt is always running, so somebody arriving to an empty world starts
+	// one. Lazy and idempotent — the same insert the winning claim uses for the
+	// replacement, against the same partial index — so cold start and a lost
+	// restart are one mechanism rather than two, and neither is a timer.
+	s.ensureHunt(ctx)
 	s.loadWorld(ctx)
 
 	// The picture, before the pet, and deliberately not fatal. A hello is the one
