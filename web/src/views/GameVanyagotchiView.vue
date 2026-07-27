@@ -430,11 +430,17 @@
       <!-- Fixed-size action row. One button per catalogue action, so adding a
            verb that moves a stat needs no change here.
            A verb gated on a PLACE is greyed when he is not at it, or when the
-           thing he draws from is empty — a courtesy on top of the server's own
-           refusal, never instead of it. `unreachable` tests only that the action
-           HAS a `needs_near`, never what it names, so this row still holds no
-           content key; the line in the status row below is what says which of
-           the three reasons applies. -->
+           thing he draws from is empty; a verb gated on one of his own NUMBERS
+           is greyed until he has enough of it. Both are a courtesy on top of the
+           server's own refusal, never instead of it, and both test only that the
+           action HAS the field, never what it names — so this row still holds no
+           content key. The line in the status row below is what says which of
+           the place reasons applies.
+
+           What is deliberately NOT greyed is a verb that may simply not come off
+           (`fail_chance`): the failure is the joke, and a control that greyed
+           itself at random would read as broken. The player is told about that
+           one on the splash instead. -->
       <div v-if="actions.length" class="actions">
         <v-btn
           v-for="action in actions"
@@ -443,7 +449,7 @@
           :data-test="`action-${action.key}`"
           color="primary"
           variant="tonal"
-          :disabled="acting || unreachable(action)"
+          :disabled="acting || unreachable(action) || notReady(action)"
           @click="act(action)"
         >
           {{ action.emoji }} {{ action.label }}
@@ -490,6 +496,7 @@ import {
   huntRestarted,
   isRenderablePosition,
   outOfReach,
+  shortOf,
   peersIn,
   propScale,
   readAppearances,
@@ -1094,6 +1101,21 @@ function unreachable(action: VanyagotchiAction): boolean {
   // cannot be reached from here, so the button greys — which is what the server's
   // own `beside` already decides, and the two must agree.
   return outOfReach(action, shopHere.value, atStore.value);
+}
+
+/**
+ * Is this verb unpressable because the pet has not got enough of what it needs?
+ *
+ * The bladder gate, greyed as a courtesy exactly as the place gate above is —
+ * and NOT the shy roll, which is deliberately never drawn: a button that greyed
+ * itself a quarter of the time at random would read as broken rather than as
+ * funny, so `fail_chance` reaches the splash and never this row.
+ *
+ * It reads the same interpolated values the bars are drawn from, so the button
+ * un-greys itself on the same tick the bar crosses the threshold.
+ */
+function notReady(action: VanyagotchiAction): boolean {
+  return shortOf(action, values.value);
 }
 
 // ---------------------------------------------------------------------------

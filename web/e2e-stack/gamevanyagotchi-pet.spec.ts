@@ -263,6 +263,40 @@ async function shown(page: Page, key: string): Promise<number> {
 const shownHp = (page: Page) => shown(page, 'hp');
 const actionBtn = (page: Page, key: string) => page.locator(`[data-test="action-${key}"]`);
 
+/**
+ * Presses a verb until it actually comes off, and returns once it has.
+ *
+ * «покакать» carries a FailChance, so a share of presses are refused outright:
+ * nothing is written — no stat, no event, no deposit, no tally — and instead of
+ * the verb's own «полегчало» he says one of the catalogue's lines about backing
+ * out. Re-pressing is exactly what a player does, and it is safe precisely
+ * because the refusal is total: the bladder is as full as it was, so the next
+ * press asks the identical question.
+ *
+ * It waits for the balloon to CLEAR before pressing again rather than sleeping a
+ * fixed amount. That is the honest synchronisation — the line expires by
+ * arithmetic against the server's clock — and it also spends more than the one
+ * second the server bounds a verb to, so a retry is never dropped in silence for
+ * being too quick.
+ *
+ * Scoped to HIS OWN Ваня, because the yard's regulars mutter to themselves and a
+ * bare balloon locator would sooner or later read an NPC's line instead.
+ */
+async function pressUntilItLands(page: Page, key: string, done: string): Promise<void> {
+  const say = yourDot(page).locator('[data-test="peer-say"]');
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await actionBtn(page, key).click();
+    // The server says SOMETHING about every press — the confirmation, or the
+    // line he backs out with.
+    await expect(say).toHaveCount(1, { timeout: 15_000 });
+    if (((await say.first().textContent()) ?? '').trim() === done) return;
+    await expect(say, 'the balloon never cleared, so the next press cannot be read').toHaveCount(0, {
+      timeout: 15_000,
+    });
+  }
+  throw new Error(`«${key}» never came off in 12 presses`);
+}
+
 /** The one line the status row says about the beer store, or nothing at all. */
 const storeLine = (page: Page) => page.locator('[data-test="store"]');
 
@@ -699,8 +733,7 @@ test('relieving himself empties the bladder and leaves the rest alone', async ({
     await expect.poll(() => shown(page, 'bladder')).toBeGreaterThanOrEqual(90);
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(1);
 
-    await actionBtn(page, 'relieve').click();
-    await expect(page.locator('[data-test="peer-say"]')).toHaveText('полегчало');
+    await pressUntilItLands(page, 'relieve', 'полегчало');
 
     await expect.poll(() => shown(page, 'bladder')).toBe(0);
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(0);
@@ -835,10 +868,21 @@ test('a dead Ваня refuses everything but the one verb that raises him', asyn
     // refusal reaches a player: nothing re-reads between actions, so the first
     // the client hears of a death is the server turning an action down.
     //
-    // Killing him a second time rather than pressing relieve while the screen
+    // Killing him a second time rather than pressing a verb while the screen
     // already said so, because that assertion would have been vacuous — the
     // balloon has to CHANGE, from the drink's own `done` text to the refusal,
     // and only a genuinely refused verb can do that.
+    //
+    // THE VERB HERE IS THE DRINK AGAIN, AND «ПОКАКАТЬ» CANNOT BE. The revival is
+    // a reset, so it put the bladder back to its catalogue start — and the
+    // client greys a verb gated on a stat it believes is empty. That grey is
+    // correct: the browser's copy is right, and nothing has re-read since. So
+    // pressing «покакать» here would be clicking a control that is disabled for
+    // an honest reason and has nothing to do with the death this test is about.
+    // Which verb is refused is not what is under test — that every verb but the
+    // revival is refused on a corpse is owned by the Go tests, as the header
+    // says; what is under test is that a refusal reaches a player who never
+    // re-read, as a line that appears from nothing.
     setStats(seeded[PLAYER_A], { hp: 0 });
 
     // Wait for the drink's own line to expire before pressing again. Two
@@ -848,7 +892,7 @@ test('a dead Ваня refuses everything but the one verb that raises him', asyn
     // assertion mean something — the line has to APPEAR, not merely differ.
     await expect(page.locator('[data-test="peer-say"]')).toHaveCount(0, { timeout: 15_000 });
 
-    await actionBtn(page, 'relieve').click();
+    await actionBtn(page, 'drink').click();
     // The refusal arrives the way everything else does: as STATE, in the world.
     // There is no reply to catch — the socket owes none — so what the player
     // gets is a line over his own Ваня that the rest of the yard reads too, and

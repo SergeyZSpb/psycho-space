@@ -461,6 +461,63 @@ describe('buildRules — a verb the pet is not always allowed to use', () => {
   });
 });
 
+describe('buildRules — a verb that sometimes does not come off', () => {
+  // «Покакать» carries a FailChance: a share of presses are refused outright and
+  // write nothing at all. Unlike every other thing that can stop a press, this
+  // one does NOT grey the button — the failure is the joke, and a control that
+  // greyed itself at random would read as broken — so this sentence is the only
+  // warning a player ever gets, and it has to be derived or it goes stale the
+  // first time somebody retunes the chance.
+  const bladder = stat({ key: 'bladder', label: 'мочевой пузырь', emoji: '🚽', start: 0 });
+  const flaky = (chance: number) => relieve({ fail_chance: chance });
+
+  it('says how often it does not come off, as odds rather than a percentage', () => {
+    const rules = buildRules(config({ stats: [bladder], actions: [flaky(0.25)] }));
+    expect(rules.actions[0]?.notes).toContain('иногда не получается: примерно 1 раз из 4');
+  });
+
+  // THE assertion the derivation exists for.
+  it('follows a retuned chance, so the sentence cannot go stale', () => {
+    const rules = buildRules(config({ stats: [bladder], actions: [flaky(0.5)] }));
+    expect(rules.actions[0]?.notes).toContain('иногда не получается: примерно 1 раз из 2');
+    const rarer = buildRules(config({ stats: [bladder], actions: [flaky(0.1)] }));
+    expect(rarer.actions[0]?.notes).toContain('иногда не получается: примерно 1 раз из 10');
+  });
+
+  it('says nothing at all for a verb that always works', () => {
+    for (const chance of [undefined, 0]) {
+      const rules = buildRules(
+        config({ stats: [bladder], actions: [relieve({ fail_chance: chance })] }),
+      );
+      expect(rules.actions[0]?.notes.some((n) => n.includes('не получается'))).toBe(false);
+    }
+  });
+
+  it('never says «1 раз из 1», which is what the arithmetic alone would produce', () => {
+    // A catalogue that turned the verb off entirely. Nonsense odds would read as
+    // a rounding bug rather than as a rule.
+    const rules = buildRules(config({ stats: [bladder], actions: [flaky(1)] }));
+    expect(rules.actions[0]?.notes).toContain('никогда не получается');
+    expect(rules.actions[0]?.notes).not.toContain('иногда не получается: примерно 1 раз из 1');
+  });
+
+  it('comes after what the verb needs, because that one decides whether it is pressable at all', () => {
+    const rules = buildRules(
+      config({
+        stats: [bladder],
+        actions: [relieve({ needs_stat: 'bladder', needs_at_least: 15, fail_chance: 0.25 })],
+        object_kinds: [objectKind()],
+      }),
+    );
+    expect(rules.actions[0]?.notes).toEqual([
+      'нужно накопить: мочевой пузырь от 15',
+      'иногда не получается: примерно 1 раз из 4',
+      'оставляет кое-что на земле: видно всем 10 минут',
+      'мёртвому нельзя',
+    ]);
+  });
+});
+
 describe('buildRules — an action that starts him over', () => {
   // The server IGNORES `effects` when `starts_over` is set, which is why the
   // reviving verb ships with an empty list. Rendered by the ordinary path that

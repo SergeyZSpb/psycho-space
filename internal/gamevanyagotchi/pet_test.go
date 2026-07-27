@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -783,6 +784,59 @@ func playedFor(rows ...StatRow) *fakeRepo {
 	}
 }
 
+// doUntilItLands presses a batch until it is not refused for NERVES, and reports
+// the state and the instant it finally went through at.
+//
+// «покакать» carries a FailChance, so a share of presses are refused and write
+// nothing at all — which makes every test that needs the verb to HAPPEN a test
+// that has to press it the way a player does: again. Re-pressing is safe
+// precisely because the refusal is total: no stat moved, no event was appended,
+// no deposit was left and no tally ticked, so an attempt that lost its nerve is
+// indistinguishable from one that was never made.
+//
+// The instant ADVANCES by a millisecond each time round, and it has to. The roll
+// is a hash of (account, verb, instant) under a key this process minted from
+// crypto/rand, so nobody — client or test — can predict it, and pressing again
+// at the SAME instant is the identical roll and would loop for ever. It is
+// returned because a caller asserting on when the stats were stamped must
+// compare against the instant that actually landed rather than the one it first
+// offered.
+//
+// Any OTHER refusal fails the test on the spot. A shy one is the only kind
+// re-pressing can cure, and swallowing the rest would turn a real regression
+// into a hang.
+func doUntilItLands(t *testing.T, svc *Service, accountID string, verbs []string, spot string, at time.Time) (State, time.Time) {
+	t.Helper()
+	st, when, err := pressPastNerves(t, svc, accountID, verbs, spot, at)
+	if err != nil {
+		t.Fatalf("Do(%v) at %s: %v", verbs, when.UTC(), err)
+	}
+	return st, when
+}
+
+// pressPastNerves is doUntilItLands for a test whose expected outcome is a
+// DIFFERENT refusal — it presses until the shy roll lets the verb reach whatever
+// the test is actually about, and hands back what happened there.
+//
+// Separate from doUntilItLands rather than a flag on it, because the two want
+// opposite things from an error and a caller should have to say which: one is
+// "this must succeed", the other is "this must fail, and not for nerves".
+func pressPastNerves(t *testing.T, svc *Service, accountID string, verbs []string, spot string, at time.Time) (State, time.Time, error) {
+	t.Helper()
+	const attempts = 200
+	for i := 0; i < attempts; i++ {
+		when := at.Add(time.Duration(i) * time.Millisecond)
+		st, err := svc.Do(context.Background(), accountID, verbs, spot, when)
+		var shy ShyRefusal
+		if !errors.As(err, &shy) {
+			return st, when, err
+		}
+	}
+	t.Fatalf("%d presses of %v were every one of them refused for nerves; either the roll is stuck on or this is the unluckiest run in the history of the game",
+		attempts, verbs)
+	return State{}, time.Time{}, nil
+}
+
 // statOf returns one stat from a response, failing if the client would not have
 // received it at all.
 func statOf(t *testing.T, st State, key string) StatValue {
@@ -1274,11 +1328,12 @@ func TestEveryActionRestampsEveryStatAtOneInstant(t *testing.T) {
 			// having to notice.
 			spot := readyFor(t, svc, repo, testAccount, action)
 
-			before := time.Now().UTC()
-			if _, err := svc.Do(context.Background(), testAccount, []string{action.Key}, spot, time.Now().UTC()); err != nil {
-				t.Fatalf("Do(%q): %v", action.Key, err)
-			}
-			after := time.Now().UTC()
+			// Pressed until it lands, because a verb may carry a FailChance and a
+			// refused press writes nothing for this test to look at. The instant it
+			// finally went through at is what the shared stamp is checked against
+			// below — an exact comparison, which is stronger than the window of wall
+			// clock either side that it replaced.
+			_, landed := doUntilItLands(t, svc, testAccount, []string{action.Key}, spot, time.Now().UTC())
 
 			batch := repo.lastBatch(t)
 			if len(batch) != len(Content().Stats) {
@@ -1293,8 +1348,8 @@ func TestEveryActionRestampsEveryStatAtOneInstant(t *testing.T) {
 						batch[0].Key, stamp, def.Key, r.AsOf)
 				}
 			}
-			if stamp.Before(before) || stamp.After(after) {
-				t.Errorf("the shared as_of is %v; want the instant of the action, within [%v, %v]", stamp, before, after)
+			if !stamp.Equal(landed) {
+				t.Errorf("the shared as_of is %v; want the instant the action was accepted at, %v", stamp, landed)
 			}
 			// A verb that STARTS HIM OVER is judged on different values, because
 			// "the stats it does not name" is all of them: a reset ignores the
@@ -1360,10 +1415,7 @@ func TestRelievingHimDoesNotEraseTheDamageAFullBladderAlreadyDid(t *testing.T) {
 	}
 	repo := playedFor(rows...)
 
-	st, err := petService(repo).Do(context.Background(), testAccount, []string{ActionRelieve}, "", time.Now().UTC())
-	if err != nil {
-		t.Fatalf("Do(%q): %v", ActionRelieve, err)
-	}
+	st, _ := doUntilItLands(t, petService(repo), testAccount, []string{ActionRelieve}, "", time.Now().UTC())
 
 	// The bladder is reset. A delta larger than the whole scale plus the clamp is
 	// how "reset" is expressed, so it lands exactly on the floor.
@@ -1470,7 +1522,11 @@ func TestAVerbRefusedForWantOfWhatItNeedsWritesNothingAndFillingUpLetsItThrough(
 				t.Fatal("the pet has no stat rows at all; a refusal that wrote nothing would be indistinguishable from one that wrote everything")
 			}
 
-			st, err := svc.Do(context.Background(), testAccount, []string{relieve.Key}, "", now)
+			// Pressed past the nerves, because the verb carries a FailChance. The
+			// refusal THIS case is about — an empty bladder — is decided inside
+			// `apply`, before the roll, so the unallowed branch still answers on the
+			// first press and only the allowed one ever goes round again.
+			st, _, err := pressPastNerves(t, svc, testAccount, []string{relieve.Key}, "", now)
 
 			if tc.allowed {
 				if err != nil {
@@ -1892,4 +1948,110 @@ func (f *fakeRepo) AppendEvents(_ context.Context, q db.DBTX, _ string, verbs []
 // Events replays what was appended, oldest first.
 func (f *fakeRepo) Events(_ context.Context, _ db.DBTX, _ string) ([]Event, error) {
 	return append([]Event(nil), f.appended...), nil
+}
+
+// TestAVerbThatLosesItsNerveWritesNothingAtAll is the whole point of making the
+// shy failure a REFUSAL rather than a second outcome.
+//
+// Nothing is written — no stat moves, no event is appended, no deposit is left,
+// no transaction is even opened, and above all the lifetime tally does NOT tick.
+// That last one is the one worth stating: «покакано раз» counts what he did, and
+// a press he backed out of is not something he did. None of it is a special case
+// anybody had to remember, either — it falls out of returning an error before the
+// transaction, which is the same path every other refusal takes.
+//
+// A FRESH SERVICE PER ATTEMPT, which is what makes the loop terminate. The roll
+// is keyed on a per-process secret, so a test cannot choose an instant that
+// fails; and a press that SUCCEEDS empties the bladder, after which every later
+// press is refused for being empty rather than for nerves — so retrying against
+// one service would wedge on the wrong refusal. A new one each time is an
+// independent draw against a fresh pet.
+func TestAVerbThatLosesItsNerveWritesNothingAtAll(t *testing.T) {
+	relieve := mustAction(t, ActionRelieve)
+	if relieve.FailChance <= 0 {
+		t.Fatalf("the catalogue no longer gives %q a chance of failing; this test is about a rule the game does not have", relieve.Key)
+	}
+
+	const attempts = 400
+	for i := 0; i < attempts; i++ {
+		repo := playedFor(enoughFor(t, ActionRelieve, epoch))
+		pool := &txPool{}
+		svc := NewService(nil, testRoom, pool, repo, nil)
+
+		// Materialised first, so the rows compared against are the ones a player
+		// would already have. Seeding runs on the read path and would otherwise
+		// look like something the refused press wrote and failed to take back.
+		if _, err := svc.State(context.Background(), testAccount); err != nil {
+			t.Fatalf("State: %v", err)
+		}
+		before := append([]StatRow(nil), repo.rows...)
+		if len(before) == 0 {
+			t.Fatal("the pet has no stat rows at all; a refusal that wrote nothing would be indistinguishable from one that wrote everything")
+		}
+		tally, hadTally := repo.row(StatShitsTaken)
+
+		_, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, "",
+			epoch.Add(time.Duration(i)*time.Millisecond))
+
+		var shy ShyRefusal
+		if !errors.As(err, &shy) {
+			if err != nil {
+				t.Fatalf("Do(%s) answered %v; want either the verb landing or a loss of nerve", relieve.Key, err)
+			}
+			continue // It came off. Try again with a fresh pet.
+		}
+
+		// He said something, and it came out of the catalogue rather than out of
+		// this package's own head.
+		if !slices.Contains(shySays, shy.Line) {
+			t.Errorf("he refused with %q, which is not one of the catalogue's lines; the pool is content and the error carries it", shy.Line)
+		}
+		// The line the PLAYER sees is the one on the error.
+		if got := refusalLine(context.Background(), err); got != shy.Line {
+			t.Errorf("the balloon says %q and the refusal carries %q; refusalLine must read the typed error rather than falling through to the vague default", got, shy.Line)
+		}
+
+		// And nothing at all was written.
+		if repo.writes != 0 {
+			t.Errorf("WriteStats was called %d times by a press he backed out of; want none", repo.writes)
+		}
+		if n := len(repo.appended); n != 0 {
+			t.Errorf("%d events were recorded for a press that never applied; a refusal is not something that happened to the pet: %+v", n, repo.appended)
+		}
+		if got := repo.insertedObjects(); len(got) != 0 {
+			t.Errorf("%d deposits were left by a press he backed out of: %+v", len(got), got)
+		}
+		if n := len(pool.begun); n != 0 {
+			t.Errorf("%d transactions were opened for a press refused before the write; the roll is meant to sit in front of the transaction, not inside it", n)
+		}
+		// THE TALLY, stated separately because it is the one a reader will doubt.
+		if hadTally {
+			now, ok := repo.row(StatShitsTaken)
+			if !ok {
+				t.Fatalf("%q lost its row entirely after a refused press", StatShitsTaken)
+			}
+			if now.Value != tally.Value {
+				t.Errorf("%q went from %v to %v on a visit he did not make", StatShitsTaken, tally.Value, now.Value)
+			}
+		}
+		// And every stored row is exactly as it was — including its as_of, because
+		// a refusal charged a re-stamp would silently erase the hours it was
+		// refused for.
+		if len(repo.rows) != len(before) {
+			t.Fatalf("the pet has %d stat rows after a refused press; want the %d it had before", len(repo.rows), len(before))
+		}
+		for _, want := range before {
+			got, ok := repo.row(want.Key)
+			if !ok {
+				t.Errorf("%q has no row after a refused press", want.Key)
+				continue
+			}
+			if got.Value != want.Value || !got.AsOf.Equal(want.AsOf) {
+				t.Errorf("%q is (%v, %s) after a refused press; want the (%v, %s) it was before",
+					want.Key, got.Value, got.AsOf.UTC(), want.Value, want.AsOf.UTC())
+			}
+		}
+		return
+	}
+	t.Fatalf("%d presses all came off; either the FailChance is disconnected or this is the luckiest run in the history of the game", attempts)
 }

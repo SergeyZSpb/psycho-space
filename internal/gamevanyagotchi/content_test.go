@@ -1220,3 +1220,28 @@ func TestEveryLocationIsAddressableAndArrivable(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryFailChanceIsAProbability. The field is a probability and the service
+// compares a 0..1 draw against it directly, so a value outside that range does
+// not fail loudly — it silently makes the verb either impossible or infallible,
+// and the cheatsheet derives odds from it that would read as nonsense.
+func TestEveryFailChanceIsAProbability(t *testing.T) {
+	flaky := 0
+	for _, action := range Content().Actions {
+		switch {
+		case action.FailChance < 0:
+			t.Errorf("%q has a FailChance of %v; a negative probability can never fire, so the verb silently always works",
+				action.Key, action.FailChance)
+		case action.FailChance >= 1:
+			t.Errorf("%q has a FailChance of %v; at one or more the verb can never be used at all",
+				action.Key, action.FailChance)
+		case action.FailChance > 0:
+			flaky++
+		}
+	}
+	// And the pool exists to serve them. A verb that can fail with nothing to say
+	// about it would refuse in silence, which reads as a broken button.
+	if flaky > 0 && len(shySays) == 0 {
+		t.Fatalf("%d verbs can lose their nerve and the catalogue has no lines for it", flaky)
+	}
+}

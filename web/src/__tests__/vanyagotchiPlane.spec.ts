@@ -29,6 +29,7 @@ import {
   huntRestarted,
   isRenderablePosition,
   outOfReach,
+  shortOf,
   peersIn,
   propScale,
   readAppearances,
@@ -1104,6 +1105,53 @@ describe('beside', () => {
     expect(beside({ x: 0.8, y: 0.2 }, crate, undefined)).toBe(false);
     expect(beside({ x: 0.8, y: 0.2 }, crate, Number.NaN)).toBe(false);
     expect(beside({ x: 0.8, y: 0.2 }, crate, -1)).toBe(false);
+  });
+});
+
+describe('shortOf', () => {
+  const gated = { needs_stat: 'bladder', needs_at_least: 15 };
+  const values = (v: number) => new Map([['bladder', v]]);
+
+  it('never blocks a verb that is not gated on a stat', () => {
+    expect(shortOf({}, values(0))).toBe(false);
+    expect(shortOf(undefined, values(0))).toBe(false);
+    expect(shortOf(null, values(0))).toBe(false);
+  });
+
+  it('blocks it below the threshold and allows it exactly on one', () => {
+    expect(shortOf(gated, values(14.9))).toBe(true);
+    // Exactly on it is ALLOWED, which is the server's own comparison: `apply`
+    // refuses on `row.Value < action.NeedsAtLeast`, so a client that greyed at
+    // equality would grey a press the server would have taken.
+    expect(shortOf(gated, values(15))).toBe(false);
+    expect(shortOf(gated, values(100))).toBe(false);
+  });
+
+  it('fails OPEN when the value has not arrived yet', () => {
+    // A pet whose state is still in flight, not a pet with an empty bladder.
+    // Greying here would make the row flicker on every load, and letting it
+    // through costs at worst one «рано ещё» from the server.
+    expect(shortOf(gated, new Map())).toBe(false);
+    expect(shortOf(gated, new Map([['bladder', Number.NaN]]))).toBe(false);
+  });
+
+  it('fails OPEN when the served threshold is unusable', () => {
+    expect(shortOf({ needs_stat: 'bladder' }, values(0))).toBe(false);
+    expect(shortOf({ needs_stat: 'bladder', needs_at_least: Number.NaN }, values(0))).toBe(false);
+  });
+
+  it('looks only at WHETHER the verb names a stat, never at which one', () => {
+    // The same property outOfReach has: the client holds no content keys, so a
+    // verb gated on a stat this browser has never heard of behaves identically.
+    const exotic = { needs_stat: 'терпение', needs_at_least: 40 };
+    expect(shortOf(exotic, new Map([['терпение', 39]]))).toBe(true);
+    expect(shortOf(exotic, new Map([['терпение', 40]]))).toBe(false);
+  });
+
+  it('ignores fail_chance entirely — the shy roll is never drawn as a grey button', () => {
+    // `fail_chance` reaches the cheatsheet and must never reach the action row:
+    // a control that greyed itself at random would read as broken.
+    expect(shortOf({ fail_chance: 1 } as never, values(0))).toBe(false);
   });
 });
 

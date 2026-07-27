@@ -274,13 +274,20 @@ function actionRow(
   // has no button at all, and a player who went looking for one would find
   // three and conclude that finding keys had been removed from the game.
   for (const line of searchNotes(searches, places)) notes.push(line);
-  // FIRST, because it is the only note that says when the button will do
-  // NOTHING. A player who presses «покакать» on an empty bladder is answered
-  // «рано ещё» and nothing happens, and a cheatsheet that listed what the verb
-  // moves without saying what it needs would have taught him a rule that is
-  // false three times out of four.
+  // FIRST, because it says when the button is not available at all. The client
+  // greys it for this now, so the cheatsheet is no longer the only warning the
+  // player gets — but it is still the only one that says WHY the control is
+  // grey, and a greyed button with no explanation is a mystery rather than a
+  // rule.
   const needs = needsNote(def, byKey);
   if (needs) notes.push(needs);
+  // Then that it may not come off even when everything above is satisfied. This
+  // one has no greyed button and never will — the failure is the joke, and a
+  // control that greyed itself at random would read as broken — so the splash is
+  // the ONLY place a player is ever told it happens. Derived from the served
+  // chance, so retuning it in content.go retunes this sentence.
+  const flaky = failNote(def);
+  if (flaky) notes.push(flaky);
   // SECOND, because it is the other note that says when the button will do
   // NOTHING, and the two are ordered as a player meets them: what he has to be
   // holding, then where he has to be standing. A verb gated on a place is
@@ -414,6 +421,32 @@ function needsNote(
   const stat = byKey.get(def.needs_stat);
   if (!stat) return null;
   return `нужно накопить: ${stat.label || def.needs_stat} от ${amount(amountNeeded as number)}`;
+}
+
+/**
+ * That this verb sometimes simply does not come off, or nothing for one that
+ * always works.
+ *
+ * THE ONLY WARNING THE PLAYER EVER GETS about it. Every other thing that can
+ * stop a press also greys the button, so the cheatsheet is a second telling; this
+ * one deliberately does not — a control that greyed itself a quarter of the time
+ * at random would read as faulty rather than funny — so a player who has not read
+ * this line meets it as a button that occasionally does nothing.
+ *
+ * SAID AS ODDS RATHER THAN AS A PERCENTAGE, because «1 раз из 4» is a thing a
+ * person can picture and «25%» is a thing a person has to convert. Derived from
+ * the served number, so retuning `relieveFailChance` in content.go retunes the
+ * sentence and nobody has to remember this file exists.
+ *
+ * A chance of one is a catalogue that has turned the verb off entirely, and it
+ * gets its own sentence rather than the nonsensical «1 раз из 1» the arithmetic
+ * would otherwise produce.
+ */
+function failNote(def: VanyagotchiAction): string | null {
+  const chance = def.fail_chance;
+  if (typeof chance !== 'number' || !Number.isFinite(chance) || chance <= 0) return null;
+  if (chance >= 1) return 'никогда не получается';
+  return `иногда не получается: примерно 1 раз из ${Math.max(2, Math.round(1 / chance))}`;
 }
 
 /**

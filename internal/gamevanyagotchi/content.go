@@ -374,6 +374,29 @@ type Action struct {
 	// contested-without-a-place verb arrives, at which point the hunt would have
 	// vanished from the screen with nothing failing.
 	NeedsSpot bool `json:"needs_spot,omitempty"`
+	// FailChance is how often this verb simply does not come off, as a
+	// probability in 0..1. Zero — the ordinary case — means it always works.
+	//
+	// A REFUSAL RATHER THAN A SECOND OUTCOME, which is what makes it cost
+	// nothing to get right: the roll returns an error, so the batch rolls back
+	// and NOTHING is written — no stat moves, no event is appended, no deposit is
+	// left, and the lifetime tally does not tick. That falls out of the existing
+	// refusal path rather than being a case somebody has to remember, and it
+	// keeps the event log honest: a replay only ever sees attempts that actually
+	// happened.
+	//
+	// The roll is taken in Service.Do, on the live path, and NEVER in `apply` —
+	// which has to stay a pure function of (Snapshot, Event) or a replay would
+	// diverge from the history it is replaying. It is hashed from (account, verb,
+	// instant) against the per-process key, exactly as the tiredness roll is
+	// (ADR-042): no seed, no stored state, nobody can predict their own roll, and
+	// two viewers cannot disagree about it.
+	//
+	// SERVED so the splash cheatsheet can DERIVE the sentence about it rather
+	// than somebody typing «иногда не получается» and forgetting it after the
+	// next retune. The client is not expected to act on it, and must not grey the
+	// button for it.
+	FailChance float64 `json:"fail_chance,omitempty"`
 }
 
 // needsSpot reports whether this verb is a search — that is, whether the kind it
@@ -792,6 +815,18 @@ const (
 	// being a thing you press absently while nothing is happening.
 	relieveNeedsBladder = 15.0
 
+	// How often he loses his nerve and does not go after all.
+	//
+	// A quarter, which is «sometimes» rather than «usually»: often enough that
+	// everybody meets it and it becomes a thing people mention, rare enough that
+	// pressing the button still normally does what it says. Raising it much past
+	// this stops reading as a joke and starts reading as a broken control.
+	//
+	// It is NOT a reason to grey the button — the failure IS the joke, and a
+	// control that greyed itself at random would look faulty rather than funny.
+	// The player is told about it on the splash instead, derived from this number.
+	relieveFailChance = 0.25
+
 	// What the verbs do.
 	drinkBeer    = 40.0
 	drinkHP      = 15.0
@@ -906,6 +941,30 @@ var tiredSays = []string{
 	"колено щёлкает",
 	"надо было такси",
 	"я не спортсмен",
+}
+
+// shySays is what he says when he could not go through with it after all.
+//
+// The same shape as tiredSays and for the same reason: a verb that silently did
+// nothing a quarter of the time would read as a broken button, and a verb that
+// announces why it did nothing is a joke. It is the refusal that carries the
+// line — the sentence is decided by the same hash as the roll, so it is a
+// property of that particular loss of nerve rather than something chosen
+// afterwards.
+//
+// Adding a line here is a backend deploy with no migration and no client change,
+// which is the whole point of it being content.
+var shySays = []string{
+	"я тут стесняюсь",
+	"не при людях же",
+	"нет, не могу",
+	"чёт передумал",
+	"а вдруг увидят",
+	"как-то неловко",
+	"потом схожу",
+	"не идёт",
+	"обстановка не та",
+	"я стеснительный",
 }
 
 // idleSays is what a Ваня mutters to himself while standing about.
@@ -1129,6 +1188,8 @@ var catalogue = Config{
 			// Nothing to do on an empty bladder.
 			NeedsStat:    StatBladder,
 			NeedsAtLeast: relieveNeedsBladder,
+			// And sometimes he simply cannot go through with it.
+			FailChance: relieveFailChance,
 			// A dead Ваня does not go to the toilet.
 			RevivesFatal: false,
 		},

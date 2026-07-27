@@ -2617,26 +2617,39 @@ func TestTheComplaintIsChosenOnceAndCarriedOnTheWalk(t *testing.T) {
 	}
 }
 
-// TestTheTwoPoolsAreDisjoint. Several tests read "he said a tired line" as
-// evidence that he got tired, which is only sound while no line is in both
-// pools. A single word landing in both would make those tests quietly stop
-// discriminating instead of failing.
-func TestTheTwoPoolsAreDisjoint(t *testing.T) {
-	if len(tiredSays) == 0 || len(idleSays) == 0 {
-		t.Fatal("a pool is empty, so every balloon assertion in this package is vacuous")
-	}
-	for _, tired := range tiredSays {
-		if slices.Contains(idleSays, tired) {
-			t.Fatalf("%q is in both pools; a balloon can no longer distinguish a Ваня who gave up walking from one standing about", tired)
+// TestThePhrasePoolsAreDisjoint. Several tests read "he said a line from pool X"
+// as evidence that X is what happened to him, which is only sound while no line
+// is in two pools. A single word landing in both would make those tests quietly
+// stop discriminating instead of failing.
+//
+// Three pools now: giving up on a walk, muttering while standing about, and
+// losing his nerve. The third is the one that most needs the guarantee, because
+// «я тут стесняюсь» is the ONLY evidence a test has that a press was refused for
+// nerves rather than for any of the reasons that are the player's fault.
+func TestThePhrasePoolsAreDisjoint(t *testing.T) {
+	pools := map[string][]string{"tiredSays": tiredSays, "idleSays": idleSays, "shySays": shySays}
+	for name, pool := range pools {
+		if len(pool) == 0 {
+			t.Fatalf("%s is empty, so every balloon assertion resting on it is vacuous", name)
 		}
-	}
-	for _, pool := range [][]string{tiredSays, idleSays} {
 		seen := make(map[string]bool, len(pool))
 		for _, line := range pool {
 			if seen[line] {
-				t.Fatalf("%q appears twice in one pool, so it is twice as likely as every other line for no stated reason", line)
+				t.Fatalf("%q appears twice in %s, so it is twice as likely as every other line for no stated reason", line, name)
 			}
 			seen[line] = true
+		}
+	}
+	for name, pool := range pools {
+		for other, against := range pools {
+			if name >= other {
+				continue // each pair once, and never a pool against itself
+			}
+			for _, line := range pool {
+				if slices.Contains(against, line) {
+					t.Fatalf("%q is in both %s and %s; a balloon can no longer say which of the two happened to him", line, name, other)
+				}
+			}
 		}
 	}
 }
@@ -3445,5 +3458,76 @@ func TestEveryCharacterStaysInTheLocationTheCatalogueGivesHim(t *testing.T) {
 	// And none of them is counted, wherever he is: the head count is people.
 	if got := inTheYard(f); got != 1 {
 		t.Errorf("the frame says %d people are in the yard while one socket is open and the rest of the cast is furniture: %+v", got, f)
+	}
+}
+
+// TestLosingHisNerveIsDecidedOnceForAnInstantAndCarriesItsOwnLine is the roll
+// itself, asserted directly because nothing else can assert it.
+//
+// The key is 32 bytes of crypto/rand minted per process and there is no seam to
+// fix it, deliberately — a player who could predict his own roll would simply
+// press at the instants that work and the mechanic would evaporate. So what a
+// test CAN pin is not the value but the three properties that make it usable:
+// it is a pure function of its inputs, a chance of nought never fires, and the
+// sentence always comes out of the catalogue's own pool.
+func TestLosingHisNerveIsDecidedOnceForAnInstantAndCarriesItsOwnLine(t *testing.T) {
+	svc := NewService(nil, testRoom, nil, nil, nil)
+
+	// DETERMINISTIC. Asked twice about the same (account, verb, instant) it
+	// answers the same thing, which is what stops two viewers — or the live path
+	// and anything that re-examined it — disagreeing about whether he went.
+	for i := 0; i < 200; i++ {
+		when := at(0).Add(time.Duration(i) * time.Second)
+		lost, line := svc.shy(testAccount, ActionRelieve, relieveFailChance, when)
+		again, sameLine := svc.shy(testAccount, ActionRelieve, relieveFailChance, when)
+		if lost != again || line != sameLine {
+			t.Fatalf("the same instant answered (%v,%q) and then (%v,%q); the roll is not a function of its inputs",
+				lost, line, again, sameLine)
+		}
+		if lost && !slices.Contains(shySays, line) {
+			t.Fatalf("he lost his nerve and said %q, which is not one of the catalogue's lines", line)
+		}
+		if !lost && line != "" {
+			t.Fatalf("he went through with it and still said %q; a line belongs to a refusal", line)
+		}
+	}
+
+	// A CHANCE OF NOUGHT NEVER FIRES, which is what makes the field safe to leave
+	// off every other verb in the catalogue: they are not rolling and losing, they
+	// are not rolling at all.
+	for i := 0; i < 500; i++ {
+		when := at(0).Add(time.Duration(i) * time.Millisecond)
+		if lost, _ := svc.shy(testAccount, ActionDrink, 0, when); lost {
+			t.Fatalf("a verb with no FailChance was refused for nerves at %s", when.UTC())
+		}
+	}
+
+	// AND IT ACTUALLY FIRES. A roll that never came up would leave every
+	// assertion above vacuous and the mechanic silently absent.
+	fired := 0
+	for i := 0; i < 500; i++ {
+		if lost, _ := svc.shy(testAccount, ActionRelieve, relieveFailChance, at(0).Add(time.Duration(i)*time.Millisecond)); lost {
+			fired++
+		}
+	}
+	if fired == 0 {
+		t.Fatal("500 presses and he never once lost his nerve; the roll is disconnected")
+	}
+
+	// The two rolls a Ваня can take at ONE instant are independent, which is what
+	// the namespace prefix in the seed buys: without it, giving up on a walk and
+	// losing his nerve would be the same draw, and a player who saw one would know
+	// the other.
+	same := 0
+	for i := 0; i < 200; i++ {
+		when := at(0).Add(time.Duration(i) * time.Millisecond)
+		lost, _ := svc.shy(testAccount, ActionRelieve, 0.5, when)
+		other, _ := svc.shy(testAccount, ActionDrink, 0.5, when)
+		if lost == other {
+			same++
+		}
+	}
+	if same == 200 || same == 0 {
+		t.Fatalf("two different verbs agreed on %d of 200 instants; the roll is not keyed on the verb", same)
 	}
 }

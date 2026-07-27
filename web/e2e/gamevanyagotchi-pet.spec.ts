@@ -111,26 +111,36 @@ interface ActionDef {
    * A stat this verb is gated on, and how much of it the pet needs, or absent
    * for a verb that can be pressed whenever.
    *
-   * Both `omitempty` on the wire, hence optional here. Mirrored because the pair
-   * is a RULE the player meets as a button that appears to do nothing: the
-   * server answers «рано ещё» and applies nothing, and the splash is the only
-   * place he can be told why in advance. Nothing in the client enforces it — the
-   * button is not disabled and the verb is still sent — so this pair reaching
-   * the SPA is entirely about what the cheatsheet says.
+   * Both `omitempty` on the wire, hence optional here. The client GREYS the
+   * button for it — a courtesy, with the server enforcing the rule regardless —
+   * and the splash says the threshold in advance, so the pair reaching the SPA
+   * is about both. It used to be neither: the gate was left entirely to the
+   * server on the grounds that a bladder fills continuously and the browser
+   * draws an interpolation of it, which turned out to be a fraction of a second
+   * of disagreement traded against a control that looks ready and then refuses.
    */
   needs_stat?: string;
   needs_at_least?: number;
   /**
+   * How often the verb simply does not come off, or absent for one that always
+   * works. `omitempty`, hence optional here.
+   *
+   * Mirrored for the CHEATSHEET alone. This is the one rule that deliberately
+   * does NOT grey the button — the failure is the joke, and a control that
+   * greyed itself at random would read as broken — so the splash is the only
+   * place a player is ever told it happens.
+   */
+  fail_chance?: number;
+  /**
    * A world-object KIND this verb needs the pet to be standing beside, and the
    * kind it races other players for. Both `omitempty` on the wire.
    *
-   * Unlike `needs_stat` above, `needs_near` IS enforced in the browser: the
-   * button greys when he is not at the thing. The asymmetry is the point and it
-   * is not inconsistency — a stat is interpolated here and read there, so the
-   * two ends genuinely hold different numbers between frames, whereas a position
-   * is not interpolated by this client at all. The roster states where everybody
-   * is, five times a second, on the same frame that carries the store, so the
-   * browser and the server read ONE number.
+   * Enforced in the browser, as `needs_stat` above now is: the button greys when
+   * he is not at the thing. What differs between the two is only how exact the
+   * browser's copy is — a position is not interpolated by this client at all
+   * (the roster states where everybody is, five times a second, on the same
+   * frame that carries the store, so both ends read ONE number), where a stat is
+   * interpolated and can drift by what it moves in a fraction of a second.
    *
    * The client must never look at the VALUE of either — it holds no content keys
    * — which is a property this suite pins directly.
@@ -459,6 +469,10 @@ const RELIEVE: ActionDef = {
   // discovers by pressing a button that does nothing is a rule nobody was told.
   needs_stat: 'bladder',
   needs_at_least: 15,
+  // And it is the one verb that sometimes does not come off at all. Mirrored
+  // with the shipped quarter because the splash derives its odds from it, and a
+  // hand-typed «1 раз из 4» would be wrong the first time anybody retuned it.
+  fail_chance: 0.25,
   revives_fatal: false,
   starts_over: false,
 };
@@ -2170,10 +2184,11 @@ test.describe('«Ванягоччи» — the beer store', () => {
   });
 
   test('a verb that needs no place is never greyed by one', async ({ page }) => {
-    // «покакать» is gated on a STAT, and that gate is deliberately not enforced
-    // here at all. So the store being absent, empty, or across the yard must not
-    // reach it — a version that greyed every button when the crate was out of
-    // reach would pass every test above.
+    // «покакать» is gated on a STAT and not on a place, so the store being
+    // absent, empty, or across the yard must not reach it — a version that
+    // greyed every button when the crate was out of reach would pass every test
+    // above. The bladder is seeded well past its own threshold so that the ONLY
+    // thing under test here is the place gate.
     await stubBackend(page, {
       config: CATALOGUE,
       state: () => stateOf({ beer: 30, bladder: 90 }),
@@ -2187,6 +2202,60 @@ test.describe('«Ванягоччи» — the beer store', () => {
     await expect(actionBtn(page, 'drink')).toBeDisabled();
     await expect(actionBtn(page, 'relieve')).toBeEnabled();
     await expect(actionBtn(page, 'revive')).toBeEnabled();
+  });
+
+  test('an empty bladder greys «покакать», and filling it un-greys it', async ({ page }) => {
+    // THE REVERSAL. This gate used to be left entirely to the server, so the
+    // button looked ready, was pressed, and answered «рано ещё». It is greyed
+    // now — a courtesy, with the server still enforcing it — and the two sides
+    // of the threshold are what make it a gate rather than a permanently dead
+    // control.
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ bladder: RELIEVE.needs_at_least! - 1 }),
+    });
+    await stubSocket(page);
+    await enterYard(page);
+
+    await expect(actionBtn(page, 'relieve')).toBeDisabled();
+    // And the other verbs are untouched: this gate is about one stat on one
+    // verb, not a general "something is wrong" grey.
+    await expect(actionBtn(page, 'revive')).toBeEnabled();
+  });
+
+  test('exactly on the threshold it is pressable, as the server would accept it', async ({
+    page,
+  }) => {
+    // The server refuses on `value < needs_at_least`, so equality is ALLOWED. A
+    // client that greyed at equality would grey a press the server would take.
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ bladder: RELIEVE.needs_at_least! }),
+    });
+    await stubSocket(page);
+    await enterYard(page);
+
+    await expect(actionBtn(page, 'relieve')).toBeEnabled();
+  });
+
+  test('a verb that sometimes fails is NEVER greyed for it, and says so on the splash', async ({
+    page,
+  }) => {
+    // The one rule that is deliberately not drawn as a grey button. What the
+    // player gets instead is a sentence, derived from the served chance — so
+    // this asserts both halves at once: the control stays live, and the splash
+    // tells him why it will sometimes do nothing.
+    await stubBackend(page, {
+      config: { ...CATALOGUE, actions: [{ ...RELIEVE, fail_chance: 0.5 }] },
+      state: () => stateOf({ bladder: 90 }),
+    });
+    await stubSocket(page);
+    await page.goto('/app/game-vanyagotchi');
+    await expect(page.locator('[data-test="rule-action-relieve"]')).toContainText(
+      'иногда не получается: примерно 1 раз из 2',
+    );
+    await enterYard(page);
+    await expect(actionBtn(page, 'relieve')).toBeEnabled();
   });
 
   test('the gate turns on the served threshold rather than a number in the SPA', async ({

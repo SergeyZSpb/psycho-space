@@ -892,10 +892,11 @@ export function sameStore(
  * `within` comes off the served catalogue for the same reason (`arrive_within`),
  * so a retune moves both ends at once.
  *
- * It is also why THIS gate is enforced in the browser at all when the pet's own
- * `needs_stat` gate deliberately is not: a stat is interpolated here and read
- * there, so the two ends hold different numbers between frames, whereas a
- * position is not interpolated by this client at all — the frame states it.
+ * Both gates are enforced in the browser now — this one and the pet's own
+ * `needs_stat` — and the difference between them is one of degree rather than of
+ * kind. A position is not interpolated by this client at all: the frame states
+ * it. A stat is, so the two ends can differ — but only by what the value moves
+ * in the fraction of a second between a frame and a press. See `shortOf`.
  *
  * FALSE FOR ANYTHING IT CANNOT READ, and each of those is a real shape rather
  * than a defensive flourish. No `here` is a client that has not had its hello
@@ -950,6 +951,43 @@ export function outOfReach(
   if (!store) return true;
   if (store.left <= 0) return true;
   return !atStore;
+}
+
+/**
+ * Is this verb unpressable right now because the pet has not got enough of what
+ * it needs — an empty bladder for «покакать»?
+ *
+ * THE PRESENCE OF `needs_stat` IS TESTED AND ITS VALUE IS NEVER COMPARED TO
+ * ANYTHING, the same rule `outOfReach` follows. The key is used to LOOK UP a
+ * number the caller already holds, never matched against a name this file knows:
+ * the browser is told which stat gates the verb and reads its own decayed copy
+ * of it, so a verb gated on a stat that does not exist yet costs no client
+ * deploy.
+ *
+ * A COURTESY, NEVER A RULE — and this one is the reversal worth knowing about.
+ * The gate used to be left entirely to the server, on the grounds that a bladder
+ * FILLS CONTINUOUSLY and the browser draws an interpolation of it rather than
+ * the number the server will read. The arithmetic does not bear that out: the
+ * bladder moves 5 an hour, so the two ends disagree about «is it at least 15»
+ * for a fraction of a second either side of the threshold, and the server
+ * refuses regardless. Against a control that looks ready, is pressed, and
+ * answers «рано ещё», greying it is the kinder half of the trade.
+ *
+ * FALSE FOR ANYTHING IT CANNOT READ, which is the fail-OPEN direction and is
+ * deliberate: a verb whose stat has no value yet is a pet whose state has not
+ * arrived, and greying a button because a fetch is in flight would make the row
+ * flicker on every load. Letting it through costs at worst one «рано ещё».
+ */
+export function shortOf(
+  action: { needs_stat?: string; needs_at_least?: number } | null | undefined,
+  values: ReadonlyMap<string, number>,
+): boolean {
+  if (!action?.needs_stat) return false;
+  const needed = action.needs_at_least;
+  if (typeof needed !== 'number' || !Number.isFinite(needed)) return false;
+  const has = values.get(action.needs_stat);
+  if (typeof has !== 'number' || !Number.isFinite(has)) return false;
+  return has < needed;
 }
 
 /**

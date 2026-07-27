@@ -97,6 +97,29 @@ var (
 	ErrNotYet = errors.New("gamevanyagotchi: not yet")
 )
 
+// ShyRefusal means the verb was allowed, he was able, and he did not go through
+// with it — the catalogue's FailChance came up.
+//
+// A TYPED ERROR RATHER THAN A SENTINEL, and the line it carries is the reason.
+// Every other refusal in this game maps to one fixed sentence, so refusalLine
+// can look it up from the sentinel alone; this one's sentence is drawn from
+// shySays by the SAME hash that took the roll, which makes it a property of that
+// particular loss of nerve rather than something chosen afterwards. Carrying it
+// on the error is what lets the pool stay content in content.go — adding a line
+// is a backend deploy with no client change — while keeping the one place a
+// refusal becomes words in refusalLine, where it is read with errors.As.
+//
+// It is exported because a test outside this package has to be able to tell this
+// refusal from a real one: it is the only refusal that is not the player's fault
+// and not repeatable, so «press it again» is the correct response to it and to
+// nothing else.
+type ShyRefusal struct {
+	// Line is what he says about it, over his own head, for everybody to read.
+	Line string
+}
+
+func (e ShyRefusal) Error() string { return "gamevanyagotchi: lost his nerve: " + e.Line }
+
 // ErrBatchTooLong rejects a frame carrying more verbs than maxBatch.
 //
 // A batch is folded and written in one transaction, so its length is the amount

@@ -790,6 +790,32 @@ func (s *Service) planWalk(accountID string, from, to Point, now time.Time) walk
 	return w
 }
 
+// shy decides whether a verb fails for nerves this time, and what he says if it
+// does.
+//
+// One hash gives both, exactly as the tiredness roll gives the fraction and the
+// complaint together: the sentence belongs to this particular loss of nerve
+// rather than being chosen after the fact. Keyed on (account, verb, instant)
+// under the per-process key, so nobody can predict their own roll and wait for a
+// favourable moment — which is the whole reason it is keyed at all, since a
+// player who could see the answer would simply press at the instants that work
+// and the mechanic would evaporate.
+//
+// The namespace prefix keeps it from colliding with the other two rolls: the
+// walk and the muttering hash the same key at the same instant, and without it a
+// giving-up and a loss of nerve would be the same draw.
+func (s *Service) shy(accountID, verb string, chance float64, now time.Time) (bool, string) {
+	if chance <= 0 {
+		return false, ""
+	}
+	seed := fmt.Sprintf("shy|%s|%s|%d", accountID, verb, now.UnixNano())
+	roll, phrase, _ := unitTriple(crypto.HMACSHA256(s.pseudonymKey, []byte(seed)))
+	if roll >= chance {
+		return false, ""
+	}
+	return true, pickPhrase(shySays, phrase)
+}
+
 // rolls turns (who, where, when) into three independent numbers in 0..1.
 func (s *Service) rolls(accountID string, to Point, now time.Time) (float64, float64, float64) {
 	seed := fmt.Sprintf("%s|%v|%v|%d", accountID, to.X, to.Y, now.UnixNano())
@@ -1083,6 +1109,27 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, spot
 				return State{}, err
 			}
 			searchedHere = true
+		}
+		// AND THEN HE MAY SIMPLY NOT GO THROUGH WITH IT.
+		//
+		// LAST of the gates, and the order is the point: every refusal above tells
+		// the player something true about the world he can act on — he is dead, he
+		// is not full enough, he is too far, he looked in the wrong place — and a
+		// random one announced ahead of any of them would send him away with the
+		// wrong idea about why the button did nothing. Nerves are what is left when
+		// nothing else was in the way.
+		//
+		// Here rather than in `apply` for the reason the movement gate is: `apply`
+		// has to stay a pure function of (Snapshot, Event), and a coin flip inside
+		// it would make a replay of the same history produce a different pet every
+		// time it ran (ADR-044). So the log records that he WENT, never that he was
+		// willing to — and returning here, before the transaction is opened, is
+		// what makes the refusal cost nothing at all: no stat, no event, no
+		// deposit, and no tick of the tally that counts them.
+		if known {
+			if lost, line := s.shy(accountID, verb, action.FailChance, at); lost {
+				return State{}, ShyRefusal{Line: line}
+			}
 		}
 		after = next
 	}
@@ -1714,7 +1761,14 @@ func (s *Service) pushState(ctx context.Context, accountID string, state State) 
 // they are what the SERVER decided about this attempt, and the same sentence
 // serves whichever verb was refused.
 func refusalLine(ctx context.Context, err error) string {
+	// The one refusal whose sentence is not fixed here. It is drawn from the
+	// catalogue's pool by the same hash that took the roll, so the error carries
+	// it and this reads it out with errors.As rather than looking one up — which
+	// is what keeps the lines content, editable with no client deploy.
+	var shy ShyRefusal
 	switch {
+	case errors.As(err, &shy):
+		return shy.Line
 	case errors.Is(err, ErrPetDead):
 		return "он не встаёт"
 	case errors.Is(err, ErrNotYet):

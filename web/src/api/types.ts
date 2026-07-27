@@ -330,17 +330,28 @@ export interface VanyagotchiAction {
    * for a verb that can be pressed whenever.
    *
    * «покакать» carries `bladder` / 15: press it on an empty bladder and the
-   * server answers «рано ещё» and applies nothing. THE GATE IS THE SERVER'S AND
-   * IS NOT ENFORCED HERE — the button is not disabled, the verb is sent, and the
-   * refusal comes back as a line — for the same reason nothing else in this
-   * client applies `effects`: a second implementation of a rule is a second
-   * implementation to disagree with the first, and this one would disagree
-   * constantly, because a bladder fills continuously and the browser is drawing
-   * an interpolation of it rather than the number the server will read.
+   * server answers «рано ещё» and applies nothing.
    *
-   * What the pair is read for is the SPLASH CHEATSHEET, which says what a verb
-   * needs so that «рано ещё» is a rule the player was told rather than a button
-   * that mysteriously does nothing. Derived, so retuning the 15 in
+   * THE CLIENT GREYS THE BUTTON FOR IT — a courtesy, never the rule. This
+   * REVERSES what was written here before, which refused to enforce the gate at
+   * all on the grounds that the browser holds an INTERPOLATION of a
+   * continuously-filling bladder and would disagree with the number the server
+   * was about to read. The arithmetic does not support that: the bladder moves 5
+   * an hour, which is 0.0014 a second, so the window in which the two ends
+   * disagree about «is it at least 15» is a fraction of a second wide and closes
+   * by itself. Set against a control that looks ready, is pressed, and answers
+   * «рано ещё», that was the wrong trade.
+   *
+   * What resolves it is the framing `needs_near` below already uses: a courtesy
+   * is ALLOWED to be wrong, because the server enforces the rule regardless. The
+   * worst this can do is grey a button a moment early or leave it live a moment
+   * late; it can never let something through that the server would refuse, and
+   * it can never refuse something the server would allow for longer than that
+   * fraction of a second.
+   *
+   * The pair is ALSO read by the SPLASH CHEATSHEET, which says what a verb needs
+   * so that «рано ещё» is a rule the player was told rather than a button that
+   * mysteriously does nothing. Derived, so retuning the 15 in
    * internal/gamevanyagotchi/content.go changes what the player is told with no
    * edit here.
    *
@@ -354,17 +365,15 @@ export interface VanyagotchiAction {
    * for a verb he can press from anywhere. «Выпить пива» carries the beer
    * crate's kind: the beer comes out of the crate, so you have to walk to it.
    *
-   * THIS GATE THE CLIENT DOES ENFORCE, which is the opposite of what it does
-   * with `needs_stat` one field up, and the asymmetry is the whole reason both
-   * decisions are worth writing down. A bladder FILLS CONTINUOUSLY and the
-   * browser is drawing an interpolation of it, so the number it would compare
-   * and the number the server will read are two different numbers that drift
-   * apart between frames — greying a button on the browser's copy would grey it
-   * while the server would in fact accept. A position is not interpolated by
-   * this client at all: the roster tells it exactly where everybody is standing,
-   * five times a second, on the same frame that carries the store — so both ends
-   * are reading ONE number and cannot disagree about it. That is what makes a
-   * greyed drink button honest here and dishonest there.
+   * THE CLIENT GREYS THE BUTTON FOR THIS TOO, on the same terms as `needs_stat`
+   * one field up: a courtesy that the server enforces regardless. The two used
+   * to be treated differently and no longer are — what remains is a difference
+   * of DEGREE worth knowing when reading either. A position is not interpolated
+   * by this client at all: the roster states exactly where everybody is
+   * standing, five times a second, on the same frame that carries the store, so
+   * both ends read ONE number and cannot disagree. A stat IS interpolated here,
+   * so the two ends can differ — but only by what the value moves in the
+   * fraction of a second between a frame and a press, which is nothing.
    *
    * It is READ FOR ITS PRESENCE AND NEVER FOR ITS VALUE. Nothing in this client
    * compares a kind key to anything, which is the property that keeps the
@@ -409,6 +418,25 @@ export interface VanyagotchiAction {
    * places rather than guessing which verb a tap should send.
    */
   needs_spot?: boolean;
+  /**
+   * How often this verb simply does not come off, as a probability in 0..1.
+   * «покакать» carries a quarter; every other verb omits it and always works.
+   *
+   * READ ONLY BY THE CHEATSHEET, and deliberately not by the action row. The
+   * button is NOT greyed for this and must never be: the failure IS the joke,
+   * and a control that greyed itself at random would read as broken rather than
+   * as funny. What the player gets instead is a line over his own Ваня's head
+   * («я тут стесняюсь» and friends, which the server draws from a pool) plus a
+   * sentence on the splash telling him in advance that it happens.
+   *
+   * The refusal costs him nothing at all — the server rolls the whole batch
+   * back, so no stat moves, nothing is written and the lifetime tally does not
+   * tick — which is why pressing again is the entire remedy.
+   *
+   * Optional because it is `omitempty`: a chance of nought is not sent, and a
+   * server that predates the field sends none.
+   */
+  fail_chance?: number;
 }
 
 /** One look for a pet. `image` (a URL) wins when set; otherwise emoji over gradient. */

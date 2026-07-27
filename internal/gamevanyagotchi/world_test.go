@@ -288,8 +288,25 @@ func TestADepositIsLeftWhereTheServerBelievesHeIsStanding(t *testing.T) {
 
 	// And now he relieves himself — in a frame that also claims a position, the
 	// far corner of the plane, which nothing reads.
-	svc.HandleInbound(context.Background(), member("1"), testRoom,
-		fmt.Appendf(nil, `{"t":%q,"verbs":[%q],"x":0.05,"y":0.95}`, TypeDo, ActionRelieve))
+	//
+	// Pressed until it lands, because the verb carries a FailChance and a press
+	// that loses its nerve writes nothing at all. Driven through the SOCKET here
+	// rather than through Do, which is the whole point of this test — so both of
+	// the inbound path's own bounds have to be respected: a tick before each
+	// press, because the tick's instant is what a verb is stamped with and two
+	// presses inside one tick would be the same roll refused twice, and a full
+	// verbInterval between them, because the rate limiter drops the second batch
+	// in a second without a word.
+	const attempts = 200
+	pressedAt := arrived
+	for i := 0; i < attempts && len(repo.appended) == 0; i++ {
+		pressedAt = arrived.Add(time.Duration(i) * verbInterval)
+		if err := svc.broadcast(context.Background(), pressedAt); err != nil {
+			t.Fatalf("broadcast before pressing: %v", err)
+		}
+		svc.HandleInbound(context.Background(), member("1"), testRoom,
+			fmt.Appendf(nil, `{"t":%q,"verbs":[%q],"x":0.05,"y":0.95}`, TypeDo, ActionRelieve))
+	}
 
 	if len(repo.appended) != 1 {
 		t.Fatalf("%d events were recorded for one verb; the verb never applied at all, so nothing below is about the deposit: %+v",
@@ -328,7 +345,7 @@ func TestADepositIsLeftWhereTheServerBelievesHeIsStanding(t *testing.T) {
 	// Measured from the instant the verb was stamped with, which is the tick's —
 	// this game has one clock, and a deposit that expired against another would
 	// disappear from the plane at a moment nothing else agrees with.
-	if want := arrived.Add(kind.Lifetime); !left.expires.Equal(want) {
+	if want := pressedAt.Add(kind.Lifetime); !left.expires.Equal(want) {
 		t.Errorf("the deposit expires at %s; want %s, the verb's own instant plus the catalogue's lifetime %s",
 			left.expires.UTC(), want.UTC(), kind.Lifetime)
 	}
@@ -348,9 +365,7 @@ func TestADepositFromSomebodyTheYardHasNeverPlacedLandsAtTheEntrance(t *testing.
 	repo := playedFor(enoughFor(t, ActionRelieve, epoch))
 	svc := planeService(&fakeTransport{}, repo)
 
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, "", at(0)); err != nil {
-		t.Fatalf("Do(%s): %v", ActionRelieve, err)
-	}
+	doUntilItLands(t, svc, testAccount, []string{ActionRelieve}, "", at(0))
 
 	got := repo.insertedObjects()
 	if len(got) != 1 {
@@ -395,7 +410,9 @@ func TestTheDepositTheStatsAndTheEventsAreOneWrite(t *testing.T) {
 	}
 
 	repo.insertErr = refused
-	_, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, "", at(0))
+	// Pressed past the nerves, because this test is about the OTHER refusal: a
+	// press that lost its nerve never reaches the insert that is rigged to fail.
+	_, _, err := pressPastNerves(t, svc, testAccount, []string{ActionRelieve}, "", at(0))
 	if !errors.Is(err, refused) {
 		t.Fatalf("Do(%s) answered err=%v; want the insert's own failure surfaced to the caller", ActionRelieve, err)
 	}
@@ -697,9 +714,7 @@ func TestTheTickNeverReadsTheWorld(t *testing.T) {
 	// The two moments that ARE allowed to read: a hello, and a verb that left
 	// something behind.
 	svc.load(context.Background(), testAccount)
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, "", at(0)); err != nil {
-		t.Fatalf("Do(%s): %v", ActionRelieve, err)
-	}
+	doUntilItLands(t, svc, testAccount, []string{ActionRelieve}, "", at(0))
 	const human = 2
 	if n := repo.worldObjectReads(); n != human {
 		t.Fatalf("a hello and a verb read the world %d times; want %d — one each", n, human)

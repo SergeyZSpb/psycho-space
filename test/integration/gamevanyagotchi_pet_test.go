@@ -193,13 +193,31 @@ func petStandAtTheBeerStore(t *testing.T, game *gamevanyagotchi.Service, account
 // of the pet in Postgres, they have their own unit tests in
 // internal/gamevanyagotchi/service_test.go, and reproducing them here would make
 // every test below wait a second between presses to assert nothing new.
+// It also PRESSES AGAIN when he loses his nerve, which is not a workaround but
+// the honest way to drive a verb that can fail. «покакать» carries a FailChance,
+// so a share of presses are refused and write nothing at all — no stat, no
+// event, no deposit, no tally — which makes an attempt that failed
+// indistinguishable from one that was never made, and re-pressing therefore
+// exactly what a player does. Every OTHER error still fails the test at once: a
+// loss of nerve is the only refusal that re-pressing can cure, and swallowing
+// the rest would turn a regression into a hang. The instant comes from the wall
+// clock each time round, so every attempt is a fresh draw.
 func petDo(t *testing.T, game *gamevanyagotchi.Service, accountID string, verbs ...string) gamevanyagotchi.State {
 	t.Helper()
-	st, err := game.Do(context.Background(), accountID, verbs, "", time.Now().UTC())
-	if err != nil {
-		t.Fatalf("Do(%v) for account %s: %v", verbs, accountID, err)
+	const attempts = 200
+	for i := 0; i < attempts; i++ {
+		st, err := game.Do(context.Background(), accountID, verbs, "", time.Now().UTC())
+		if err == nil {
+			return st
+		}
+		var shy gamevanyagotchi.ShyRefusal
+		if !errors.As(err, &shy) {
+			t.Fatalf("Do(%v) for account %s: %v", verbs, accountID, err)
+		}
 	}
-	return st
+	t.Fatalf("%d presses of %v were every one of them refused for nerves; either the roll is stuck on or this is the unluckiest run in the history of the game",
+		attempts, verbs)
+	return gamevanyagotchi.State{}
 }
 
 // petValue plucks one decayed stat value out of the state a verb answered with.
@@ -2110,11 +2128,10 @@ func TestVanyagotchiPetAGatedVerbIsRefusedUntilTheStatItNeedsIsThere(t *testing.
 	// And now the same press, on the same pet, with nothing changed but the
 	// instant its rows are stamped at.
 	petBackdateAll(t, id, petHours(full*11/10))
-	state, err := game.Do(context.Background(), account, []string{relieve.Key}, "", time.Now().UTC())
-	if err != nil {
-		t.Fatalf("%s after %.2f hours of filling: %v — the stored %s still reads %v, and what the gate judges him by is the value he actually has",
-			relieve.Key, full*11/10, err, def.Key, def.Min)
-	}
+	// Through petDo, which presses again if he loses his nerve — a refusal for
+	// nerves writes nothing, so it leaves the bladder exactly as full as this
+	// backdating just made it and the next press asks the same question.
+	state := petDo(t, game, account, relieve.Key)
 	if !state.Alive {
 		t.Fatalf("alive = %v after %s; the windows here are meant to keep him well clear of dying", state.Alive, relieve.Key)
 	}
@@ -3298,4 +3315,104 @@ func TestVanyagotchiAPetsLocationIsWrittenWithoutTouchingItsPosition(t *testing.
 	if pets != 1 {
 		t.Errorf("he has %d living pets after moving twice; want 1 — moving is an UPDATE and not an insert", pets)
 	}
+}
+
+// TestVanyagotchiAPressHeBacksOutOfWritesNothingAtAll is the shy refusal against
+// a real database, which is where "writes nothing" is a claim rather than a
+// property of a fake.
+//
+// The unit test asserts the same thing against an in-memory repository and can
+// therefore only say that the service did not CALL anything. This one says the
+// rows are not there: the stats carry the instant they carried before, the event
+// log is the same length, no deposit is in the world, and «покакано раз» — the
+// tally that would be the visible reminder of a visit he did not make — has not
+// moved.
+//
+// PRESSED IN A LOOP because the roll is keyed on a per-process secret and cannot
+// be chosen from outside. A press that LANDS empties the bladder, so the loop
+// re-fills it by backdating and asks again; every iteration snapshots first, so
+// whichever attempt loses its nerve is measured against the state immediately
+// before it.
+func TestVanyagotchiAPressHeBacksOutOfWritesNothingAtAll(t *testing.T) {
+	ctx := context.Background()
+	relieve := petAction(t, gamevanyagotchi.ActionRelieve)
+	if relieve.FailChance <= 0 {
+		t.Fatalf("the catalogue no longer gives %q a chance of failing; this test is about a rule the game does not have", relieve.Key)
+	}
+	def := petStat(t, relieve.NeedsStat)
+	if relieve.NeedsAtLeast >= def.Max {
+		t.Fatalf("%s asks for %v of %s, at or above its ceiling %v; there is no value this test could arm it with",
+			relieve.Key, relieve.NeedsAtLeast, def.Key, def.Max)
+	}
+
+	app, game := petApp(t)
+	cli := loginAs(t, app.URL, "7270", "user")
+	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+		t.Fatalf("create: status=%d body=%v", s, body)
+	}
+	account := accountIDByUID(t, "7270")
+	id := petID(t, account)
+	t.Cleanup(func() { petForgetWorldObjects(t, account) })
+
+	hp := petStat(t, gamevanyagotchi.StatHP)
+	// Puts him back on his feet with a full bladder, in one statement.
+	//
+	// Backdating alone would not do: it fills the bladder by letting time pass,
+	// but the same passage of time drains his HEALTH, and around a loop that may
+	// run a dozen times he would quietly die part way through — after which every
+	// press is refused for being dead and the loop waits for a refusal that can
+	// no longer happen. Setting the values outright keeps each attempt an
+	// independent draw against an identical pet.
+	arm := func() {
+		if _, err := pool.Exec(ctx,
+			`UPDATE game_vanyagotchi_pet_stats
+			    SET value = CASE WHEN stat_key = $2 THEN $3 WHEN stat_key = $4 THEN $5 ELSE value END,
+			        as_of = now()
+			  WHERE pet_id = $1::uuid`,
+			id, def.Key, relieve.NeedsAtLeast+(def.Max-relieve.NeedsAtLeast)/2, hp.Key, hp.Max); err != nil {
+			t.Fatalf("arm the pet for another press: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE game_vanyagotchi_pets SET died_at = NULL WHERE id = $1::uuid`, id); err != nil {
+			t.Fatalf("put him back on his feet: %v", err)
+		}
+	}
+
+	const attempts = 200
+	for i := 0; i < attempts; i++ {
+		arm()
+
+		asOf := petSharedAsOf(t, id)
+		shits := petStoredValue(t, id, gamevanyagotchi.StatShitsTaken)
+		events := petEventCount(t, id)
+		deposits := len(petWorldObjectsOwnedBy(t, account))
+
+		_, err := game.Do(ctx, account, []string{relieve.Key}, "", time.Now().UTC())
+		var shy gamevanyagotchi.ShyRefusal
+		if !errors.As(err, &shy) {
+			if err != nil {
+				t.Fatalf("Do(%s) answered %v; want either the verb landing or a loss of nerve", relieve.Key, err)
+			}
+			continue // It came off. Fill him up and ask again.
+		}
+
+		if shy.Line == "" {
+			t.Errorf("he backed out and said nothing; the line is what makes a button that did nothing read as a joke rather than as a fault")
+		}
+		if now := petSharedAsOf(t, id); !now.Equal(asOf) {
+			t.Errorf("his stats are stamped %s after a press he backed out of; want the %s they carried before it — a refusal charged him a re-stamp, which is silently erased decay",
+				now.UTC(), asOf.UTC())
+		}
+		if got := petStoredValue(t, id, gamevanyagotchi.StatShitsTaken); got != shits {
+			t.Errorf("%q went from %v to %v on a visit he did not make", gamevanyagotchi.StatShitsTaken, shits, got)
+		}
+		if n := petEventCount(t, id); n != events {
+			t.Errorf("his log holds %d events after a press he backed out of; want the %d it held before — a replay would otherwise see a visit that never happened", n, events)
+		}
+		if n := len(petWorldObjectsOwnedBy(t, account)); n != deposits {
+			t.Errorf("the world holds %d of his deposits after a press he backed out of; want the %d it held before", n, deposits)
+		}
+		return
+	}
+	t.Fatalf("%d presses all came off; either the FailChance is disconnected or this is the luckiest run in the history of the game", attempts)
 }
