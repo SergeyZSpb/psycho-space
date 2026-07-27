@@ -723,6 +723,24 @@ describe('YARD_PROSE — the hardcoded half', () => {
     expect(prose).not.toContain('кто первым нажал');
   });
 
+  it('describes the beer store that exists rather than the vendor who was deleted', () => {
+    // The second thing the hardcoded half got caught lying about, and it had
+    // been lying since the commit that removed him. There used to be a vendor
+    // NPC standing beside the crate; he was deleted when the crate gained its
+    // own sign and a count badge, and this array went on telling players to look
+    // for a character who is not in the game — and, worse, attributing the
+    // restock to him, when it is a write inside the same transaction as the draw
+    // that empties the crate.
+    const prose = YARD_PROSE.join(' ');
+    expect(prose).not.toContain('продавец');
+    expect(prose).not.toContain('продавц');
+    // What must survive: the walk, the sharing, and the instant replacement,
+    // none of which is derivable from the wire.
+    expect(prose).toContain('ногами');
+    expect(prose).toContain('один на всех');
+    expect(prose).toContain('ждать долго не придётся');
+  });
+
   it('describes a world of several places rather than one yard', () => {
     // The other rule the hardcoded half owns outright, and the one nothing else
     // could tell you had gone stale. Three facts, none of them on any wire: that

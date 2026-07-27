@@ -1084,6 +1084,91 @@ async function enterYard(page: Page): Promise<void> {
 }
 
 test.describe('«Ванягоччи» — the shared plane', () => {
+  test('reduced motion actually reaches the yard, rather than being out-specified', async ({
+    page,
+  }) => {
+    // A REGRESSION TEST FOR A SPECIFICITY BUG, which is why it reads a computed
+    // style rather than watching something move. The transitions were written as
+    // `.plane, .plane .peer`, which under scoped compilation is one class higher
+    // than the `.peer` this media query and `.peer--instant` are written on — so
+    // both lost silently. A media query contributes no specificity of its own,
+    // and that is exactly what makes the mistake invisible: the block is there,
+    // it is correct, and it does nothing.
+    //
+    // `transitionDuration` is safe to assert on, unlike `zIndex` elsewhere in
+    // this file: there is no computed-versus-used gap for it, so the cascade
+    // result IS the behaviour.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'peer-a', x: 0.3, y: 0.4 }));
+    await expect(dots(page)).toHaveCount(1);
+
+    const durations = await page.evaluate(() => {
+      const dot = document.querySelector<HTMLElement>('[data-peer="peer-a"]');
+      const plane = document.querySelector<HTMLElement>('[data-test="plane"]');
+      if (!dot || !plane) throw new Error('the yard is not drawn');
+      return {
+        peer: getComputedStyle(dot).transitionDuration,
+        plane: getComputedStyle(plane).transitionDuration,
+      };
+    });
+    // `0s` however many properties were listed, because `transition: none`
+    // collapses the whole shorthand.
+    expect(durations.peer, 'a dot still glides under prefers-reduced-motion').toBe('0s');
+    expect(durations.plane, 'the stale-world fade still animates under prefers-reduced-motion').toBe(
+      '0s',
+    );
+  });
+
+  test('without that preference the yard still animates, so the test above discriminates', async ({
+    page,
+  }) => {
+    // The other half, and it is what stops the assertion above passing against a
+    // stylesheet that simply has no transitions left in it at all.
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'peer-a', x: 0.3, y: 0.4 }));
+    await expect(dots(page)).toHaveCount(1);
+
+    const moving = await page.evaluate(() => {
+      const dot = document.querySelector<HTMLElement>('[data-peer="peer-a"]');
+      if (!dot) throw new Error('no dot');
+      return getComputedStyle(dot).transitionDuration;
+    });
+    expect(moving, 'a dot no longer glides at all, so reduced motion asserts nothing').not.toBe(
+      '0s',
+    );
+  });
+
+  test('«peer--instant» suppresses the transition it is there to suppress', async ({ page }) => {
+    // The same specificity bug, in its other guise. The class is added for one
+    // frame when Vue re-creates a dot that already has a position, so it appears
+    // where it is instead of flying in from the corner — and it was dead code,
+    // out-specified by the very rule it exists to override. Asserted by putting
+    // the class on directly, because the condition that adds it is a Vue
+    // re-render this suite cannot force.
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'peer-a', x: 0.3, y: 0.4 }));
+    await expect(dots(page)).toHaveCount(1);
+
+    const withClass = await page.evaluate(() => {
+      const dot = document.querySelector<HTMLElement>('[data-peer="peer-a"]');
+      if (!dot) throw new Error('no dot');
+      dot.classList.add('peer--instant');
+      return getComputedStyle(dot).transitionDuration;
+    });
+    expect(withClass, 'peer--instant is out-specified again, so dots fly in from the corner').toBe(
+      '0s',
+    );
+  });
+
   test('the intro carries the fiction disclaimer before play begins', async ({ page }) => {
     // The game names real meme characters and parodies a real subculture, so the
     // disclaimer is a requirement rather than decoration — and it must be on the

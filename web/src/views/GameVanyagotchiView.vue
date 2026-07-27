@@ -2377,14 +2377,30 @@ onBeforeUnmount(() => {
 .plane--stale {
   filter: brightness(0.85);
 }
-.plane,
-.plane .peer {
+/* WRITTEN AS TWO RULES, AND THE DESCENDANT SELECTOR IS THE BUG THIS FIXES.
+   These were one `.plane, .plane .peer { … }`, which under scoped compilation
+   becomes `.plane .peer[data-v-…]` — specificity (0,3,0). Every rule that is
+   supposed to override it is written on the element alone and compiles to
+   (0,2,0): the `prefers-reduced-motion` block below, and `.peer--instant`. Both
+   therefore lost, silently. Motion-sensitive users kept a 220ms transition on
+   every dot, and `.peer--instant` was dead code — which is why a re-created dot
+   visibly flew in from the corner of the plane instead of appearing where it
+   already was. A media query adds no specificity of its own, so the only fix is
+   to stop out-specifying the overrides: `.peer` does not need `.plane` in front
+   of it to be found. */
+.plane {
+  transition-property: filter;
+  transition-duration: 400ms;
+  transition-timing-function: ease;
+}
+.peer {
   transition-property: transform, opacity, filter;
   transition-duration: 220ms, 400ms, 400ms;
   transition-timing-function: linear, ease, ease;
 }
 
-/* First placement: jump, do not fly in from the corner. */
+/* First placement: jump, do not fly in from the corner. Now at the same
+   specificity as the rule above and later in the file, so it actually wins. */
 .peer--instant {
   transition: none;
 }
@@ -2956,7 +2972,17 @@ onBeforeUnmount(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* Every one of these is written on the element alone, which is only enough
+     because nothing above out-specifies it. A rule like `.plane .peer` compiles
+     one class higher than these do and a media query adds no specificity, so
+     re-introducing a descendant selector for anything listed here would switch
+     this whole block off without a word. */
   .peer {
+    transition: none;
+  }
+  /* The stale-world fade, which was missed the first time: the plane dims and
+     desaturates across a reconnect, and that is motion too. */
+  .plane {
     transition: none;
   }
   .hotspot,
