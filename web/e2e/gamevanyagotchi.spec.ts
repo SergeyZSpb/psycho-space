@@ -280,11 +280,13 @@ interface Peer {
    * life, so it never churns the client's appearance guard. A fixture that wrote
    * "seconds remaining" here would be describing a much more expensive protocol.
    *
-   * Note the one world object that does NOT get one: the key at the centre of a
-   * hunt lasts until somebody finds it, so the server sends it no expiry and the
-   * client draws it as an ordinary full-size dot. That is intended — the thing
-   * this distinction exists to shrink is litter, and the key is the one object
-   * meant to be spotted.
+   * Note the one world object that does NOT get one: the crate of beer stands
+   * there until it is drunk dry, so the server sends it no expiry and the client
+   * draws it as an ordinary full-size dot. That is intended — the thing this
+   * distinction exists to shrink is litter, and the crate is the one object
+   * meant to be walked to. (The key at the centre of a hunt used to be another
+   * such object. It is hidden now and is not on a frame at all, so no fixture
+   * here can give itself one.)
    */
   expires?: number;
   // THERE IS NO AVATAR FIELD, and a test that gave a peer one would be
@@ -2802,11 +2804,15 @@ test.describe('«Ванягоччи» — the key hunt', () => {
   // to every other test in this file, because the yard looks identical either
   // way — which is the entire reason this suite exists.
   //
-  // THE KEY ITSELF NEEDS NO TEST HERE, and adding one would be a regression. It
-  // reaches this page as an ordinary entity with an art key, drawn and placed
-  // and forgotten by the same machinery that handles a Ваня and a deposit; the
-  // suite above already pins that the client stayed kind-agnostic, and teaching
-  // this file what a `key` is would be undoing precisely that.
+  // THE KEY ITSELF NEEDS NO TEST HERE, and adding one would be a regression —
+  // now for a second reason as well as the original one. It is HIDDEN: the
+  // server picks a hiding place at spawn and publishes none of it, so the key is
+  // not an entity on any frame and there is nothing here to draw. And even
+  // before that it was drawn and placed and forgotten by the same machinery that
+  // handles a Ваня and a deposit, so teaching this file what a `key` is would be
+  // undoing the kind-agnosticism the suite above exists to pin. Where a search
+  // is exercised is the pet spec, which is the file that stubs a catalogue and
+  // therefore the only one that has hiding places in it at all.
 
   test('a fresh hunt is announced, and one already running is joined in silence', async ({
     page,

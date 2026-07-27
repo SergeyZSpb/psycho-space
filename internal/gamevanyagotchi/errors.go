@@ -61,6 +61,26 @@ var (
 	// It exists because a greyed button is a suggestion, and because a count on a
 	// frame is always a moment out of date.
 	ErrOutOfStock = errors.New("gamevanyagotchi: nothing left in it")
+	// ErrNoSpot means a search verb arrived naming no place to search — or naming
+	// something that is not a place in the location its pet is standing in.
+	//
+	// The two are ONE SENTINEL on purpose. To the server they are the same
+	// failure: nothing was named that could be looked in. A client that sends a
+	// spot key from another location, or a key that has left the catalogue, or no
+	// key at all, is in every case a client that has not asked a question — and
+	// splitting them would mean inventing a second line for a case only a stale or
+	// hostile client reaches, which is a sentence written for nobody.
+	ErrNoSpot = errors.New("gamevanyagotchi: no place named to search")
+	// ErrNothingHere means he searched a real place, he was standing in it, and
+	// the thing he was looking for was somewhere else.
+	//
+	// THE ONLY REFUSAL IN THIS GAME THAT IS A MOVE IN IT. The other two a search
+	// can produce tell the player he has not asked properly yet — name a place,
+	// walk over — and cost him nothing. This one is the answer: he looked, and it
+	// was not there. It is deliberately distinct from ErrTooFar for exactly the
+	// reason ErrTooFar is distinct from ErrOutOfStock — the three want different
+	// things from him, and one sentence covering them would tell him to do none.
+	ErrNothingHere = errors.New("gamevanyagotchi: nothing hidden there")
 	// ErrNotYet means the verb needs one of his own numbers to be further along
 	// — there is nothing to do on an empty bladder. The client greys the button,
 	// so a player should rarely meet this; it exists because a greyed button is

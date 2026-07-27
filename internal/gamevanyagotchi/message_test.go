@@ -162,7 +162,7 @@ func TestParsingAVerbFrameRejectsEveryBadShape(t *testing.T) {
 			why:  "nine verbs against a cap of eight — refused at the edge, before any storage is touched"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := parseVerbs([]byte(tc.payload)); !errors.Is(err, tc.want) {
+			if _, _, err := parseVerbs([]byte(tc.payload)); !errors.Is(err, tc.want) {
 				t.Fatalf("parseVerbs(%s) = %v; want %v — %s", tc.payload, err, tc.want, tc.why)
 			}
 		})
@@ -173,7 +173,7 @@ func TestParsingAVerbFrameRejectsEveryBadShape(t *testing.T) {
 // fold applies them in sequence — so a parser that returned a set would silently
 // change what the player asked for.
 func TestParsingAVerbFrameKeepsTheOrder(t *testing.T) {
-	got, err := parseVerbs([]byte(`{"t":"vanyagotchi_do","verbs":["drink","relieve","drink"]}`))
+	got, _, err := parseVerbs([]byte(`{"t":"vanyagotchi_do","verbs":["drink","relieve","drink"]}`))
 	if err != nil {
 		t.Fatalf("parseVerbs: %v", err)
 	}
@@ -185,5 +185,65 @@ func TestParsingAVerbFrameKeepsTheOrder(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("position %d is %q; want %q — the batch order is the fold order", i, got[i], want[i])
 		}
+	}
+}
+
+// TestParsingAVerbFrameCarriesTheSpotThroughUntouched.
+//
+// The spot is the first inbound field the server has to JUDGE rather than clamp,
+// and the parser's whole job is to not get in the way of that: it reads the
+// string and hands it on. Every check that matters — is it a place, is it a place
+// in HIS location, is he standing in it — is the service's, against the catalogue
+// and the yard's own placement, and a parser that pre-filtered would be a second
+// weaker copy of the lookup that has to happen anyway.
+//
+// Absence is the ordinary case, not a defect: every verb but a search sends no
+// spot at all, so an empty string has to reach Do rather than being refused here.
+func TestParsingAVerbFrameCarriesTheSpotThroughUntouched(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    string
+		why     string
+	}{
+		{
+			name:    "a spot the catalogue has",
+			payload: `{"t":"vanyagotchi_do","verbs":["claim"],"spot":"bush"}`,
+			want:    "bush",
+		},
+		{
+			name:    "no spot at all",
+			payload: `{"t":"vanyagotchi_do","verbs":["drink"]}`,
+			want:    "",
+			why:     "every verb but a search sends none, so absence is the ordinary frame rather than a bad one",
+		},
+		{
+			name:    "a spot no location has",
+			payload: `{"t":"vanyagotchi_do","verbs":["claim"],"spot":"луна"}`,
+			want:    "луна",
+			why:     "the parser validates shape only; whether this names a place is decided against the catalogue for the pet's own location",
+		},
+		{
+			name:    "a spot that is not a string",
+			payload: `{"t":"vanyagotchi_do","verbs":["claim"],"spot":7}`,
+			want:    "",
+			why:     "a malformed spot takes the whole frame down, which is the same silence any other bad shape gets",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, spot, err := parseVerbs([]byte(tc.payload))
+			if tc.name == "a spot that is not a string" {
+				if !errors.Is(err, ErrMalformedMessage) {
+					t.Fatalf("parseVerbs(%s) = %v; want ErrMalformedMessage — %s", tc.payload, err, tc.why)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseVerbs(%s): %v", tc.payload, err)
+			}
+			if spot != tc.want {
+				t.Fatalf("the frame's spot came through as %q; want %q — %s", spot, tc.want, tc.why)
+			}
+		})
 	}
 }

@@ -1,4 +1,10 @@
-import type { VanyagotchiSkin, VanyagotchiStore } from '../api/types';
+import type {
+  VanyagotchiAction,
+  VanyagotchiConfig,
+  VanyagotchiHotspot,
+  VanyagotchiSkin,
+  VanyagotchiStore,
+} from '../api/types';
 
 // Applying positions to the plane, deliberately outside Vue.
 //
@@ -344,11 +350,13 @@ export interface PeerAppearance {
    * becomes a deploy (ADR-028).
    *
    * What it costs is stated rather than discovered: an object with no expiry —
-   * today, the key, which lasts until somebody finds it — is drawn as an
-   * ordinary full-size dot. That is the right way round anyway. The thing this
-   * distinction is FOR is litter, which the owner asked to stop dominating the
-   * yard, and the one object that is meant to be spotted is the one that keeps
-   * its circle.
+   * today, the crate of beer, which stands there until it is drunk dry — is
+   * drawn as an ordinary full-size dot. That is the right way round anyway. The
+   * thing this distinction is FOR is litter, which the owner asked to stop
+   * dominating the yard, and the one object that is meant to be walked to is the
+   * one that keeps its circle. (The lost key used to be the other such object.
+   * It is not on a frame at all now: it is hidden, so publishing where it stood
+   * was publishing the answer — see the hiding-place section below.)
    *
    * ABSOLUTE, which is what lets it sit on a frame that repeats five times a
    * second: an instant is CONSTANT for the life of the object, so it never
@@ -863,6 +871,207 @@ export function storeLabel(store: VanyagotchiStore | undefined, atStore: boolean
   // he has arrived.
   if (!atStore) return `🍺 ящик: ${store.left} — дойди`;
   return `🍺 ящик: ${store.left}`;
+}
+
+// ---------------------------------------------------------------------------
+// The key hunt: hiding places, and the verb you search one with.
+//
+// The key is not on the plane any more. It used to be an ordinary entity with a
+// position everybody could see, which made the hunt a race to press a button
+// rather than a search — the thing was visible, so there was nothing to find. It
+// is now HIDDEN: the server knows which hiding place it is under and publishes
+// none of it, and what the client is given instead is the LIST of candidates,
+// on the catalogue, where it costs one cached request rather than five frames a
+// second.
+//
+// So the browser has two things to work out, and neither of them is "where are
+// the keys". WHICH PLACES CAN BE SEARCHED comes off the served location, and
+// WHICH VERB SEARCHES ONE is inferred from the catalogue's shape rather than
+// from a key this file holds — see `searchVerb` for the whole of that argument,
+// because it is the one place in this module that comes close to knowing a piece
+// of content and the reason it does not is worth reading before changing it.
+//
+// WHAT IS DELIBERATELY NOT HERE is a second distance function. Whether he has
+// arrived somewhere is `beside` above, the same arithmetic against the same
+// served `arrive_within` the beer store's gate turns on — a search that thought
+// "near" meant something else than the crate does would be two thresholds where
+// the game has one, and the server would refuse a claim the screen had already
+// decided was good.
+// ---------------------------------------------------------------------------
+
+/**
+ * What to draw for a hiding place the catalogue described without a picture.
+ *
+ * A question mark rather than a blank, and the choice is the same one
+ * `UNKNOWN_ART` makes for a person: the place is real and can genuinely be
+ * searched, and the only thing missing is this client's idea of what it looks
+ * like. An invisible tap target would be worse than an ugly one — the whole
+ * mechanic is that you can see where there is something to look under.
+ */
+export const UNKNOWN_SPOT = '❓';
+
+/**
+ * How long a search stays pending before the client forgets it, in
+ * milliseconds.
+ *
+ * A BACKSTOP, NOT A MODEL OF THE WALK. Tapping a hiding place sends him walking
+ * and arms a claim to be sent when he arrives; the walk can simply never finish
+ * — he rolls «устал» part way and sits down, which is intended and is what makes
+ * a far hiding place a gamble — and without this the armed claim would sit there
+ * indefinitely and fire minutes later, the first time the player happened to
+ * walk him past that bush for some other reason. A search nobody asked for is a
+ * worse failure than a search that quietly expired.
+ *
+ * Hand-picked rather than derived, because nothing on the wire could derive it:
+ * the walking speed is deliberately server-side (`walkSpeed` in
+ * internal/gamevanyagotchi/content.go) so that no second implementation of the
+ * motion can appear in a browser, so the client cannot know how long crossing
+ * the yard should take. Fifteen seconds is comfortably longer than the longest
+ * walk the plane allows at the speed the prose describes — about a fifth of the
+ * yard a second, so a corner-to-corner walk is around seven — and it fails in
+ * the safe direction either way: expiring early costs one tap to repeat,
+ * expiring late is the bug this exists to prevent.
+ */
+export const SEARCH_WALK_MS = 15_000;
+
+/**
+ * Is this something off the wire we can put on the plane and tap?
+ *
+ * Narrowed to the two fields that are ENTRY REQUIREMENTS rather than to the
+ * whole published shape, exactly as `isRenderablePosition` is: the key is what
+ * the claim names, so a hotspot without one is a tap that could only ever be
+ * refused, and the place is what he walks to, so one without a usable position
+ * is a tap with nowhere to go. Everything else about a hiding place has a
+ * fallback, and is therefore read again untyped by the caller rather than
+ * promised here.
+ */
+function isHotspot(value: unknown): value is { key: string; at: { x: number; y: number } } {
+  if (typeof value !== 'object' || value === null) return false;
+  const spot = value as Record<string, unknown>;
+  return typeof spot.key === 'string' && spot.key.length > 0 && isPlace(spot.at);
+}
+
+/** One shared empty list, so a yard with nothing to search never allocates. */
+const EMPTY_HOTSPOTS: readonly VanyagotchiHotspot[] = Object.freeze([]);
+
+/**
+ * The hiding places of one location, ready to draw.
+ *
+ * FILTERED BY LOCATION RATHER THAN FLATTENED, and that is the half of this
+ * function that is not about today. There is one location in the game as it
+ * stands, so a flat list would behave identically and would have to be undone
+ * the moment the лес and the лифт arrive — at which point every yard would be
+ * showing every other yard's bushes. The catalogue already carries the hotspots
+ * per location, so honouring that costs one `find` and nothing else.
+ *
+ * TOLERANT AT EVERY STEP, like everything else that reads the catalogue: no
+ * config yet (it is fetched over HTTP while the plane runs on the socket), a
+ * location this client cannot find, a location with no hiding places at all, or
+ * a malformed entry among good ones. Each yields fewer hotspots rather than a
+ * throw, and the failure of the whole thing is a yard with nothing to tap —
+ * which is exactly the yard a server that predates the hunt serves.
+ *
+ * Frozen, like `readAppearances`, so a caller cannot quietly sort or splice a
+ * list that other callers are reading in the same render.
+ */
+export function hotspotsFor(
+  config: VanyagotchiConfig | null | undefined,
+  locationKey: string | undefined,
+): readonly VanyagotchiHotspot[] {
+  if (!locationKey) return EMPTY_HOTSPOTS;
+  const locations = config?.locations;
+  if (!Array.isArray(locations)) return EMPTY_HOTSPOTS;
+  const here = locations.find((location) => location?.key === locationKey);
+  if (!Array.isArray(here?.hotspots)) return EMPTY_HOTSPOTS;
+  const out: VanyagotchiHotspot[] = [];
+  for (const entry of here.hotspots) {
+    if (!isHotspot(entry)) continue;
+    // The same object, read again untyped: the guard above narrowed it to the
+    // two fields a hiding place cannot do without, and deliberately promises
+    // nothing about the two that fall back.
+    const raw = entry as unknown as Record<string, unknown>;
+    out.push({
+      key: entry.key,
+      // Falls back rather than dropping the place, for the reason `resolveArt`
+      // falls back rather than drawing nobody: a hiding place this client
+      // cannot picture is still a hiding place the key might be under, and
+      // making it untappable would mean a client older than its server could
+      // never win a hunt.
+      label: typeof raw.label === 'string' ? raw.label : '',
+      emoji: typeof raw.emoji === 'string' && raw.emoji ? raw.emoji : UNKNOWN_SPOT,
+      at: { x: entry.at.x, y: entry.at.y },
+    });
+  }
+  return Object.freeze(out);
+}
+
+/**
+ * Which verb searches a hiding place, or nothing when the catalogue has none.
+ *
+ * IDENTIFIED BY THE CATALOGUE'S SHAPE AND NEVER BY A KEY, which is the whole
+ * reason this function exists instead of the string «claim» sitting in a
+ * template. The client holds no content: it cannot name a stat, a skin, an NPC
+ * or a kind of thing on the ground, and a browser that knew what the searching
+ * verb was called would be a browser that had to be redeployed the day it was
+ * renamed (ADR-028). The same discipline `outOfReach` follows one section up,
+ * where the PRESENCE of `needs_near` is tested and its value never is.
+ *
+ * The shape it reads is a real distinction rather than a convenient one. Two
+ * verbs in this catalogue race other players for something. One of them
+ * («выпить пива») also says where you have to be standing to use it, because
+ * what it draws from is a crate that everybody can see; the other says nothing
+ * of the sort, because what it draws from is HIDDEN and where to stand is the
+ * question rather than the answer. So: contested, with no place to walk to, is
+ * a verb whose target has to be searched for.
+ *
+ * NOTHING AT ALL WHEN THE ANSWER IS AMBIGUOUS, and that is deliberate in both
+ * directions. No such verb is an older server, or a location with no hunt, and
+ * the honest response is a yard with no tap targets in it. SEVERAL such verbs is
+ * a catalogue this predicate no longer identifies one thing in — and sending the
+ * wrong verb, with somebody else's spot key on it, is a worse answer than
+ * sending none: the hotspots go away, the player is told nothing false, and the
+ * server still refuses a bare claim with «где искать-то». It is the case worth
+ * knowing about when a second contested verb is added.
+ */
+export function searchVerb(
+  actions: readonly VanyagotchiAction[] | undefined,
+): VanyagotchiAction | undefined {
+  if (!Array.isArray(actions)) return undefined;
+  let found: VanyagotchiAction | undefined;
+  for (const action of actions) {
+    if (!action || typeof action.key !== 'string' || !action.key) continue;
+    // THE PRESENCE OF THE CAPABILITY, NEVER THE VALUE OF A KEY. The server
+    // derives `needs_spot` from the kind this verb races for being hidden, and
+    // publishes it precisely so this line can exist without the browser holding
+    // any content at all (ADR-028): the question asked is «does this verb
+    // search?», never «is this verb `claim`?».
+    //
+    // It replaced `contests && !needs_near`, which inferred the same thing and
+    // was true only by accident of there being exactly one contested verb with
+    // nowhere to walk to. The day a second one arrived that predicate would have
+    // matched two, returned undefined, and the hunt would have disappeared from
+    // the screen with nothing failing anywhere.
+    if (!action.needs_spot) continue;
+    if (found) return undefined;
+    found = action;
+  }
+  return found;
+}
+
+/**
+ * What a screen reader — and a desktop hover — is told a hiding place is.
+ *
+ * A pure function rather than an expression in the template, the same rule the
+ * cheatsheet follows: the interesting half of a sentence belongs somewhere a
+ * unit test can hold it. There is exactly one thing to get wrong here and it is
+ * the nameless case: a hotspot the catalogue described without a label must not
+ * produce «искать: », a trailing colon over nothing, and must not fall back to
+ * the wire KEY, which would show a player the word `bush` where the yard says
+ * «куст».
+ */
+export function spotAriaLabel(spot: { label?: string }): string {
+  const label = typeof spot.label === 'string' ? spot.label.trim() : '';
+  return label ? `искать: ${label}` : 'искать здесь';
 }
 
 /**

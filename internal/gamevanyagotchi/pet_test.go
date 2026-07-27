@@ -1070,7 +1070,7 @@ func TestAVerbThatIsNotInTheCatalogueIsRejectedAndTouchesNothing(t *testing.T) {
 	for _, key := range []string{"", "sudo-drink", StatHP, "DRINK", ActionDrink + " "} {
 		t.Run("action "+key, func(t *testing.T) {
 			repo := &fakeRepo{}
-			if _, err := petService(repo).Do(context.Background(), testAccount, []string{key}, time.Now().UTC()); !errors.Is(err, ErrUnknownAction) {
+			if _, err := petService(repo).Do(context.Background(), testAccount, []string{key}, "", time.Now().UTC()); !errors.Is(err, ErrUnknownAction) {
 				t.Fatalf("Do(%q) error = %v; want ErrUnknownAction", key, err)
 			}
 			if repo.ensured != 0 || repo.writes != 0 || repo.seeded != 0 {
@@ -1138,7 +1138,7 @@ func TestAVerbAppliesEveryEffectOfAMultiStatAction(t *testing.T) {
 			atTheStore(t, svc, repo, testAccount, crateStock)
 
 			before := time.Now().UTC()
-			st, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, time.Now().UTC())
+			st, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", time.Now().UTC())
 			after := time.Now().UTC()
 			if err != nil {
 				t.Fatalf("Do: %v", err)
@@ -1211,13 +1211,15 @@ func TestEveryActionRestampsEveryStatAtOneInstant(t *testing.T) {
 			repo.claimWon = true
 			svc := contestedService(repo)
 			// And a verb gated on WHERE HE IS has to be allowed to happen for the
-			// same reason. Applied to every case rather than only to the one that
-			// needs it, so that a second gated verb joins this loop without
-			// anybody having to notice.
-			atTheStore(t, svc, repo, testAccount, crateStock)
+			// same reason — which is now two different places, because drinking
+			// wants him at the crate and searching wants him at a hotspot on the
+			// other side of the yard. Read off the catalogue rather than switched
+			// on here, so that a third gated verb joins this loop without anybody
+			// having to notice.
+			spot := readyFor(t, svc, repo, testAccount, action)
 
 			before := time.Now().UTC()
-			if _, err := svc.Do(context.Background(), testAccount, []string{action.Key}, time.Now().UTC()); err != nil {
+			if _, err := svc.Do(context.Background(), testAccount, []string{action.Key}, spot, time.Now().UTC()); err != nil {
 				t.Fatalf("Do(%q): %v", action.Key, err)
 			}
 			after := time.Now().UTC()
@@ -1302,7 +1304,7 @@ func TestRelievingHimDoesNotEraseTheDamageAFullBladderAlreadyDid(t *testing.T) {
 	}
 	repo := playedFor(rows...)
 
-	st, err := petService(repo).Do(context.Background(), testAccount, []string{ActionRelieve}, time.Now().UTC())
+	st, err := petService(repo).Do(context.Background(), testAccount, []string{ActionRelieve}, "", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("Do(%q): %v", ActionRelieve, err)
 	}
@@ -1412,7 +1414,7 @@ func TestAVerbRefusedForWantOfWhatItNeedsWritesNothingAndFillingUpLetsItThrough(
 				t.Fatal("the pet has no stat rows at all; a refusal that wrote nothing would be indistinguishable from one that wrote everything")
 			}
 
-			st, err := svc.Do(context.Background(), testAccount, []string{relieve.Key}, now)
+			st, err := svc.Do(context.Background(), testAccount, []string{relieve.Key}, "", now)
 
 			if tc.allowed {
 				if err != nil {
@@ -1551,7 +1553,7 @@ func TestADeadPetTakesTheActionThatRevivesAndRefusesTheOneThatDoesNot(t *testing
 	for _, action := range Content().Actions {
 		t.Run(action.Key, func(t *testing.T) {
 			repo := deadPet(t)
-			st, err := petService(repo).Do(context.Background(), testAccount, []string{action.Key}, time.Now().UTC())
+			st, err := petService(repo).Do(context.Background(), testAccount, []string{action.Key}, "", time.Now().UTC())
 
 			if !action.RevivesFatal {
 				refused++

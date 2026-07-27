@@ -3,7 +3,9 @@ package gamevanyagotchi
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"log/slog"
+	"math/big"
 	"time"
 )
 
@@ -137,6 +139,19 @@ func (s *Service) props(now time.Time) []Peer {
 			// no person behind it who would otherwise vanish from the yard.
 			continue
 		}
+		if kind.Hidden {
+			// THE KEY IS NOT ON THE WIRE, and this one line is the whole of it.
+			// It stays in the cache — the hunt's id comes out of it and so does
+			// the answer a search is judged against — but it never becomes an
+			// entity, so its coordinates do not leave this process and no client
+			// can draw, infer or record where it is. A search is only a search
+			// because of this.
+			//
+			// It also makes the yard one entity SMALLER on the wire, about 60
+			// bytes a frame per viewer, which is the rare case of the secure
+			// thing also being the cheap one.
+			continue
+		}
 		var expires int64
 		if o.ExpiresAt != nil {
 			expires = o.ExpiresAt.Unix()
@@ -261,23 +276,125 @@ func (s *Service) ensureSingleton(ctx context.Context, def ObjectKind) {
 		return
 	}
 	if err := s.repo.InsertWorldObject(ctx, s.q, def.Key, LocationYard,
-		s.placeFor(def), "", def.Singleton, def.stock(), nil); err != nil {
+		s.placeFor(def, LocationYard), "", def.Singleton, def.stock(), nil); err != nil {
 		slog.WarnContext(ctx, "gamevanyagotchi: could not spawn a world object", "kind", def.Key, "err", err)
 	}
 }
 
 // placeFor decides where a freshly spawned object of a kind stands.
 //
-// The catalogue's own pitch for a kind that has one, and somewhere drawn at
-// random for a kind that does not. That nil is the entire difference between a
+// The catalogue's own pitch for a kind that has one, and one of the location's
+// hotspots for a kind that does not. That nil is the entire difference between a
 // shop and a lost key, and reading it here is what keeps the difference out of
 // the two places that spawn things — the hello above and the exhausting write in
 // Do — so neither of them has to know which kinds stand still.
-func (s *Service) placeFor(def ObjectKind) Point {
+//
+// IT TAKES THE LOCATION, which is the shape the four locations after the yard
+// reuse: a thing is hidden among the places in the location it is spawned into,
+// and nothing here names one.
+func (s *Service) placeFor(def ObjectKind, locationKey string) Point {
 	if def.At != nil {
 		return *def.At
 	}
-	return s.hidingPlace()
+	return hideIn(locationKey)
+}
+
+// hideIn picks one of a location's hotspots to lose something in.
+//
+// WHERE THE KEY IS, IS STORED RATHER THAN DERIVED, and that is a decision worth
+// the paragraph because the obvious alternative was tried on paper first: derive
+// the hiding place from the row's id under a process-lifetime secret, the way the
+// roster's pseudonyms already are. Storing it wins on three counts. The row
+// already has the columns — `x` and `y` — so this costs nothing and invents no
+// second secret with a second lifetime to reason about. It is not derivable AT
+// ALL, rather than derivable by anybody who obtains the secret, which meets the
+// requirement more strongly and not less. And it SURVIVES A RESTART: a
+// per-process secret would silently move the key out from under somebody who was
+// halfway through searching for it — invisible, unfair, and impossible to write a
+// test for.
+//
+// crypto/rand rather than math/rand, and here it genuinely is a secret rather
+// than a habit: this is the answer to the game, so a predictable sequence would
+// let a player who watched a few rounds know the next one before it started.
+// `rand.Int` rather than a byte and a modulo, because a modulo over 256 favours
+// the low indices by about 2% at five hotspots — small, but a bias in the one
+// number the whole mechanic rests on is the wrong place to save three lines.
+//
+// A location with no hotspots cannot hide anything and falls back to its entry
+// point. That is a content bug rather than a state — the invariant test in
+// content_test.go forbids it — and the fallback exists only so a spawn cannot
+// produce a coordinate the column's own CHECK would refuse.
+func hideIn(locationKey string) Point {
+	loc, ok := LocationByKey(locationKey)
+	if !ok {
+		return spawn
+	}
+	if len(loc.Hotspots) == 0 {
+		return loc.Entry
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(loc.Hotspots))))
+	if err != nil {
+		// Unreachable on any platform this runs on — crypto/rand's reader does
+		// not fail, and modern Go panics rather than reporting it here. Falling
+		// back to the first hotspot keeps a spawn from being skipped, which is
+		// the failure that would end the hunt for ever.
+		return loc.Hotspots[0].At
+	}
+	return loc.Hotspots[n.Int64()].At
+}
+
+// searched judges a claim against the place the player says he looked in.
+//
+// THE SECOND USER OF THE ARRIVAL GATE I9 BUILT, and it deliberately reuses the
+// shape rather than the function: `beside` measures the distance to the one live
+// object of a kind, which is exactly the question a search must not answer — "am
+// I near the key" is the thing the player is not allowed to be told. This
+// measures the distance to the spot HE NAMED, which he already knows, and only
+// then asks whether the key is in it.
+//
+// THE ORDER OF THE THREE CHECKS IS THE SECURITY PROPERTY, not a matter of taste.
+// Reach is decided BEFORE the answer is looked at, so a wrong spot and a right
+// spot he has not reached are indistinguishable: standing anywhere far away is
+// «далековато» whether or not the key is there, and only somebody actually
+// standing in a place is ever told whether it was empty. Reverse the two and the
+// refusal becomes an oracle — tap every hotspot from the middle of the yard and
+// the one that answers differently is the answer.
+//
+// WHAT A HOSTILE CLIENT CAN SEND, weighed. The spot is an arbitrary string from
+// the wire: it is resolved against the catalogue for the pet's OWN location
+// (so a spot from another location, an invented one, or none at all is
+// ErrNoSpot), and then against the yard's own in-memory placement at the instant
+// the batch is folded (so a client announcing an arrival it has not made is
+// ErrTooFar). Both are decided server-side from data the client cannot influence
+// — the catalogue is compiled in and the placement is what the plane broadcast
+// to everybody. The client announcing arrival is a REQUEST, never a fact. The
+// most an arbitrary payload buys is a refusal, and the refusal it buys carries no
+// information about where the key is.
+//
+// It is on the LIVE PATH ONLY, next to the arrival gate and never inside `apply`,
+// for the reason ADR-043 gives: `apply` is what a replay folds over a history,
+// and a rule about where somebody was standing cannot be one of its inputs. The
+// log records that a search happened, never where from.
+func (s *Service) searched(accountID, locationKey, spotKey string, def ObjectKind, now time.Time) error {
+	spot, ok := hotspotIn(locationKey, spotKey)
+	if !ok {
+		return fmt.Errorf("%w: %q is not a place in %q", ErrNoSpot, spotKey, locationKey)
+	}
+	if distance(s.standing(accountID, now), spot.At) > arriveWithin {
+		return fmt.Errorf("%w: %q is not standing at %q", ErrTooFar, accountID, spot.Key)
+	}
+	object, ok := s.objectOf(def.Key, now)
+	if !ok {
+		// No hunt is running at all. Answered as an empty place rather than as
+		// anything more specific: there is genuinely nothing here, and a distinct
+		// sentence would tell a player about the world's bookkeeping.
+		return fmt.Errorf("%w: no %q is hidden in %q", ErrNothingHere, def.Key, locationKey)
+	}
+	where, ok := nearestHotspot(locationKey, object.At)
+	if !ok || where.Key != spot.Key {
+		return fmt.Errorf("%w: %q is not in %q", ErrNothingHere, def.Key, spot.Key)
+	}
+	return nil
 }
 
 // beside reports whether an account is standing close enough to the one live
@@ -312,25 +429,6 @@ func (s *Service) store(now time.Time) *Store {
 		return nil
 	}
 	return &Store{X: crate.At.X, Y: crate.At.Y, Left: *crate.Remaining}
-}
-
-// hidingPlace picks somewhere on the plane to lose the keys.
-//
-// crypto/rand rather than math/rand, and not because a spawn point is a secret:
-// it is the project's standing rule for anything random, and a predictable
-// sequence here would let a player who watched a few rounds guess where the next
-// key lands before it is drawn.
-func (s *Service) hidingPlace() Point {
-	var b [2]byte
-	_, _ = rand.Read(b[:])
-	// Kept off the very edge, where a dot is half clipped by the plane and
-	// awkward to tap.
-	const margin = 0.08
-	span := 1 - 2*margin
-	return Point{
-		X: margin + span*float64(b[0])/255,
-		Y: margin + span*float64(b[1])/255,
-	}
 }
 
 // setMood puts a cosmetic face on somebody for a moment.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +154,93 @@ func aLostKey(n int, at Point) WorldObject {
 	return o
 }
 
+// aHotspot is one of a location's published places, by index.
+//
+// By index rather than by key, for the reason mustStat and mustObjectKind are
+// looked up rather than written down: the five places in the yard are content
+// somebody is meant to move by feel, and a test naming «куст» would break the
+// day somebody renamed a bush. What the tests below need is "a place" and "a
+// different place", which is what an index gives.
+func aHotspot(t *testing.T, locationKey string, i int) Hotspot {
+	t.Helper()
+	loc, ok := LocationByKey(locationKey)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", locationKey)
+	}
+	if i >= len(loc.Hotspots) {
+		t.Fatalf("%q publishes %d hotspots and this test wants a %s; a search needs somewhere to be wrong as well as somewhere to be right",
+			locationKey, len(loc.Hotspots), []string{"first", "second", "third"}[min(i, 2)])
+	}
+	return loc.Hotspots[i]
+}
+
+// theKeyIsIn hides the lost key at a hotspot, without placing anybody.
+//
+// BOTH HALVES, exactly as crateInTheYard writes both: into the cache the gate
+// reads, and into what the repository hands back — because a verb that changes
+// the world reloads the cache from the repository afterwards, and a fixture that
+// wrote only the cache would give the first search a key and the second one an
+// empty yard.
+//
+// Separate from searchingIn because half the tests of the gate are about somebody
+// standing in the WRONG place, and "the key is here" and "he is there" are the
+// two independent facts a search is judged on.
+func theKeyIsIn(t *testing.T, svc *Service, repo *fakeRepo, spot Hotspot) WorldObject {
+	t.Helper()
+	key := mustObjectKind(t, KindKey)
+	if !key.Hidden {
+		t.Fatalf("the catalogue no longer marks %q hidden; there would be nothing to search for", key.Key)
+	}
+	lost := aLostKey(7, spot.At)
+	repo.objects = append(repo.objects, lost)
+	svc.mu.Lock()
+	svc.world = append(svc.world, lost)
+	svc.mu.Unlock()
+	return lost
+}
+
+// searchingIn is the fixture every claim now needs: a key hidden in a place, and
+// somebody standing in that place. It returns the spot key his frame has to name.
+//
+// That it takes three lines rather than none IS the rule change: «искать ключи»
+// used to be pressable from anywhere against a key drawn on the plane for
+// everybody to see, so a test needed no position and no place at all.
+func searchingIn(t *testing.T, svc *Service, repo *fakeRepo, accountID string, spot Hotspot) string {
+	t.Helper()
+	theKeyIsIn(t, svc, repo, spot)
+	standAt(svc, accountID, spot.At)
+	return spot.Key
+}
+
+// readyFor puts an account wherever a verb's own gates require him to be, and
+// returns the spot its frame has to name.
+//
+// It exists for the two tests that press EVERY verb in the catalogue to assert
+// something that is not about the gates — the shared re-stamp, and the contest
+// routing. Both would otherwise have to carry a switch over verbs that somebody
+// has to remember to extend, which is the failure where a new verb silently stops
+// being covered. This reads the gates off the catalogue instead, so a third gated
+// verb joins those loops with no edit here.
+func readyFor(t *testing.T, svc *Service, repo *fakeRepo, accountID string, action Action) string {
+	t.Helper()
+	if action.NeedsNear != "" {
+		// The one kind anything is gated on standing beside is the crate, and it
+		// is the crate this stands him at. A second such kind would want this to
+		// read the kind's own `At` — which is exactly what atTheStore already
+		// does one level down.
+		atTheStore(t, svc, repo, accountID, crateStock)
+	}
+	def, ok := ObjectKindByKey(action.Contests)
+	if !ok || !def.Hidden {
+		return ""
+	}
+	// A searching verb wants him somewhere else entirely — a hotspot is nowhere
+	// near the beer store, by design — so this overrides any placement above. No
+	// verb is gated on both today, and one that were would be a rule nobody could
+	// satisfy rather than a fixture problem.
+	return searchingIn(t, svc, repo, accountID, aHotspot(t, LocationYard, 0))
+}
+
 // TestADepositIsLeftWhereTheServerBelievesHeIsStanding is the whole of what a
 // verb writes into the world, driven down the one path a client actually has.
 //
@@ -251,7 +337,7 @@ func TestADepositFromSomebodyTheYardHasNeverPlacedLandsAtTheEntrance(t *testing.
 	repo := playedFor(enoughFor(t, ActionRelieve, epoch))
 	svc := planeService(&fakeTransport{}, repo)
 
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, at(0)); err != nil {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, "", at(0)); err != nil {
 		t.Fatalf("Do(%s): %v", ActionRelieve, err)
 	}
 
@@ -298,7 +384,7 @@ func TestTheDepositTheStatsAndTheEventsAreOneWrite(t *testing.T) {
 	}
 
 	repo.insertErr = refused
-	_, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, at(0))
+	_, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, "", at(0))
 	if !errors.Is(err, refused) {
 		t.Fatalf("Do(%s) answered err=%v; want the insert's own failure surfaced to the caller", ActionRelieve, err)
 	}
@@ -369,7 +455,7 @@ func TestAVerbThatTouchesNothingInTheWorldLeavesTheCacheAlone(t *testing.T) {
 	svc := planeService(&fakeTransport{}, repo)
 	atTheStore(t, svc, repo, testAccount, crateStock)
 
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionRevive}, at(0)); err != nil {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionRevive}, "", at(0)); err != nil {
 		t.Fatalf("Do(%s): %v", ActionRevive, err)
 	}
 	if len(repo.appended) != 1 {
@@ -384,7 +470,7 @@ func TestAVerbThatTouchesNothingInTheWorldLeavesTheCacheAlone(t *testing.T) {
 
 	// And the contrast: a drink DOES change the world, so it refreshes what the
 	// plane renders from — once, on its own goroutine, which is human-paced.
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, at(1)); err != nil {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", at(1)); err != nil {
 		t.Fatalf("Do(%s): %v", ActionDrink, err)
 	}
 	if n := repo.worldObjectReads(); n != 1 {
@@ -600,7 +686,7 @@ func TestTheTickNeverReadsTheWorld(t *testing.T) {
 	// The two moments that ARE allowed to read: a hello, and a verb that left
 	// something behind.
 	svc.load(context.Background(), testAccount)
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, at(0)); err != nil {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionRelieve}, "", at(0)); err != nil {
 		t.Fatalf("Do(%s): %v", ActionRelieve, err)
 	}
 	const human = 2
@@ -740,7 +826,11 @@ func TestOnlyTheWinnerOfTheKeyHasAnythingWrittenDownAtAll(t *testing.T) {
 			}
 
 			repo.claimWon = tc.won
-			st, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, at(0))
+			// A key in a place, and him standing in it — so what this case is
+			// about is the outcome of the RACE rather than the search that got
+			// him to it, which has its own tests below.
+			spot := searchingIn(t, svc, repo, testAccount, aHotspot(t, LocationYard, 0))
+			st, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, spot, at(0))
 
 			// The race was actually run, for the right kind, in the location his pet
 			// is in and in his own name. Without this, everything below would also
@@ -881,9 +971,10 @@ func TestTheClaimAndTheKeyThatReplacesItAreOneWrite(t *testing.T) {
 	}
 
 	repo.claimWon = true
+	spot := searchingIn(t, svc, repo, testAccount, aHotspot(t, LocationYard, 0))
 	repo.insertErr = refused
 
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, at(0)); !errors.Is(err, refused) {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, spot, at(0)); !errors.Is(err, refused) {
 		t.Fatalf("Do(%q) answered err=%v; want the insert's own failure surfaced to the caller", ActionClaim, err)
 	}
 
@@ -970,7 +1061,11 @@ func TestFindingTheKeysPaintsTheYardAndThenStopsPainting(t *testing.T) {
 	}
 
 	repo.claimWon = true
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, at(0)); err != nil {
+	// After the tick, because standing him in the spot he is about to search is
+	// the last thing the winner needs and the broadcast above is what gave the
+	// other two somewhere to wear a face.
+	spot := searchingIn(t, svc, repo, testAccount, aHotspot(t, LocationYard, 0))
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, spot, at(0)); err != nil {
 		t.Fatalf("Do(%q): %v", ActionClaim, err)
 	}
 
@@ -1239,61 +1334,78 @@ func TestTheFrameNamesTheKeyThatIsLostAndAsksNobodyWhichOneItIs(t *testing.T) {
 	}
 }
 
-// TestAKeyIsHiddenSomewhereOnThePlaneAndNeverAgainstItsEdge pins the two things
-// about the hiding place that can actually be wrong.
+// TestAKeyIsHiddenAtOneOfTheLocationsOwnHotspots is the whole of where a key
+// goes, and it replaces the draw-a-random-point placement it supersedes.
 //
-// It must be ON the plane, because the column CHECKs 0..1 and a coordinate
-// outside that is not a badly-placed key but a refused insert and a hunt that
-// never starts. And it must be off the very edge, where a dot is half clipped and
-// awkward to tap on a phone.
+// A key used to be hidden anywhere on the plane and DRAWN there, which made
+// «искать ключи» a race to press a button somebody could already see the answer
+// to. It is now hidden at one of the five places the location publishes — never
+// between them, never at a coordinate no hotspot occupies — because the whole
+// mechanic is that a player picks one of those five and walks to it. A key
+// somewhere else is a key nobody can name.
 //
-// The margin itself is deliberately not written down here: it is a tuning
-// constant somebody is meant to move by feel, and a test carrying the number
-// would report every retune as a regression. What is pinned is that there IS one,
-// that it is the same at both ends, and that the position is genuinely drawn —
-// a key that always landed in the same place would be found by whoever noticed.
-func TestAKeyIsHiddenSomewhereOnThePlaneAndNeverAgainstItsEdge(t *testing.T) {
-	svc := NewService(nil, testRoom, nil, nil, nil)
+// Two properties, and both would fail silently. It must land ON a hotspot,
+// exactly, because that is what `searched` resolves against. And it must move: a
+// key that always landed in the same place would be found by whoever noticed
+// first, every round, for ever. Neither the number of hotspots nor their
+// coordinates are written down here — they are content somebody is meant to move
+// by feel, and a test carrying them would report every retune as a regression.
+func TestAKeyIsHiddenAtOneOfTheLocationsOwnHotspots(t *testing.T) {
+	yard, ok := LocationByKey(LocationYard)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q at all", LocationYard)
+	}
+	if len(yard.Hotspots) < 2 {
+		t.Fatalf("%q publishes %d hotspots; a search needs somewhere to be wrong as well as somewhere to be right",
+			LocationYard, len(yard.Hotspots))
+	}
+	key := mustObjectKind(t, KindKey)
+	if !key.Hidden {
+		t.Fatalf("the catalogue no longer marks %q hidden; it would be drawn on the plane and there would be nothing to search for", key.Key)
+	}
+	if key.At != nil {
+		t.Fatalf("the catalogue gives %q a pitch of its own at %+v; a key that stands somewhere in particular is a shop", key.Key, *key.At)
+	}
 
-	// Enough draws that both ends of the byte each coordinate is derived from are
-	// hit with overwhelming probability, so the observed extremes ARE the margin
-	// rather than a sample that stopped short of it.
-	const draws = 5000
-	lowX, lowY := math.Inf(1), math.Inf(1)
-	highX, highY := math.Inf(-1), math.Inf(-1)
+	// Enough draws that every hotspot is hit with overwhelming probability — at
+	// five places, the chance of missing one across this many is far below any
+	// number worth writing down.
+	const draws = 2000
+	seen := map[string]int{}
 	for i := 0; i < draws; i++ {
-		p := svc.hidingPlace()
+		p := hideIn(LocationYard)
 		if p.X < 0 || p.X > 1 || p.Y < 0 || p.Y > 1 {
 			t.Fatalf("draw %d hid the key at (%v,%v); the world-object table CHECKs both axes into 0..1, so that row would be refused outright",
 				i, p.X, p.Y)
 		}
-		lowX, highX = math.Min(lowX, p.X), math.Max(highX, p.X)
-		lowY, highY = math.Min(lowY, p.Y), math.Max(highY, p.Y)
+		spot, ok := hotspotAtPoint(yard, p)
+		if !ok {
+			t.Fatalf("draw %d hid the key at (%v,%v), which is not any of %q's hotspots; a key nobody can name is a hunt nobody can win",
+				i, p.X, p.Y, LocationYard)
+		}
+		seen[spot.Key]++
 	}
+	for _, h := range yard.Hotspots {
+		if seen[h.Key] == 0 {
+			t.Errorf("%q never held the key across %d draws; every published place has to be worth searching, or the list is longer than the game",
+				h.Key, draws)
+		}
+	}
+}
 
-	for _, axis := range []struct {
-		name      string
-		low, high float64
-	}{
-		{name: "x", low: lowX, high: highX},
-		{name: "y", low: lowY, high: highY},
-	} {
-		if axis.low <= 0 || axis.high >= 1 {
-			t.Errorf("%s ran from %v to %v across %d draws; the key is kept off the edge, where the dot is half clipped and awkward to tap",
-				axis.name, axis.low, axis.high, draws)
-		}
-		// The margin is the same at both ends, so the extremes of thousands of
-		// draws sum to one. A tolerance rather than an equality because the draw is
-		// a byte and the very last value is not guaranteed to come up.
-		if got := axis.low + axis.high; math.Abs(got-1) > 0.02 {
-			t.Errorf("the %s extremes across %d draws are %v and %v, summing to %v; want 1 — the margin is not the same at both ends",
-				axis.name, draws, axis.low, axis.high, got)
-		}
-		if axis.high-axis.low < 0.5 {
-			t.Errorf("%s only ever landed between %v and %v across %d draws; the key is hidden somewhere, not somewhere in particular",
-				axis.name, axis.low, axis.high, draws)
+// hotspotAtPoint finds the hotspot a point is exactly on, which is what a spawn
+// is required to produce.
+//
+// Exact rather than nearest, deliberately: `nearestHotspot` is total by design
+// and would answer for any point on the plane, so using it here would let a key
+// hidden between two bushes pass a test whose whole subject is that it cannot be.
+func hotspotAtPoint(loc Location, at Point) (Hotspot, bool) {
+	for _, h := range loc.Hotspots {
+		if h.At == at {
+			return h, true
 		}
 	}
+	return Hotspot{}, false
 }
 
 // ---------------------------------------------------------------------------
@@ -1392,7 +1504,7 @@ func TestDrinkingIsRefusedFromAcrossTheYardAndAllowedBesideTheCrate(t *testing.T
 			}
 			writes := repo.writes
 
-			_, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, at(0))
+			_, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", at(0))
 
 			if tc.want == nil {
 				if err != nil {
@@ -1474,13 +1586,13 @@ func TestTheGateReadsWhereHeHasGotToAndNotWhereHeSetOff(t *testing.T) {
 		t.Fatalf("halfway along a walk of %v he is already within %v of the crate; this test needs a journey whose middle is genuinely too far away",
 			distance(w.from, w.to), arriveWithin)
 	}
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, midway); !errors.Is(err, ErrTooFar) {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", midway); !errors.Is(err, ErrTooFar) {
 		t.Fatalf("Do(%s) halfway to the crate = %v; want ErrTooFar — he is still walking, and where he is GOING is not where he is",
 			ActionDrink, err)
 	}
 
 	// And once he is there.
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, afterArriving(w)); err != nil {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", afterArriving(w)); err != nil {
 		t.Fatalf("Do(%s) after arriving at the crate: %v; the gate is reading something other than his position at the instant of the verb",
 			ActionDrink, err)
 	}
@@ -1520,9 +1632,9 @@ func TestTheContestFieldRoutesEachVerbToItsOwnDiscipline(t *testing.T) {
 			repo := playedFor()
 			repo.claimWon = true
 			svc := contestedService(repo)
-			atTheStore(t, svc, repo, testAccount, crateStock)
+			spot := readyFor(t, svc, repo, testAccount, action)
 
-			if _, err := svc.Do(context.Background(), testAccount, []string{tc.verb}, at(0)); err != nil {
+			if _, err := svc.Do(context.Background(), testAccount, []string{tc.verb}, spot, at(0)); err != nil {
 				t.Fatalf("Do(%q): %v", tc.verb, err)
 			}
 
@@ -1573,7 +1685,7 @@ func TestTheCrateIsReplacedOnlyByTheDrawThatEmptiesIt(t *testing.T) {
 	svc := planeService(&fakeTransport{}, repo)
 	atTheStore(t, svc, repo, testAccount, 2)
 
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, at(0)); err != nil {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", at(0)); err != nil {
 		t.Fatalf("the first drink: %v", err)
 	}
 	if left := repo.leftIn(crate.Key); left != 1 {
@@ -1583,7 +1695,7 @@ func TestTheCrateIsReplacedOnlyByTheDrawThatEmptiesIt(t *testing.T) {
 		t.Fatalf("%d crates were stood up by a draw that left one behind; the replacement belongs to the draw that empties it: %+v", len(got), got)
 	}
 
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, at(1)); err != nil {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", at(1)); err != nil {
 		t.Fatalf("the drink that empties it: %v", err)
 	}
 	if left := repo.leftIn(crate.Key); left != 0 {
@@ -1632,7 +1744,7 @@ func TestTheDrawAndTheCrateThatReplacesItAreOneWrite(t *testing.T) {
 	}
 	repo.insertErr = refused
 
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, at(0)); !errors.Is(err, refused) {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", at(0)); !errors.Is(err, refused) {
 		t.Fatalf("Do(%s) answered err=%v; want the insert's own failure surfaced to the caller", ActionDrink, err)
 	}
 
@@ -1704,7 +1816,7 @@ func TestAnEmptyCrateRefusesTheDrinkAndCostsHimNothing(t *testing.T) {
 		t.Fatal("the pet has no stat rows at all; a rollback of nothing would pass this test whatever the service did")
 	}
 
-	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, at(0)); !errors.Is(err, ErrOutOfStock) {
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", at(0)); !errors.Is(err, ErrOutOfStock) {
 		t.Fatalf("Do(%s) at an empty crate = %v; want ErrOutOfStock — and NOT ErrTooFar, which would send him walking to a crate he is already standing at",
 			ActionDrink, err)
 	}
@@ -1815,5 +1927,435 @@ func TestTheFrameCarriesTheStoreOnceAndAsksNobodyWhatIsLeft(t *testing.T) {
 					n, ticks, reads)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The key hunt as a SEARCH — «искать ключи» stops being a button and becomes a
+// place you have to name and walk to.
+//
+// It supersedes the press-anywhere claim entirely, and the tests below are
+// written to fail if any of it comes back. Three things changed at once and each
+// one is load-bearing: the key is no longer DRAWN, so nobody can see where it is;
+// the claim carries a SPOT, which is the first inbound payload the server has to
+// judge rather than clamp; and the claim is refused unless he is actually
+// STANDING in that spot, which makes this the second user of the arrival gate I9
+// built rather than a mechanism of its own.
+//
+// The ordering of the checks is a security property rather than a style, and
+// TestARefusalNeverSaysWhereTheKeyIs is the test that holds it: reach is decided
+// before the answer is looked at, so a refusal cannot be used as an oracle.
+// ---------------------------------------------------------------------------
+
+// TestTheKeyIsNeverDrawnOnThePlane is the deletion this iteration is built on,
+// asserted from the only side that can see it.
+//
+// The key used to be an ordinary entity in the roster, which meant every client
+// was told exactly where it was five times a second and «искать ключи» was a race
+// to press a button pointing at a visible dot. It is now absent from the frame
+// entirely — not obscured, not sent with a flag, absent — so a hostile client
+// reading every byte it will ever receive still does not know where the keys are.
+//
+// What must NOT disappear with it is the hunt's id: a hunt is STATE a late joiner
+// has to be able to see, and a yard that stopped saying one was running would
+// leave somebody who opened the app thirty seconds ago with nothing to join.
+func TestTheKeyIsNeverDrawnOnThePlane(t *testing.T) {
+	key := mustObjectKind(t, KindKey)
+	if !key.Hidden {
+		t.Fatalf("the catalogue no longer marks %q hidden; this test is about a rule the game does not have", key.Key)
+	}
+	relief := mustObjectKind(t, KindRelief)
+	if relief.Hidden {
+		t.Fatalf("the catalogue marks %q hidden too; this test needs a visible object to prove the frame is not simply empty", relief.Key)
+	}
+
+	spot := aHotspot(t, LocationYard, 0)
+	lost := aLostKey(1, spot.At)
+	repo := playedFor()
+	repo.objects = []WorldObject{lost, anObject(2, relief.Key, Point{X: 0.2, Y: 0.2}, at(600))}
+	repo.active = map[string]string{KindKey: lost.ID}
+	tr := &fakeTransport{}
+	tr.setMembers(member("1"))
+	svc := planeService(tr, repo)
+	svc.load(context.Background(), testAccount)
+
+	if err := svc.broadcast(context.Background(), at(1)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	if len(frames) != 1 {
+		t.Fatalf("%d frames were published for one tick", len(frames))
+	}
+	frame := frames[0]
+
+	props := propsOf(frame)
+	if len(props) != 1 {
+		t.Fatalf("the frame carries %d objects; want the one deposit and NOT the key: %+v", len(props), props)
+	}
+	if props[0].Art == key.Art {
+		t.Errorf("the frame draws the key: %+v — everybody can see where it is, and «искать ключи» is a race to press rather than a search", props[0])
+	}
+	if props[0].ID == "obj-"+shortID(lost.ID) {
+		t.Errorf("the key is in the roster under its own id %q; hiding it means it is not an entity at all", props[0].ID)
+	}
+	// Nothing anywhere in the frame stands where the key is, which is the strong
+	// form: not merely "no entity is labelled key" but "no coordinate leaks it".
+	for _, p := range frame.Peers {
+		if samePoint(Point{X: p.X, Y: p.Y}, spot.At) {
+			t.Errorf("entity %q is standing exactly where the key is hidden, (%v,%v); a client that noticed would have the answer",
+				p.ID, p.X, p.Y)
+		}
+	}
+
+	// And the hunt is still announced as state, because a late joiner has to be
+	// able to take part in one that is already running.
+	if frame.Hunt != shortID(lost.ID) {
+		t.Errorf("the frame names the hunt %q; want %q — hiding the key must not hide that a hunt is running, which is state a late joiner needs",
+			frame.Hunt, shortID(lost.ID))
+	}
+}
+
+// TestASearchIsRefusedUnlessHeNamedAPlaceAndWalkedToIt is the whole of the gate,
+// in every way it says no, and it is also the deletion test for the
+// press-anywhere claim: the first case below is exactly the frame I8c accepted.
+//
+// Each refusal asks the player for a different thing — name a place, walk to it,
+// try somewhere else — which is why there are three sentences rather than one.
+// And every one of them WRITES NOTHING: no claim is attempted, no event is
+// appended, no stat is re-stamped. That last part matters more than it looks,
+// because a re-stamp on a refused batch is silently erased damage rather than a
+// cosmetic blemish.
+func TestASearchIsRefusedUnlessHeNamedAPlaceAndWalkedToIt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spot  func(t *testing.T) string
+		stand func(t *testing.T, svc *Service, hidden Hotspot)
+		want  error
+		why   string
+	}{
+		{
+			name:  "no place named at all",
+			spot:  func(*testing.T) string { return "" },
+			stand: func(_ *testing.T, svc *Service, hidden Hotspot) { standAt(svc, testAccount, hidden.At) },
+			want:  ErrNoSpot,
+			why:   "THE PRESS-ANYWHERE CLAIM, exactly as it used to arrive — a bare {\"verbs\":[\"claim\"]} — and it must not work even from on top of the key",
+		},
+		{
+			name:  "a place no location has",
+			spot:  func(*testing.T) string { return "под-луной" },
+			stand: func(_ *testing.T, svc *Service, hidden Hotspot) { standAt(svc, testAccount, hidden.At) },
+			want:  ErrNoSpot,
+			why:   "an arbitrary string off the wire buys nothing: it is resolved against the catalogue before anything else happens",
+		},
+		{
+			name: "a place in another location",
+			spot: func(t *testing.T) string {
+				// Composed rather than written down, so this stays a test about
+				// the location predicate rather than about a name.
+				return aHotspot(t, LocationYard, 0).Key + "-в-лесу"
+			},
+			stand: func(_ *testing.T, svc *Service, hidden Hotspot) { standAt(svc, testAccount, hidden.At) },
+			want:  ErrNoSpot,
+			why:   "the lookup is by (location, spot) from the start, which is what the four locations after this one reuse",
+		},
+		{
+			name: "the right place, from across the yard",
+			spot: func(t *testing.T) string { return aHotspot(t, LocationYard, 0).Key },
+			stand: func(t *testing.T, svc *Service, _ Hotspot) {
+				standAt(svc, testAccount, aHotspot(t, LocationYard, 1).At)
+			},
+			want: ErrTooFar,
+			why:  "the client announcing an arrival is a REQUEST, never a fact; the server measures its own placement",
+		},
+		{
+			name: "a place he is standing in, with nothing in it",
+			spot: func(t *testing.T) string { return aHotspot(t, LocationYard, 1).Key },
+			stand: func(t *testing.T, svc *Service, _ Hotspot) {
+				standAt(svc, testAccount, aHotspot(t, LocationYard, 1).At)
+			},
+			want: ErrNothingHere,
+			why:  "he asked properly and looked properly; this is the only refusal of the three that is a move in the game rather than a correction",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := playedFor()
+			pool := &txPool{}
+			svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil)
+			if _, err := svc.State(context.Background(), testAccount); err != nil {
+				t.Fatalf("State: %v", err)
+			}
+			before := append([]StatRow(nil), repo.rows...)
+			if len(before) == 0 {
+				t.Fatal("the pet has no stat rows at all; a rollback of nothing would pass this test whatever the service did")
+			}
+
+			// The key is in the FIRST hotspot in every case, and the fake would
+			// hand it to anybody who got as far as asking — so every refusal below
+			// is the gate's and not the database's.
+			hidden := aHotspot(t, LocationYard, 0)
+			theKeyIsIn(t, svc, repo, hidden)
+			repo.claimWon = true
+			tc.stand(t, svc, hidden)
+
+			_, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, tc.spot(t), at(0))
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Do(%q, spot=%q) = %v; want %v — %s", ActionClaim, tc.spot(t), err, tc.want, tc.why)
+			}
+
+			// AND NOTHING HAPPENED. The gate runs before the transaction, so this
+			// is stronger than a rollback: there was never anything to take back.
+			if n := len(repo.attempts()); n != 0 {
+				t.Errorf("%d claims reached the database on a refused search; the gate decides before anything is contested: %+v", n, repo.attempts())
+			}
+			if n := len(pool.begun); n != 0 {
+				t.Errorf("%d transactions were begun for a search that was refused before one was needed", n)
+			}
+			if n := len(repo.appended); n != 0 {
+				t.Errorf("%d events survived a refused search; looking in the wrong place is not something that happened to the pet: %+v", n, repo.appended)
+			}
+			if n := len(repo.insertedObjects()); n != 0 {
+				t.Errorf("%d world objects were written by a refused search; only a winner starts the next hunt: %+v", n, repo.insertedObjects())
+			}
+			if len(repo.rows) != len(before) {
+				t.Fatalf("the pet has %d stat rows after a refused search; want the %d it had before", len(repo.rows), len(before))
+			}
+			for _, want := range before {
+				got, ok := repo.row(want.Key)
+				if !ok {
+					t.Errorf("%q has no row after a refused search", want.Key)
+					continue
+				}
+				if got.Value != want.Value || !got.AsOf.Equal(want.AsOf) {
+					t.Errorf("%q is (%v, %s) after a refused search; want the (%v, %s) it was before — a refusal charged him a re-stamp, which is silently erased damage",
+						want.Key, got.Value, got.AsOf.UTC(), want.Value, want.AsOf.UTC())
+				}
+			}
+		})
+	}
+}
+
+// TestSearchingTheRightPlaceFindsTheKeysAndTheWrongOneDoesNot is the pair, driven
+// against one fixture so the only difference between them is where he looked.
+//
+// A test of the winning half alone would pass on a service that ignored the spot
+// entirely, which is exactly the regression this iteration exists to prevent.
+func TestSearchingTheRightPlaceFindsTheKeysAndTheWrongOneDoesNot(t *testing.T) {
+	tally := effectOn(mustAction(t, ActionClaim), StatKeysFound)
+	if tally <= 0 {
+		t.Fatalf("the catalogue says %q moves %q by %v; there would be nothing for a winner to gain", ActionClaim, StatKeysFound, tally)
+	}
+	right, wrong := aHotspot(t, LocationYard, 0), aHotspot(t, LocationYard, 1)
+
+	for _, tc := range []struct {
+		name string
+		spot Hotspot
+		wins bool
+	}{
+		{name: "where they are", spot: right, wins: true},
+		{name: "where they are not", spot: wrong, wins: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := playedFor()
+			svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+			if _, err := svc.State(context.Background(), testAccount); err != nil {
+				t.Fatalf("State: %v", err)
+			}
+			found, ok := repo.row(StatKeysFound)
+			if !ok {
+				t.Fatalf("the pet has no %q row; the counter this verb moves has not been materialised", StatKeysFound)
+			}
+
+			theKeyIsIn(t, svc, repo, right)
+			repo.claimWon = true
+			// He walks to whichever one this case is about, so the ONLY variable
+			// between the two runs is the place he searched.
+			standAt(svc, testAccount, tc.spot.At)
+
+			st, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, tc.spot.Key, at(0))
+			if !tc.wins {
+				if !errors.Is(err, ErrNothingHere) {
+					t.Fatalf("Do(%q) in %q = %v; want ErrNothingHere — the keys are in %q", ActionClaim, tc.spot.Key, err, right.Key)
+				}
+				now, ok := repo.row(StatKeysFound)
+				if !ok || now.Value != found.Value {
+					t.Errorf("his %q went from %v to %v on a search that found nothing", StatKeysFound, found.Value, now.Value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Do(%q) in %q, which is where they are: %v", ActionClaim, tc.spot.Key, err)
+			}
+			nearlyStat(t, statOf(t, st, StatKeysFound).Value, found.Value+tally, "the finder's "+StatKeysFound)
+			if held := repo.heldBy(KindKey); held != testAccount {
+				t.Errorf("the key is held by %q after he searched the place it was in; want %q", held, testAccount)
+			}
+		})
+	}
+}
+
+// TestARefusalNeverSaysWhereTheKeyIs is the security property of the gate, and
+// the reason its three checks are in the order they are in.
+//
+// Reach is decided BEFORE the answer is looked at. So a player standing in the
+// middle of the yard, tapping every hotspot in turn, gets the identical refusal
+// for all of them — including the one holding the key. Reverse those two checks
+// and the refusal becomes an oracle: the spot that answered differently is the
+// answer, and the whole game is one loop in a browser console.
+//
+// It is asserted as "every refusal is the SAME", which is the property that
+// matters, rather than as "the right one says далековато" — a future third
+// refusal that leaked would break this test whatever it was called.
+func TestARefusalNeverSaysWhereTheKeyIs(t *testing.T) {
+	yard, ok := LocationByKey(LocationYard)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", LocationYard)
+	}
+	if len(yard.Hotspots) < 2 {
+		t.Fatalf("%q publishes %d hotspots; with one there is nothing to compare a refusal against", LocationYard, len(yard.Hotspots))
+	}
+
+	// Somewhere genuinely away from all of them, so no tap below is ever within
+	// reach and the only thing that could distinguish the answers is the key.
+	var far Point
+	for _, candidate := range []Point{spawn, {X: 0.5, Y: 0.5}, {X: 0.5, Y: 0.42}} {
+		ok := true
+		for _, h := range yard.Hotspots {
+			if distance(candidate, h.At) <= arriveWithin {
+				ok = false
+			}
+		}
+		if ok {
+			far = candidate
+			break
+		}
+	}
+	if far == (Point{}) {
+		t.Fatal("every candidate standing place is within arriving distance of some hotspot; there is nowhere to be too far from all of them")
+	}
+
+	for i := range yard.Hotspots {
+		t.Run(fmt.Sprintf("the key is in hotspot %d", i), func(t *testing.T) {
+			answers := map[string]string{}
+			for _, asked := range yard.Hotspots {
+				repo := playedFor()
+				svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+				theKeyIsIn(t, svc, repo, yard.Hotspots[i])
+				repo.claimWon = true
+				standAt(svc, testAccount, far)
+
+				_, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, asked.Key, at(0))
+				if err == nil {
+					t.Fatalf("searching %q from across the yard was ALLOWED; the arrival gate is not being applied at all", asked.Key)
+				}
+				answers[asked.Key] = refusalLine(context.Background(), err)
+			}
+			var first string
+			for _, line := range answers {
+				if first == "" {
+					first = line
+					continue
+				}
+				if line != first {
+					t.Fatalf("the yard answers %+v when the key is in %q; a refusal that varies with the answer IS the answer, and the game becomes one loop in a console",
+						answers, yard.Hotspots[i].Key)
+				}
+			}
+		})
+	}
+}
+
+// TestOneCorrectSearchWinsOneKeyHoweverManyClaimsAreInTheFrame closes the hole a
+// batch would otherwise open, and it is the case a hostile client reaches first.
+//
+// The gate reads the world CACHE, which is not refreshed inside a batch — so
+// without the one-search-per-frame rule, `{"verbs":["claim",…×8],"spot":"куст"}`
+// would pass the same cached key eight times off one correct search, and each
+// claim after the first would take the REPLACEMENT the one before it stood up:
+// a key hidden somewhere he has never looked. Eight keys for the price of one
+// walk, and the log would record eight searches that genuinely happened.
+//
+// The second claim is refused as an empty place, which is exactly what it is —
+// he already took what was there — and the refusal takes the whole batch with it,
+// so a client trying this gets nothing rather than getting the first one free.
+func TestOneCorrectSearchWinsOneKeyHoweverManyClaimsAreInTheFrame(t *testing.T) {
+	spot := aHotspot(t, LocationYard, 0)
+	repo := playedFor()
+	pool := &txPool{}
+	svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil)
+	if _, err := svc.State(context.Background(), testAccount); err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	found, ok := repo.row(StatKeysFound)
+	if !ok {
+		t.Fatalf("the pet has no %q row", StatKeysFound)
+	}
+
+	searchingIn(t, svc, repo, testAccount, spot)
+	repo.claimWon = true
+
+	batch := make([]string, maxBatch)
+	for i := range batch {
+		batch[i] = ActionClaim
+	}
+	if _, err := svc.Do(context.Background(), testAccount, batch, spot.Key, at(0)); !errors.Is(err, ErrNothingHere) {
+		t.Fatalf("Do(%d × %q, one spot) = %v; want ErrNothingHere on the second — he already took what was in there",
+			len(batch), ActionClaim, err)
+	}
+
+	if n := len(repo.attempts()); n != 0 {
+		t.Errorf("%d claims reached the database; the batch is refused before the transaction, so none of them should have: %+v", n, repo.attempts())
+	}
+	if n := len(pool.begun); n != 0 {
+		t.Errorf("%d transactions were begun for a batch refused before one was needed", n)
+	}
+	if now, ok := repo.row(StatKeysFound); !ok || now.Value != found.Value {
+		t.Errorf("his %q went from %v to %v on a batch that was refused whole; a refused batch writes nothing at all", StatKeysFound, found.Value, now.Value)
+	}
+
+	// And the honest single search still works, from the same fixture — so the
+	// rule above bounds the batch rather than breaking the verb.
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, spot.Key, at(1)); err != nil {
+		t.Fatalf("one %q in the place it is in: %v; the batch rule must not cost the ordinary search", ActionClaim, err)
+	}
+}
+
+// TestTheKeyThatReplacesAFoundOneIsHiddenAtAHotspotToo is the property that keeps
+// the hunt going, and the one that would rot silently.
+//
+// The replacement is inserted inside the winner's own transaction, from
+// `placeFor`. If it landed anywhere else on the plane — a random point, the
+// origin, the spawn — the NEXT search could never be judged: no spot key would
+// resolve to it, so every player would be told «тут пусто» everywhere, for ever,
+// with a hunt id riding the frame the whole time saying one was running.
+func TestTheKeyThatReplacesAFoundOneIsHiddenAtAHotspotToo(t *testing.T) {
+	yard, ok := LocationByKey(LocationYard)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", LocationYard)
+	}
+	spot := aHotspot(t, LocationYard, 0)
+
+	repo := playedFor()
+	svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+	if _, err := svc.State(context.Background(), testAccount); err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	searchingIn(t, svc, repo, testAccount, spot)
+	repo.claimWon = true
+
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, spot.Key, at(0)); err != nil {
+		t.Fatalf("Do(%q): %v", ActionClaim, err)
+	}
+
+	inserted := repo.insertedObjects()
+	if len(inserted) != 1 {
+		t.Fatalf("%d world objects were written by a winning claim; want the replacement key: %+v", len(inserted), inserted)
+	}
+	next := inserted[0]
+	if next.kind != KindKey {
+		t.Fatalf("the replacement is of kind %q; want %q", next.kind, KindKey)
+	}
+	if _, ok := hotspotAtPoint(yard, next.at); !ok {
+		t.Fatalf("the replacement was hidden at (%v,%v), which is not any of %q's hotspots; no spot key would ever resolve to it and every later search would answer «тут пусто» for ever",
+			next.at.X, next.at.Y, LocationYard)
 	}
 }

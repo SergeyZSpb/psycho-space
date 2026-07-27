@@ -119,6 +119,39 @@
         :aria-label="`Двор, во дворе ${here}`"
         @pointerdown="onPlaneTap"
       >
+        <!-- THE HIDING PLACES, and the only tappable things this plane has ever
+             had inside it.
+             Drawn BEFORE the dots on purpose. They share the back band's
+             stacking order (`z-index: 0`, see `.hotspot`), so what decides which
+             of a bush and a Ваня standing on it is painted on top is document
+             order — and the answer has to be the Ваня. A hiding place is
+             scenery: the yard is for finding people in, and a bush that covered
+             somebody would be the wrong thing winning.
+             That they can still be TAPPED from under a dot is not an accident
+             either: `.peer` is `pointer-events: none`, so hit-testing walks past
+             every Ваня standing on a hotspot and lands on the hotspot itself.
+             The coordinates go through `:style` rather than through the
+             imperative writer the dots use, and that does NOT break the rule at
+             the head of this file. What that rule forbids is binding something
+             that changes five times a second; a hiding place is catalogue
+             furniture that changes when the config lands and never again, so
+             this is one write per load rather than one per frame. -->
+        <button
+          v-for="spot in hotspots"
+          :key="spot.key"
+          type="button"
+          class="hotspot"
+          :class="{ 'hotspot--seeking': spot.key === seeking }"
+          data-test="hotspot"
+          :data-spot="spot.key"
+          :data-seeking="spot.key === seeking ? '1' : undefined"
+          :aria-label="spotAriaLabel(spot)"
+          :title="spot.label || undefined"
+          :style="{ '--x': String(spot.at.x), '--y': String(spot.at.y) }"
+          @pointerdown.stop="onHotspotTap(spot)"
+        >
+          <span class="hotspot-glyph" aria-hidden="true">{{ spot.emoji }}</span>
+        </button>
         <div
           v-for="peer in drawn"
           :key="peer.id"
@@ -303,10 +336,12 @@ import { computed, onBeforeUnmount, ref, shallowRef } from 'vue';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
 import { useGameVanyagotchiStore } from '../stores/gameVanyagotchi';
 import {
+  SEARCH_WALK_MS,
   applyFrame,
   applyPosition,
   avatarEndpoint,
   beside,
+  hotspotsFor,
   huntRestarted,
   isRenderablePosition,
   outOfReach,
@@ -318,6 +353,8 @@ import {
   resolveArt,
   sameAppearance,
   sameStore,
+  searchVerb,
+  spotAriaLabel,
   storeLabel,
   tapToPosition,
   type PeerAppearance,
@@ -328,6 +365,7 @@ import { gameVanyagotchiApi } from '../api/endpoints';
 import type {
   VanyagotchiAction,
   VanyagotchiConfig,
+  VanyagotchiHotspot,
   VanyagotchiState,
   VanyagotchiStore,
 } from '../api/types';
@@ -436,7 +474,68 @@ const DISPLAY_TICK_MS = 1_000;
 const ACT_COOLDOWN_MS = 900;
 
 const stats = computed(() => config.value?.stats ?? []);
-const actions = computed(() => config.value?.actions ?? []);
+
+/**
+ * The verb a hiding place is searched with, or nothing when this catalogue has
+ * none.
+ *
+ * Worked out from the catalogue's SHAPE rather than from a key held here — see
+ * `searchVerb` for why the browser is not allowed to know the verb is called
+ * «claim», and for what happens when the shape stops identifying exactly one.
+ */
+const searchAction = computed(() => searchVerb(config.value?.actions));
+
+/**
+ * One button per catalogue action — MINUS the one the yard itself offers.
+ *
+ * THE SEARCHING VERB IS NOT IN THIS ROW, and its removal is the other half of
+ * this iteration rather than tidying. It used to be an ordinary button pressable
+ * from anywhere, which is exactly what stopped the hunt being a search: the key
+ * was drawn on the plane, so everybody could see it, and finding it was a race
+ * to press rather than a race to look. Now the hiding places are the control —
+ * tap one, walk over, and arriving is the search — so a button beside them would
+ * be a SECOND PATH TO THE SAME OUTCOME, which this codebase does not keep
+ * (CLAUDE.md → *No legacy code*).
+ *
+ * Removed rather than greyed, and the difference is worth stating because a
+ * disabled control is the obvious alternative. A button that can never be
+ * enabled is not a control at all, it is a label taking up a quarter of the
+ * tightest row on the screen — the one four Russian verbs already had to be
+ * re-typeset to fit at 320px. Three buttons is more room for the three that
+ * still do something, and the cheatsheet is where the player is told that
+ * searching moved onto the plane (`searchNotes` in lib/vanyagotchiRules).
+ *
+ * An older catalogue, in which no verb fits the search shape, is unfiltered —
+ * which is exactly the row it has always drawn.
+ */
+const actions = computed(() => {
+  const all = config.value?.actions ?? [];
+  const search = searchAction.value;
+  return search ? all.filter((action) => action.key !== search.key) : all;
+});
+
+/**
+ * The hiding places this yard has, ready to draw.
+ *
+ * Off the pet's OWN location, falling back to the catalogue's default for the
+ * moment before the pet has been fetched — the plane runs on the socket and the
+ * pet comes over HTTP, so the yard is routinely on screen before anybody knows
+ * which location дядя Ваня is standing in, and the default is what a fresh one
+ * gets.
+ *
+ * EMPTY WHEN THERE IS NO VERB TO SEARCH WITH, which is not the same as empty
+ * because the location has none. A tappable bush that could only send a walk is
+ * an affordance that lies — it looks like the way to find keys and is not — so
+ * when the catalogue offers nothing to search with, the yard offers nothing to
+ * search.
+ */
+const hotspots = computed<readonly VanyagotchiHotspot[]>(() => {
+  if (!searchAction.value) return [];
+  return hotspotsFor(
+    config.value,
+    petState.value?.pet?.location_key || config.value?.default_location,
+  );
+});
 
 /** The decayed value of every stat, keyed, as of `displayNow`. */
 const values = computed(() => {
@@ -689,6 +788,88 @@ function unreachable(action: VanyagotchiAction): boolean {
   return outOfReach(action, beerStore.value, atStore.value);
 }
 
+// ---------------------------------------------------------------------------
+// A search in progress: tap a hiding place, walk there, and claim on arrival.
+//
+// THE CLIENT ANNOUNCING ARRIVAL IS A REQUEST AND NEVER A FACT. What is sent when
+// he gets there is a claim naming the place, and the server checks it against
+// its own in-memory placement at the instant the batch is folded (ADR-043) — so
+// a browser that lied about where he was standing, or about which place it was,
+// buys nothing at all. Three refusals come back as balloons over his own head
+// («где искать-то», «далековато», «тут пусто») and this screen renders none of
+// them specially; they arrive on the roster's ordinary `say` field like every
+// other thing he has ever been made to say.
+//
+// The state is split the way everything on this screen is split. The KEY of the
+// place he is walking to is reactive, because the yard draws that one hotspot
+// differently and it changes on a tap rather than on a frame; the COORDINATES
+// are not, because they are read five times a second inside `onFrame` and the
+// rule at the head of this file is that a position never enters Vue.
+// ---------------------------------------------------------------------------
+
+/** The hiding place he is on his way to, or the empty string. */
+const seeking = ref('');
+/**
+ * Where that place is, and when to stop believing he is still walking to it.
+ *
+ * Plain `let`s, like `clockSkew` and `seenHunt`: nothing renders either of them,
+ * they are read once per frame inside `onFrame`, and a coordinate in particular
+ * is the one thing this screen keeps out of reactivity on purpose.
+ */
+let seekingAt: { x: number; y: number } | undefined;
+let seekingUntil = 0;
+
+/** Forgets whatever search was in flight, if any. */
+function forgetSearch(): void {
+  // Guarded, like every other assignment this screen makes to a ref: the common
+  // case is that there was nothing to forget, and an unguarded write would be a
+  // render five times a second for a yard in which nobody is searching anything.
+  if (seeking.value) seeking.value = '';
+  seekingAt = undefined;
+  seekingUntil = 0;
+}
+
+/**
+ * A tap on a hiding place: walk there, and remember to search it on arrival.
+ *
+ * THE PLANE'S OWN TAP HANDLER IS STOPPED (`@pointerdown.stop` on the button),
+ * and that is a decision rather than a formality. Left to bubble, one finger
+ * would send two moves in one gesture — the plane's, to wherever the finger
+ * actually landed, and this one, to the hiding place's exact point — and which
+ * of them won would come down to handler order. Worse, the plane's would be the
+ * inaccurate one: arrival is measured against the hotspot's own coordinates, so
+ * a tap forty pixels off centre could land him a hair outside `arrive_within`
+ * and have the claim refused «далековато» for a reason nothing on screen
+ * explains. A tap on a bush is a different INTENT from a tap on the ground —
+ * "search that" rather than "stand there" — so it is one message, not both.
+ *
+ * A SECOND TAP MID-WALK SIMPLY REPLACES THE FIRST. That is the rule the yard
+ * already plays by for movement — a new tap always cancels the old walk, which
+ * is why nobody can get stuck — and a search is a walk with an intention on the
+ * end of it, so there is exactly one of each. Anything else would mean arriving
+ * at the second bush and searching the first.
+ */
+function onHotspotTap(spot: VanyagotchiHotspot): void {
+  // Nothing to search with. The layer is not drawn in that case, so this is the
+  // impossible branch rather than the routine one — but the catalogue can land
+  // between a tap and its handler, and firing a claim naming no verb would be a
+  // frame the server has to reject.
+  if (!searchAction.value) return;
+  // Dropped rather than queued when the socket is down, the same rule a tap on
+  // the ground and a verb both follow: the server stamps every event, so a walk
+  // queued now and delivered in a minute would start from the wrong place.
+  if (!client.send({ t: TYPE_MOVE, x: spot.at.x, y: spot.at.y })) return;
+  if (seeking.value !== spot.key) seeking.value = spot.key;
+  seekingAt = { x: spot.at.x, y: spot.at.y };
+  // A local clock rather than the server's, unlike everything else on this
+  // screen that measures time. It is comparing two readings of THIS device's
+  // clock a few seconds apart to decide whether a walk this device started is
+  // still plausibly running, so skew cancels out exactly — and the alternative,
+  // `displayNow`, only ticks once a second and would make the backstop coarse
+  // for no gain.
+  seekingUntil = Date.now() + SEARCH_WALK_MS;
+}
+
 /**
  * The hunt this screen has already seen, so that a CHANGE of hunt can be told
  * from the first sight of one.
@@ -886,6 +1067,12 @@ function forgetWorld() {
   // anywhere at all.
   beerStore.value = undefined;
   atStore.value = false;
+  // And so is the search he was walking to. Where he is standing is exactly what
+  // this screen has just admitted it no longer knows, and an armed claim is a
+  // promise to send one the moment it thinks he has arrived — so the first frame
+  // after a reconnect, which may well put him somewhere else entirely, would
+  // otherwise fire a search the player asked for in a different world.
+  forgetSearch();
   lastPos.clear();
   peerEls.clear();
 }
@@ -1046,6 +1233,36 @@ function onFrame(frame: RealtimeFrame) {
   const near = beside(mine, nextStore, config.value?.arrive_within);
   if (atStore.value !== near) atStore.value = near;
 
+  // And whether the search he is walking to has arrived.
+  //
+  // ON THE FRAME BECAUSE THE FRAME IS WHERE THE ANSWER IS. The server states
+  // where everybody is standing five times a second, so "has he got there" is a
+  // question this screen can answer from the same read it already makes for the
+  // crate — off `lastPos`, which is deliberately not reactive, with `beside` and
+  // the same served `arrive_within` the drink button turns on. There is one
+  // notion of "near" in this game and this is it.
+  //
+  // The claim is armed ONCE and disarmed before it is sent, which is what stops
+  // a refusal turning into a loop: «тут пусто» is the server saying he searched
+  // the wrong place, and re-sending it on the next frame — and the one after, at
+  // five a second, for as long as he stands there — would be this client
+  // hammering a question it has already been answered.
+  if (seekingAt) {
+    if (Date.now() > seekingUntil) {
+      // He never got there. The walk can genuinely end short — a long one rolls
+      // «устал» and he sits down where he gave up — and that is the whole reason
+      // distance costs something now. Forgetting it is what stops the claim
+      // firing minutes later, the first time the player happens to walk him past
+      // that bush on his way somewhere else.
+      forgetSearch();
+    } else if (beside(mine, seekingAt, config.value?.arrive_within)) {
+      const verb = searchAction.value;
+      const spot = seeking.value;
+      forgetSearch();
+      if (verb && spot) client.send({ t: TYPE_DO, verbs: [verb.key], spot });
+    }
+  }
+
   // The two reactive facts first — each usually a no-op, and each behind its own
   // guard so an unchanged yard costs no render — then positions, which are not
   // reactive at all.
@@ -1088,7 +1305,14 @@ function onPlaneTap(event: PointerEvent) {
   if (!pos) return;
   // Deliberately no optimistic move: the dot moves when the server says it
   // moved, which is the same rule every other client is playing by.
-  client.send({ t: TYPE_MOVE, x: pos.x, y: pos.y });
+  if (!client.send({ t: TYPE_MOVE, x: pos.x, y: pos.y })) return;
+  // AND IT CANCELS ANY SEARCH IN FLIGHT, because it cancels the walk that search
+  // was riding on: a new destination is a new destination, and he is no longer
+  // on his way to the bush. Left armed, the claim would fire the next time he
+  // happened to pass within reach of a place the player had stopped caring
+  // about — a search nobody asked for, minutes after the tap that meant it.
+  // (A tap on a hiding place never reaches here: see `onHotspotTap`.)
+  forgetSearch();
 }
 
 /**
@@ -1131,6 +1355,11 @@ onBeforeUnmount(() => {
   window.removeEventListener('pageshow', onWake);
   peerEls.clear();
   lastPos.clear();
+  // Nothing is reading frames any more, so an armed claim could never fire — but
+  // the socket outlives this view by its grace period and the next visit reuses
+  // this module's state, so it is disarmed here rather than left to be somebody
+  // else's surprise.
+  forgetSearch();
   // The socket may outlive this view by the grace period, but nothing is
   // rendering its frames any more — leaving the roster behind would show the
   // next visit a world that stopped updating when we left.
@@ -1406,6 +1635,113 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
+/* A HIDING PLACE: the only thing inside this plane that has ever been tappable.
+
+   THE PLANE OWNS EVERY TAP AND THIS IS THE ONE EXCEPTION, which is why
+   `pointer-events` is stated here rather than left to the default. Every dot is
+   `pointer-events: none` so that a finger anywhere on the yard means "walk
+   there"; a hiding place means something else — "go and search that" — so it
+   takes the tap itself and stops it going any further (`@pointerdown.stop` in
+   the template, with the reasoning on `onHotspotTap`). The happy side effect of
+   the dots being transparent to hit-testing is that a hotspot under a Ваня is
+   still tappable, which matters in a yard 231px wide where somebody standing on
+   the bush is an ordinary Tuesday.
+
+   PLACED BY THE SAME MAPPING THE DOTS USE — `--x`/`--y` against the plane's own
+   container query — so a hiding place and a person at the same coordinates are
+   drawn at the same point, which is the whole basis of "he has arrived". What it
+   deliberately does NOT share is the depth machinery: no `--band`, no `--depth`,
+   no z-index of its own beyond the back of the yard. A hiding place is scenery,
+   it does not walk, and giving it a band would mean a bush in the near band
+   drawn in front of a player behind it — hiding a person to draw a shrub.
+   Sitting at `z-index: 0` puts it level with the back band and document order
+   does the rest (see the template): the hotspots are written first, so anybody
+   standing on one is painted over it.
+   Not a NEGATIVE z-index, which would also work and is more fragile: `.plane` is
+   a stacking context (its `container-type: size` implies `contain: layout`), so
+   the exact painting order of a negative child against the plane's own gradient
+   is a rule nobody should have to look up to move this element.
+
+   THE 44px FLOOR IS A TAP TARGET AND NOT A LEGIBILITY ONE, which makes it the
+   first length inside this plane that really is the WCAG number the rest only
+   resembles. `--unit` bottoms out at 32px on a phone (see the note on `.plane`),
+   and 32px is fine for a face nobody can press and much too small for something
+   a thumb has to hit — so the box is the larger of the two, and grows with the
+   world above it. The glyph inside stays a world unit, so what the player sees
+   is a small object with generous room around it rather than an enormous bush.
+   The plane's `overflow: hidden` clips a hotspot standing near an edge exactly
+   as it clips a dot, so no page can be made to scroll sideways by one. */
+.hotspot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate3d(
+    calc(var(--x, 0.5) * 100cqw - 50%),
+    calc(var(--y, 0.5) * 100cqh - 50%),
+    0
+  );
+  z-index: 0;
+  width: max(44px, calc(var(--unit) * 1.25));
+  height: max(44px, calc(var(--unit) * 1.25));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* A button, so tap and keyboard both work — which means undoing everything a
+     button brings with it. None of this is decoration: a UA background and
+     border would draw a grey box round every bush in the yard. */
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+  /* Quieter than the people standing among them: scenery you can see and press,
+     not competition for the faces. */
+  opacity: 0.75;
+  transition: opacity 160ms ease;
+}
+.hotspot-glyph {
+  /* Smaller than a face (0.59 of the unit) on purpose — a hiding place is a
+     thing in the yard, and the yard is for finding people in. */
+  font-size: calc(var(--unit) * 0.5);
+  line-height: 1;
+  /* Legible over both ends of the plane's gradient without a plate behind it,
+     the same way a name is. */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  transition: transform 160ms ease;
+}
+/* The one he is walking to. A static change of size and tone rather than a
+   pulse, for the reason the two moods are static: the state lasts a few seconds
+   and has to be legible in its first frame, including under
+   prefers-reduced-motion, where the block at the foot of this file switches
+   animation off entirely. */
+.hotspot--seeking {
+  opacity: 1;
+}
+.hotspot--seeking .hotspot-glyph {
+  transform: scale(1.3);
+  text-shadow: 0 0 calc(var(--unit) * 0.25) rgba(255, 255, 255, 0.9);
+}
+/* Keyboard reach. The dots have no focus state because they cannot be focused;
+   these can, and a focus ring drawn inside the plane is the only thing telling
+   somebody tabbing through the yard where they are. */
+.hotspot:focus-visible {
+  opacity: 1;
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: 2px;
+}
+/* A world that is no longer being updated cannot be searched: the socket is
+   down, so the walk would not be sent, and offering the tap would be offering
+   something that silently does nothing. Dimmed with everything else on the
+   plane, and taken out of hit-testing so the yard behind it still takes taps. */
+.plane--stale .hotspot {
+  opacity: 0.25;
+  pointer-events: none;
+}
+
 /* A dot is placed purely by transform, never by `top`/`left`: transform is
    composited, and the custom properties are the only thing JavaScript writes.
    The -50% centres it on its own coordinates.
@@ -1517,8 +1853,10 @@ onBeforeUnmount(() => {
    ever gets — see PeerAppearance.expires. No kind key, no lookup against the
    catalogue's object kinds, nothing that would have to be redeployed when a kind
    is added on the server (ADR-028). The cost is stated where the decision is: an
-   object with no expiry keeps its circle, which today means the key, and that is
-   the right way round since the key is the one thing meant to be spotted.
+   object with no expiry keeps its circle, which today means the crate of beer,
+   and that is the right way round since the crate is the one thing meant to be
+   walked to. (The lost key used to keep its circle as well; it is not drawn at
+   all now, because it is hidden — see `.hotspot` above.)
 
    THE SIZE IS THE UNIT, NOT THE BOX. Halving `--unit` here halves everything
    derived from it at once — the dot, the face inside it, the rim, the shadow,
@@ -1945,6 +2283,10 @@ onBeforeUnmount(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .peer {
+    transition: none;
+  }
+  .hotspot,
+  .hotspot-glyph {
     transition: none;
   }
   .peer-face[data-condition='poorly'] {

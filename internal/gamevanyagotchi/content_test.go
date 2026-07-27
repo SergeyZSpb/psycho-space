@@ -1,9 +1,11 @@
 package gamevanyagotchi
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -806,5 +808,221 @@ func TestAStockedKindHasSomethingInItAndNothingElseDoes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEveryLocationsHotspotsAreDistinctAndReachable is the catalogue invariant
+// the search rests on, and every clause of it is a failure that would otherwise
+// be silent.
+//
+// A duplicate key inside one location makes `hotspotIn` answer with whichever
+// entry happens to come first, so a key hidden in the second one could never be
+// found — a hunt that is simply unwinnable, with nothing to see. A coordinate off
+// the plane is a row the world-object table's own CHECK refuses, which ends the
+// hunt for ever the first time a key lands there. A hotspot sitting on top of the
+// beer store puts «search here» and «drink here» on the same square of a 360 px
+// screen. And a location with none of them cannot hide anything at all.
+//
+// Deliberately NOT pinned: how many there are, what they are called, and where
+// exactly they sit. Those are content somebody is meant to move by feel, and a
+// test carrying them would report every retune as a regression.
+func TestEveryLocationsHotspotsAreDistinctAndReachable(t *testing.T) {
+	// The margin a hotspot is kept inside, which is a property of the TAP TARGET
+	// rather than of the plane: a circle centred on the very edge is half clipped
+	// and awkward to hit with a thumb. Half the arrival radius, so a spot is
+	// always somewhere a Ваня can actually stand within reach of.
+	margin := arriveWithin / 2
+
+	// Everything with a fixed pitch of its own. A hotspot must not be within
+	// arriving distance of one, or the two gates overlap on screen and in the
+	// hand.
+	pitched := map[string]Point{}
+	for _, kind := range Content().ObjectKinds {
+		if kind.At != nil {
+			pitched[kind.Key] = *kind.At
+		}
+	}
+	for _, npc := range Content().NPCs {
+		if npc.Pattern == PatternIdle {
+			pitched["npc:"+npc.Key] = npc.Params.Home
+		}
+	}
+	if len(pitched) == 0 {
+		t.Fatal("nothing in the yard stands anywhere in particular; this test is checking a clearance the game does not have")
+	}
+
+	for _, loc := range Content().Locations {
+		t.Run(loc.Key, func(t *testing.T) {
+			if len(loc.Hotspots) == 0 {
+				t.Fatalf("%q publishes no hotspots; nothing can be hidden in it, so a hunt started here could never be won by anybody",
+					loc.Key)
+			}
+			seen := map[string]bool{}
+			for _, h := range loc.Hotspots {
+				if h.Key == "" {
+					t.Errorf("a hotspot labelled %q has no key; the frame names a spot by key and an empty one can never be sent", h.Label)
+				}
+				if seen[h.Key] {
+					t.Errorf("%q appears twice in %q; the lookup answers with whichever comes first, so a key hidden in the other one could never be found",
+						h.Key, loc.Key)
+				}
+				seen[h.Key] = true
+				if h.Label == "" || h.Emoji == "" {
+					t.Errorf("%q has label %q and emoji %q; it is a thing the player taps and both are what he taps",
+						h.Key, h.Label, h.Emoji)
+				}
+				if h.At.X < margin || h.At.X > 1-margin || h.At.Y < margin || h.At.Y > 1-margin {
+					t.Errorf("%q is at (%v,%v), which is inside %v of the edge; the world-object table CHECKs 0..1 outright and a tap target on the rim is half clipped",
+						h.Key, h.At.X, h.At.Y, margin)
+				}
+				for what, p := range pitched {
+					if d := distance(h.At, p); d <= arriveWithin {
+						t.Errorf("%q is %v from %q, which is inside the %v arrival radius; searching there and using that would be the same square of a phone screen",
+							h.Key, d, what, arriveWithin)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestAHiddenKindHasSomewhereToHideAndNowhereToStand pins the two halves of what
+// makes a kind searchable rather than visible.
+//
+// `Hidden` and `At` are opposites and the catalogue must not carry both: a kind
+// with a pitch stands in a known place, so hiding it would mean withholding a
+// coordinate every player could work out from the catalogue in one line. And a
+// hidden kind has to be a singleton, because the search is judged by asking
+// `objectOf` for THE one of its kind — a second live one would be reachable or
+// not by whichever happened to be first in the cache.
+func TestAHiddenKindHasSomewhereToHideAndNowhereToStand(t *testing.T) {
+	hidden := 0
+	for _, kind := range Content().ObjectKinds {
+		t.Run(kind.Key, func(t *testing.T) {
+			if !kind.Hidden {
+				return
+			}
+			hidden++
+			if kind.At != nil {
+				t.Errorf("it is hidden and yet stands at %+v; the pitch is in the catalogue the client is served, so the answer would ship with the question",
+					*kind.At)
+			}
+			if !kind.Singleton {
+				t.Errorf("it is hidden and not a singleton; a search asks for THE one of its kind, so a second live one would be found or missed by cache order")
+			}
+			if kind.Contest == ContestNone {
+				t.Errorf("it is hidden and nobody contests it; there would be no verb that could ever take it out of the world, so the first one would stay hidden for ever")
+			}
+		})
+	}
+	if hidden != 1 {
+		t.Fatalf("%d kinds are hidden; the search mechanic exists for the lost key, and this test is written to notice when a second one arrives without its own thinking",
+			hidden)
+	}
+}
+
+// TestTheHiddenKindIsNotPublishedOnTheWire is the one field of the catalogue that
+// must not be served, checked against the JSON the SPA actually receives.
+//
+// `Hidden` is `json:"-"`, and the reason is not tidiness: the client is
+// deliberately kind-agnostic, so the moment it could see WHICH kind is hidden it
+// could also filter the roster for everything that is not, and a key would be
+// findable by elimination in a browser console. The hotspots beside it ARE
+// served, and that asymmetry is the whole mechanic — the candidates are public
+// and the answer is not.
+func TestTheHiddenKindIsNotPublishedOnTheWire(t *testing.T) {
+	raw, err := json.Marshal(Content())
+	if err != nil {
+		t.Fatalf("marshal the catalogue: %v", err)
+	}
+	if strings.Contains(string(raw), `"hidden"`) {
+		t.Errorf("the served catalogue carries a \"hidden\" field: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"hotspots"`) {
+		t.Errorf("the served catalogue carries no \"hotspots\"; the client cannot draw places it was never told about, and a search with no visible candidates is a guess: %s", raw)
+	}
+
+	var back Config
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("read the catalogue back: %v", err)
+	}
+	for _, kind := range back.ObjectKinds {
+		if kind.Hidden {
+			t.Errorf("%q comes back hidden through the wire; the field is server-side and a client that could read it could find the key by elimination", kind.Key)
+		}
+	}
+	for _, loc := range back.Locations {
+		want, ok := LocationByKey(loc.Key)
+		if !ok {
+			t.Fatalf("the wire carries a location %q the catalogue does not have", loc.Key)
+		}
+		if len(loc.Hotspots) != len(want.Hotspots) {
+			t.Fatalf("%q arrives with %d hotspots; want the %d it has, because the client draws exactly what it is told",
+				loc.Key, len(loc.Hotspots), len(want.Hotspots))
+		}
+		for i, h := range loc.Hotspots {
+			if h != want.Hotspots[i] {
+				t.Errorf("%q hotspot %d arrives as %+v; want %+v — every field of one is something the player taps", loc.Key, i, h, want.Hotspots[i])
+			}
+		}
+	}
+}
+
+// A search says so on the wire, and says nothing about why.
+//
+// The client has to find the searching verb in order to draw the hiding places
+// and to know what a tap on one sends — and it must do that WITHOUT holding a
+// content key (ADR-028). So the capability is published and the reason is not:
+// `NeedsSpot` rides the action, while `ObjectKind.Hidden` — the fact it is
+// derived from — stays `json:"-"`, because publishing which kinds are hidden
+// would publish that the key is hidden.
+//
+// The derivation is what is pinned here rather than the value. Nothing in the
+// catalogue sets `NeedsSpot` by hand, so a kind that stopped being hidden would
+// take the flag with it on both ends in one edit.
+func TestASearchingVerbSaysSoOnTheWireAndNotWhy(t *testing.T) {
+	served := Content()
+
+	var searching []string
+	for _, a := range served.Actions {
+		if !a.NeedsSpot {
+			continue
+		}
+		searching = append(searching, a.Key)
+		kind, ok := ObjectKindByKey(a.Contests)
+		if !ok || !kind.Hidden {
+			t.Errorf("action %q is served as a search but the kind it contests (%q) is not hidden",
+				a.Key, a.Contests)
+		}
+	}
+	if len(searching) == 0 {
+		t.Fatal("no action is served as a search, so the yard would draw no hiding places at all")
+	}
+
+	// Derived onto the COPY and never written in the catalogue itself, which is
+	// what stops it becoming a second place to state the rule.
+	for _, a := range catalogue.Actions {
+		if a.NeedsSpot {
+			t.Errorf("action %q sets NeedsSpot in the catalogue; it must only ever be derived", a.Key)
+		}
+	}
+
+	// Every verb the derivation says is a search, and no others.
+	for _, a := range served.Actions {
+		want := a.needsSpot()
+		if a.NeedsSpot != want {
+			t.Errorf("action %q: served NeedsSpot=%v, derivation says %v", a.Key, a.NeedsSpot, want)
+		}
+	}
+
+	// AND THE REASON STAYS OFF THE WIRE. A hidden kind must not be identifiable
+	// from the served catalogue, or the flag above would have leaked exactly what
+	// it exists to avoid saying.
+	blob, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("marshal the served catalogue: %v", err)
+	}
+	if strings.Contains(string(blob), "hidden") {
+		t.Errorf("the served catalogue mentions hiddenness: %s", blob)
 	}
 }

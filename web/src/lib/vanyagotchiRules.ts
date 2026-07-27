@@ -1,10 +1,19 @@
 import type {
   VanyagotchiAction,
   VanyagotchiConfig,
+  VanyagotchiHotspot,
   VanyagotchiObjectKind,
   VanyagotchiStat,
   VanyagotchiStatDelta,
 } from '../api/types';
+// The two facts about the key hunt that the yard already works out, imported
+// rather than worked out a second time here. Which verb searches a hiding place
+// is a reading of the catalogue's SHAPE (see `searchVerb`), and re-deriving it
+// in this file would be two implementations of one predicate — the day one of
+// them learned about a new kind of verb and the other did not, the cheatsheet
+// and the yard would describe different games. It is the only edge between these
+// two modules and it exists for exactly that reason.
+import { hotspotsFor, searchVerb } from './vanyagotchiPlane';
 
 // The rules cheatsheet «Ванягоччи» shows before you go into the yard.
 //
@@ -136,10 +145,28 @@ export function buildRules(config: VanyagotchiConfig | null | undefined): Vanyag
   // Whether anything in this catalogue starts him over at all — see `counterRow`
   // for why a tally only claims to survive a reset when a reset exists.
   const resettable = actions.some((action) => action.starts_over);
+  // Which verb is a SEARCH rather than a press, and where a search can be made.
+  // Both are facts about the catalogue rather than about any one action, so they
+  // are worked out once here and handed down — the same treatment `revivers`
+  // gets one line up, and for the same reason: a row must not have to re-read
+  // the whole catalogue to describe itself.
+  //
+  // THE DEFAULT LOCATION, because the splash is read BEFORE the pet is fetched.
+  // The verb that creates the pet is deliberately behind the CTA (see
+  // `loadCatalogue` in GameVanyagotchiView.vue), so at the moment this
+  // cheatsheet is built nobody knows which yard дядя Ваня is standing in — and
+  // `default_location` is the one a fresh Ваня gets, which makes it the honest
+  // answer for a player who has not gone in yet. When the second location
+  // arrives this line has to say WHICH place it is counting, because «искать
+  // можно в 5 местах» will otherwise be true of the yard and false of the лифт.
+  const search = searchVerb(actions);
+  const spots = hotspotsFor(config, config?.default_location);
   return {
     stats: bars.map((stat) => statRow(stat, byKey)),
     counters: counters.map((stat) => counterRow(stat, resettable)),
-    actions: actions.map((action) => actionRow(action, bars, byKey, objectKinds, revivers)),
+    actions: actions.map((action) =>
+      actionRow(action, bars, byKey, objectKinds, revivers, action.key === search?.key, spots),
+    ),
   };
 }
 
@@ -222,8 +249,16 @@ function actionRow(
   byKey: Map<string, VanyagotchiStat>,
   objectKinds: Map<string, VanyagotchiObjectKind>,
   revivers: number,
+  searches: boolean,
+  spots: readonly VanyagotchiHotspot[],
 ): RuleAction {
   const notes: string[] = [];
+  // BEFORE EVERYTHING, on the one verb it applies to, because it corrects the
+  // heading this row is sitting under. «Жмёшь ты» is a promise that the rows
+  // beneath it are buttons, and the searching verb is the one that is not — it
+  // has no button at all, and a player who went looking for one would find
+  // three and conclude that finding keys had been removed from the game.
+  for (const line of searchNotes(searches, spots)) notes.push(line);
   // FIRST, because it is the only note that says when the button will do
   // NOTHING. A player who presses «покакать» on an empty bladder is answered
   // «рано ещё» and nothing happens, and a cheatsheet that listed what the verb
@@ -262,6 +297,47 @@ function actionRow(
     effects: def.starts_over ? resetText(bars) : effectsText(def, byKey),
     notes,
   };
+}
+
+/**
+ * How the searching verb is used, and where — or nothing at all for every other
+ * verb in the catalogue.
+ *
+ * TWO LINES BECAUSE THEY ARE TWO KINDS OF FACT, and only one of them can be
+ * derived. The first is the CONTROL — that this verb has no button and is used
+ * by tapping a hiding place and walking to it — and no catalogue field could say
+ * it, because it is a property of this screen rather than of the game: the wire
+ * carries the verb and the hiding places, and which of them is a button is a
+ * decision the SPA makes. It is therefore hardcoded copy, and it is here rather
+ * than in `YARD_PROSE` for the one reason that matters — it is ATTACHED to the
+ * verb the predicate picked out, so a catalogue in which no verb searches
+ * anything (an older server, or a location with no hunt) never shows it at all.
+ *
+ * The second is derived outright: how many places there are and what they are
+ * called come off `locations[].hotspots`, so adding a bush in
+ * internal/gamevanyagotchi/content.go changes this sentence with no edit here.
+ * That is worth the derivation rather than a round «несколько», because the
+ * count is a number the player plays against — five places to search is a hunt
+ * you can brute-force in a minute and twenty is a hunt you have to be lucky at,
+ * and it is exactly the sort of number somebody retunes by feel one evening.
+ *
+ * THE NAMES ARE DROPPED WHOLESALE IF ANY IS MISSING, rather than a partial list
+ * being printed. «искать можно в 5 местах: куст · мусорка» reads as a complete
+ * enumeration and is a lie about the other three — the count is still true, so
+ * the honest degradation is to keep it and say no more.
+ */
+function searchNotes(searches: boolean, spots: readonly VanyagotchiHotspot[]): string[] {
+  if (!searches) return [];
+  // ==> HARDCODED. This half describes the CONTROL, which is not on the wire.
+  const lines = ['не кнопка: тапни укрытие во дворе, и он обыщет его, когда дойдёт'];
+  if (!spots.length) return lines;
+  const named = spots.map((spot) => spot.label.trim()).filter(Boolean);
+  // Prepositional case, which has two forms rather than three: «в 1 месте», «в
+  // 2 местах», «в 5 местах». The shared helper takes three, so the last two are
+  // the same word — deliberately, rather than a second pluraliser for one case.
+  const where = `искать можно в ${spots.length} ${plural(spots.length, 'месте', 'местах', 'местах')}`;
+  if (named.length !== spots.length) return [...lines, where];
+  return [...lines, `${where}: ${named.join(' · ')}`];
 }
 
 /**
@@ -553,18 +629,24 @@ function signed(value: number): string {
  *      What one of them is and how long it lasts is derived instead, one section
  *      up, off the verb that leaves it.
  *   5. the key hunt, which is the one rule where the derived half is actively
- *      misleading on its own. The catalogue says the claiming verb adds one to a
- *      tally and is refused on a corpse, and stops there — so a player reading
- *      only the derived rows would take it for another button he may press
- *      whenever he likes. What is missing is every part that makes it a race:
- *      that there is exactly ONE key in the world at a time (the singleton
- *      invariant is a partial unique index in migration 008, not a catalogue
- *      flag), that the first press takes it and the rest are refused, that
- *      losing costs nothing but a sad face for a few seconds — no stat moves,
- *      deliberately, so nothing about the loss can be derived from `effects` —
- *      and that a replacement is lost the instant the old one is found. The verb
- *      carries no `leaves` kind either, so even «где-то на земле» has to be said
- *      here rather than coming off the object kind the way a deposit's does.
+ *      misleading on its own. The catalogue says the searching verb adds one to
+ *      a tally and is refused on a corpse, and stops there. Two of the missing
+ *      parts ARE derived now and are no longer in this block — that the verb is
+ *      not a button, and how many hiding places there are and what they are
+ *      called, both attached to the verb itself by `searchNotes` above. What is
+ *      still missing is everything that makes it a RACE and a GAMBLE: that there
+ *      is exactly ONE key in the world at a time (the singleton invariant is a
+ *      partial unique index in migration 008, not a catalogue flag); that it is
+ *      HIDDEN — the server picks a hiding place at spawn and simply never
+ *      publishes which, so the key is not an entity on the roster at all and
+ *      cannot be seen, followed, or read off a frame; that arriving at the wrong
+ *      place is answered «тут пусто» and the walk was the whole cost; that the
+ *      walk itself can end in «устал», which is what makes a far hiding place a
+ *      risk rather than a longer wait; that the first to arrive at the right one
+ *      takes it and the rest are refused; that losing costs nothing but a sad
+ *      face for a few seconds — no stat moves, deliberately, so nothing about
+ *      the loss can be derived from `effects` — and that a replacement is lost
+ *      the instant the old one is found.
  *   6. the beer store, where the derived half stops one sentence short of the
  *      rule. `needs_near` and the crate's `stock` give «нужно стоять рядом» and
  *      «6 порций на всех» one section up, and read alone those describe a yard
@@ -589,6 +671,7 @@ export const YARD_PROSE: readonly string[] = [
   'Стоит без дела — бормочет себе под нос.',
   'Остальные во дворе — живые люди. Кто ушёл, тот лежит спит там, где стоял. А пара местных вообще ничьи.',
   'Не всё во дворе — люди. Что кто-то оставил на земле, то там и лежит: видно всем, но в счётчике народу не числится.',
-  'Ключи одни на весь двор и всегда где-то на земле: кто первым нажал, тот их и нашёл. Опоздавшему не будет ничего — только грустная морда на пару секунд. И новые ключи теряются сразу же, так что искать можно вечно.',
+  'Ключи одни на весь двор, и где они — не видно никому: их прячут в одном из укрытий, и на карте они не нарисованы. Тапни укрытие — Ваня пойдёт туда и обыщет его, когда дойдёт. Не дошёл — не обыскал, так что дальнее укрытие это риск.',
+  'Обыскал не то — «тут пусто»: ключи всё ещё где-то, а ты уже сходил. Нашёл первым — твои; опоздавшему не будет ничего, только грустная морда на пару секунд. И новые ключи теряются сразу же, так что искать можно вечно.',
   'Пиво не берётся из воздуха: у ящика во дворе стоит продавец, и дойти до ящика надо ногами. Ящик один на всех, и разбирают его вместе — кто дошёл, тот и налил. Кончилось — продавец тут же тащит новый, так что ждать долго не придётся.',
 ];

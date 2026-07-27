@@ -2879,6 +2879,14 @@ func TestRefusalLineSaysTheRightThingOrDeliberatelyNothing(t *testing.T) {
 		{"a dead pet is the one refusal a player must read", ErrPetDead, "он не встаёт"},
 		{"nothing to go for yet", ErrNotYet, "рано ещё"},
 		{"somebody else got to the keys first", ErrClaimLost, "кто-то успел раньше"},
+		// THE THREE A SEARCH CAN PRODUCE, and they are three sentences because
+		// they ask the player for three different things: name a place, walk to
+		// it, try somewhere else. The strings are pinned rather than derived
+		// because the client branches on them — a change here is a wire change.
+		{"a search naming no place at all", ErrNoSpot, "где искать-то"},
+		{"a place he has not walked to", ErrTooFar, "далековато"},
+		{"a place with nothing in it", ErrNothingHere, "тут пусто"},
+		{"a crate somebody else emptied", ErrOutOfStock, "пиво кончилось"},
 		{"too many verbs at once", ErrBatchTooLong, "не части"},
 		{"a verb outside the catalogue is answered with silence", ErrUnknownAction, ""},
 		{"a catalogue that disagrees with itself is answered with silence", ErrUnknownStat, ""},

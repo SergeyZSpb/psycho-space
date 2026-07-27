@@ -309,6 +309,45 @@ type Action struct {
 	// only contested thing in the world and stopped being it the moment the crate
 	// arrived.
 	Contests string `json:"contests,omitempty"`
+	// NeedsSpot says this verb is a SEARCH: it must name the hiding place the
+	// player chose to look in, and the server refuses it unless he is standing
+	// there.
+	//
+	// DERIVED, NEVER HAND-SET — see `needsSpot` and `Content`. It is not a field
+	// anybody writes in the catalogue below, because then it would be a second
+	// place to state a rule that `ObjectKind.Hidden` already states, and the two
+	// could disagree the day a kind stops being hidden.
+	//
+	// SERVED, AND THAT IS THE WHOLE POINT OF IT EXISTING AT ALL. The rule lives
+	// in `ObjectKind.Hidden`, which is `json:"-"` and must stay so — publishing
+	// which kinds are hidden would be publishing that the key is hidden, and the
+	// client has no business holding kind keys anyway (ADR-028). But the browser
+	// genuinely needs to know WHICH VERB a hiding place invokes, and it must
+	// learn that without ever comparing a key to a string. So the capability is
+	// published on the action and read for its PRESENCE, exactly as `NeedsNear`
+	// already is: the client asks "does this verb search?", never "is this verb
+	// `claim`?".
+	//
+	// It replaced a client-side predicate that inferred the same thing from
+	// `contests && !needs_near` — true today, and silently false the day a second
+	// contested-without-a-place verb arrives, at which point the hunt would have
+	// vanished from the screen with nothing failing.
+	NeedsSpot bool `json:"needs_spot,omitempty"`
+}
+
+// needsSpot reports whether this verb is a search — that is, whether the kind it
+// races for is hidden.
+//
+// THE ONE EXPRESSION OF THE RULE, called by the service to decide whether a spot
+// is required and by `Content` to publish the capability. Written once so the
+// gate the server enforces and the flag the client renders cannot drift: a kind
+// that stops being hidden stops needing a spot on both ends in the same edit.
+func (a Action) needsSpot() bool {
+	if a.Contests == "" {
+		return false
+	}
+	kind, ok := ObjectKindByKey(a.Contests)
+	return ok && kind.Hidden
 }
 
 // Skin is one look for a pet: an art key resolved against the shared blob store,
@@ -376,18 +415,65 @@ type ObjectKind struct {
 	// of somebody typing the six out and forgetting it after the next retune.
 	Stock int `json:"stock,omitempty"`
 	// At is where one of these stands, for a kind that has a pitch — nil for a
-	// kind that is hidden somewhere instead.
+	// kind that is hidden at one of its location's hotspots instead.
 	//
 	// That nil IS the difference between a shop and a lost key, and it is the
-	// whole of it: `placeFor` reads this field and draws a random hiding place
-	// when there is none, so "does this kind stand somewhere in particular"
-	// stopped being a case in the service the moment there were two answers.
+	// whole of it: `placeFor` reads this field and picks a hiding place when
+	// there is none, so "does this kind stand somewhere in particular" stopped
+	// being a case in the service the moment there were two answers.
 	//
 	// Server-side only, and deliberately: an object arrives in the roster with
 	// its own coordinates like every other entity, and the one client that needs
 	// to know where the STORE is gets told by the frame (see Roster.Store), not
 	// by matching a kind key it is not supposed to hold.
 	At *Point `json:"-"`
+	// Hidden means one of these is never drawn at all: it has a place, and that
+	// place is the answer to a search rather than something to look at.
+	//
+	// SERVER-SIDE ONLY, and this is the field that has to be, because it is the
+	// game. A hidden object is skipped by `props`, so it is not an entity in the
+	// roster and its coordinates never leave this process — a client cannot draw
+	// what it was never told about, and a client that inspected every frame it
+	// ever received would still not know where the keys are. It is also, pleasingly,
+	// a saving on the wire: the yard publishes one entity fewer, about 60 bytes a
+	// frame.
+	//
+	// What IS published is the list of places a hidden thing could be — the
+	// location's Hotspots — because a search needs somewhere to search. Publishing
+	// the candidates and withholding the answer is the whole shape of the mechanic.
+	Hidden bool `json:"-"`
+}
+
+// Hotspot is a place in a location where something might be hidden, and where a
+// player can go and look.
+//
+// STATIC CATALOGUE DATA, SERVED IN /config, and both halves of that matter. It is
+// static, so it costs nothing on the 5 Hz frame: the client is told the five
+// places once, at load, and draws them itself for as long as it is looking at
+// that location — where a per-frame list would be a couple of hundred bytes
+// repeated five times a second forever to say something that never changes
+// (ADR-037, and CLAUDE.md → *Bytes on the wire are a design constraint*). And it
+// is served, deliberately: a search the player cannot see the candidates for is
+// not a search, it is a guess.
+//
+// What is withheld is which one holds the key — see ObjectKind.Hidden. That is
+// the only secret here, and it is the only one that has to be: everything else
+// about a hotspot is a picture on a screen.
+//
+// It hangs off Location rather than off the game, because I10 puts four more
+// locations behind this one and each needs its own places to look. The lookup is
+// by (location, spot) from the start for the same reason.
+type Hotspot struct {
+	Key string `json:"key"`
+	// Label is what it is called, and it is what the player taps.
+	Label string `json:"label"`
+	// Emoji is drawn in place of art, exactly as a skin's is: the client resolves
+	// a hotspot the same way it resolves everything else it is told about, so a
+	// new one is a catalogue entry with no client change.
+	Emoji string `json:"emoji"`
+	// At is where it is, in the same normalised 0..1 coordinates everything else
+	// on the plane uses.
+	At Point `json:"at"`
 }
 
 // stock is the `remaining` a freshly spawned object of this kind is inserted
@@ -414,6 +500,18 @@ type Location struct {
 	// Entry is where a pet stands on arriving, in the same normalised 0..1
 	// coordinates the plane uses.
 	Entry Point `json:"entry"`
+	// Hotspots are the places in here worth looking in.
+	//
+	// PER-LOCATION FROM THE START, which is the whole of what the four locations
+	// after this one reuse: a hidden thing is hidden at one of the hotspots of
+	// ITS OWN location, and a claim naming a spot is resolved against the
+	// catalogue for the location the pet is actually standing in. Nothing about
+	// the mechanism knows the yard exists.
+	//
+	// A location with none cannot hide anything, which is a content bug rather
+	// than a state — an invariant test in content_test.go forbids it, because
+	// the failure it produces is silent: a hunt nobody can ever win.
+	Hotspots []Hotspot `json:"hotspots,omitempty"`
 }
 
 // NPC is somebody in the yard who is not a player.
@@ -903,10 +1001,19 @@ var catalogue = Config{
 			// on in the service, which is what let the second contested verb
 			// arrive without a second `if`.
 			//
-			// No NeedsNear: the keys are LOST, so looking for them is something
-			// you do from wherever you are standing. Being able to search the
-			// whole yard without crossing it is what keeps the hunt a race
-			// between people rather than a race against the walk.
+			// AND THE KIND IT RACES FOR IS HIDDEN, which is what makes this a
+			// SEARCH. The verb no longer works from wherever you are standing: it
+			// carries the hotspot the player chose to look in, and the server
+			// refuses it unless he has actually walked there. That is the whole of
+			// the rule and it is read off `ObjectKindByKey(Contests).Hidden` rather
+			// than written here, so a second hidden kind would inherit it.
+			//
+			// It is deliberately NOT expressed as NeedsNear. That gate measures the
+			// distance to the OBJECT, which would answer the question the search is
+			// asking: "am I near the key" is exactly what the player is not allowed
+			// to be told. The search gate measures the distance to the SPOT HE
+			// NAMED, which he already knows, and only then asks whether the key is
+			// in it.
 			Contests: KindKey,
 		},
 		{
@@ -1032,6 +1139,15 @@ var catalogue = Config{
 			Contest: ContestSingleWinner,
 			// No At: the whole point of a key is that it is somewhere, and
 			// `placeFor` draws a hiding place for a kind that names no pitch.
+			//
+			// AND IT IS NOT DRAWN. The key used to be an entity in the roster like
+			// any other, which meant everybody could see exactly where it was and
+			// «искать ключи» was a button you pressed from wherever you happened to
+			// be standing — a race to press, not a search. Hiding it is what turns
+			// the verb into looking somewhere: the plane shows the five places it
+			// could be, the row says which one it is in, and only this process ever
+			// knows that.
+			Hidden: true,
 		},
 		{
 			Key:   KindCrate,
@@ -1058,7 +1174,42 @@ var catalogue = Config{
 	},
 
 	Locations: []Location{
-		{Key: LocationYard, Label: "двор", Entry: spawn},
+		{
+			Key: LocationYard, Label: "двор", Entry: spawn,
+			// The five places worth looking in, and they are what makes the key
+			// hunt a search rather than a button.
+			//
+			// THREE RULES GOVERN THESE COORDINATES, and all three are the sort of
+			// thing that is invisible until somebody plays.
+			//
+			// They are kept off the edges, where a tap target is half clipped by
+			// the plane and awkward to hit on a phone — the same margin the
+			// entities themselves respect.
+			//
+			// They are kept well clear of the beer store: the crate stands at
+			// (0.82, 0.22) with its vendor at (0.68, 0.26), and a hotspot inside
+			// arriveWithin of either would put "search here" and "drink here" on
+			// the same square of a 360 px screen. Every one of these is at least
+			// 0.35 plane-widths from both, which is three times the reach of the
+			// arrival gate.
+			//
+			// And they are DELIBERATELY SPREAD, including one that is genuinely far
+			// from the entrance. `подъезд` is about 0.51 plane-widths from `spawn`,
+			// which is past tiredFrom (0.45) — so a walk there can end in «устал»
+			// and the search can fail by never arriving. That is intended: it is
+			// the entire reason distance matters, and it is what makes the near
+			// hotspots a safe guess and the far one a gamble. If it reads as
+			// frustrating rather than funny the fix is tiredChance / tiredFrom, NOT
+			// the gate — loosening the gate would give the whole yard back its
+			// press-anywhere claim under another name.
+			Hotspots: []Hotspot{
+				{Key: "bush", Label: "куст", Emoji: "🌿", At: Point{X: 0.14, Y: 0.30}},
+				{Key: "bins", Label: "мусорка", Emoji: "🗑️", At: Point{X: 0.30, Y: 0.86}},
+				{Key: "sandbox", Label: "песочница", Emoji: "🪣", At: Point{X: 0.20, Y: 0.58}},
+				{Key: "bench", Label: "лавочка", Emoji: "🪑", At: Point{X: 0.72, Y: 0.62}},
+				{Key: "porch", Label: "подъезд", Emoji: "🚪", At: Point{X: 0.86, Y: 0.86}},
+			},
+		},
 	},
 	// The yard's regulars. Four of them across three ways of moving, which is
 	// exactly what the pattern table exists for: the last two arrived as
@@ -1145,6 +1296,13 @@ func Content() Config {
 	c := catalogue
 	c.Stats = append([]Stat(nil), catalogue.Stats...)
 	c.Actions = append([]Action(nil), catalogue.Actions...)
+	// The one DERIVED field on the wire, filled here rather than written in the
+	// catalogue so that "which verb is a search" has exactly one expression (see
+	// Action.needsSpot). It is computed onto the COPY, so the package's own
+	// catalogue stays the plain content it reads as.
+	for i, a := range c.Actions {
+		c.Actions[i].NeedsSpot = a.needsSpot()
+	}
 	c.Skins = append([]Skin(nil), catalogue.Skins...)
 	c.Locations = append([]Location(nil), catalogue.Locations...)
 	c.NPCs = append([]NPC(nil), catalogue.NPCs...)
@@ -1161,6 +1319,14 @@ func Content() Config {
 		at := *k.At
 		c.ObjectKinds[i].At = &at
 	}
+	// And the one SLICE a copied struct still shares, re-allocated for exactly the
+	// same reason as the pointer above: copying []Location copies each Location by
+	// value, but the Hotspots header inside each one still points at the
+	// catalogue's own backing array, so a caller that wrote through it would move
+	// the yard's hiding places for every later request in the process.
+	for i, l := range c.Locations {
+		c.Locations[i].Hotspots = append([]Hotspot(nil), l.Hotspots...)
+	}
 	return c
 }
 
@@ -1176,6 +1342,76 @@ func ObjectKindByKey(key string) (ObjectKind, bool) {
 		}
 	}
 	return ObjectKind{}, false
+}
+
+// LocationByKey looks a location up in the catalogue.
+//
+// The sibling of the three lookups around it, and it arrived with the search:
+// the hotspots a claim is judged against belong to the location the PET is
+// standing in, so the gate has to be able to get from a stored `location_key` to
+// the places in it. Nothing here mentions the yard, which is the property the
+// four locations after it depend on.
+func LocationByKey(key string) (Location, bool) {
+	for _, l := range catalogue.Locations {
+		if l.Key == key {
+			return l, true
+		}
+	}
+	return Location{}, false
+}
+
+// hotspotIn resolves a spot key against a location's own list of places.
+//
+// The FIRST of the two things a search is judged on, and the one that decides
+// whether the client named a place at all. A spot from another location does not
+// resolve here, which is what stops a claim from being judged against a hotspot
+// its pet is nowhere near — and it costs nothing extra to enforce, because the
+// lookup was always going to be by (location, spot).
+func hotspotIn(locationKey, spotKey string) (Hotspot, bool) {
+	if spotKey == "" {
+		return Hotspot{}, false
+	}
+	loc, ok := LocationByKey(locationKey)
+	if !ok {
+		return Hotspot{}, false
+	}
+	for _, h := range loc.Hotspots {
+		if h.Key == spotKey {
+			return h, true
+		}
+	}
+	return Hotspot{}, false
+}
+
+// nearestHotspot says which place a point is in, by being nearest to it.
+//
+// NEAREST RATHER THAN EQUAL, and the reason is not a fear of floating point —
+// the column is `double precision`, the coordinate is a float64 end to end, and a
+// point written from a catalogue constant comes back bit for bit. It is that
+// nearest makes the answer TOTAL: every point on the plane resolves to exactly
+// one hotspot, so a key lying somewhere no hotspot is — a row written by an older
+// build, when a key was hidden at a random point and drawn for everybody to see —
+// is still findable rather than making the hunt quietly unwinnable for ever.
+// Equality would have needed a migration to fix a row that is already in
+// production; this needs nothing.
+//
+// Ties go to the earlier hotspot, which makes it deterministic. Two hotspots
+// exactly equidistant from a stored point is not a case anybody will meet — the
+// spawn writes a point that IS one of them, at distance nought — but a rule that
+// depends on map order is a rule that reports a different winner on different
+// days, and this one does not.
+func nearestHotspot(locationKey string, at Point) (Hotspot, bool) {
+	loc, ok := LocationByKey(locationKey)
+	if !ok || len(loc.Hotspots) == 0 {
+		return Hotspot{}, false
+	}
+	best, bestDist := loc.Hotspots[0], distance(loc.Hotspots[0].At, at)
+	for _, h := range loc.Hotspots[1:] {
+		if d := distance(h.At, at); d < bestDist {
+			best, bestDist = h, d
+		}
+	}
+	return best, true
 }
 
 // StatByKey looks a stat up in the catalogue.

@@ -943,7 +943,13 @@ func (s *Service) State(ctx context.Context, accountID string) (State, error) {
 // written. Partially applying a list is the behaviour nobody can reason about:
 // the player sees some of what they pressed take effect with no way to tell
 // which, and a replay of the log would not reproduce it.
-func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at time.Time) (State, error) {
+// `spot` is where the player says he searched, and it is empty for every verb
+// but a search. It is a parameter of THIS function rather than of a second
+// entry point, because one funnel stays one funnel: a rule about a search
+// belongs where every other rule about a verb already is. It never reaches
+// `apply`, which has to stay a pure function of (Snapshot, Event) — a spot is a
+// fact about NOW, and a replay of last March has no idea where anybody stood.
+func (s *Service) Do(ctx context.Context, accountID string, verbs []string, spot string, at time.Time) (State, error) {
 	if len(verbs) == 0 {
 		return s.state(ctx, accountID, at)
 	}
@@ -986,6 +992,14 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 
 	// Folded BEFORE anything is written, so a refused batch costs no rows.
 	after := snapshotOf(stored, before.Pet.DiedAt)
+	// ONE SEARCH PER FRAME, and the flag is what enforces it. The gate below
+	// reads the world CACHE, which is not refreshed inside the batch, so without
+	// this a frame carrying `{"verbs":["claim","claim",…],"spot":"bush"}` would
+	// pass the same cached key eight times and win eight keys off one correct
+	// search — the second claim taking the replacement the first one stood up,
+	// which is hidden somewhere he has not looked. It is refused as an empty
+	// place because that is exactly what it is: he already took what was there.
+	searchedHere := false
 	for i, verb := range verbs {
 		next, err := apply(after, Event{Seq: int64(i + 1), Verb: verb, At: at})
 		if err != nil {
@@ -1009,9 +1023,31 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 		// with a corpse. It reads the placement at `at` — the instant the batch is
 		// folded — so a walk in progress is judged by where he has actually got
 		// to rather than by where he set off from.
-		if action, ok := ActionByKey(verb); ok && action.NeedsNear != "" &&
-			!s.beside(accountID, action.NeedsNear, at) {
+		// Looked up ONCE for the whole body. Both gates below read it, and an
+		// unknown verb cannot reach here anyway — the catalogue check above the
+		// read path rejected it before a single row was touched.
+		action, known := ActionByKey(verb)
+		if known && action.NeedsNear != "" && !s.beside(accountID, action.NeedsNear, at) {
 			return State{}, fmt.Errorf("%w: %q needs to be at %q", ErrTooFar, verb, action.NeedsNear)
+		}
+		// THE SEARCH GATE, and it is the same rule one layer along: a verb that
+		// contests a HIDDEN kind is a search, so it is judged against the place
+		// the player named rather than against the object he cannot see. Read off
+		// the catalogue in the same two hops the contest itself is — the verb
+		// names a kind and the kind says it is hidden — so a second hidden kind
+		// would inherit the whole mechanic without a line here.
+		// `needsSpot` is the SAME expression the served `Action.NeedsSpot` is derived
+		// from, deliberately: the gate the server enforces here and the flag the
+		// browser draws its hiding places from are ONE rule, so a kind that stops
+		// being hidden stops needing a spot on both ends in a single edit.
+		if def, ok := contests(verb); ok && known && action.needsSpot() {
+			if searchedHere {
+				return State{}, fmt.Errorf("%w: %q has already been searched in this batch", ErrNothingHere, spot)
+			}
+			if err := s.searched(accountID, before.Pet.LocationKey, spot, def, at); err != nil {
+				return State{}, err
+			}
+			searchedHere = true
 		}
 		after = next
 	}
@@ -1110,7 +1146,7 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 			// so the very next frame already carries a fresh key or a fresh crate
 			// rather than an empty yard somebody has to be told about.
 			if err := s.repo.InsertWorldObject(ctx, q, def.Key, before.Pet.LocationKey,
-				s.placeFor(def), "", def.Singleton, def.stock(), nil); err != nil {
+				s.placeFor(def, before.Pet.LocationKey), "", def.Singleton, def.stock(), nil); err != nil {
 				return err
 			}
 		}
@@ -1370,7 +1406,7 @@ const sayFor = 4 * time.Second
 // over their own Ваня, which every other player can see too, and a push of their
 // own pet so the bars move.
 func (s *Service) handleVerbs(ctx context.Context, m realtime.Member, payload []byte) {
-	verbs, err := parseVerbs(payload)
+	verbs, spot, err := parseVerbs(payload)
 	if err != nil {
 		// Malformed shape, dropped in silence like every other bad frame: at ten
 		// frames a second a log line per bad one is a flood lever, and there is
@@ -1389,7 +1425,7 @@ func (s *Service) handleVerbs(ctx context.Context, m realtime.Member, payload []
 		return
 	}
 
-	state, err := s.Do(ctx, m.AccountID, verbs, now)
+	state, err := s.Do(ctx, m.AccountID, verbs, spot, now)
 	if err != nil {
 		s.Say(m.AccountID, refusalLine(ctx, err), sayFor)
 		return
@@ -1499,11 +1535,23 @@ func refusalLine(ctx context.Context, err error) string {
 		return "рано ещё"
 	case errors.Is(err, ErrClaimLost):
 		return "кто-то успел раньше"
+	case errors.Is(err, ErrNoSpot):
+		// He pressed «искать ключи» without saying where. THREE REFUSALS SERVE A
+		// SEARCH and they are distinct because they ask for three different
+		// things: name a place, walk to it, or try somewhere else. A single line
+		// covering them would tell the player to do none of the three, which is
+		// the same reasoning that keeps «далековато» and «пиво кончилось» apart.
+		return "где искать-то"
 	case errors.Is(err, ErrTooFar):
 		// Deliberately NOT the same line as the empty crate below. The two
 		// refusals want opposite things from the player — walk over, or wait —
 		// and one sentence covering both would tell him to do neither.
 		return "далековато"
+	case errors.Is(err, ErrNothingHere):
+		// He looked, and it was not there. The one refusal in this game that is a
+		// move in it rather than a correction — it costs him the search, and
+		// telling him so is the only feedback the mechanic has.
+		return "тут пусто"
 	case errors.Is(err, ErrOutOfStock):
 		return "пиво кончилось"
 	case errors.Is(err, ErrBatchTooLong):

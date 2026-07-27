@@ -2,6 +2,7 @@ package gamevanyagotchi
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -791,5 +792,67 @@ func TestApplyKnowsNothingAboutWhereAnybodyIsStandingOrWhatIsLeftInTheCrate(t *t
 	if got := valueOf(t, folded, StatBeersDrunk); got != float64(len(history)) {
 		t.Errorf("%q = %v after replaying %d drinks; want %d — `fold` SKIPS what it cannot apply, so a gate in here would be silently dropped events rather than a failure",
 			StatBeersDrunk, got, len(history), len(history))
+	}
+}
+
+// TestApplyKnowsNothingAboutWhereTheKeysAreHidden is the same boundary the test
+// above draws, held against the rule that arrived with the search.
+//
+// A claim now carries a SPOT — the place the player says he looked in — and it is
+// the first inbound payload the server has to judge rather than clamp. It would
+// be entirely natural to judge it inside `apply`, where every other rule about a
+// verb already lives, and it would be wrong for a reason that does not show up
+// until somebody replays a history: a spot is a fact about NOW. Where the key was
+// last March is not written down, where the player was standing is not written
+// down, and finding out either would mean a database read inside a pure fold.
+//
+// So `apply` never sees one, and this drives it with no service, no world, no
+// position map and no repository at all — which is the strongest available
+// statement that it needs none of them. A history of claims replays in full: if a
+// search gate were hiding in here, `fold` would SKIP every one of them, and the
+// tally would come back short rather than the code failing loudly.
+func TestApplyKnowsNothingAboutWhereTheKeysAreHidden(t *testing.T) {
+	claim := mustAction(t, ActionClaim)
+	if claim.Contests == "" {
+		t.Fatalf("the catalogue says %q contests nothing; this test is guarding a boundary the game does not have", claim.Key)
+	}
+	kind, ok := ObjectKindByKey(claim.Contests)
+	if !ok || !kind.Hidden {
+		t.Fatalf("%q contests %q, which is not hidden; the spot this test is about would not exist", claim.Key, claim.Contests)
+	}
+	tally := effectOn(claim, StatKeysFound)
+	if tally <= 0 {
+		t.Fatalf("the catalogue says %q moves %q by %v; this test needs a verb whose effect is visible", claim.Key, StatKeysFound, tally)
+	}
+
+	// Event carries a verb, a sequence number and an instant, and that is all it
+	// can carry — a spot has nowhere to go in the log, which is the structural
+	// half of the property this test asserts behaviourally below.
+	if n := reflect.TypeOf(Event{}).NumField(); n != 3 {
+		t.Errorf("Event has %d fields; it holds a verb, a seq and an instant, and a spot on it would be a fact about NOW written into a permanent history",
+			n)
+	}
+
+	out, err := apply(freshPet(eventEpoch), Event{Seq: 1, Verb: ActionClaim, At: eventEpoch})
+	if err != nil {
+		t.Fatalf("apply(%s) = %v; a replay must be able to apply a claim with nobody standing anywhere and no key in sight", ActionClaim, err)
+	}
+	if got := valueOf(t, out, StatKeysFound); got != tally {
+		t.Errorf("%q = %v after a replayed claim; want %v — the verb applied, so it has to have applied fully", StatKeysFound, got, tally)
+	}
+
+	// And a whole history of them. `fold` SKIPS what it cannot apply, so a search
+	// gate hiding in `apply` would not fail here — it would quietly drop every
+	// claim in the log and answer with a tally that is simply wrong, which is the
+	// failure shape worth writing a test for.
+	const searches = 6
+	history := make([]Event, 0, searches)
+	for i := 0; i < searches; i++ {
+		history = append(history, Event{Seq: int64(i + 1), Verb: ActionClaim, At: eventEpoch.Add(time.Duration(i) * time.Hour)})
+	}
+	folded := fold(freshPet(eventEpoch), history)
+	if got, want := valueOf(t, folded, StatKeysFound), tally*float64(searches); got != want {
+		t.Errorf("%q = %v after replaying %d claims; want %v — a gate in `apply` would be silently dropped events rather than a failure",
+			StatKeysFound, got, searches, want)
 	}
 }

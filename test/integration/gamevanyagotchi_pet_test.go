@@ -195,7 +195,7 @@ func petStandAtTheBeerStore(t *testing.T, game *gamevanyagotchi.Service, account
 // every test below wait a second between presses to assert nothing new.
 func petDo(t *testing.T, game *gamevanyagotchi.Service, accountID string, verbs ...string) gamevanyagotchi.State {
 	t.Helper()
-	st, err := game.Do(context.Background(), accountID, verbs, time.Now().UTC())
+	st, err := game.Do(context.Background(), accountID, verbs, "", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("Do(%v) for account %s: %v", verbs, accountID, err)
 	}
@@ -1387,7 +1387,7 @@ func TestVanyagotchiPetEveryVerbButTheRevivalIsRefusedOnADeadPet(t *testing.T) {
 			continue
 		}
 		refused++
-		if _, err := game.Do(context.Background(), account, []string{action.Key}, time.Now().UTC()); !errors.Is(err, gamevanyagotchi.ErrPetDead) {
+		if _, err := game.Do(context.Background(), account, []string{action.Key}, "", time.Now().UTC()); !errors.Is(err, gamevanyagotchi.ErrPetDead) {
 			t.Fatalf("%s on a dead pet: err=%v; want ErrPetDead", action.Key, err)
 		}
 		if at := petDiedAt(t, id); at == nil || !at.Equal(*died) {
@@ -1532,10 +1532,14 @@ func TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies(t *testing.T)
 	if !ok {
 		t.Fatalf("the catalogue has no object kind %q", gamevanyagotchi.KindKey)
 	}
+	// In a HOTSPOT, because finding the keys is now a search: he has to name the
+	// place and be standing in it, and a key hidden anywhere else would resolve to
+	// whichever spot happened to be nearest.
+	spot := petYardHotspot(t, 0)
 	petClearTheYardOf(t, gamevanyagotchi.KindKey)
 	t.Cleanup(func() { petClearTheYardOf(t, gamevanyagotchi.KindKey) })
 	if err := gamevanyagotchi.NewPostgresRepository().InsertWorldObject(context.Background(), pool,
-		kind.Key, gamevanyagotchi.LocationYard, gamevanyagotchi.Point{X: 0.5, Y: 0.5}, "", kind.Singleton, nil, nil); err != nil {
+		kind.Key, gamevanyagotchi.LocationYard, spot.At, "", kind.Singleton, nil, nil); err != nil {
 		t.Fatalf("hide a key for him to find: %v", err)
 	}
 
@@ -1551,7 +1555,10 @@ func TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies(t *testing.T)
 	petStandAtTheBeerStore(t, game, account)
 	petDo(t, game, account, drink.Key, drink.Key)
 	petDo(t, game, account, relieve.Key)
-	petDo(t, game, account, claim.Key)
+	// And then he walks to the place the keys are in, because looking for them is
+	// a search now: the beer store is nowhere near a hotspot, deliberately.
+	petSearchingIn(t, game, account, spot)
+	petSearchIn(t, game, account, spot)
 
 	tallies := make(map[string]float64)
 	for _, def := range gamevanyagotchi.Stats() {
@@ -1634,7 +1641,7 @@ func TestVanyagotchiPetRejectsAnActionOutsideTheCatalogue(t *testing.T) {
 	loginAs(t, app.URL, "7208", "user")
 	account := accountIDByUID(t, "7208")
 
-	_, err := game.Do(context.Background(), account, []string{"подкормить"}, time.Now().UTC())
+	_, err := game.Do(context.Background(), account, []string{"подкормить"}, "", time.Now().UTC())
 	if !errors.Is(err, gamevanyagotchi.ErrUnknownAction) {
 		t.Fatalf("an unknown verb: err=%v; want ErrUnknownAction", err)
 	}
@@ -2073,7 +2080,7 @@ func TestVanyagotchiPetAGatedVerbIsRefusedUntilTheStatItNeedsIsThere(t *testing.
 	}
 	events := petEventCount(t, id)
 
-	_, err := game.Do(context.Background(), account, []string{relieve.Key}, time.Now().UTC())
+	_, err := game.Do(context.Background(), account, []string{relieve.Key}, "", time.Now().UTC())
 	if !errors.Is(err, gamevanyagotchi.ErrNotYet) {
 		t.Fatalf("%s after %.2f hours of filling answered %v; want ErrNotYet, because the catalogue asks for %v of %s",
 			relieve.Key, full*9/10, err, relieve.NeedsAtLeast, def.Key)
@@ -2103,7 +2110,7 @@ func TestVanyagotchiPetAGatedVerbIsRefusedUntilTheStatItNeedsIsThere(t *testing.
 	// And now the same press, on the same pet, with nothing changed but the
 	// instant its rows are stamped at.
 	petBackdateAll(t, id, petHours(full*11/10))
-	state, err := game.Do(context.Background(), account, []string{relieve.Key}, time.Now().UTC())
+	state, err := game.Do(context.Background(), account, []string{relieve.Key}, "", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("%s after %.2f hours of filling: %v — the stored %s still reads %v, and what the gate judges him by is the value he actually has",
 			relieve.Key, full*11/10, err, def.Key, def.Min)
@@ -2300,12 +2307,17 @@ func TestVanyagotchiExactlyOnePlayerFindsTheKey(t *testing.T) {
 	petClearTheYardOf(t, gamevanyagotchi.KindKey)
 	t.Cleanup(func() { petClearTheYardOf(t, gamevanyagotchi.KindKey) })
 
-	// One key, hidden by hand. The service hides its own at a hello, which is a
-	// socket and therefore this file's neighbour's subject; what this test needs is
-	// a key whose id it knows.
+	// One key, hidden by hand IN A HOTSPOT. The service hides its own at a hello,
+	// which is a socket and therefore this file's neighbour's subject; what this
+	// test needs is a key whose id it knows. It has to be in a real hotspot rather
+	// than merely somewhere, because a claim is now judged by asking which spot
+	// the key's coordinates resolve to — a key in the middle of the yard would be
+	// found by whichever hotspot happened to be nearest, which is a fixture that
+	// works by accident.
+	spot := petYardHotspot(t, 0)
 	repo := gamevanyagotchi.NewPostgresRepository()
 	if err := repo.InsertWorldObject(ctx, pool, kind.Key, gamevanyagotchi.LocationYard,
-		gamevanyagotchi.Point{X: 0.5, Y: 0.5}, "", kind.Singleton, nil, nil); err != nil {
+		spot.At, "", kind.Singleton, nil, nil); err != nil {
 		t.Fatalf("hide the key: %v", err)
 	}
 	hidden := petContestedRowsOf(t, gamevanyagotchi.KindKey, gamevanyagotchi.LocationYard)
@@ -2313,6 +2325,15 @@ func TestVanyagotchiExactlyOnePlayerFindsTheKey(t *testing.T) {
 		t.Fatalf("%d keys are in the yard before the race; want exactly the one this test hid: %+v", len(hidden), hidden)
 	}
 	lost := hidden[0]
+
+	// AND BOTH OF THEM STANDING IN IT. A search is refused unless the server's
+	// own placement says he is at the spot he named, so a race for the key is now
+	// a race between two people who have both already walked there — which is
+	// what the mechanic is for. Done after the key is hidden, so the hello inside
+	// finds a hunt already running and does not stand a second one up.
+	for _, account := range accounts {
+		petSearchingIn(t, game, account, spot)
+	}
 
 	// BOTH ON THE SAME KEY, and that is arranged rather than hoped for.
 	//
@@ -2349,7 +2370,7 @@ func TestVanyagotchiExactlyOnePlayerFindsTheKey(t *testing.T) {
 		wg.Add(1)
 		go func(who, account string) {
 			defer wg.Done()
-			_, err := game.Do(ctx, account, []string{claim.Key}, time.Now().UTC())
+			_, err := game.Do(ctx, account, []string{claim.Key}, spot.Key, time.Now().UTC())
 			results <- outcome{who: who, err: err}
 		}(who, account)
 	}
@@ -2565,7 +2586,7 @@ func TestVanyagotchiTheCrateCannotBeOversold(t *testing.T) {
 		wg.Add(1)
 		go func(who, account string) {
 			defer wg.Done()
-			_, err := game.Do(ctx, account, []string{drink.Key}, time.Now().UTC())
+			_, err := game.Do(ctx, account, []string{drink.Key}, "", time.Now().UTC())
 			results <- outcome{who: who, err: err}
 		}(who, account)
 	}
@@ -2693,7 +2714,7 @@ func TestVanyagotchiDrinkingIsRefusedFromAcrossTheYardAndWritesNothing(t *testin
 	events := petEventCount(t, id)
 	stock := petLiveCrateStock(t)
 
-	if _, err := game.Do(ctx, account, []string{drink.Key}, time.Now().UTC()); !errors.Is(err, gamevanyagotchi.ErrTooFar) {
+	if _, err := game.Do(ctx, account, []string{drink.Key}, "", time.Now().UTC()); !errors.Is(err, gamevanyagotchi.ErrTooFar) {
 		t.Fatalf("Do(%s) from across the yard = %v; want ErrTooFar", drink.Key, err)
 	}
 
@@ -2714,7 +2735,7 @@ func TestVanyagotchiDrinkingIsRefusedFromAcrossTheYardAndWritesNothing(t *testin
 	// And walking back is all it takes: the gate stores no answer, so there is
 	// nothing about the refusal for him to undo.
 	petStandAtTheBeerStore(t, game, account)
-	if _, err := game.Do(ctx, account, []string{drink.Key}, time.Now().UTC()); err != nil {
+	if _, err := game.Do(ctx, account, []string{drink.Key}, "", time.Now().UTC()); err != nil {
 		t.Fatalf("Do(%s) back at the crate: %v; the gate asks about now and remembers nothing", drink.Key, err)
 	}
 	if now := petLiveCrateStock(t); now != stock-1 {
@@ -2754,4 +2775,275 @@ func petStoredValue(t *testing.T, petIDs, statKey string) float64 {
 	t.Helper()
 	value, _ := petStoredStat(t, petIDs, statKey)
 	return value
+}
+
+// ---------------------------------------------------------------------------
+// «искать ключи» as a SEARCH, against a real database.
+//
+// The gate itself is decided entirely in memory — the spot against the
+// catalogue, then his own placement against that spot — and it has its exhaustive
+// tests in internal/gamevanyagotchi. What this file adds is the durable half,
+// which is the half a response cannot show: a refused search must leave the stat
+// rows, their shared as_of, the event log and the key's own row exactly as they
+// were, and a winning one must have moved the key through PostgreSQL rather than
+// through anything in Go.
+// ---------------------------------------------------------------------------
+
+// petYardHotspot is one of the yard's published places, by index.
+//
+// By index rather than by key, for the reason petAction and petObjectKind are
+// looked up rather than written down: the places in the yard are content
+// somebody is meant to move by feel, and a test naming «куст» would break the day
+// somebody renamed a bush. What these tests need is "a place" and "a different
+// place".
+func petYardHotspot(t *testing.T, i int) gamevanyagotchi.Hotspot {
+	t.Helper()
+	yard, ok := gamevanyagotchi.LocationByKey(gamevanyagotchi.LocationYard)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", gamevanyagotchi.LocationYard)
+	}
+	if i >= len(yard.Hotspots) {
+		t.Fatalf("%q publishes %d hotspots and this test wants index %d; a search needs somewhere to be wrong as well as somewhere to be right",
+			gamevanyagotchi.LocationYard, len(yard.Hotspots), i)
+	}
+	return yard.Hotspots[i]
+}
+
+// petSearchingIn stands an account in a hotspot, with the yard loaded.
+//
+// The two real client frames rather than a reach into the service, exactly as
+// petStandAtTheBeerStore does and for the same reasons. The hello is the
+// human-paced moment the yard reads the world — which is what puts the key into
+// the cache the gate reads, and stands one up if the world has none — and the tap
+// is a teleport, because no broadcast has ever run in this suite so there is no
+// clock to measure a journey against.
+func petSearchingIn(t *testing.T, game *gamevanyagotchi.Service, accountID string, spot gamevanyagotchi.Hotspot) {
+	t.Helper()
+	m := realtime.Member{ConnID: "conn-" + accountID, AccountID: accountID}
+	game.HandleInbound(context.Background(), m, httpapi.DefaultRoom, []byte(`{"t":"vanyagotchi_hello"}`))
+	game.HandleInbound(context.Background(), m, httpapi.DefaultRoom,
+		fmt.Appendf(nil, `{"t":"vanyagotchi_move","x":%v,"y":%v}`, spot.At.X, spot.At.Y))
+}
+
+// TestVanyagotchiASearchThatIsRefusedWritesNothingAtAll is the durable half of
+// every way the gate says no, including the frame «искать ключи» used to be.
+//
+// The first case is the deletion test for the press-anywhere claim: a bare
+// `{"verbs":["claim"]}` with no spot is exactly what I8c accepted from anywhere in
+// the yard, and it must now be refused even from on top of the key. The rest are
+// the other three ways to ask badly. Every one of them has to leave the database
+// as it found it — and "as it found it" includes the shared as_of, because a
+// re-stamp on a refused batch is silently erased damage rather than a blemish.
+func TestVanyagotchiASearchThatIsRefusedWritesNothingAtAll(t *testing.T) {
+	ctx := context.Background()
+	claim := petAction(t, gamevanyagotchi.ActionClaim)
+	kind, ok := gamevanyagotchi.ObjectKindByKey(claim.Contests)
+	if !ok || !kind.Hidden {
+		t.Fatalf("%q contests %q, which is not a hidden kind; this test is about a mechanic the game does not have", claim.Key, claim.Contests)
+	}
+
+	here, elsewhere := petYardHotspot(t, 0), petYardHotspot(t, 1)
+
+	for i, tc := range []struct {
+		name  string
+		spot  string
+		stand gamevanyagotchi.Hotspot
+		want  error
+		why   string
+	}{
+		{
+			name: "the press-anywhere claim, from on top of the key", spot: "", stand: here,
+			want: gamevanyagotchi.ErrNoSpot,
+			why:  "the frame I8c accepted — no spot at all — and it must not work even where the answer is",
+		},
+		{
+			name: "a spot no location has", spot: "под-луной", stand: here,
+			want: gamevanyagotchi.ErrNoSpot,
+			why:  "an arbitrary string off the wire is resolved against the catalogue before anything else happens",
+		},
+		{
+			name: "the right spot, without having walked to it", spot: here.Key, stand: elsewhere,
+			want: gamevanyagotchi.ErrTooFar,
+			why:  "the client announcing an arrival is a request, never a fact",
+		},
+		{
+			name: "a spot he is standing in, with nothing in it", spot: elsewhere.Key, stand: elsewhere,
+			want: gamevanyagotchi.ErrNothingHere,
+			why:  "he asked properly and looked properly; this is the refusal that is a move in the game",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app, game := petApp(t)
+			uid := fmt.Sprintf("729%d", i)
+			cli := loginAs(t, app.URL, uid, "user")
+			if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+				t.Fatalf("create: status=%d body=%v", s, body)
+			}
+			account := accountIDByUID(t, uid)
+			id := petID(t, account)
+
+			petClearTheYardOf(t, kind.Key)
+			t.Cleanup(func() { petClearTheYardOf(t, kind.Key) })
+			repo := gamevanyagotchi.NewPostgresRepository()
+			if err := repo.InsertWorldObject(ctx, pool, kind.Key, gamevanyagotchi.LocationYard,
+				here.At, "", kind.Singleton, nil, nil); err != nil {
+				t.Fatalf("hide the key: %v", err)
+			}
+			petSearchingIn(t, game, account, tc.stand)
+
+			before := petSharedAsOf(t, id)
+			found := petStoredValue(t, id, gamevanyagotchi.StatKeysFound)
+			events := petEventCount(t, id)
+			keys := petContestedRowsOf(t, kind.Key, gamevanyagotchi.LocationYard)
+
+			if _, err := game.Do(ctx, account, []string{claim.Key}, tc.spot, time.Now().UTC()); !errors.Is(err, tc.want) {
+				t.Fatalf("Do(%s, spot=%q) = %v; want %v — %s", claim.Key, tc.spot, err, tc.want, tc.why)
+			}
+
+			if now := petSharedAsOf(t, id); !now.Equal(before) {
+				t.Errorf("his stats are stamped %s after a refused search; want the %s they carried before it — a refusal charged him a re-stamp, which is silently erased damage",
+					now.UTC(), before.UTC())
+			}
+			if got := petStoredValue(t, id, gamevanyagotchi.StatKeysFound); got != found {
+				t.Errorf("his %q went from %v to %v on a search that was refused", gamevanyagotchi.StatKeysFound, found, got)
+			}
+			if n := petEventCount(t, id); n != events {
+				t.Errorf("his log holds %d events after a refused search; want the %d it held before — looking in the wrong place is not something that happened to his pet", n, events)
+			}
+			// AND THE KEY IS STILL LOST. Not merely unclaimed by him: the row must
+			// be untouched, because a refused search that had exhausted it would
+			// have ended the hunt with nothing to replace it.
+			now := petContestedRowsOf(t, kind.Key, gamevanyagotchi.LocationYard)
+			if len(now) != len(keys) {
+				t.Fatalf("the yard holds %d keys after a refused search; want the %d it held before: %+v", len(now), len(keys), now)
+			}
+			for j := range now {
+				if now[j].claimedBy != nil || now[j].exhaustedAt != nil {
+					t.Errorf("key %s is claimed/exhausted after a refused search: %+v", now[j].id, now[j])
+				}
+			}
+		})
+	}
+}
+
+// TestVanyagotchiSearchingTheRightPlaceFindsTheKeysAndHidesTheNextOneInAnother is
+// the winning half, and the property that keeps the game running afterwards.
+//
+// Two things are proved here that no unit test can. The claim really moved a row
+// in PostgreSQL — claimed, exhausted, and the tally written down — and the
+// REPLACEMENT it stood up in the same transaction is itself at a hotspot. That
+// second half is the one that would rot silently: a replacement hidden anywhere
+// else on the plane would resolve to no spot key at all, so every later search by
+// every player would answer «тут пусто» for ever, while a hunt id rode the frame
+// the whole time saying one was running.
+func TestVanyagotchiSearchingTheRightPlaceFindsTheKeysAndHidesTheNextOneInAnother(t *testing.T) {
+	ctx := context.Background()
+	claim := petAction(t, gamevanyagotchi.ActionClaim)
+	tally := petEffectOn(claim, gamevanyagotchi.StatKeysFound)
+	if tally <= 0 {
+		t.Fatalf("the catalogue says %q moves %q by %v; there would be nothing for a finder to gain", claim.Key, gamevanyagotchi.StatKeysFound, tally)
+	}
+	kind, ok := gamevanyagotchi.ObjectKindByKey(claim.Contests)
+	if !ok || !kind.Hidden {
+		t.Fatalf("%q contests %q, which is not a hidden kind", claim.Key, claim.Contests)
+	}
+	yard, ok := gamevanyagotchi.LocationByKey(gamevanyagotchi.LocationYard)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", gamevanyagotchi.LocationYard)
+	}
+	spot := petYardHotspot(t, 2)
+
+	app, game := petApp(t)
+	cli := loginAs(t, app.URL, "7295", "user")
+	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+		t.Fatalf("create: status=%d body=%v", s, body)
+	}
+	account := accountIDByUID(t, "7295")
+	id := petID(t, account)
+
+	petClearTheYardOf(t, kind.Key)
+	t.Cleanup(func() { petClearTheYardOf(t, kind.Key) })
+	repo := gamevanyagotchi.NewPostgresRepository()
+	if err := repo.InsertWorldObject(ctx, pool, kind.Key, gamevanyagotchi.LocationYard,
+		spot.At, "", kind.Singleton, nil, nil); err != nil {
+		t.Fatalf("hide the key: %v", err)
+	}
+	petSearchingIn(t, game, account, spot)
+
+	found := petStoredValue(t, id, gamevanyagotchi.StatKeysFound)
+	if _, err := game.Do(ctx, account, []string{claim.Key}, spot.Key, time.Now().UTC()); err != nil {
+		t.Fatalf("Do(%s) in %q, which is where the keys are: %v", claim.Key, spot.Key, err)
+	}
+
+	if got, want := petStoredValue(t, id, gamevanyagotchi.StatKeysFound), found+tally; got != want {
+		t.Errorf("his %q is %v after finding the keys; want %v", gamevanyagotchi.StatKeysFound, got, want)
+	}
+	if n := petEventCount(t, id); n != 1 {
+		t.Errorf("his log holds %d events for one accepted search; want 1", n)
+	}
+
+	keys := petContestedRowsOf(t, kind.Key, gamevanyagotchi.LocationYard)
+	if len(keys) != 2 {
+		t.Fatalf("%d keys are in the yard after one was found; want the one that was claimed and the one that replaced it: %+v", len(keys), keys)
+	}
+	var fresh []petContestedRow
+	for _, k := range keys {
+		if k.exhaustedAt == nil {
+			fresh = append(fresh, k)
+		}
+	}
+	if len(fresh) != 1 {
+		t.Fatalf("%d keys are still lost; the partial unique index permits exactly one: %+v", len(fresh), keys)
+	}
+
+	// THE ASSERTION THIS TEST EXISTS FOR: the next key is somewhere a player can
+	// name. Read back out of Postgres rather than off the insert, because a
+	// coordinate that survived the column's CHECK is not the same claim as a
+	// coordinate that is one of the five places the client is told about.
+	at, err := petWorldObjectPoint(t, fresh[0].id)
+	if err != nil {
+		t.Fatalf("read the replacement key's position: %v", err)
+	}
+	var landed string
+	for _, h := range yard.Hotspots {
+		if h.At == at {
+			landed = h.Key
+		}
+	}
+	if landed == "" {
+		t.Fatalf("the replacement key is at (%v,%v), which is not any of %q's hotspots; no spot key would ever resolve to it and every later search would answer «тут пусто» for ever",
+			at.X, at.Y, gamevanyagotchi.LocationYard)
+	}
+	t.Logf("the next key is in %q", landed)
+}
+
+// petWorldObjectPoint reads where one world object is standing.
+//
+// By id and straight out of the table, because the question is what was actually
+// WRITTEN: a replacement whose coordinates the service computed correctly and
+// then inserted from the wrong variable would look identical everywhere else.
+func petWorldObjectPoint(t *testing.T, id string) (gamevanyagotchi.Point, error) {
+	t.Helper()
+	var p gamevanyagotchi.Point
+	err := pool.QueryRow(context.Background(),
+		`SELECT x, y FROM game_vanyagotchi_world_objects WHERE id = $1::uuid`, id).Scan(&p.X, &p.Y)
+	return p, err
+}
+
+// petSearchIn presses «искать ключи» naming a place, and fails the test on a
+// refusal.
+//
+// The sibling of petDo for the one verb that now carries a payload the server
+// has to judge. It exists rather than a spot parameter on petDo because every
+// other verb in the catalogue sends none, and threading an empty string through
+// forty call sites would say the opposite of what is true — a spot belongs to a
+// search and to nothing else.
+func petSearchIn(t *testing.T, game *gamevanyagotchi.Service, accountID string, spot gamevanyagotchi.Hotspot) gamevanyagotchi.State {
+	t.Helper()
+	st, err := game.Do(context.Background(), accountID,
+		[]string{gamevanyagotchi.ActionClaim}, spot.Key, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("searching %q for account %s: %v", spot.Key, accountID, err)
+	}
+	return st
 }

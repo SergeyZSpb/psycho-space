@@ -393,6 +393,22 @@ export interface VanyagotchiAction {
    * Optional for the same reason `needs_near` is.
    */
   contests?: string;
+  /**
+   * This verb is a SEARCH: it names the hiding place the player chose to look
+   * in, and the server refuses it unless he is standing there.
+   *
+   * READ FOR ITS PRESENCE AND NEVER FOR A KEY, exactly as `needs_near` is. The
+   * server DERIVES it from the kind this verb races for being hidden — a fact
+   * deliberately not on the wire, because publishing which kinds are hidden
+   * would publish that the key is hidden. So the capability is published instead
+   * of the reason, and the browser can find the searching verb while still
+   * holding no content key at all (ADR-028).
+   *
+   * Optional because it is `omitempty`: every other verb omits it, and a server
+   * that predates the field sends none — in which case the yard draws no hiding
+   * places rather than guessing which verb a tap should send.
+   */
+  needs_spot?: boolean;
 }
 
 /** One look for a pet. `image` (a URL) wins when set; otherwise emoji over gradient. */
@@ -518,11 +534,54 @@ export interface VanyagotchiStore {
   left: number;
 }
 
+/**
+ * One candidate hiding place: somewhere in the yard a lost key might be, and a
+ * thing the player can tap.
+ *
+ * THE LIST IS DELIBERATELY PUBLIC AND THE ANSWER DELIBERATELY IS NOT. Every
+ * hiding place a location has is served here, drawn on the plane and named on
+ * the splash — what must never be derivable in a browser is WHICH of them the
+ * key is under, because the hotspot list is exactly what a one-line script would
+ * read to win every hunt. So the key's own coordinates simply stop being
+ * published (the kind is hidden and `props` skips it) and the client is left
+ * doing what a player does: pick a place, walk over, and find out.
+ *
+ * ON THE CATALOGUE RATHER THAN ON A FRAME, which is the whole reason it costs
+ * nothing. A hiding place is furniture — it is the same five entries for the
+ * life of the process — so it rides the one cached GET that already describes
+ * the game instead of a roster that repeats five times a second (CLAUDE.md →
+ * *Bytes on the wire are a design constraint*). The iteration that added it in
+ * fact made the socket CHEAPER: the key stopped being an entity on the roster,
+ * which is about 60 bytes a frame back.
+ *
+ * PER LOCATION FROM THE START, because a hiding place belongs to a place: the
+ * yard has its bushes and the лифт will have its own, and the client filters by
+ * the pet's `location_key` rather than holding one flat list.
+ */
+export interface VanyagotchiHotspot {
+  /** What the claim names when it is sent. Never shown to the player. */
+  key: string;
+  /** What it is called — «куст», «мусорка». */
+  label: string;
+  /** What is drawn for it on the plane. */
+  emoji: string;
+  /** Where it stands, in the plane's normalised 0..1 coordinates. */
+  at: { x: number; y: number };
+}
+
 export interface VanyagotchiLocation {
   key: string;
   label: string;
   /** Where a pet stands on arriving, in the plane's normalised 0..1 coordinates. */
   entry: { x: number; y: number };
+  /**
+   * The places a key can be hidden here, drawn on the plane as tap targets.
+   *
+   * Optional because it is `omitempty`, and because a location with nothing to
+   * search in is a perfectly good location — the yard is the only one with a
+   * hunt in it today.
+   */
+  hotspots?: VanyagotchiHotspot[];
 }
 
 export interface VanyagotchiConfig {

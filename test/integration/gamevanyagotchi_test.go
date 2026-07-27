@@ -126,23 +126,28 @@ func regulars() map[string]gamevanyagotchi.NPC {
 }
 
 // propPrefix is what the server publishes a THING under, as opposed to somebody:
-// a deposit on the ground, the lost key.
+// a deposit on the ground, the crate of beer.
 //
 // The same shape as the regulars' "npc-", and here for the same reason. To the
 // client there is no such thing as a world object — it resolves whatever art key
 // an entity carries against the catalogue and holds no notion of kinds — so the
-// only thing distinguishing a key lying in the grass from a player standing in
-// it, on the wire, is this prefix.
+// only thing distinguishing a deposit on the grass from a player standing in it,
+// on the wire, is this prefix.
+//
+// The lost key is deliberately NOT among them any more: a hidden kind is skipped
+// before it becomes an entity at all, which is what makes «искать ключи» a search
+// rather than a race to press. See TestVanyagotchiTheHiddenKeyNeverReachesTheWire.
 const propPrefix = "obj-"
 
 // peopleIn is the entities in a roster that are neither the yard's regulars nor
 // the things lying about in it: the players, and anybody asleep.
 //
 // Both exclusions earn their keep, and the second one arrived the expensive way.
-// A key hunt is always running — every hello starts one if there is not one — so
-// from the first connection this suite makes, every roster carries a key drawn as
-// an ordinary entity in an ordinary pose. Counting it as a person made a yard
-// holding one player look like a yard holding two.
+// Deposits are player-created and durable, and this suite shares one database —
+// so a roster can carry any number of them, and counting one as a person made a
+// yard holding one player look like a yard holding two. (The key used to be the
+// worst of these, because every hello starts a hunt and the key was drawn; it is
+// hidden now, so the exclusion it forced is kept for the things still visible.)
 func peopleIn(r gamevanyagotchi.Roster) []gamevanyagotchi.Peer {
 	npcs := regulars()
 	out := make([]gamevanyagotchi.Peer, 0, len(r.Peers))
@@ -1592,4 +1597,110 @@ func getNoRedirect(t *testing.T, cli *http.Client, url string) *http.Response {
 		t.Fatalf("GET %s: %v", url, err)
 	}
 	return res
+}
+
+// TestVanyagotchiTheHiddenKeyNeverReachesTheWire is the deletion this iteration
+// is built on, asserted at the only place that settles it: the bytes a browser
+// actually receives, over a real socket, from a real database.
+//
+// The key used to be an ordinary entity in the roster. Every client was told
+// exactly where it was five times a second, so «искать ключи» was a race to press
+// a button pointing at a visible dot rather than a search. It is now absent from
+// the frame entirely — not obscured, not flagged, absent — and the strong form of
+// that is asserted here: no entity carries its art, no entity carries its id, and
+// nothing at all is standing on its coordinates. A client reading every byte it
+// will ever receive still does not know where the keys are.
+//
+// What must NOT go with it is the hunt's id. A hunt is STATE a late joiner has to
+// be able to see and take part in, so a yard that stopped saying one was running
+// would leave whoever opened the app thirty seconds ago with nothing to join.
+func TestVanyagotchiTheHiddenKeyNeverReachesTheWire(t *testing.T) {
+	kind := petObjectKind(t, gamevanyagotchi.KindKey)
+	if !kind.Hidden {
+		t.Fatalf("the catalogue no longer marks %q hidden; this test is about a rule the game does not have", kind.Key)
+	}
+	// Both ends, because the yard is a singleton world shared with every other
+	// test in this suite: one left standing by a neighbour would be the key this
+	// test then reads back, and its hello's own insert would be swallowed in
+	// silence by ON CONFLICT DO NOTHING.
+	petClearTheYardOf(t, kind.Key)
+	t.Cleanup(func() { petClearTheYardOf(t, kind.Key) })
+
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, _, tick := buildAppRealtimeGame(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	cli := loginAs(t, app.URL, "7311", "user")
+	conn, _, err := dialRealtime(t, app.URL, cookieHeader(t, cli, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	frames := readFrames(t, conn)
+	waitRegistered(t, hub, frames)
+
+	// The hello is the human-paced moment the yard reads the world, and the one
+	// that starts a hunt when it finds none — which is how the key under test gets
+	// hidden in the first place, by the server, at a place only it knows.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText,
+		fmt.Appendf(nil, `{"t":%q}`, gamevanyagotchi.TypeHello)); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+
+	// Ticked until the hunt appears rather than slept on: the hello is handled on
+	// its own read pump, so the roster that started the hunt is whichever one
+	// happens to be published after it lands.
+	base := time.Now().UTC()
+	var frame gamevanyagotchi.Roster
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		frame = expectRosterAt(t, tick, frames, base)
+		if frame.Hunt != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no hunt was ever announced; a hello stands a key up when it finds none, and without one there is nothing here to be hidden")
+		}
+	}
+
+	// Where it actually is, straight out of the table — the one place in the
+	// system that knows.
+	rows := petContestedRowsOf(t, kind.Key, gamevanyagotchi.LocationYard)
+	var live []petContestedRow
+	for _, r := range rows {
+		if r.exhaustedAt == nil {
+			live = append(live, r)
+		}
+	}
+	if len(live) != 1 {
+		t.Fatalf("%d keys are lost in the yard; the partial unique index permits exactly one: %+v", len(live), rows)
+	}
+	hidden, err := petWorldObjectPoint(t, live[0].id)
+	if err != nil {
+		t.Fatalf("read where the key is hidden: %v", err)
+	}
+
+	for _, p := range frame.Peers {
+		if p.Art == kind.Art {
+			t.Errorf("the frame draws an entity with the key's own art: %+v — everybody can see where it is, and «искать ключи» is a race to press rather than a search", p)
+		}
+		if p.X == hidden.X && p.Y == hidden.Y {
+			t.Errorf("entity %q is standing exactly where the key is hidden, (%v,%v); a client that noticed would have the answer",
+				p.ID, p.X, p.Y)
+		}
+		if p.ID == propPrefix+live[0].id[:12] {
+			t.Errorf("the key is in the roster under its own id %q; hiding it means it is not an entity at all", p.ID)
+		}
+	}
+
+	// And the hunt itself is still there, because it is state rather than an
+	// announcement — the whole reason somebody arriving late can still take part.
+	if frame.Hunt != live[0].id[:12] {
+		t.Errorf("the frame names the hunt %q; want %q, the truncation every other id on this frame uses — hiding the key must not hide that a hunt is running",
+			frame.Hunt, live[0].id[:12])
+	}
 }

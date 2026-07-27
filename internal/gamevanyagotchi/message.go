@@ -262,10 +262,32 @@ func parseInbound(payload []byte) (Point, error) {
 	return Point{X: x, Y: y}, nil
 }
 
-// do is the inbound verb frame: a list, applied in order.
+// do is the inbound verb frame: a list, applied in order, and optionally the
+// place the player says he is looking in.
 type do struct {
 	T     string   `json:"t"`
 	Verbs []string `json:"verbs"`
+	// Spot is a hotspot key — where he says he searched.
+	//
+	// THE FIRST INBOUND FIELD THE SERVER HAS TO JUDGE RATHER THAN CLAMP, and the
+	// distinction is worth stating because everything else a client sends is one
+	// or the other of two harmless shapes. A verb is a key checked against the
+	// catalogue, so a wrong one is a refusal. A coordinate is clamped, so a wrong
+	// one is a legal coordinate. A spot is neither: it is an ASSERTION about the
+	// world — "I am standing at the bins" — and the server's job is to disagree.
+	//
+	// It does, twice, and neither check trusts a byte of this: the key is resolved
+	// against the catalogue FOR THE PET'S OWN LOCATION, and then the server
+	// measures its own in-memory placement against that hotspot. So the worst an
+	// arbitrary string buys is a refusal, and an arbitrary string that happens to
+	// name a real hotspot buys a refusal too unless he walked there. See
+	// Service.searched, which also explains why the ORDER of those two checks is
+	// the part that stops the refusal leaking the answer.
+	//
+	// Optional, and absent for every verb but a search — `omitempty` on the way
+	// out is moot because this type is never marshalled, but a client that sends
+	// no spot with a drink is sending the right frame rather than a defective one.
+	Spot string `json:"spot"`
 }
 
 // StateFrame carries a player their own pet after it changes.
@@ -279,39 +301,46 @@ type StateFrame struct {
 	State State  `json:"state"`
 }
 
-// parseVerbs turns a raw frame into the verbs it asks for.
+// parseVerbs turns a raw frame into the verbs it asks for and the place it says
+// they were done in.
 //
 // Pure, like parseInbound, so every rejection is a table row rather than
 // something needing a socket. It validates SHAPE only — that the frame is the
-// right type and carries a plausible list. Whether a verb exists, and whether
-// this pet may take it, is the service's business and is decided against the
-// catalogue and the pet's own state.
-func parseVerbs(payload []byte) ([]string, error) {
+// right type and carries a plausible list. Whether a verb exists, whether this
+// pet may take it, and whether the spot is a real place he is really standing in,
+// are all the service's business and are decided against the catalogue, the pet's
+// own state and the yard's own placement.
+//
+// The spot is passed through UNTOUCHED and unvalidated, which is deliberate: a
+// length or character check here would be a second, weaker copy of the catalogue
+// lookup that has to happen anyway, and the frame is already bounded at 4 KiB by
+// the read pump. An arbitrary string fails `hotspotIn` on its first byte.
+func parseVerbs(payload []byte) ([]string, string, error) {
 	var env envelope
 	if err := json.Unmarshal(payload, &env); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrMalformedMessage, err)
+		return nil, "", fmt.Errorf("%w: %v", ErrMalformedMessage, err)
 	}
 	if env.T != TypeDo {
-		return nil, fmt.Errorf("%w: %q", ErrUnknownMessage, env.T)
+		return nil, "", fmt.Errorf("%w: %q", ErrUnknownMessage, env.T)
 	}
 
 	var d do
 	if err := json.Unmarshal(payload, &d); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrMalformedMessage, err)
+		return nil, "", fmt.Errorf("%w: %v", ErrMalformedMessage, err)
 	}
 	if len(d.Verbs) == 0 {
-		return nil, fmt.Errorf("%w: verbs is required and must not be empty", ErrNoVerbs)
+		return nil, "", fmt.Errorf("%w: verbs is required and must not be empty", ErrNoVerbs)
 	}
 	// Checked here as well as in Do, because this is the edge: a frame asking
 	// for a thousand verbs must be refused before anything reads a database,
 	// not after.
 	if len(d.Verbs) > maxBatch {
-		return nil, fmt.Errorf("%w: %d verbs, limit %d", ErrBatchTooLong, len(d.Verbs), maxBatch)
+		return nil, "", fmt.Errorf("%w: %d verbs, limit %d", ErrBatchTooLong, len(d.Verbs), maxBatch)
 	}
 	for _, v := range d.Verbs {
 		if v == "" {
-			return nil, fmt.Errorf("%w: an empty verb", ErrNoVerbs)
+			return nil, "", fmt.Errorf("%w: an empty verb", ErrNoVerbs)
 		}
 	}
-	return d.Verbs, nil
+	return d.Verbs, d.Spot, nil
 }

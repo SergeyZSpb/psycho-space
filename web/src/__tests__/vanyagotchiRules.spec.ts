@@ -647,6 +647,24 @@ describe('YARD_PROSE — the hardcoded half', () => {
     expect(YARD_PROSE.length).toBeGreaterThan(0);
     for (const line of YARD_PROSE) expect(line.trim().length).toBeGreaterThan(0);
   });
+
+  it('describes the hunt that exists rather than the one that used to', () => {
+    // THE assertion this block was missing, and the reason it is worth having:
+    // the hardcoded half is the part nothing tells you has gone stale, and the
+    // key hunt is the rule that changed underneath it most completely. The key
+    // used to lie on the ground where everybody could see it and go to whoever
+    // pressed first; it is now hidden, and finding it means picking a place and
+    // walking there. A cheatsheet still promising the old game is worse than no
+    // cheatsheet at all, because a player will believe it.
+    const prose = YARD_PROSE.join(' ');
+    expect(prose).toContain('не видно никому');
+    expect(prose).toContain('укрыти');
+    expect(prose).toContain('тут пусто');
+    // What it must NOT still say. Both of these were true of I8c and are lies
+    // now: the key is not on the ground, and pressing is not what finds it.
+    expect(prose).not.toContain('всегда где-то на земле');
+    expect(prose).not.toContain('кто первым нажал');
+  });
 });
 
 describe('buildRules — a verb you have to walk to something to use', () => {
@@ -741,5 +759,166 @@ describe('buildRules — a verb you have to walk to something to use', () => {
     );
     expect(notes).toContain('нужно накопить: мочевой пузырь от 15');
     expect(notes).toContain('нужно стоять рядом: ящик пива');
+  });
+});
+
+describe('buildRules — the verb you do not press', () => {
+  /**
+   * A hiding place, shaped as the catalogue serves one.
+   *
+   * Mirrored here rather than imported from the plane spec, for the reason every
+   * fixture in this repository is copied rather than shared: a change to the
+   * shape the server sends should fail in both places rather than in neither.
+   */
+  const spot = (key: string, label: string) => ({
+    key,
+    label,
+    emoji: '🌳',
+    at: { x: 0.3, y: 0.3 },
+  });
+
+  /** The yard, with somewhere in it to look. */
+  const yard = (...hotspots: ReturnType<typeof spot>[]) => ({
+    key: 'yard',
+    label: 'двор',
+    entry: { x: 0.5, y: 0.5 },
+    hotspots,
+  });
+
+  /**
+   * «искать ключи» as the catalogue has it: it races other players for the key,
+   * and — unlike «выпить пива», which races them for the crate — it names no
+   * place to stand, because where the thing is, is the question. That absence is
+   * the whole of what identifies it; see `searchVerb`.
+   */
+  const claim = (over: Partial<VanyagotchiAction> = {}): VanyagotchiAction =>
+    action({ key: 'claim', label: 'искать ключи', emoji: '🔑', contests: 'key', needs_spot: true, ...over });
+
+  const notesOf = (cfg: VanyagotchiConfig, i = 0): string[] => buildRules(cfg).actions[i].notes;
+
+  it('corrects the heading it is sitting under: this one is not a button', () => {
+    // «Жмёшь ты» promises that everything beneath it is a button, and the
+    // searching verb no longer has one — the yard's own hiding places are the
+    // control. A player told to press it would look for a button, find three,
+    // and conclude that finding keys had been taken out of the game.
+    const notes = notesOf(config({ actions: [claim()], locations: [yard()] }));
+    expect(notes[0]).toContain('не кнопка');
+    expect(notes[0]).toContain('тапни укрытие');
+  });
+
+  it('counts and names the hiding places, off the catalogue', () => {
+    const notes = notesOf(
+      config({
+        actions: [claim()],
+        locations: [yard(spot('bush', 'куст'), spot('bin', 'мусорка'), spot('door', 'подъезд'))],
+      }),
+    );
+    expect(notes).toContain('искать можно в 3 местах: куст · мусорка · подъезд');
+  });
+
+  it('follows a retuned yard rather than pinning what is in it today', () => {
+    // THE assertion this derivation exists for. Adding a bush in
+    // internal/gamevanyagotchi/content.go changes what the player is told with no
+    // client edit — and the count in particular is a number the player plays
+    // against: five places is a hunt you can brute-force and twenty is one you
+    // have to be lucky at.
+    const notes = notesOf(
+      config({
+        actions: [claim()],
+        locations: [yard(spot('lift', 'лифт'), spot('shed', 'сарай'))],
+      }),
+    );
+    expect(notes).toContain('искать можно в 2 местах: лифт · сарай');
+    expect(notes.some((note) => note.includes('куст'))).toBe(false);
+  });
+
+  it('agrees the Russian numeral, which the prepositional case gets wrong twice', () => {
+    const whereFor = (n: number) =>
+      notesOf(
+        config({
+          actions: [claim()],
+          locations: [yard(...Array.from({ length: n }, (_, i) => spot(`s${i}`, `место${i}`)))],
+        }),
+      ).find((note) => note.startsWith('искать можно'));
+    expect(whereFor(1)).toContain('в 1 месте');
+    expect(whereFor(2)).toContain('в 2 местах');
+    expect(whereFor(5)).toContain('в 5 местах');
+    expect(whereFor(11)).toContain('в 11 местах');
+    expect(whereFor(21)).toContain('в 21 месте');
+  });
+
+  it('drops the list wholesale when a place has no name, and keeps the count', () => {
+    // A partial enumeration reads as a complete one and is a lie about the rest.
+    // The count is still true, so the honest degradation is to say only that.
+    const notes = notesOf(
+      config({
+        actions: [claim()],
+        locations: [yard(spot('bush', 'куст'), spot('bin', ''))],
+      }),
+    );
+    expect(notes).toContain('искать можно в 2 местах');
+    expect(notes.some((note) => note.includes('куст'))).toBe(false);
+  });
+
+  it('still says it is not a button in a yard with nothing to search', () => {
+    // The two halves fail independently: an older server sends the verb without
+    // the hiding places, and the half that matters most — where the control went
+    // — is the one that does not need them.
+    const notes = notesOf(config({ actions: [claim()], locations: [] }));
+    expect(notes[0]).toContain('не кнопка');
+    expect(notes.some((note) => note.startsWith('искать можно'))).toBe(false);
+  });
+
+  it('says none of it about a verb you really do press', () => {
+    const notes = notesOf(
+      config({
+        actions: [action(), relieve(), revive()],
+        locations: [yard(spot('bush', 'куст'))],
+      }),
+    );
+    expect(notes.some((note) => note.includes('не кнопка'))).toBe(false);
+    expect(notes.some((note) => note.startsWith('искать можно'))).toBe(false);
+  });
+
+  it('says none of it when the catalogue no longer identifies ONE searching verb', () => {
+    // Two verbs fitting the shape is the case a second contested verb creates,
+    // and the yard's answer to it is to offer no hiding places at all — so the
+    // cheatsheet must not go on describing a control that is not there.
+    const rules = buildRules(
+      config({
+        actions: [claim(), claim({ key: 'dig', contests: 'treasure', needs_spot: true })],
+        locations: [yard(spot('bush', 'куст'))],
+      }),
+    );
+    for (const row of rules.actions) {
+      expect(row.notes.some((note) => note.includes('не кнопка'))).toBe(false);
+      expect(row.notes.some((note) => note.startsWith('искать можно'))).toBe(false);
+    }
+  });
+
+  it('reads the DEFAULT location, which is the only one a splash can know', () => {
+    // The pet is fetched behind the CTA, so at the moment this cheatsheet is
+    // built nobody knows which yard дядя Ваня is standing in — and `entry`/`лифт`
+    // hotspots must not be counted into the yard's line.
+    const notes = notesOf(
+      config({
+        actions: [claim()],
+        default_location: 'yard',
+        locations: [
+          yard(spot('bush', 'куст')),
+          { key: 'lift', label: 'лифт', entry: { x: 0.5, y: 0.5 }, hotspots: [spot('p', 'панель')] },
+        ],
+      }),
+    );
+    expect(notes).toContain('искать можно в 1 месте: куст');
+  });
+
+  it('keeps the death warning, and puts the control before it', () => {
+    // Order is the argument: how the verb is used at all outranks the one state
+    // it is refused in, exactly as `needsNote` outranks what a verb moves.
+    const notes = notesOf(config({ actions: [claim()], locations: [yard(spot('bush', 'куст'))] }));
+    expect(notes[0]).toContain('не кнопка');
+    expect(notes[1]).toBe('искать можно в 1 месте: куст');
+    expect(notes[notes.length - 1]).toBe('мёртвому нельзя');
   });
 });

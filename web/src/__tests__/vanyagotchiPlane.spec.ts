@@ -9,7 +9,9 @@ import {
   SAY_BELOW_PROPERTY,
   SAY_FLIP_Y,
   SAY_MAX,
+  SEARCH_WALK_MS,
   UNKNOWN_ART,
+  UNKNOWN_SPOT,
   X_PROPERTY,
   Y_PROPERTY,
   applyFrame,
@@ -19,6 +21,7 @@ import {
   beside,
   capLabel,
   capSay,
+  hotspotsFor,
   huntRestarted,
   isRenderablePosition,
   outOfReach,
@@ -27,6 +30,8 @@ import {
   readHere,
   readStore,
   sameStore,
+  searchVerb,
+  spotAriaLabel,
   storeLabel,
   readHunt,
   resolveArt,
@@ -35,7 +40,7 @@ import {
   tapToPosition,
   type PeerAppearance,
 } from '../lib/vanyagotchiPlane';
-import type { VanyagotchiSkin } from '../api/types';
+import type { VanyagotchiAction, VanyagotchiConfig, VanyagotchiSkin } from '../api/types';
 
 /** The smallest thing that looks like an element to this module. */
 function fakeEl() {
@@ -1026,5 +1031,233 @@ describe('storeLabel', () => {
     ]) {
       expect([...(line ?? '')].length).toBeLessThanOrEqual(20);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The key hunt. The key itself is nowhere in these tests and cannot be: it is
+// hidden server-side and never published, so the whole of what the browser is
+// given is the list of places it MIGHT be under and a way of naming one.
+// ---------------------------------------------------------------------------
+
+/** A hiding place, shaped as the catalogue serves one. */
+const spot = (over: Record<string, unknown> = {}) => ({
+  key: 'bush',
+  label: 'куст',
+  emoji: '🌳',
+  at: { x: 0.28, y: 0.34 },
+  ...over,
+});
+
+/**
+ * A catalogue with the given locations in it.
+ *
+ * Cast rather than built in full, deliberately: what these tests read is
+ * `locations`, and spelling out five other lists to satisfy the compiler would
+ * make it look as though one of them mattered.
+ */
+const catalogue = (over: Record<string, unknown>): VanyagotchiConfig =>
+  ({ locations: [], default_location: 'yard', ...over }) as unknown as VanyagotchiConfig;
+
+/** A location, shaped as the catalogue serves one. */
+const place = (key: string, hotspots?: unknown[]) => ({
+  key,
+  label: key,
+  entry: { x: 0.5, y: 0.5 },
+  ...(hotspots ? { hotspots } : {}),
+});
+
+describe('hotspotsFor', () => {
+  it('reads the hiding places of the location it was asked about', () => {
+    const spots = hotspotsFor(catalogue({ locations: [place('yard', [spot()])] }), 'yard');
+    expect(spots).toEqual([{ key: 'bush', label: 'куст', emoji: '🌳', at: { x: 0.28, y: 0.34 } }]);
+  });
+
+  it('never lends one location its neighbour’s hiding places', () => {
+    // The assertion that is not about today. There is one location in the game
+    // as it stands, so a version that flattened every location's hotspots into
+    // one list would behave identically — right up to the лес arriving, at which
+    // point every yard would be showing every other yard's bushes.
+    const cfg = catalogue({
+      locations: [place('yard', [spot()]), place('lift', [spot({ key: 'panel', label: 'панель' })])],
+    });
+    expect(hotspotsFor(cfg, 'yard').map((s) => s.key)).toEqual(['bush']);
+    expect(hotspotsFor(cfg, 'lift').map((s) => s.key)).toEqual(['panel']);
+  });
+
+  it('is empty for a location this catalogue does not describe', () => {
+    expect(hotspotsFor(catalogue({ locations: [place('yard', [spot()])] }), 'zabroshka')).toEqual(
+      [],
+    );
+  });
+
+  it('is empty for a location with nothing to search in', () => {
+    // A real state rather than a defensive one: a location need not have a hunt.
+    expect(hotspotsFor(catalogue({ locations: [place('yard')] }), 'yard')).toEqual([]);
+  });
+
+  it('is empty before the catalogue has arrived, and when nobody said where', () => {
+    // The plane runs on the socket and the catalogue comes over HTTP, so a yard
+    // with no config yet is the ordinary first second of every visit.
+    expect(hotspotsFor(null, 'yard')).toEqual([]);
+    expect(hotspotsFor(undefined, 'yard')).toEqual([]);
+    expect(hotspotsFor(catalogue({ locations: [place('yard', [spot()])] }), undefined)).toEqual([]);
+    expect(hotspotsFor(catalogue({ locations: [place('yard', [spot()])] }), '')).toEqual([]);
+  });
+
+  it('survives a catalogue whose locations are not a list at all', () => {
+    expect(hotspotsFor(catalogue({ locations: undefined }), 'yard')).toEqual([]);
+    expect(hotspotsFor(catalogue({ locations: 'yard' }), 'yard')).toEqual([]);
+  });
+
+  it('drops a hiding place with nothing to name in a claim', () => {
+    // The key is what the claim carries, so a hotspot without one could only
+    // ever produce a frame the server refuses — a tap that does nothing.
+    const spots = hotspotsFor(
+      catalogue({ locations: [place('yard', [spot({ key: '' }), spot({ key: undefined })])] }),
+      'yard',
+    );
+    expect(spots).toEqual([]);
+  });
+
+  it('drops a hiding place with nowhere to walk to', () => {
+    // The other entry requirement: arrival is measured against this point, so a
+    // place without a usable one is a search that can never be completed.
+    const spots = hotspotsFor(
+      catalogue({
+        locations: [
+          place('yard', [
+            spot({ key: 'a', at: undefined }),
+            spot({ key: 'b', at: { x: 0.5 } }),
+            spot({ key: 'c', at: { x: Number.NaN, y: 0.5 } }),
+            spot({ key: 'd' }),
+          ]),
+        ],
+      }),
+      'yard',
+    );
+    expect(spots.map((s) => s.key)).toEqual(['d']);
+  });
+
+  it('draws a hiding place the catalogue gave no picture, rather than hiding it', () => {
+    // The same choice `resolveArt` makes for a person: the place is real and the
+    // key may be under it, and a client older than its server must still be able
+    // to win a hunt. An untappable bush is a losing one.
+    const spots = hotspotsFor(
+      catalogue({ locations: [place('yard', [spot({ emoji: '' }), spot({ key: 'b', emoji: 7 })])] }),
+      'yard',
+    );
+    expect(spots.map((s) => s.emoji)).toEqual([UNKNOWN_SPOT, UNKNOWN_SPOT]);
+  });
+
+  it('keeps a nameless hiding place tappable, with no name rather than a wire key', () => {
+    const spots = hotspotsFor(
+      catalogue({ locations: [place('yard', [spot({ label: undefined })])] }),
+      'yard',
+    );
+    expect(spots).toHaveLength(1);
+    expect(spots[0]?.label).toBe('');
+  });
+
+  it('freezes what it returns', () => {
+    // Several things read this list in one render; none of them may sort it.
+    const spots = hotspotsFor(catalogue({ locations: [place('yard', [spot()])] }), 'yard');
+    expect(Object.isFrozen(spots)).toBe(true);
+  });
+});
+
+describe('searchVerb', () => {
+  /** A verb, shaped as the catalogue serves one. */
+  const verb = (over: Partial<VanyagotchiAction> = {}): VanyagotchiAction => ({
+    key: 'claim',
+    label: 'искать ключи',
+    emoji: '🔑',
+    effects: [],
+    done: 'нашёл ключи',
+    revives_fatal: false,
+    starts_over: false,
+    ...over,
+  });
+
+  const claim = verb({ contests: 'key', needs_spot: true });
+  const drink = verb({ key: 'drink', contests: 'beer_crate', needs_near: 'beer_crate' });
+  const relieve = verb({ key: 'relieve' });
+
+  it('picks the verb that races for something with no place to walk to', () => {
+    expect(searchVerb([drink, relieve, claim])?.key).toBe('claim');
+  });
+
+  it('is not fooled by the verb that races for something you CAN walk to', () => {
+    // «выпить пива» contests the crate as hard as the claim contests the key.
+    // What tells them apart is that one of them says where to stand, because
+    // the crate is visible and the key is not.
+    expect(searchVerb([drink, relieve])).toBeUndefined();
+  });
+
+  it('never looks at the verb’s key, so a renamed verb is still found', () => {
+    // The load-bearing property. A browser holding the string «claim» would be
+    // a browser that has to be redeployed the day the verb is renamed, which is
+    // exactly the coupling the wire is shaped to avoid (ADR-028).
+    expect(searchVerb([verb({ key: 'rummage', contests: 'key', needs_spot: true })])?.key).toBe('rummage');
+  });
+
+  it('is nothing at all when no verb searches for anything', () => {
+    expect(searchVerb([relieve, drink])).toBeUndefined();
+    expect(searchVerb([])).toBeUndefined();
+  });
+
+  it('is nothing at all when TWO verbs fit, rather than guessing between them', () => {
+    // The case worth knowing about when a second contested verb is added: the
+    // predicate has stopped identifying one thing, and sending the wrong verb
+    // with somebody else's spot on it is worse than sending none. The yard
+    // simply stops offering hiding places, and the player is told nothing false.
+    expect(searchVerb([claim, verb({ key: 'dig', contests: 'treasure', needs_spot: true })])).toBeUndefined();
+  });
+
+  it('tolerates a catalogue that has not arrived, or one with a broken entry', () => {
+    expect(searchVerb(undefined)).toBeUndefined();
+    expect(
+      searchVerb([{ key: '', contests: 'key', needs_spot: true } as VanyagotchiAction, claim])?.key,
+    ).toBe('claim');
+  });
+});
+
+describe('spotAriaLabel', () => {
+  it('says what searching this place would be', () => {
+    expect(spotAriaLabel({ label: 'куст' })).toBe('искать: куст');
+  });
+
+  it('never shows a trailing colon over nothing, and never a wire key', () => {
+    // A hotspot the catalogue described without a label is still drawable, so
+    // this is a live path rather than a defensive one — and «искать: » or
+    // «искать: bush» are both worse than saying only what is certain.
+    expect(spotAriaLabel({})).toBe('искать здесь');
+    expect(spotAriaLabel({ label: '' })).toBe('искать здесь');
+    expect(spotAriaLabel({ label: '   ' })).toBe('искать здесь');
+  });
+
+  it('trims, because a padded name is a stranger-looking name', () => {
+    expect(spotAriaLabel({ label: ' куст ' })).toBe('искать: куст');
+  });
+});
+
+describe('SEARCH_WALK_MS', () => {
+  it('outlasts the longest walk the plane allows', () => {
+    // The backstop must never expire a search that is still genuinely walking,
+    // or a far hiding place would be unsearchable for a reason nothing on screen
+    // explains. The plane is a unit square in normalised coordinates, so the
+    // longest journey is its diagonal — √2 — and the prose puts the walking
+    // speed at about a fifth of the yard a second, which is a little over seven
+    // seconds. Derived here rather than pinned so that a slower Ваня fails this
+    // rather than silently losing his searches.
+    const longestWalkMs = (Math.SQRT2 / 0.2) * 1_000;
+    expect(SEARCH_WALK_MS).toBeGreaterThan(longestWalkMs * 1.5);
+  });
+
+  it('is short enough to be a backstop rather than a memory', () => {
+    // The failure it exists to prevent is a claim firing minutes after the tap
+    // that armed it, so a value long enough to feel like "forever" would be no
+    // guard at all.
+    expect(SEARCH_WALK_MS).toBeLessThanOrEqual(60_000);
   });
 });
