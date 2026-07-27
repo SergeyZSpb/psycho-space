@@ -426,6 +426,36 @@ async function walkToTheCrate(page: Page): Promise<void> {
 }
 
 /**
+ * Puts him back beside the crate from wherever he has ended up.
+ *
+ * Needed because a REVIVAL now relocates him: he wakes in a place chosen by the
+ * server, which is the whole mechanic — death costs you the walk you had done.
+ * So a test that wants to press a verb gated on standing at the crate has to
+ * travel back to the crate's own location first, and only then walk.
+ *
+ * Which location that is comes off the served config (`store_location`) rather
+ * than being named here, exactly as the client reads it: the crate is pinned by
+ * a catalogue field, and a test that hardcoded «двор» would pass until somebody
+ * moved the shop.
+ */
+async function returnToTheCrate(page: Page): Promise<void> {
+  const res = await page.request.get(CONFIG_URL);
+  expect(res.status(), `GET ${CONFIG_URL}`).toBe(200);
+  const cfg = (await res.json()) as {
+    store_location?: string;
+    locations?: { key: string; label: string }[];
+  };
+  const key = cfg.store_location;
+  if (key) {
+    const label = (cfg.locations ?? []).find((l) => l.key === key)?.label ?? '';
+    const here = (await page.locator('[data-test="here"]').textContent()) ?? '';
+    if (label && !here.includes(label)) await travelToPlace(page, key, label);
+  }
+  await walkToTheCrate(page);
+}
+
+
+/**
  * Puts him back where the beer is out of reach, and waits until the screen
  * agrees.
  *
@@ -891,6 +921,12 @@ test('a dead Ваня refuses everything but the one verb that raises him', asyn
     // in silence, and starting from an empty balloon is what makes the next
     // assertion mean something — the line has to APPEAR, not merely differ.
     await expect(page.locator('[data-test="peer-say"]')).toHaveCount(0, { timeout: 15_000 });
+
+    // AND HE HAS MOVED. The revival above put him down somewhere the server
+    // chose, so the crate this verb is gated on is no longer where he is
+    // standing — bring him back, or the refusal below would be about distance
+    // rather than about death, which is the one thing this test is for.
+    await returnToTheCrate(page);
 
     await actionBtn(page, 'drink').click();
     // The refusal arrives the way everything else does: as STATE, in the world.

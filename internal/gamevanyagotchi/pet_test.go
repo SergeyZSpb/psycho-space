@@ -2118,3 +2118,61 @@ func TestTheYardAsksTheAssetStoreWhichFacesExist(t *testing.T) {
 		}
 	})
 }
+
+// TestARevivalPutsHimDownSomewhereElse. Death costs him his place.
+//
+// Asserted as a DISTRIBUTION rather than as one outcome, because the draw is
+// crypto/rand and no test can choose it: over enough revivals he must reach more
+// than one location, and every one he reaches must be a real place from the
+// catalogue. A version that always woke him where he died, or always in the
+// yard, fails the first; one that invented a location key fails the second.
+func TestARevivalPutsHimDownSomewhereElse(t *testing.T) {
+	revive, ok := revivingAction()
+	if !ok {
+		t.Fatal("no action in the catalogue revives a dead pet; this test is about a verb the game does not have")
+	}
+	known := map[string]bool{}
+	for _, loc := range Content().Locations {
+		known[loc.Key] = true
+	}
+	if len(known) < 2 {
+		t.Fatalf("the catalogue has %d locations; «somewhere else» cannot mean anything", len(known))
+	}
+
+	seen := map[string]bool{}
+	const revivals = 60
+	for i := 0; i < revivals; i++ {
+		hp := mustStat(t, StatHP)
+		// Dead: the fatal stat on its floor, stamped now so nothing decays under
+		// the test.
+		repo := playedFor(StatRow{Key: StatHP, Value: hp.Min, AsOf: epoch})
+		svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil, nil)
+		if _, err := svc.State(context.Background(), testAccount); err != nil {
+			t.Fatalf("State: %v", err)
+		}
+		if _, err := svc.Do(context.Background(), testAccount, []string{revive.Key}, "", epoch.Add(time.Hour)); err != nil {
+			t.Fatalf("Do(%s): %v", revive.Key, err)
+		}
+		moves := repo.moved()
+		if len(moves) != 1 {
+			t.Fatalf("a revival wrote %d location changes; want exactly one — a Ваня who wakes up where he died has not been relocated at all", len(moves))
+		}
+		if !known[moves[0].locationKey] {
+			t.Fatalf("a revival put him in %q, which is not a location the catalogue has", moves[0].locationKey)
+		}
+		seen[moves[0].locationKey] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("%d revivals all landed in %v; the destination is not being drawn at all", revivals, seen)
+	}
+}
+
+// revivingAction finds the one verb that raises a dead pet.
+func revivingAction() (Action, bool) {
+	for _, a := range Content().Actions {
+		if a.RevivesFatal {
+			return a, true
+		}
+	}
+	return Action{}, false
+}

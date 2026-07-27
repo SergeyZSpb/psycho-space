@@ -673,3 +673,36 @@ func (s *Service) hunt(now time.Time) string {
 	}
 	return shortID(key.ID)
 }
+
+// somewhereElse picks a location at random, for a Ваня who has just been raised
+// from the dead.
+//
+// A REVIVAL RELOCATES HIM ENTIRELY, and that is a mechanic rather than a
+// placement detail: dying costs you the walk you had done and nothing else,
+// which is the shape the reference-game research settled on — mildly annoying
+// and cheaply reversible is fine, irreversible is churn. It also gives the four
+// places besides the yard something to do that is not the key hunt.
+//
+// SERVER-SIDE, and it has to be. A client-decided destination would be forgeable
+// and would show two players different worlds; this one arrives the way every
+// other fact about a pet does, on the `vanyagotchi_state` push that follows the
+// verb.
+//
+// crypto/rand for consistency with the other draws in this file rather than
+// because it is a secret — nobody gains anything by predicting where a corpse
+// wakes up. Two randomisers with different guarantees in one package would be a
+// distinction somebody has to keep straight, and there is no reason to introduce
+// one.
+func somewhereElse() (Location, bool) {
+	locations := catalogue.Locations
+	if len(locations) == 0 {
+		return Location{}, false
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(locations))))
+	if err != nil {
+		// Unreachable, as it is everywhere else in this file. Waking up in the
+		// first location beats not waking up at all.
+		return locations[0], true
+	}
+	return locations[n.Int64()], true
+}

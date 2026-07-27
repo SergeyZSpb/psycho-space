@@ -1295,6 +1295,24 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, spot
 		if err := s.repo.Revive(ctx, s.q, before.Pet.ID); err != nil {
 			return State{}, err
 		}
+		// AND HE WAKES UP SOMEWHERE ELSE. Death costs him his place — the walk he
+		// had done — and nothing else.
+		//
+		// HERE RATHER THAN IN `apply`, like every other rule about NOW: a replay
+		// of last March's revivals must not move anybody, and a draw inside the
+		// fold would make one history produce a different pet every time it ran.
+		// After the transaction rather than inside it, for the same reason the
+		// death clear is: it is a consequence of the batch having succeeded, not
+		// a part of what makes it atomic — a revival that committed and then
+		// failed to relocate is a live Ваня standing where he died, which is the
+		// old behaviour and costs nobody anything.
+		if loc, ok := somewhereElse(); ok {
+			if err := s.repo.SetLocation(ctx, s.q, accountID, loc.Key); err != nil {
+				slog.WarnContext(ctx, "gamevanyagotchi: could not move a revived pet", "err", err)
+			} else {
+				s.arrive(accountID, loc)
+			}
+		}
 	}
 	return s.state(ctx, accountID, at)
 }
