@@ -6,6 +6,8 @@ import (
 	neturl "net/url"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
 )
 
 // available reports whether the game is wired, and answers 503 when it is not.
@@ -121,14 +123,29 @@ func (s *Server) handleGameVanyagotchiAvatar(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	// Private, because the answer is about one person and a shared cache must not
-	// keep it. THIRTY MINUTES, which is long relative to a session on purpose: a
-	// face is the most static thing this game serves, the miss is permanent for
-	// every NPC, and re-asking costs a request per entity per player. It is not
-	// the limit on freshness anyway — the paragraph above explains why the login
-	// is — so a shorter window would buy traffic without buying currency. Set on
-	// the miss as well as the hit, or every NPC would be re-asked by a client
-	// that cannot tell an NPC from a person.
-	w.Header().Set("Cache-Control", "private, max-age=1800")
+	// keep it. THIRTY MINUTES for an answer, which is long relative to a session
+	// on purpose: a face is the most static thing this game serves, and re-asking
+	// costs a request per entity per player. It is not the limit on freshness
+	// anyway — the paragraph above explains why the login is — so a shorter
+	// window would buy traffic without buying currency.
+	//
+	// A MISS IS CACHED ONLY WHEN IT IS PERMANENT, and getting that wrong cost a
+	// real bug. For an NPC or a thing on the ground there will never be a picture,
+	// so the 404 is cached exactly like an answer — which is what stops a client
+	// that cannot tell them apart from re-asking for every one on every reconnect.
+	// For a PERSON the miss is transient: the avatar is read out of Postgres when
+	// that account says hello, so a peer drawn before its owner's hello has landed
+	// — a sleeper after a restart, most obviously — answers 404 and starts
+	// answering with a picture moments later. Caching that left the face missing
+	// for half an hour after it existed, and made two browsers disagree about the
+	// same handle, because the one that asked early was replaying its own 404.
+	if ok || gamevanyagotchi.NeverHasAFace(chi.URLParam(r, "peer")) {
+		w.Header().Set("Cache-Control", "private, max-age=1800")
+	} else {
+		// Deliberately not a short max-age: there is no correct number, because
+		// the miss ends when a human opens the app rather than after any interval.
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if !ok {
 		writeError(w, r, http.StatusNotFound, "no_avatar")
 		return

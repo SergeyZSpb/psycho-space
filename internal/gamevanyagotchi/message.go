@@ -3,6 +3,7 @@ package gamevanyagotchi
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // This game's wire types. They live here and not in internal/realtime: the hub
@@ -47,6 +48,35 @@ const (
 	// game that is per-player rather than shared.
 	TypeStateFrame = "vanyagotchi_state"
 )
+
+// Roster id prefixes, and the one thing outside this package that needs them.
+//
+// Every entity on the plane carries an id, and only a PERSON's is a pseudonym of
+// an account. The other two are synthetic and say so: a character the world owns
+// and a thing lying on the ground. The client neither knows nor needs these — it
+// draws whatever it is sent (ADR-028) — but the avatar route does, for the reason
+// NeverHasAFace explains.
+const (
+	npcPrefix  = "npc-"
+	propPrefix = "obj-"
+)
+
+// NeverHasAFace reports whether a roster id belongs to something that is not a
+// person, and therefore can NEVER have a picture.
+//
+// IT EXISTS TO DECIDE HOW LONG A MISS MAY BE CACHED, which is a distinction the
+// avatar route got wrong and which cost a real bug. For an NPC or a deposit the
+// 404 is permanent, so caching it hard is right and is what stops a client — which
+// cannot tell them apart — re-asking for every one of them on every reconnect.
+// For a person it is TRANSIENT: the picture is read out of Postgres when that
+// account says hello, so a peer drawn before its owner's hello has landed (a
+// sleeper after a restart, most obviously) answers 404 and then starts answering
+// with a picture. Caching that miss for half an hour left the face missing long
+// after it existed, and made two browsers disagree about the same handle — one was
+// replaying its own cached 404.
+func NeverHasAFace(id string) bool {
+	return strings.HasPrefix(id, npcPrefix) || strings.HasPrefix(id, propPrefix)
+}
 
 // Roster is the whole plane, every tick.
 //

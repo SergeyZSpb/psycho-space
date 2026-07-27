@@ -625,6 +625,20 @@ export interface VanyagotchiConfig {
    * stubs one and forgets the other.
    */
   arrive_within?: number;
+  /**
+   * The art key to draw the beer store with, resolved against `skins` exactly as
+   * a pet's or an NPC's is.
+   *
+   * Served with the catalogue rather than on the frame because it is a CONSTANT —
+   * a picture that never changes must not ride a payload sent five times a second
+   * (ADR-037). And it is served at all only because the crate deliberately stopped
+   * being an entity: every other object carries its own art key in the roster, and
+   * the store arrives as a structure instead.
+   *
+   * It names a PICTURE and never a kind, so the browser still holds no content
+   * key — the same capability-not-reason split `needs_spot` makes (ADR-039).
+   */
+  store_art?: string;
   locations: VanyagotchiLocation[];
   default_skin: string;
   default_location: string;

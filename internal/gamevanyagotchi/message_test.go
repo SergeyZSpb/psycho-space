@@ -1,8 +1,10 @@
 package gamevanyagotchi
 
 import (
+	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -245,5 +247,57 @@ func TestParsingAVerbFrameCarriesTheSpotThroughUntouched(t *testing.T) {
 				t.Fatalf("the frame's spot came through as %q; want %q — %s", spot, tc.want, tc.why)
 			}
 		})
+	}
+}
+
+// Which roster ids can never have a picture.
+//
+// It decides how long the avatar route may cache a 404, and getting that wrong
+// cost a real bug: a person's miss is TRANSIENT — the picture is read when their
+// owner says hello — so caching it for half an hour left a face missing long
+// after it existed, and made two browsers disagree about the same handle.
+func TestOnlyAPersonCanEverHaveAFace(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{"a character the world owns", npcPrefix + "sahur", true},
+		{"the beer vendor", npcPrefix + "vendor", true},
+		{"a thing lying on the ground", propPrefix + "a1b2c3d4e5f6", true},
+		{"a person's pseudonym", "AV0XmddbiDyp", false},
+		{"a pseudonym that merely starts with n", "npcLookAlike", false},
+		{"a pseudonym that merely starts with o", "objLookAlike", false},
+		{"nothing at all", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NeverHasAFace(tc.id); got != tc.want {
+				t.Errorf("NeverHasAFace(%q) = %v, want %v", tc.id, got, tc.want)
+			}
+		})
+	}
+
+	// And the prefixes are the ones the roster actually builds, rather than two
+	// strings that happen to agree with it today.
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	svc := planeService(tr, &fakeRepo{})
+	svc.load(context.Background(), accountOf("a"))
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	frame := frames[len(frames)-1]
+	var sawNPC bool
+	for _, p := range frame.Peers {
+		if strings.HasPrefix(p.ID, npcPrefix) {
+			sawNPC = true
+			if !NeverHasAFace(p.ID) {
+				t.Errorf("the roster drew %q but NeverHasAFace says it could have a picture", p.ID)
+			}
+		}
+	}
+	if !sawNPC {
+		t.Error("the yard published no NPC at all, so this half of the test proved nothing")
 	}
 }

@@ -2359,3 +2359,51 @@ func TestTheKeyThatReplacesAFoundOneIsHiddenAtAHotspotToo(t *testing.T) {
 			next.at.X, next.at.Y, LocationYard)
 	}
 }
+
+// The beer store is carried as a STRUCTURE and never as an entity.
+//
+// It used to be both — an `obj-` entity in the roster AND the `store` block —
+// which is the second path to one outcome CLAUDE.md forbids, and it is why the
+// crate drew as a person-shaped circle: the client tells a thing from a person
+// by the presence of `expires`, and a crate never expires. One representation is
+// correcter, lets the client draw a shop with a count on it, and is about sixty
+// bytes a frame per viewer cheaper.
+func TestTheBeerStoreIsCarriedAsAStructureAndNotAsAnEntity(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("a"))
+	repo := &fakeRepo{}
+	svc := planeService(tr, repo)
+	svc.load(context.Background(), accountOf("a"))
+	atTheStore(t, svc, repo, accountOf("a"), 4)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	if len(frames) == 0 {
+		t.Fatal("nothing was published")
+	}
+	frame := frames[len(frames)-1]
+
+	// The block still says where it is and how much is in it — the client needs
+	// both to draw the shop and to gate the button.
+	if frame.Store == nil {
+		t.Fatal("the frame carries no store at all, so the yard has no shop to draw")
+	}
+	if frame.Store.Left != 4 {
+		t.Errorf("the store says %d left, want 4", frame.Store.Left)
+	}
+	kind := mustObjectKind(t, KindCrate)
+	if kind.At == nil {
+		t.Fatal("the crate has no pitch in the catalogue")
+	}
+	if frame.Store.X != kind.At.X || frame.Store.Y != kind.At.Y {
+		t.Errorf("the store is at %v,%v, want the catalogue's %v", frame.Store.X, frame.Store.Y, *kind.At)
+	}
+
+	// And nothing is drawn for it. The crate is the only thing in the world here,
+	// so any object entity at all is the duplicate this test exists to forbid.
+	if drawn := propsOf(frame); len(drawn) != 0 {
+		t.Errorf("the crate is still drawn as an entity as well as published as a store: %+v", drawn)
+	}
+}

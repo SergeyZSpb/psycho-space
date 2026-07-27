@@ -715,7 +715,7 @@ func (s *Service) cast(now time.Time) []Peer {
 	for _, npc := range catalogue.NPCs {
 		at := evaluate(npc.Pattern, npc.Params, elapsed)
 		out = append(out, Peer{
-			ID:    "npc-" + npc.Key,
+			ID:    npcPrefix + npc.Key,
 			X:     at.X,
 			Y:     at.Y,
 			Art:   npc.Art,

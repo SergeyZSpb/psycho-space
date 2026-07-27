@@ -1026,3 +1026,46 @@ func TestASearchingVerbSaysSoOnTheWireAndNotWhy(t *testing.T) {
 		t.Errorf("the served catalogue mentions hiddenness: %s", blob)
 	}
 }
+
+// Being off the frame and being a secret are two different things.
+//
+// THE COLLAPSE THIS FORBIDS WAS TRIED FIRST. Giving the crate `Hidden` — because
+// it also stops being an entity — would have made `drink` contest a hidden kind,
+// which is exactly the definition of a SEARCH: the beer would have quietly become
+// a second key hunt, refusing every press that did not name a hiding place. The
+// two flags answer two questions — "is where it is a secret?" and "is it carried
+// some other way?" — and only the first has anything to do with searching.
+func TestBeingOffTheFrameIsNotTheSameAsBeingASecret(t *testing.T) {
+	var hidden, offFrame []string
+	for _, k := range catalogue.ObjectKinds {
+		if k.Hidden {
+			hidden = append(hidden, k.Key)
+		}
+		if k.OffFrame {
+			offFrame = append(offFrame, k.Key)
+		}
+	}
+	if len(hidden) == 0 {
+		t.Error("nothing is hidden, so nothing is searchable and the hunt cannot exist")
+	}
+	if len(offFrame) == 0 {
+		t.Error("nothing is off the frame, so this test is vacuous")
+	}
+
+	// A kind that is drawn down a bit at a time is a shop, and a shop you had to
+	// hunt for would be a second key hunt wearing an apron.
+	for _, k := range catalogue.ObjectKinds {
+		if k.Contest == ContestStock && k.Hidden {
+			t.Errorf("kind %q is drawn down AND hidden, which makes the verb that draws from it a search", k.Key)
+		}
+	}
+
+	// And no verb that must be walked to may also be a search: the two gates ask
+	// opposite questions — «are you near the thing» versus «name where you looked»
+	// — and a verb carrying both would be told to be somewhere it cannot see.
+	for _, a := range Content().Actions {
+		if a.NeedsSpot && a.NeedsNear != "" {
+			t.Errorf("action %q is both a search and gated on a place (%q)", a.Key, a.NeedsNear)
+		}
+	}
+}

@@ -1564,23 +1564,21 @@ test('a hello puts a beer store back into an empty yard', async ({ browser, base
     await expect(storeLine(page)).toBeVisible({ timeout: 20_000 });
     await expect(storeLine(page)).toContainText(String(kind.stock));
 
-    // And it is drawn, as an ordinary entity with an art key like everybody
-    // else's — which is the property that keeps a new kind of thing on the ground
-    // a backend-only change. Found by POSITION rather than by kind, because the
-    // browser holds no kind keys at all and there is nothing on a roster entry to
-    // match one against.
-    await expect
-      .poll(
-        async () =>
-          (await objectsOnThePlane(page)).some(
-            (at) => Math.hypot(at.x - CRATE_PLACE.x, at.y - CRATE_PLACE.y) < 0.01,
-          ),
-        {
-          message: 'the crate is in the table and on the status row but nothing draws it',
-          timeout: 20_000,
-        },
-      )
-      .toBe(true);
+    // And it is drawn — as a SHOP rather than as an entity, which is the change
+    // the owner's feedback bought. The crate used to arrive in the roster as an
+    // ordinary `obj-` dot AND as the store block, and the entity half is what made
+    // it a person-shaped circle: this client tells a thing from a person by the
+    // presence of `expires`, and a crate never expires. Now there is one
+    // representation, so the yard carries no object for it at all and the shop is
+    // drawn from the block.
+    await expect(page.locator('[data-test="shop"]')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-test="shop-left"]')).toHaveText(String(kind.stock));
+    expect(
+      (await objectsOnThePlane(page)).some(
+        (at) => Math.hypot(at.x - CRATE_PLACE.x, at.y - CRATE_PLACE.y) < 0.01,
+      ),
+      'the crate is still drawn as an entity as well as as a shop',
+    ).toBe(false);
   } finally {
     await context.close();
   }

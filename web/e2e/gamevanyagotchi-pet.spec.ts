@@ -223,6 +223,8 @@ interface ConfigFixture {
    * uses whatever it is told.
    */
   arrive_within: number;
+  /** The art key the beer store is drawn with, resolved against `skins`. */
+  store_art?: string;
   default_skin: string;
   default_location: string;
 }
@@ -596,6 +598,9 @@ const CATALOGUE: ConfigFixture = {
   object_kinds: [RELIEF_KIND, KEY_KIND, CRATE_KIND],
   locations: [{ key: 'yard', label: 'двор', entry: { x: 0.5, y: 0.5 }, hotspots: HOTSPOTS }],
   arrive_within: 0.12,
+  // The store's picture, named ONCE in the catalogue rather than on the frame —
+  // a constant has no business on a payload sent five times a second.
+  store_art: CRATE_KIND.art,
   default_skin: SKIN_VANYA,
   default_location: 'yard',
 };
@@ -2544,5 +2549,101 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     const row = page.locator('[data-test="rule-action-claim"]');
     await expect(row).toContainText('искать можно в 1 месте: лифт');
     await expect(row).not.toContainText('куст');
+  });
+});
+
+test.describe('«Ванягоччи» — the store is a shop, not a dot', () => {
+  const shop = (page: Page) => page.locator('[data-test="shop"]');
+  const shopLeft = (page: Page) => page.locator('[data-test="shop-left"]');
+
+  test('the crate is drawn from the block, with the count on it, and never as an entity', async ({
+    page,
+  }) => {
+    // THE DELETION THIS ITERATION IS ABOUT. The crate used to arrive BOTH as an
+    // `obj-` entity and as the store block, which is why it drew as a
+    // person-shaped circle — this screen tells a thing from a person by the
+    // presence of `expires`, and a crate never expires. Now there is one
+    // representation, and the shop can look like a shop.
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
+
+    await expect(shop(page)).toBeVisible();
+    await expect(shopLeft(page)).toHaveText(String(STORE.left));
+    // Exactly one person in the yard, and no object entity at all — the server
+    // no longer sends one for the crate.
+    await expect(dots(page)).toHaveCount(1);
+    await expectNoOverflow(page, 'vanyagotchi yard with the shop drawn');
+  });
+
+  test('the shop is bigger than a Ваня and is not a circle', async ({ page }) => {
+    // The owner's complaint, as an assertion: it read as one more dot. Pinned as
+    // a RELATIONSHIP rather than as pixels, so the world scale can be retuned
+    // without touching this.
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
+    await expect(shop(page)).toBeVisible();
+
+    const shopBox = await shop(page).boundingBox();
+    const dotBox = await page.locator('[data-peer="me"]').boundingBox();
+    expect(shopBox, 'the shop has no box').not.toBeNull();
+    expect(dotBox, 'the Ваня has no box').not.toBeNull();
+    expect(shopBox?.width ?? 0).toBeGreaterThan(dotBox?.width ?? 0);
+
+    // Square-ish rather than round. A circle is a 50% radius; anything under a
+    // quarter of the box reads as a crate.
+    const radius = await shop(page).evaluate((el) => getComputedStyle(el).borderRadius);
+    const px = Number.parseFloat(radius);
+    expect(Number.isFinite(px), `unreadable border-radius ${radius}`).toBe(true);
+    expect(px).toBeLessThan((shopBox?.height ?? 0) / 4);
+  });
+
+  test('the count on the shop follows the frame', async ({ page }) => {
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(STORE, { id: 'me', ...AT_THE_CRATE }));
+    await expect(shopLeft(page)).toHaveText(String(STORE.left));
+
+    await socket.push(rosterWithStore({ ...STORE, left: 2 }, { id: 'me', ...AT_THE_CRATE }));
+    await expect(shopLeft(page)).toHaveText('2');
+  });
+
+  test('a yard with no crate draws no shop', async ({ page }) => {
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(undefined, { id: 'me', ...AT_THE_CRATE }));
+
+    await expect(shop(page)).toHaveCount(0);
+  });
+
+  test('a tap on the shop still walks him over rather than being swallowed', async ({ page }) => {
+    // `pointer-events: none`, like every dot. Reaching the store IS walking to
+    // it, so the shop must not eat the tap that gets you there.
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
+    await expect(shop(page)).toBeVisible();
+
+    const box = await shop(page).boundingBox();
+    await page.mouse.click((box?.x ?? 0) + (box?.width ?? 0) / 2, (box?.y ?? 0) + (box?.height ?? 0) / 2);
+
+    const moves = socket.sent().filter((f) => f.t === TYPE_MOVE);
+    expect(moves.length, 'the shop swallowed the tap instead of letting it walk him over').toBe(1);
   });
 });

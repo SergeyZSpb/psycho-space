@@ -152,6 +152,51 @@
         >
           <span class="hotspot-glyph" aria-hidden="true">{{ spot.emoji }}</span>
         </button>
+        <!-- The beer store, drawn from the frame's own `store` block rather than
+             from an entity — which is the whole of why it can look like a shop.
+             It used to be published BOTH ways, and the entity half is what made
+             it a person-shaped circle: this screen tells a thing from a person by
+             the presence of `expires`, and a crate never expires. One
+             representation is correcter and about sixty bytes a frame cheaper.
+
+             STILL KIND-AGNOSTIC. Nothing here matches a content key: the server
+             says «here is the store, at this place, with this much left» and
+             names the picture once in the catalogue. The browser draws what it is
+             told and could not pick the crate out of the yard if it wanted to.
+
+             `pointer-events: none`, like every dot, so a tap falls through to the
+             plane and walks him over — which is already how you reach it, and the
+             reason the shop needs no press of its own.
+
+             It carries `--band` and `--depth` like everybody else, and it is
+             anchored at its feet. That is not decoration: an object at a fixed
+             pitch would otherwise be correct only by COINCIDENCE — the crate sits
+             high on the plane, `bandFor` puts it in band 0, and an absent z-index
+             also resolves to 0 — so it would look right today and start drawing
+             through people the day the shop moved down the yard. -->
+        <div
+          v-if="beerStore"
+          class="shop"
+          data-test="shop"
+          :style="{
+            '--x': String(beerStore.x),
+            '--y': String(beerStore.y),
+            '--band': String(bandFor(beerStore.y)),
+            '--depth': String(DEPTH_SCALES[bandFor(beerStore.y)] ?? 1),
+          }"
+        >
+          <span class="shop-face" aria-hidden="true">
+            <img v-if="storeArt.image" class="shop-sprite" :src="storeArt.image" alt="" />
+            <template v-else>{{ storeArt.emoji }}</template>
+          </span>
+          <!-- How much is left, small and in the corner. It is DECORATION that
+               reinforces a fact stated legibly elsewhere — the status row carries
+               «🍺 ящик: 6» in full — which is what licenses it to be this small
+               and is why it must not be "fixed" later by lifting it out of the
+               depth transform to keep it a constant size. It has a hard 9px floor
+               regardless, because a count is text. -->
+          <span class="shop-badge" data-test="shop-left">{{ beerStore.left }}</span>
+        </div>
         <div
           v-for="peer in drawn"
           :key="peer.id"
@@ -336,10 +381,12 @@ import { computed, onBeforeUnmount, ref, shallowRef } from 'vue';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
 import { useGameVanyagotchiStore } from '../stores/gameVanyagotchi';
 import {
+  DEPTH_SCALES,
   SEARCH_WALK_MS,
   applyFrame,
   applyPosition,
   avatarEndpoint,
+  bandFor,
   beside,
   hotspotsFor,
   huntRestarted,
@@ -773,6 +820,18 @@ const atStore = ref(false);
  * states are spelled out rather than collapsed into a greyed button.
  */
 const storeLine = computed(() => storeLabel(beerStore.value, atStore.value));
+
+/**
+ * What to draw the beer store with, resolved against the catalogue exactly as a
+ * pet's skin or an NPC's art is.
+ *
+ * The key comes from `store_art`, served ONCE with the catalogue rather than on
+ * the frame — a picture that never changes has no business riding a payload sent
+ * five times a second. And it is the one thing the store block cannot carry:
+ * every other object gets its art from the entity it arrives as, and the store
+ * deliberately no longer arrives as one.
+ */
+const storeArt = computed(() => resolveArt(config.value?.skins, config.value?.store_art ?? ''));
 
 /**
  * Is this verb unpressable because of where he is standing, or because the thing
@@ -1780,6 +1839,10 @@ onBeforeUnmount(() => {
   width: var(--unit);
   height: var(--unit);
   border-radius: 50%;
+  /* The dot CLIPS ITS OWN CONTENTS. A pose may scale the face — `happy` does —
+     and without this the picture spills outside the circle it is supposed to be
+     inside, which is half of the bug the mood rules above record. */
+  overflow: hidden;
   /* Rim and shadow in world units too, or a big Ваня wears a hairline and a
      small one wears a hoop. The fractions are 2/44 and 6/44 — the proportions a
      44px dot was drawn with, kept as proportions so they follow the unit
@@ -2028,13 +2091,30 @@ onBeforeUnmount(() => {
    drained. Sad also tips forward, using the one axis happy deliberately leaves
    alone: it is nowhere near `asleep`'s 74deg, and unlike `poorly` it is holding
    still. */
+/* A MOOD MAY NOT MOVE THE PICTURE, and this is a bug fixed rather than a taste.
+   These two used to translate and shrink the face, which reads fine on an emoji
+   drawn over a coloured disc and is BROKEN on a photograph: the avatar covers the
+   disc almost exactly, so lifting it by a seventh of a unit slid it out of its own
+   circle and exposed a crescent of the owner's identity colour underneath, and
+   scaling it past 1 spilled it outside the dot entirely. It went unnoticed because
+   every Ваня was an emoji until faces arrived, and it fires exactly when somebody
+   wins the keys — the one moment everybody is looking.
+
+   So the geometry is gone and the FILTER carries both moods on its own. A filter
+   is content-agnostic: it reads the same on an emoji, a photograph and a sprite,
+   and it cannot displace anything. `dead` has always worked this way — grayscale
+   and a little transparency — and nobody has ever reported it as broken.
+
+   Happy keeps a small scale-UP, which is safe in a way scaling down is not: a
+   picture larger than its disc still covers it, and `overflow: hidden` on `.peer`
+   clips the overflow to the circle. Sad gets no transform at all — shrinking is
+   what exposes the disc, and rotating a circular photo is invisible anyway. */
 .peer-face[data-condition='happy'] {
-  transform: translateY(calc(var(--unit) * -0.14)) scale(1.2);
-  filter: saturate(1.4) brightness(1.25);
+  transform: scale(1.12);
+  filter: saturate(1.5) brightness(1.3);
 }
 .peer-face[data-condition='sad'] {
-  transform: translateY(calc(var(--unit) * 0.12)) rotate(16deg) scale(0.8);
-  filter: saturate(0.35) brightness(0.8);
+  filter: grayscale(0.65) saturate(0.5) brightness(0.72);
 }
 
 /* A line over somebody's head, for the few seconds the server keeps it on the
@@ -2252,6 +2332,68 @@ onBeforeUnmount(() => {
   line-height: 1.2;
   opacity: 0.85;
 }
+/* THE BEER STORE — a shop, not a dot.
+   It is drawn from the frame's `store` block rather than from an entity, which
+   is what lets it have its own shape at all: an object arriving in the roster
+   goes through `.peer`, and `.peer` is a circle because it is mostly people.
+   Square-ish, and DELIBERATELY LARGER than a Ваня — a shop that read as one more
+   dot was the whole of the owner's complaint. */
+.shop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Off `--unit-base` rather than `--unit`, exactly as `.peer--prop` is: a
+     self-referential `--unit` is a cycle, and the plane's own comment says so. */
+  width: calc(var(--unit-base) * 1.55);
+  height: calc(var(--unit-base) * 1.15);
+  /* The same mapping every other thing on the plane uses, so the shop and the
+     dots cannot disagree about where a coordinate is. */
+  transform: translate3d(calc(var(--x, 0.5) * 100cqw - 50%), calc(var(--y, 0.5) * 100cqh - 50%), 0)
+    scale(var(--depth, 1));
+  /* Scaled about its FEET, like everybody else. Without this a thing detaches
+     from the floor as depth scales it, which is the illusion collapsing. */
+  transform-origin: 50% 100%;
+  z-index: var(--band, 0);
+  display: grid;
+  place-items: center;
+  border-radius: calc(var(--unit-base) * 0.12);
+  background: linear-gradient(160deg, #6b5a2f, #35301c);
+  box-shadow:
+    0 0 0 calc(var(--unit-base) * 0.045) rgba(255, 255, 255, 0.18),
+    0 calc(var(--unit-base) * 0.06) calc(var(--unit-base) * 0.14) rgba(0, 0, 0, 0.45);
+  /* A tap falls THROUGH to the plane and walks him over, which is already how
+     you reach it — so the shop needs no press of its own and must not swallow
+     one. Same rule as every dot. */
+  pointer-events: none;
+}
+.shop-face {
+  font-size: calc(var(--unit-base) * 0.62);
+  line-height: 1;
+}
+.shop-sprite {
+  display: block;
+  width: calc(var(--unit-base) * 1.2);
+  height: calc(var(--unit-base) * 0.9);
+  object-fit: contain;
+}
+/* The count, small and in the corner. Decoration reinforcing a fact the status
+   row already states in full, which is what licenses it to be this small — but a
+   count is TEXT, so it carries a hard 9px floor whatever the world scale does. */
+.shop-badge {
+  position: absolute;
+  top: calc(var(--unit-base) * -0.14);
+  right: calc(var(--unit-base) * -0.14);
+  min-width: calc(var(--unit-base) * 0.44);
+  padding: 0 calc(var(--unit-base) * 0.08);
+  border-radius: 999px;
+  background: rgb(var(--v-theme-primary));
+  color: rgb(var(--v-theme-on-primary));
+  font-size: max(9px, calc(var(--unit-base) * 0.3));
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .hud-count,
 .hud-store,
 .hud-status {

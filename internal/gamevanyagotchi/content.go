@@ -404,6 +404,29 @@ type ObjectKind struct {
 	// and publishing it would invite a second implementation in TypeScript, the
 	// same reason an NPC's motion pattern is withheld.
 	Contest ContestKind `json:"-"`
+	// OffFrame means one of these is never published as an ENTITY, because the
+	// frame carries it some other way.
+	//
+	// ORTHOGONAL TO Hidden, and keeping the two apart is the whole point. Hidden
+	// says *where one is, is a secret* — that is why the key is not drawn, and it
+	// is what makes a verb racing for it a SEARCH. This says only *it is not an
+	// entity*, for a reason that has nothing to do with secrecy: the beer crate is
+	// perfectly visible, and the player is told exactly where it is — by the
+	// `store` block, which carries its place and its count together so the client
+	// can draw it as a shop rather than as one more dot.
+	//
+	// Collapsing the two into one flag was tried first and is wrong: the crate
+	// would have inherited `Hidden`, `drink` would have become a verb that needs
+	// naming a hiding place, and the beer would have quietly become a second key
+	// hunt. A test pins that they stay separate.
+	//
+	// What it BUYS is the deletion the owner's feedback asked for. The crate used
+	// to be published TWICE — once as an `obj-` entity and once as the store block
+	// — which is the second-path-to-one-outcome CLAUDE.md forbids, and it is why
+	// the crate drew as a person-shaped circle: the client tells a thing from a
+	// person by the presence of `expires`, and a crate never expires. One
+	// representation is both correcter and about 60 bytes a frame cheaper.
+	OffFrame bool `json:"-"`
 	// Stock is how many draws a freshly spawned one of these carries: the row's
 	// `remaining` starts here, and the draw that takes it to nought exhausts the
 	// row and spawns its replacement in the same transaction. Nought for a kind
@@ -568,6 +591,23 @@ type Config struct {
 	// value. The client has both ends of the measurement already: its own entity,
 	// from the hello, and the store's place, from the frame.
 	ArriveWithin float64 `json:"arrive_within"`
+	// StoreArt is the art key to draw the beer store with, resolved against
+	// `Skins` exactly as a pet's or an NPC's is.
+	//
+	// SERVED HERE RATHER THAN ON THE FRAME, because it is a constant: a picture
+	// that never changes has no business riding a payload sent five times a
+	// second forever (ADR-037's rule, applied again). It is fetched once with the
+	// catalogue and cached by the browser.
+	//
+	// AND SERVED AT ALL only because the crate is `OffFrame`: the client draws the
+	// store from the `store` block, so unlike every other object it cannot get an
+	// art key from an entity. It is told which picture to use without being told
+	// which KIND it is — the same capability-not-reason split `needs_spot` makes
+	// (ADR-039), so the browser still holds no content key.
+	//
+	// Derived rather than written, from the one kind `Service.store` publishes, so
+	// there is no second place to keep in step.
+	StoreArt string `json:"store_art,omitempty"`
 	// DefaultSkin and DefaultLocation are what a new pet is created with.
 	DefaultSkin     string `json:"default_skin"`
 	DefaultLocation string `json:"default_location"`
@@ -1170,6 +1210,12 @@ var catalogue = Config{
 			// arrival gate mean anything: a shop you had to hunt for would be a
 			// second key hunt wearing an apron.
 			At: &cratePlace,
+			// NOT AN ENTITY, because the frame already carries it as the `store`
+			// block — its place and its count in one object, which is what lets the
+			// client draw a shop with a number on it instead of a dot with a face.
+			// Deliberately NOT `Hidden`: there is no secret here, and borrowing that
+			// flag would have turned drinking into a search.
+			OffFrame: true,
 		},
 	},
 
@@ -1302,6 +1348,13 @@ func Content() Config {
 	// catalogue stays the plain content it reads as.
 	for i, a := range c.Actions {
 		c.Actions[i].NeedsSpot = a.needsSpot()
+	}
+	// The store's picture, derived from the one kind Service.store publishes so
+	// that moving the shop to another kind moves the art with it. Empty if that
+	// kind ever leaves the catalogue, which the client reads as "draw no store" —
+	// the honest answer, and the same one an absent `store` block gets.
+	if crate, ok := ObjectKindByKey(KindCrate); ok {
+		c.StoreArt = crate.Art
 	}
 	c.Skins = append([]Skin(nil), catalogue.Skins...)
 	c.Locations = append([]Location(nil), catalogue.Locations...)

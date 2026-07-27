@@ -139,7 +139,15 @@ func (s *Service) props(now time.Time) []Peer {
 			// no person behind it who would otherwise vanish from the yard.
 			continue
 		}
-		if kind.Hidden {
+		if kind.Hidden || kind.OffFrame {
+			// TWO KINDS NEVER BECOME ENTITIES, for two unrelated reasons, and the
+			// flags are kept apart so that stays true. `OffFrame` is the beer
+			// crate: perfectly visible, but carried by the `store` block instead —
+			// its place and its count together, which is what lets the client draw
+			// a shop with a number on it rather than one more dot with a face. It
+			// used to be published BOTH ways, which is the second path to one
+			// outcome CLAUDE.md forbids.
+			//
 			// THE KEY IS NOT ON THE WIRE, and this one line is the whole of it.
 			// It stays in the cache — the hunt's id comes out of it and so does
 			// the answer a search is judged against — but it never becomes an
@@ -161,7 +169,7 @@ func (s *Service) props(now time.Time) []Peer {
 			// travels in every frame; twelve is the same length a player's
 			// pseudonym uses, is unique enough among a capped two dozen objects,
 			// and saves most of a kilobyte a second per viewer at the cap.
-			ID:      "obj-" + shortID(o.ID),
+			ID:      propPrefix + shortID(o.ID),
 			X:       o.At.X,
 			Y:       o.At.Y,
 			Art:     kind.Art,

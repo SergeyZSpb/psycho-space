@@ -2940,28 +2940,31 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     const sad = await faceShape(page, 'loser');
     const plain = await faceShape(page, 'bystander');
 
-    // Neither mood is the ordinary face, and they are not merely different from
-    // it in the same direction.
-    expect(happy.scale, `a winner is drawn at ${happy.scale}× — no bigger than anybody`).toBeGreaterThan(1.05);
-    expect(sad.scale, `a loser is drawn at ${sad.scale}× — no smaller than anybody`).toBeLessThan(0.95);
-    expect(plain.scale, 'an ordinary face is no longer drawn at its own size').toBeCloseTo(1, 2);
-
-    // And far enough apart to tell across a plane 231px wide, which is what
-    // "at a glance, on somebody else's dot" actually means here.
-    expect(
-      happy.scale / sad.scale,
-      `the two moods are only ${(happy.scale / sad.scale).toFixed(2)}× apart`,
-    ).toBeGreaterThan(1.3);
-
-    // Lifted against slumped: opposite along the one axis, rather than two sizes
-    // of the same picture.
-    expect(happy.dy, 'a winner is not lifted off his dot').toBeLessThan(0);
-    expect(sad.dy, 'a loser does not slump').toBeGreaterThan(0);
-
-    // A second channel as well, so the difference survives a squint and a
-    // greyscale screenshot has something left.
+    // THE MOODS ARE TONE RATHER THAN GEOMETRY, and this test used to say the
+    // opposite. It asserted a winner lifted off his dot and a loser slumped and
+    // shrank — which was the shipped behaviour, and was a BUG the moment faces
+    // stopped being emoji: an avatar covers its disc almost exactly, so any
+    // movement slid it out of its own circle and exposed the identity colour
+    // underneath. See «a mood must not move the face» below for the whole of it.
+    //
+    // What the requirement was ever about survives untouched: the two faces have
+    // to be tellable apart at a glance, on somebody else's dot, across a plane
+    // 231px wide — because winning and losing move NO STAT AT ALL and these faces
+    // are the entire consequence of the race. Only the channel changed.
     expect(happy.filter, 'both moods are drawn in the same tone').not.toBe(sad.filter);
+    expect(happy.filter, 'a winner is drawn like anybody else').not.toBe(plain.filter);
+    expect(sad.filter, 'a loser is drawn like anybody else').not.toBe(plain.filter);
     expect(plain.filter, 'an ordinary face grew a filter').toBe('none');
+
+    // NEITHER MOOD MOVES THE FACE, which is now the rule rather than an
+    // observation. A pose may not translate the picture at all, and may only ever
+    // scale it UP — a face larger than its disc still covers it, where a smaller
+    // one leaves a ring of colour showing.
+    expect(happy.dy, 'a winner is lifted off his dot, which uncovers it').toBe(0);
+    expect(sad.dy, 'a loser is pushed down his dot, which uncovers it').toBe(0);
+    expect(sad.scale, `a loser is drawn at ${sad.scale}×, which uncovers his dot`).toBeGreaterThanOrEqual(1);
+    expect(plain.scale, 'an ordinary face is no longer drawn at its own size').toBeCloseTo(1, 2);
+    expect(happy.scale, `a winner is drawn at ${happy.scale}× — no bigger than anybody`).toBeGreaterThan(1.05);
 
     // NEITHER ANIMATES, which is where they part company with `poorly`. A mood is
     // on the wire for about as long as one cycle of that wobble lasts, so an
@@ -2971,4 +2974,89 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     expect(happy.animation, 'the happy face animates, so it can be missed').toBe('none');
     expect(sad.animation, 'the sad face animates, so it can be missed').toBe('none');
   });
+});
+
+test.describe('«Ванягоччи» — a mood must not move the face', () => {
+  // REPORTED FROM PRODUCTION, the moment somebody won the keys: the avatar came
+  // away from its own circle and a crescent of the owner's identity colour showed
+  // underneath it. The cause was that `happy` and `sad` expressed themselves by
+  // TRANSLATING and SCALING the face — which reads fine on an emoji drawn over a
+  // coloured disc, and is broken on a photograph, because a photograph covers the
+  // disc almost exactly and any movement uncovers it.
+  //
+  // Pinned as containment rather than as pixels: whatever a pose does, the picture
+  // stays inside the dot it belongs to.
+  const MOODS = ['happy', 'sad', 'fine', 'poorly', 'dead', 'asleep'] as const;
+
+  for (const pose of MOODS) {
+    test(`the face stays inside its dot while «${pose}»`, async ({ page }) => {
+      await stubBackend(page);
+      await stubFaces(page, ['me']);
+      const socket = await stubSocket(page);
+      await enterYard(page);
+
+      await socket.push(rosterHere(1, { id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose }));
+      await expect(avatarOf(page, 'me')).toBeVisible();
+
+      const dot = await page.locator('[data-peer="me"]').boundingBox();
+      const pic = await avatarOf(page, 'me').boundingBox();
+      expect(dot, 'the dot has no box').not.toBeNull();
+      expect(pic, 'the face has no box').not.toBeNull();
+
+      // A pixel of slack for sub-pixel rounding; anything more is the picture
+      // hanging out of its own circle.
+      const slack = 1;
+      expect(pic!.x, `«${pose}» pushed the face off the left of its dot`).toBeGreaterThanOrEqual(
+        dot!.x - slack,
+      );
+      expect(pic!.y, `«${pose}» pushed the face off the top of its dot`).toBeGreaterThanOrEqual(
+        dot!.y - slack,
+      );
+      expect(
+        pic!.x + pic!.width,
+        `«${pose}» pushed the face off the right of its dot`,
+      ).toBeLessThanOrEqual(dot!.x + dot!.width + slack);
+      expect(
+        pic!.y + pic!.height,
+        `«${pose}» pushed the face off the bottom of its dot`,
+      ).toBeLessThanOrEqual(dot!.y + dot!.height + slack);
+    });
+  }
+
+  // HAPPY ONLY, and the reason is worth recording because it is a trap rather
+  // than an oversight. This assertion measures AREA off `boundingBox()`, which is
+  // an axis-aligned box — so a ROTATED element reports a box about 24% wider than
+  // it is, and a face both rotated and shrunk measures the same as one that was
+  // left alone. The shipped `sad` did exactly that (`rotate(16deg) scale(0.8)`),
+  // so this test read it as fine. Containment above still holds it, and `sad` now
+  // carries no transform at all, which is the only shape that cannot lie here.
+  for (const pose of ['happy'] as const) {
+  test(`a «${pose}» face still covers the disc it is drawn on`, async ({ page }) => {
+    // The other half of the same bug, and the one the screenshot showed: the disc
+    // must not peek out from behind the picture. Asserted as area rather than as
+    // geometry — a face covering nearly all of its dot cannot be leaving a
+    // crescent of colour anywhere.
+    await stubBackend(page);
+    await stubFaces(page, ['me']);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(rosterHere(1, { id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose }));
+    await expect(avatarOf(page, 'me')).toBeVisible();
+
+    const dot = await page.locator('[data-peer="me"]').boundingBox();
+    const pic = await avatarOf(page, 'me').boundingBox();
+    const covered = ((pic?.width ?? 0) * (pic?.height ?? 0)) / ((dot?.width ?? 1) * (dot?.height ?? 1));
+    // NOT "covers everything", and the number is measured rather than derived.
+    // The picture is deliberately inset by the rim so the owner's identity colour
+    // survives as a ring (`.peer-sprite`), and the dot's own box includes its
+    // border — which together put the natural coverage at about 0.64. The
+    // threshold sits below that and well above the ~0.41 a face shrunk to 0.8
+    // leaves, which is the shipped bug this pins.
+    expect(
+      covered,
+      `the «${pose}» face leaves too much of the identity disc showing`,
+    ).toBeGreaterThan(0.55);
+  });
+  }
 });

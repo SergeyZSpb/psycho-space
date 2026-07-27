@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1702,5 +1703,69 @@ func TestVanyagotchiTheHiddenKeyNeverReachesTheWire(t *testing.T) {
 	if frame.Hunt != live[0].id[:12] {
 		t.Errorf("the frame names the hunt %q; want %q, the truncation every other id on this frame uses — hiding the key must not hide that a hunt is running",
 			frame.Hunt, live[0].id[:12])
+	}
+}
+
+// A 404 from the avatar route is cached only when it can never stop being one.
+//
+// THE BUG THIS PINS was reported from production: two browsers disagreed about
+// the same handle, one showing the picture and the other showing
+// `{"error":"no_avatar"}`. Neither was wrong about the server — the one that
+// asked EARLY had cached its own 404 for half an hour, because the route sent
+// `max-age=1800` on a miss as well as on a hit.
+//
+// For an NPC that is right: there is no picture and there never will be, and a
+// client cannot tell an NPC from a person, so without a cached miss it would
+// re-ask for every character on every reconnect. For a PERSON it is wrong: the
+// avatar is read out of Postgres when that account says hello, so a peer drawn
+// before its owner's hello has landed — a sleeper after a restart, most
+// obviously — answers 404 and begins answering with a picture moments later.
+func TestVanyagotchiAMissIsCachedOnlyWhenItIsPermanent(t *testing.T) {
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, _, _, _ := buildAppRealtimeGame(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	cli := loginAs(t, app.URL, "7431", "user")
+
+	ask := func(t *testing.T, peer string) (int, string) {
+		t.Helper()
+		res, err := cli.Get(app.URL + "/api/game-vanyagotchi/avatar/" + peer)
+		if err != nil {
+			t.Fatalf("asking for %q: %v", peer, err)
+		}
+		defer res.Body.Close()
+		_, _ = io.Copy(io.Discard, res.Body)
+		return res.StatusCode, res.Header.Get("Cache-Control")
+	}
+
+	// A character the world owns: the miss is permanent, so it is cached exactly
+	// like an answer would be.
+	status, cache := ask(t, "npc-sahur")
+	if status != http.StatusNotFound {
+		t.Errorf("an NPC answered %d, want 404", status)
+	}
+	if !strings.Contains(cache, "max-age=") {
+		t.Errorf("an NPC's permanent miss is not cached: Cache-Control=%q", cache)
+	}
+
+	// A thing on the ground: the same.
+	if _, cache := ask(t, "obj-a1b2c3d4e5f6"); !strings.Contains(cache, "max-age=") {
+		t.Errorf("a deposit's permanent miss is not cached: Cache-Control=%q", cache)
+	}
+
+	// A person this process has not loaded a picture for. The miss is TRANSIENT
+	// and must not be stored, or the face stays missing long after it exists.
+	status, cache = ask(t, "AV0XmddbiDyp")
+	if status != http.StatusNotFound {
+		t.Errorf("an unknown person answered %d, want 404", status)
+	}
+	if strings.Contains(cache, "max-age=") {
+		t.Errorf("a person's TRANSIENT miss is cached (%q) — this is the reported bug: "+
+			"a browser that asks before the hello lands keeps showing no_avatar", cache)
+	}
+	if cache != "no-store" {
+		t.Errorf("Cache-Control=%q, want no-store", cache)
 	}
 }
