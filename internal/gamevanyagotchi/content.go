@@ -152,8 +152,10 @@ const (
 const (
 	// SkinVanya is the only pet skin: he is дядя Ваня, which is the joke.
 	SkinVanya = "vanya"
-	// LocationYard is двор — where a pet is created and where the beer store
-	// stands, which is what makes it the DEFAULT rather than merely the first.
+	// LocationYard is двор — where a pet is created, which is what makes it the
+	// DEFAULT rather than merely the first. It is no longer where the beer is:
+	// the crate moves each time it is emptied, so the yard is the place you start
+	// from rather than the place everything happens in.
 	//
 	// A location is deliberately NOT a realtime room. Rooms are a closed set owned
 	// by the platform (`internal/httpapi/realtime.go`), so making locations rooms
@@ -440,13 +442,14 @@ type ObjectKind struct {
 	// Location pins this kind to one place, or is empty for a kind the world may
 	// put ANYWHERE.
 	//
-	// The two answers are the difference between a shop and a lost key, one level
-	// up from what `At` already says. The crate names the yard, so the beer is
-	// always somewhere a player can be told to walk to; the key names nothing, so
-	// each fresh hunt picks a location with crypto/rand and nobody is told which
-	// one — searching everywhere IS the game. There is still exactly ONE key in
-	// the world, because the partial unique index is on `kind` alone (migration
-	// 008): locations multiplied the places to look, not the number of hunts.
+	// NO KIND NAMES A PLACE TODAY, and the field is kept for the same reason
+	// PatternIdle is: it is what makes "this thing always stands in двор" a
+	// catalogue entry rather than a code change, and that property is the whole
+	// point of an ObjectKind. The crate named the yard until the shop was set
+	// loose to wander; both singletons now leave it empty, so each fresh one picks
+	// a location with crypto/rand. There is still exactly ONE of each in the
+	// world, because the partial unique index is on `kind` alone (migration 008):
+	// locations multiplied the places a thing can be, not the number of things.
 	//
 	// READ ONLY WHEN THE WORLD SPAWNS ONE, which is why the relief deposit can
 	// leave it empty without meaning "anywhere". A kind a PLAYER leaves behind
@@ -523,12 +526,15 @@ type ObjectKind struct {
 	// of somebody typing the six out and forgetting it after the next retune.
 	Stock int `json:"stock,omitempty"`
 	// At is where one of these stands, for a kind that has a pitch — nil for a
-	// kind that is hidden at one of its location's hotspots instead.
+	// kind that is put at one of its location's hotspots instead.
 	//
-	// That nil IS the difference between a shop and a lost key, and it is the
-	// whole of it: `placeFor` reads this field and picks a hiding place when
-	// there is none, so "does this kind stand somewhere in particular" stopped
-	// being a case in the service the moment there were two answers.
+	// NIL FOR EVERY KIND TODAY, and kept for the reason Location above is kept:
+	// `placeFor` reads this field and picks a hotspot when there is none, so
+	// "does this kind stand somewhere in particular" is content rather than a
+	// case in the service. The crate carried the only pitch there has ever been,
+	// and it gave it up when the shop started moving — a crate at a hotspot is
+	// the same shape as a key at a hotspot, which is what let the two spawns
+	// collapse into one path.
 	//
 	// Server-side only, and deliberately: an object arrives in the roster with
 	// its own coordinates like every other entity, and the one client that needs
@@ -662,13 +668,13 @@ type NPC struct {
 	Art string `json:"art"`
 	// Location is where he hangs about, empty for the yard.
 	//
-	// It is what `cast` reads to stamp `loc` on his entity, which is the field's
-	// live use rather than a seam kept open for later: without it the broadcast
-	// would have to name the yard in Go for every character, which is exactly the
-	// hardcoding the four locations removed everywhere else. Its second use is the
-	// obvious one — a regular somewhere other than двор becomes a one-word edit,
-	// no code, no migration, no client deploy, which is the property NPCs have
-	// about every other axis of themselves.
+	// It is what `cast` reads to stamp `loc` on his entity, and both of its uses
+	// are live now. Without it the broadcast would have to name the yard in Go for
+	// every character, which is exactly the hardcoding the four locations removed
+	// everywhere else; and it is what put a regular into each of the other four
+	// places, which cost one word per character and no code, no migration and no
+	// client deploy — the property NPCs have about every other axis of
+	// themselves.
 	//
 	// Server-side like Pattern and Params: where he is arrives in the roster.
 	Location string       `json:"-"`
@@ -733,24 +739,15 @@ type Config struct {
 	// is, and derived from the kind's own `Label` so there is one name for the
 	// thing rather than two that drift.
 	StoreLabel string `json:"store_label,omitempty"`
-	// StoreLocation is which of the five places the beer store is in, resolved
-	// against `Locations` for its label exactly as StoreArt is against `Skins`.
+	// THERE IS NO StoreLocation, and its absence is a rule of the game rather than
+	// an omission. It used to sit here, derived from the crate's pinned location,
+	// so the splash cheatsheet could say «пиво только во дворе». The crate now
+	// moves every time it is emptied, so a STATIC field claiming where the shop is
+	// would be a lie for most of the game's life — and a lie a player believes,
+	// because the cheatsheet is the one place he is told the rules. The live
+	// `store` block on the roster (see Store) carries the shop's location on every
+	// frame and is the ONLY answer to "where is the beer" there is.
 	//
-	// IT IS A RULE OF THE GAME AND THEREFORE IT IS SERVED. The splash screen's
-	// cheatsheet has to be able to say «пиво только во дворе», because a player who
-	// walks into лес and finds the drink button dead needs to know why — and
-	// «пиво из ящика» without saying where the ящик is answers a different
-	// question. That sentence must be DERIVED rather than typed, or it becomes a
-	// lie the first time the shop moves.
-	//
-	// It publishes a location key and never the kind's, which is the same
-	// capability-not-reason split StoreArt and NeedsSpot already make: the client
-	// is told where the shop is without being told which object kind a shop is.
-	// Nothing is given away — the frame's `store` block already carries the same
-	// place, and the crate is `OffFrame` rather than `Hidden`, so there was never a
-	// secret here. Empty if the crate ever leaves the catalogue, which the client
-	// reads as «draw no store» exactly as an absent `store` block is read.
-	StoreLocation string `json:"store_location,omitempty"`
 	// DefaultSkin and DefaultLocation are what a new pet is created with.
 	DefaultSkin     string `json:"default_skin"`
 	DefaultLocation string `json:"default_location"`
@@ -862,22 +859,22 @@ const (
 	arriveWithin = 0.12
 )
 
-// Where the beer store stands.
+// THE BEER STORE NO LONGER HAS A PLACE OF ITS OWN. It stood at (0.82, 0.22) in
+// двор for as long as the crate was pinned, and the constant that said so is
+// gone with the pinning — a fresh crate is now stood up at one of the hotspots
+// of a location drawn at random, exactly as a fresh key is hidden. What that
+// buys is a reason to walk into the other four places when no hunt is tempting
+// you there: the beer might be in any of them, and it moves every six drinks.
 //
-// THE CRATE IS DELIBERATELY INSIDE tiredFrom OF THE ENTRANCE. It is about 0.43
-// plane-widths from `spawn`, and a walk that short is never refused by the
-// tiredness roll — so somebody who has just arrived can always reach the beer in
-// one tap, and no Ваня is ever stuck between the door and a drink. Moving this
-// without checking that distance against tiredFrom is how the store quietly
-// becomes unreachable for whoever is unlucky.
-//
-// THERE IS NO VENDOR STANDING BESIDE IT ANY MORE. He was a stateless NPC — a
-// catalogue entry with a motion pattern and no row — and he was a good
-// illustration of the state-versus-appearance split. He was also a third dot in
-// a corner of the yard that said nothing about what the box was for, and the box
-// carrying its own sign says it better. The split he illustrated is unharmed:
-// everything mutable about the store is still the crate's `remaining`.
-var cratePlace = Point{X: 0.82, Y: 0.22}
+// TWO THINGS THAT WERE TRUE OF THE PINNED PITCH ARE NO LONGER GUARANTEED, and
+// both are deliberate rather than overlooked. The crate used to sit inside
+// tiredFrom of the entrance, so a Ваня who had just arrived could always reach
+// the beer in one tap; now it can be a hotspot far enough away that the walk
+// ends in «устал» and he has to try again. And it used to be clear of every
+// hiding place, so «искать ключи» and «выпить пива» were never the same square
+// of a 360 px screen; now the crate stands ON a hotspot, so sometimes they are.
+// Both were properties of a shop that never moved, and a shop that never moved
+// is what this change is spending.
 
 // How a Ваня crosses the yard.
 //
@@ -995,7 +992,6 @@ var idleSays = []string{
 	"чё стоим",
 	"вроде дождь собирается",
 	"я на пять минут вышел",
-	"кладмен мудак",
 	"зачем я вышел",
 	"телефон сел",
 	"холодно чёт",
@@ -1014,6 +1010,11 @@ var idleSays = []string{
 // It is also the joke, and the joke needs the reaction more than it needs the
 // deed. Relieving himself already leaves a deposit that ages out of the yard over
 // ten minutes; what it did not have was an audience.
+// HALF OF IT IS ABOUT THE SMELL AND HALF IS ABOUT THE MAN, deliberately. A yard
+// that only ever said «фу» would read as weather; what makes it land is that the
+// objection has an addressee, and everybody watching knows who. The register is
+// the game's own — this is a deliberately cringe app for a handful of friends who
+// picked it, and the target is a cartoon of дядя Ваня rather than anybody real.
 var reekSays = []string{
 	"ну и вонь",
 	"я сейчас блевану",
@@ -1027,7 +1028,40 @@ var reekSays = []string{
 	"тут вообще-то люди",
 	"пойду отсюда",
 	"это уже слишком",
+	"пидорас",
+	"ебаный гандон",
+	"ебать тя в сраку",
+	"сучара дырявая",
+	"гнида",
 }
+
+// enviousSays is what everybody else says when somebody finds the keys.
+//
+// THE SECOND HALF OF A RULING THAT USED TO HAVE ONE. Winning and losing move no
+// stat — that is settled, and it is what makes another player turning up never
+// bad news — so the whole consequence of the race was a happy face and a row of
+// sad ones. A face is a small thing to hang a mechanic's entire payoff on, and
+// four seconds of it in a yard where everybody is looking somewhere else is
+// easily missed altogether. A line is not.
+//
+// It is envy rather than congratulation, which is the register the rest of this
+// game is written in and the reason the pool is worth having at all: «молодец»
+// would be a different game.
+var enviousSays = []string{
+	"он нашел а я нет",
+	"кладмен мудак",
+	"аааа ломает",
+	"жопа чешется",
+	"везёт же уродам",
+	"а я тут с утра стою",
+	"нечестно вообще",
+	"я первый увидел",
+	"мне и не надо было",
+}
+
+// How long the envy is up. The same window the sad face is drawn for, because
+// they are two halves of one reaction and two different lifetimes for one moment
+// is a difference nobody could explain.
 
 // How near you have to be standing to notice, and how long you go on about it.
 //
@@ -1363,6 +1397,38 @@ var catalogue = Config{
 			Emoji:    "67",
 			Gradient: "linear-gradient(160deg, #e0762b, #6d2f0c)",
 		},
+		// The four regulars who live outside the yard. NO PICTURE HAS BEEN DRAWN
+		// FOR ANY OF THEM YET, and that is why these entries exist rather than
+		// being left for the art to arrive with: an art key the blob store cannot
+		// resolve falls back to the emoji-over-gradient placeholder, and a key with
+		// no skin at all falls back to a faceless silhouette. One is a character
+		// waiting for his portrait; the other is a dot nobody can tell from a
+		// stranger. Uploading the image later replaces the placeholder and changes
+		// nothing here.
+		{
+			Key:      "npc_tralalero",
+			Label:    "Тралалеро Тралала",
+			Emoji:    "🦈",
+			Gradient: "linear-gradient(160deg, #4a7fa8, #1c2f42)",
+		},
+		{
+			Key:      "npc_cappuccino",
+			Label:    "Капучино Ассасино",
+			Emoji:    "🥷",
+			Gradient: "linear-gradient(160deg, #6b4a35, #241a14)",
+		},
+		{
+			Key:      "npc_patapim",
+			Label:    "Брр Брр Патапим",
+			Emoji:    "🐒",
+			Gradient: "linear-gradient(160deg, #8a6b3a, #2f3a22)",
+		},
+		{
+			Key:      "npc_bombardiro",
+			Label:    "Бомбардиро Крокодило",
+			Emoji:    "🐊",
+			Gradient: "linear-gradient(160deg, #5b7a3a, #24301a)",
+		},
 	},
 	ObjectKinds: []ObjectKind{
 		{
@@ -1435,15 +1501,28 @@ var catalogue = Config{
 			// all.
 			Contest: ContestStock,
 			Stock:   crateStock,
-			// PINNED TO THE YARD, and unlike the key it also STANDS SOMEWHERE in it
-			// — the two together are what make the arrival gate mean anything. A
-			// shop you had to hunt for would be a second key hunt wearing an apron,
-			// and one that moved between five locations would be a shop nobody could
-			// be told to walk to. The frame publishes where it is (Roster.Store), so
-			// a Ваня in лес is shown no store at all rather than being invited to
-			// walk to a crate he cannot see.
-			Location: LocationYard,
-			At:       &cratePlace,
+			// THE SHOP MOVES, and this entry naming neither a location nor a pitch
+			// is the whole of how. Every crate the world stands up — the one a cold
+			// start puts out, and the one that replaces each crate somebody empties —
+			// goes to a location drawn with crypto/rand and to one of that location's
+			// hotspots, which is the identical machinery the lost key uses
+			// (`locationFor`, `placeFor`, `hideIn`). One spawn path for both
+			// singletons rather than two.
+			//
+			// IT REVERSES WHAT USED TO BE WRITTEN HERE, deliberately, and the old
+			// argument is worth answering rather than deleting: a shop that moved
+			// between five locations, it said, would be a shop nobody could be told
+			// to walk to. That was true of a shop nobody was TOLD about — and the
+			// frame does tell. `Roster.Store` carries the crate's location and its
+			// pitch on every tick, so the client draws the shop when the player is
+			// looking at the place it is in and draws nothing when he is not. He is
+			// never hunting for the beer; he is told where it is and has to go there.
+			//
+			// WHICH IS THE DIFFERENCE FROM THE KEY, and it survives the two of them
+			// sharing a spawn. The key is `Hidden`: its coordinates never leave this
+			// process, so finding it is a search. The crate is `OffFrame`: its
+			// coordinates are published, just not as an entity. Same placement, and
+			// opposite secrecy — which is exactly why those are two flags and not one.
 			// NOT AN ENTITY, because the frame already carries it as the `store`
 			// block — its place and its count in one object, which is what lets the
 			// client draw a shop with a number on it instead of a dot with a face.
@@ -1459,19 +1538,21 @@ var catalogue = Config{
 			// The five places worth looking in, and they are what makes the key
 			// hunt a search rather than a button.
 			//
-			// THREE RULES GOVERN THESE COORDINATES, and all three are the sort of
-			// thing that is invisible until somebody plays.
+			// TWO RULES GOVERN THESE COORDINATES, and both are the sort of thing
+			// that is invisible until somebody plays.
 			//
 			// They are kept off the edges, where a tap target is half clipped by
 			// the plane and awkward to hit on a phone — the same margin the
 			// entities themselves respect.
 			//
-			// They are kept well clear of the beer store: the crate stands at
-			// (0.82, 0.22), and a hotspot inside
-			// arriveWithin of either would put "search here" and "drink here" on
-			// the same square of a 360 px screen. Every one of these is at least
-			// 0.35 plane-widths from both, which is three times the reach of the
-			// arrival gate.
+			// There used to be a third: keep clear of the beer store, so that
+			// "search here" and "drink here" were never the same square of a 360 px
+			// screen. It went when the crate stopped being pinned — a crate is now
+			// stood up AT a hotspot, in any of the five places, so the overlap the
+			// rule forbade is the ordinary case. What it cost is small: the two
+			// verbs read differently on screen (a box with a number on it, against a
+			// place to look), and neither gate can be satisfied by accident, because
+			// «искать ключи» has to name the spot it is looking in.
 			//
 			// And they are DELIBERATELY SPREAD, including one that is genuinely far
 			// from the entrance. `подъезд` is about 0.51 plane-widths from `spawn`,
@@ -1538,8 +1619,9 @@ var catalogue = Config{
 				{Key: "krapiva", Label: "крапива", Emoji: "🌱", At: Point{X: 0.20, Y: 0.26}},
 				{Key: "paket", Label: "пакет", Emoji: "🛍️", At: Point{X: 0.78, Y: 0.30}},
 				{Key: "butylki", Label: "бутылки", Emoji: "🍾", At: Point{X: 0.30, Y: 0.66}},
-				// The one that is the joke rather than the scenery: the yard's idle
-				// pool already mutters «кладмен мудак», and this is where he works.
+				// The one that is the joke rather than the scenery: the yard says
+				// «кладмен мудак» when somebody else finds the keys, and this is
+				// where he works.
 				{Key: "zakladka", Label: "закладка", Emoji: "📦", At: Point{X: 0.72, Y: 0.68}},
 				{Key: "vetki", Label: "ветки", Emoji: "🌿", At: Point{X: 0.50, Y: 0.16}},
 			},
@@ -1555,18 +1637,33 @@ var catalogue = Config{
 			},
 		},
 	},
-	// The yard's regulars. Three of them across two ways of moving, which is
-	// exactly what the pattern table exists for: the last two arrived as
-	// catalogue entries and nothing else — no code, no migration, no client
-	// change — because each reuses a pattern that was already written.
+	// The regulars. Seven of them across two ways of moving, which is exactly what
+	// the pattern table exists for: every one after the first two arrived as a
+	// catalogue entry and nothing else — no code, no migration, no client change —
+	// because each reuses a pattern that was already written.
 	//
-	// ALL THREE ARE IN THE YARD, and none of them names a location, because empty
-	// means двор. That is a decision rather than an omission: the four locations
-	// behind the yard are a MECHANIC, and populating them by copying the same
-	// three characters into each would make лес a room full of Сахур and say
-	// nothing about any of the five places. A regular of their own is content the
-	// four places should get deliberately, and when they do it is one word per
-	// character here.
+	// EVERY LOCATION HAS SOMEBODY IN IT, and that is the rule this list is now
+	// kept to rather than an accident of who was added when. All three of the
+	// original cast lived in двор, which was defensible while the other four
+	// places were new — populating them by copying the same three characters into
+	// each would have made лес a room full of Сахур — but the cost was that four
+	// fifths of the world was scenery. A place with nobody in it reads as unfinished
+	// on a phone: you walk in, there is a backdrop and five things to tap, and
+	// nothing that suggests anybody has ever been there. So each of the four got a
+	// regular of its own, and Балерина moved into лес, where a ballerina is funnier
+	// than she ever was in a courtyard. An invariant test pins the property, because
+	// the failure is silent: a location quietly emptied by a rename still draws.
+	//
+	// THE WHOLE CAST IS ONE JOKE — the Italian brainrot menagerie — which is what
+	// keeps seven characters from reading as seven unrelated ideas. They are placed
+	// by which one is funniest where, not by filling slots.
+	//
+	// TWO RULES GOVERN THE NUMBERS, and both are invisible until somebody plays.
+	// A character stays in the walkable band, y from about 0.25 to 0.95: the
+	// backdrops put the horizon at 0.25, so anything above it is standing in the
+	// sky. And no two characters share a period or a phase — see Сиксти Севен Мэн,
+	// who was the first to need saying so — because two entities on the same cycle
+	// read as one animation played twice however different their art is.
 	NPCs: []NPC{
 		{
 			Key:     "sahur",
@@ -1582,12 +1679,30 @@ var catalogue = Config{
 			},
 		},
 		{
-			Key:     "ballerina",
-			Label:   "Балерина Каппучина",
-			Art:     "npc_ballerina",
-			Pattern: PatternPatrol,
+			Key:     "67man",
+			Label:   "Сиксти Севен Мэн",
+			Art:     "npc_67man",
+			Pattern: PatternWander,
+			// The bottom-right corner, on a shorter cycle than Сахур and half a
+			// turn out of phase with him, so the two wanderers never read as the
+			// same animation played twice.
+			Params: MotionParams{
+				Home:   Point{X: 0.72, Y: 0.72},
+				Spread: Point{X: 0.22, Y: 0.18},
+				Period: 61 * time.Second,
+				Phase:  0.5,
+			},
+		},
+		{
+			Key:      "ballerina",
+			Label:    "Балерина Каппучина",
+			Art:      "npc_ballerina",
+			Location: LocationLes,
+			Pattern:  PatternPatrol,
 			// A repeating figure with a pause at each corner, which is the joke:
-			// a ballerina doing the same four steps forever.
+			// a ballerina doing the same four steps forever. She danced it in the
+			// yard first; a clearing in the woods is the funnier stage for it, and
+			// it is the same four steps either way — the move is one word.
 			Params: MotionParams{
 				Home:   Point{X: 0.2, Y: 0.7},
 				Period: 40 * time.Second,
@@ -1601,18 +1716,77 @@ var catalogue = Config{
 			},
 		},
 		{
-			Key:     "67man",
-			Label:   "Сиксти Севен Мэн",
-			Art:     "npc_67man",
-			Pattern: PatternWander,
-			// The bottom-right corner, on a shorter cycle than Сахур and half a
-			// turn out of phase with him, so the two wanderers never read as the
-			// same animation played twice.
+			Key:      "tralalero",
+			Label:    "Тралалеро Тралала",
+			Art:      "npc_tralalero",
+			Location: LocationLes,
+			Pattern:  PatternWander,
+			// A shark in trainers, cruising the right-hand half of the wood while
+			// Балерина keeps to the left — the two share лес, so they are separated
+			// by side as well as by pattern and nobody has to watch them overlap.
 			Params: MotionParams{
-				Home:   Point{X: 0.72, Y: 0.72},
-				Spread: Point{X: 0.22, Y: 0.18},
-				Period: 61 * time.Second,
-				Phase:  0.5,
+				Home:   Point{X: 0.72, Y: 0.45},
+				Spread: Point{X: 0.20, Y: 0.14},
+				Period: 73 * time.Second,
+				Phase:  0.15,
+			},
+		},
+		{
+			Key:      "cappuccino",
+			Label:    "Капучино Ассасино",
+			Art:      "npc_cappuccino",
+			Location: LocationLift,
+			Pattern:  PatternPatrol,
+			// An assassin has a route and sticks to it, so the patrol is the joke
+			// rather than merely the cheapest pattern: he works the four walls of a
+			// lift, pausing at each corner, for ever, in a box two metres square.
+			Params: MotionParams{
+				Home:   Point{X: 0.50, Y: 0.60},
+				Period: 53 * time.Second,
+				Route: []Point{
+					{X: 0.30, Y: 0.40},
+					{X: 0.70, Y: 0.36},
+					{X: 0.74, Y: 0.78},
+					{X: 0.32, Y: 0.84},
+				},
+				Phase: 0.6,
+			},
+		},
+		{
+			Key:      "patapim",
+			Label:    "Брр Брр Патапим",
+			Art:      "npc_patapim",
+			Location: LocationKusty,
+			Pattern:  PatternWander,
+			// Half monkey and half tree, rummaging about the middle of the bushes
+			// on the longest cycle of anybody — he is the slowest thing in the game
+			// and that is what he is for.
+			Params: MotionParams{
+				Home:   Point{X: 0.50, Y: 0.52},
+				Spread: Point{X: 0.26, Y: 0.18},
+				Period: 83 * time.Second,
+				Phase:  0.35,
+			},
+		},
+		{
+			Key:      "bombardiro",
+			Label:    "Бомбардиро Крокодило",
+			Art:      "npc_bombardiro",
+			Location: LocationZabroshka,
+			Pattern:  PatternPatrol,
+			// A crocodile who is also a bomber, so his route is a bombing run: the
+			// long straight legs of a circuit over the ruin, wide enough that he
+			// crosses the whole place rather than loitering in a corner of it.
+			Params: MotionParams{
+				Home:   Point{X: 0.50, Y: 0.60},
+				Period: 67 * time.Second,
+				Route: []Point{
+					{X: 0.16, Y: 0.40},
+					{X: 0.84, Y: 0.38},
+					{X: 0.86, Y: 0.88},
+					{X: 0.18, Y: 0.90},
+				},
+				Phase: 0.8,
 			},
 		},
 	},
@@ -1643,13 +1817,13 @@ func Content() Config {
 	// that moving the shop to another kind moves the art with it. Empty if that
 	// kind ever leaves the catalogue, which the client reads as "draw no store" —
 	// the honest answer, and the same one an absent `store` block gets.
+	// Only the two CONSTANT facts about the shop: its picture and its sign. Where
+	// it is, is not one of them any more — the crate moves, so its place is
+	// published on the frame and nowhere else. See the note where StoreLocation
+	// used to be declared.
 	if crate, ok := ObjectKindByKey(KindCrate); ok {
 		c.StoreArt = crate.Art
 		c.StoreLabel = crate.Label
-		// Resolved through locationOr, so a kind that names no location publishes
-		// the default rather than an empty string the client would have to know how
-		// to read. The crate names the yard, so this is the yard.
-		c.StoreLocation = locationOr(crate.Location)
 	}
 	c.Skins = append([]Skin(nil), catalogue.Skins...)
 	c.Locations = append([]Location(nil), catalogue.Locations...)

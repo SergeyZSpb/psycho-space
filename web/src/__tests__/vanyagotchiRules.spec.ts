@@ -260,15 +260,18 @@ describe('buildRules — actions', () => {
     );
     expect(rules.actions[0]?.notes).toEqual(['мёртвому нельзя']);
     expect(rules.actions[1]?.notes).toEqual(['мёртвому нельзя']);
-    expect(rules.actions[2]?.notes).toEqual(['единственный способ поднять мёртвого']);
+    // The reviving verb also carries the note saying it has no button of its own
+    // — it turns up on the death screen — so this asserts the LAST line rather
+    // than the whole list, which is the one this test is about.
+    expect(rules.actions[2]?.notes.at(-1)).toBe('единственный способ поднять мёртвого');
   });
 
   it('drops the exclusivity claim as soon as a second action revives', () => {
     const rules = buildRules(
       config({ actions: [revive(), revive({ key: 'defibrillate', starts_over: false })] }),
     );
-    expect(rules.actions[0]?.notes).toEqual(['поднимает мёртвого']);
-    expect(rules.actions[1]?.notes).toEqual(['поднимает мёртвого']);
+    expect(rules.actions[0]?.notes.at(-1)).toBe('поднимает мёртвого');
+    expect(rules.actions[1]?.notes.at(-1)).toBe('поднимает мёртвого');
   });
 });
 
@@ -1038,7 +1041,7 @@ describe('buildRules — the verb you do not press', () => {
         locations: [yard(spot('bush', 'куст'))],
       }),
     );
-    expect(notes.some((note) => note.includes('не кнопка'))).toBe(false);
+    expect(notes.some((note) => note.includes('тапни укрытие'))).toBe(false);
     expect(notes.some((note) => note.startsWith('искать можно'))).toBe(false);
   });
 
@@ -1053,7 +1056,7 @@ describe('buildRules — the verb you do not press', () => {
       }),
     );
     for (const row of rules.actions) {
-      expect(row.notes.some((note) => note.includes('не кнопка'))).toBe(false);
+      expect(row.notes.some((note) => note.includes('тапни укрытие'))).toBe(false);
       expect(row.notes.some((note) => note.startsWith('искать можно'))).toBe(false);
     }
   });
@@ -1086,50 +1089,59 @@ describe('buildRules — the verb you do not press', () => {
   });
 });
 
-describe('buildRules — where the beer actually is', () => {
+describe('buildRules — the beer does not stay put', () => {
+  // IT USED TO NAME THE PLACE, derived from a `store_location` the catalogue
+  // served, and this describe used to pin that derivation in both directions.
+  // The crate moves now — a replacement is hidden in a random location the way a
+  // fresh key is — so the field is gone from the wire and there is nothing left
+  // to derive from: the only truth is the live `store` block on a frame, which
+  // the yard's own readout draws. The sentence is a pointer at that readout
+  // rather than an answer, which is the one form of it that cannot go stale
+  // between the splash being read and the player walking somewhere.
   const crate = (over: Partial<VanyagotchiObjectKind> = {}): VanyagotchiObjectKind =>
     objectKind({ key: 'beer_crate', art: 'obj_crate', label: 'ящик пива', lifetime_seconds: 0, ...over });
   const drink = () => action({ needs_near: 'beer_crate', contests: 'beer_crate' });
   const place = (key: string, label: string) => ({ key, label, entry: { x: 0.5, y: 0.5 } });
   const notesFor = (cfg: VanyagotchiConfig): string[] => buildRules(cfg).actions[0].notes;
 
-  it('names the place, derived from the served key', () => {
+  it('says the crate wanders, and where to look for where it is', () => {
     const notes = notesFor(
       config({
         actions: [drink()],
         object_kinds: [crate()],
         locations: [place('yard', 'двор'), place('les', 'лес')],
-        store_location: 'yard',
-      } as Partial<VanyagotchiConfig>),
+      }),
     );
-    expect(notes).toContain('только тут: двор');
+    expect(notes.some((note) => note.includes('кочует'))).toBe(true);
   });
 
-  it('follows the shop when it moves, without an edit here', () => {
+  it('names no place at all, because any it named would be wrong within the hour', () => {
+    // The sharp version of the rule. A sentence naming двор is true of a crate
+    // in двор and a lie about the same crate six beers later, and the splash is
+    // read once at the start of a session.
     const notes = notesFor(
       config({
         actions: [drink()],
         object_kinds: [crate()],
-        locations: [place('yard', 'двор'), place('zabroshka', 'заброшка')],
-        store_location: 'zabroshka',
-      } as Partial<VanyagotchiConfig>),
+        locations: [place('yard', 'двор'), place('les', 'лес')],
+      }),
     );
-    expect(notes).toContain('только тут: заброшка');
+    for (const label of ['двор', 'лес']) {
+      expect(notes.some((note) => note.includes(label))).toBe(false);
+    }
   });
 
   it('says nothing when there is only one place to be in', () => {
-    // «пиво только во дворе» is information only when there is somewhere else to
-    // be. In a one-place world it is a rule about a distinction the player cannot
-    // make, which is noise.
+    // A crate that moves between one place is a crate that does not move, and a
+    // rule about a distinction the player cannot make is noise.
     const notes = notesFor(
       config({
         actions: [drink()],
         object_kinds: [crate()],
         locations: [place('yard', 'двор')],
-        store_location: 'yard',
-      } as Partial<VanyagotchiConfig>),
+      }),
     );
-    expect(notes.some((note) => note.startsWith('только тут'))).toBe(false);
+    expect(notes.some((note) => note.includes('кочует'))).toBe(false);
   });
 
   it('says nothing for a verb that is not gated on a place at all', () => {
@@ -1138,23 +1150,56 @@ describe('buildRules — where the beer actually is', () => {
         actions: [action()],
         object_kinds: [crate()],
         locations: [place('yard', 'двор'), place('les', 'лес')],
-        store_location: 'yard',
-      } as Partial<VanyagotchiConfig>),
+      }),
     );
-    expect(notes.some((note) => note.startsWith('только тут'))).toBe(false);
+    expect(notes.some((note) => note.includes('кочует'))).toBe(false);
+  });
+});
+
+
+describe('buildRules — the verbs that are not buttons', () => {
+  // «Жмёшь ты» promises that every row beneath it is a button, and three of the
+  // four verbs no longer have one: searching is a tap on a hiding place, drinking
+  // is a tap on the crate, and reviving is the screen a death puts you on. A
+  // player told to press one would look for a button, find one, and conclude the
+  // other three had been taken out of the game — which is the mistake the note
+  // attached to the searching verb has always existed to prevent, now that it
+  // applies to two more.
+  const notesOf = (cfg: VanyagotchiConfig, i = 0): string[] => buildRules(cfg).actions[i].notes;
+
+  it('says the crate is the control for the verb gated on standing at it', () => {
+    const notes = notesOf(config({ actions: [action({ key: 'drink', needs_near: 'crate' })] }));
+    expect(notes.some((note) => note.includes('тапни ящик'))).toBe(true);
   });
 
-  it('stays silent about a place the catalogue does not name', () => {
-    // Naming a raw key at a player is worse than saying nothing — the same
-    // discipline every other note here follows.
-    const notes = notesFor(
+  it('says the reviving verb turns up by itself', () => {
+    const notes = notesOf(config({ actions: [revive()] }));
+    expect(notes.some((note) => note.includes('когда он помрёт'))).toBe(true);
+  });
+
+  it('says nothing of the sort about the one verb that IS a button', () => {
+    // The whole point of attaching these to a FIELD rather than to a key: a verb
+    // with no gate, which is not the search and does not revive, is a verb with
+    // nowhere else to be — so it is the button, and telling the player to look
+    // for it somewhere else would be the exact error inverted.
+    const notes = notesOf(config({ actions: [relieve()] }));
+    expect(notes.some((note) => note.includes('не кнопка'))).toBe(false);
+  });
+
+  it('attaches each note to its own verb rather than to the row above it', () => {
+    // A catalogue with all three, read as a whole: the notes have to land on the
+    // rows they describe. Flattened into one list they would look correct while
+    // telling a player to tap the crate to search a bush.
+    const rules = buildRules(
       config({
-        actions: [drink()],
-        object_kinds: [crate()],
-        locations: [place('yard', 'двор'), place('les', 'лес')],
-        store_location: 'garazh',
-      } as Partial<VanyagotchiConfig>),
+        actions: [action({ key: 'drink', needs_near: 'crate' }), relieve(), revive()],
+      }),
     );
-    expect(notes.some((note) => note.startsWith('только тут'))).toBe(false);
+    const noteFor = (key: string) => rules.actions.find((row) => row.key === key)?.notes ?? [];
+    expect(noteFor('drink').some((n) => n.includes('тапни ящик'))).toBe(true);
+    expect(noteFor('drink').some((n) => n.includes('помрёт'))).toBe(false);
+    expect(noteFor('revive').some((n) => n.includes('помрёт'))).toBe(true);
+    expect(noteFor('revive').some((n) => n.includes('тапни ящик'))).toBe(false);
+    expect(noteFor('relieve').some((n) => n.includes('не кнопка'))).toBe(false);
   });
 });

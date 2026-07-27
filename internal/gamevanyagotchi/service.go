@@ -139,16 +139,16 @@ type Service struct {
 	// computed, and it is worth being uncomfortable about.
 	//
 	// The cast is otherwise catalogue plus arithmetic (ADR-042): no rows, no
-	// placements, nothing stored, so every process draws the same three
-	// characters in the same places at the same instant with nothing to keep in
-	// step. Their POSITIONS still are, and that is the property worth having.
-	// What could not be closed-form is a reaction to something a player did: it
-	// has no formula, because it has a cause outside the clock.
+	// placements, nothing stored, so every process draws the same characters in
+	// the same places at the same instant with nothing to keep in step. Their
+	// POSITIONS still are, and that is the property worth having. What could not
+	// be closed-form is a reaction to something a player did: it has no formula,
+	// because it has a cause outside the clock.
 	//
-	// Without it the yard only recoils when a second person is standing in it,
-	// and on the evening this is actually played that is a yard of one player and
-	// three regulars saying nothing — the feature would be invisible in its
-	// commonest case. So a regular gets a line with an expiry, in memory, under
+	// Without it a place only recoils when a second person is standing in it, and
+	// on the evening this is actually played that is one player and the one or two
+	// regulars who live there saying nothing — the feature would be invisible in
+	// its commonest case. So a regular gets a line with an expiry, in memory, under
 	// the same lock as everything else here, keyed by his catalogue key. It
 	// expires by comparison against the tick's clock, so nothing schedules its
 	// removal, exactly as a player's balloon does.
@@ -880,21 +880,26 @@ func (s *Service) shy(accountID, verb string, chance float64, now time.Time) (bo
 	return true, pickPhrase(shySays, phrase)
 }
 
-// reekLine is what one bystander says about one particular deed — see `recoil`.
+// witnessLine is what one bystander says about one thing somebody else did.
 //
-// Hashed per witness so that four people objecting say four different things: one
+// TWO CALLERS AND THAT IS WHAT EARNED IT: the yard objecting to a deposit
+// (`recoil`) and the yard envying a found key (`settleHunt`). They differ in the
+// pool they draw from and in nothing else, so the pool is the argument.
+//
+// Hashed PER WITNESS so that four people react in four different voices: one
 // shared roll would be a chorus, which reads as a scripted cutscene rather than
-// as a yard full of individuals. Keyed on the deed as well, so the same person
-// standing through two of them does not repeat himself.
+// as a yard full of individuals. Keyed on the deed as well — the actor and the
+// instant — so the same person standing through two of them does not repeat
+// himself.
 //
-// The `reek|` namespace is what keeps it clear of the rolls above, for the reason
-// `shy` gives: the walk, the muttering and this all hash the same key, and
-// without a prefix a loss of nerve and a bystander's disgust at the same instant
+// The namespace prefix is what keeps each roll clear of the others, for the
+// reason `shy` gives: the walk, the muttering and both of these hash the same key,
+// and without it a loss of nerve and a bystander's disgust at the same instant
 // would be the same draw.
-func (s *Service) reekLine(witness, actor string, now time.Time) string {
-	seed := fmt.Sprintf("reek|%s|%s|%d", witness, actor, now.UnixNano())
+func (s *Service) witnessLine(pool []string, namespace, witness, actor string, now time.Time) string {
+	seed := fmt.Sprintf("%s|%s|%s|%d", namespace, witness, actor, now.UnixNano())
 	_, phrase, _ := unitTriple(crypto.HMACSHA256(s.pseudonymKey, []byte(seed)))
-	return pickPhrase(reekSays, phrase)
+	return pickPhrase(pool, phrase)
 }
 
 // rolls turns (who, where, when) into three independent numbers in 0..1.
@@ -1309,13 +1314,15 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, spot
 			// so the very next frame already carries a fresh key or a fresh crate
 			// rather than an empty yard somebody has to be told about.
 			//
-			// IT GOES WHERE THE CATALOGUE SAYS, NOT WHERE THE LAST ONE WAS. A fresh
-			// crate is put out in the yard because the crate is pinned there; a
-			// fresh key is hidden in a location drawn at random, which is what makes
-			// finding one tell you nothing about where the next is. Using the
-			// finder's own location here would have been the quiet bug: every key
-			// after the first would appear wherever the previous one was found, so
-			// the hunt would settle into one place and stay there.
+			// IT GOES WHERE THE CATALOGUE SAYS, NOT WHERE THE LAST ONE WAS, and
+			// since neither singleton names a place that means a location drawn at
+			// random and a hotspot within it — for the fresh key and, now, for the
+			// fresh crate alike. Using the finder's own location here would have
+			// been the quiet bug, and it would have been the worse one of the two:
+			// every key after the first would appear wherever the previous one was
+			// found and the hunt would settle into one place, and every crate would
+			// be replaced under the man who emptied it, so the beer would never move
+			// again once one player had drunk in his favourite corner.
 			where := locationFor(def)
 			if err := s.repo.InsertWorldObject(ctx, q, def.Key, where,
 				s.placeFor(def, where), "", def.Singleton, def.stock(), nil); err != nil {

@@ -114,17 +114,20 @@ const SAY_FLIP_Y = 0.18;
  * IT WAS 2.182 — 96/44, the proportion a balloon was drawn at when a Ваня was
  * 44px — AND THE FRACTION WAS CUT WHEN THE UNIT GREW. A balloon is interface
  * drawn over the yard rather than a thing standing in it, so it keeps the size it
- * had while the figures around it grew; 1.35 of the new unit is the same 70–140px
- * that 2.182 of the old one was. Left alone it would also have blown straight
- * through the plane-fraction bound below (2.182 x 0.17 = 37% against a 34% cap),
- * which is exactly what that bound is for.
+ * had while the figures around it grew. Left alone it would also have blown
+ * straight through the plane-fraction bound below (2.182 x 0.17 = 37% against a
+ * 34% cap), which is exactly what that bound is for.
  *
- * The plane-fraction bound is kept as an independent second opinion, and it is
- * still the looser of the two (1.35 x 0.17 = 23% of the plane at most, against
- * 34%) — derived from a different quantity, so it still fails if the unit rule
- * itself is wrong.
+ * IT WENT TOO FAR THE FIRST TIME: at 1.35 the balloon was narrow enough that a
+ * «nowrap» line was ellipsed mid-word — «нашел клю…» — which is not a shorter
+ * version of what he said. The balloon wraps now, and this is back up to the most
+ * it can be while staying inside the bound below (1.9 x 0.17 = 32% against 34%),
+ * so the two together are what keep a sentence readable.
+ *
+ * The plane-fraction bound is kept as an independent second opinion, derived from
+ * a different quantity, so it still fails if the unit rule itself is wrong.
  */
-const SAY_MAX_UNITS = 1.35;
+const SAY_MAX_UNITS = 1.9;
 const SAY_MAX_PLANE_FRACTION = 0.34;
 
 /** The longest line a balloon will show, in code points. Mirrored from SAY_MAX. */
@@ -1075,12 +1078,14 @@ const face = (page: Page, id: string) =>
 const nameTag = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-label"]`);
 /**
- * The status line under the bars — the only text on this screen the CLIENT
- * writes rather than the server.
+ * The one transient line the yard shows — the only text on this screen the
+ * CLIENT writes rather than the server.
  *
- * Always present, empty or not, so that the plane above it does not resize as a
- * line comes and goes. An assertion that it is empty is therefore an assertion
- * about its text and never about the element existing.
+ * ABSENT RATHER THAN EMPTY, which it did not used to be. It was a row under the
+ * plane, always present so that the plane above it did not resize as a line came
+ * and went; there is no row any more — it is a pill drawn over the yard — so
+ * "nothing to say" is now no element at all. An assertion that the screen is
+ * quiet is therefore a count of zero rather than an empty string.
  */
 const petLine = (page: Page) => page.locator('[data-test="pet-line"]');
 /**
@@ -3350,7 +3355,7 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     // arriving before it and passing on an empty screen.
     await socket.push(rosterHunt(FIRST, ...YARD));
     await expect(dots(page)).toHaveCount(1);
-    await expect(petLine(page)).toHaveText('');
+    await expect(petLine(page)).toHaveCount(0);
 
     // Somebody found them, and a fresh pair went missing in the same instant.
     // THIS is the transition, and it is the only thing that is one.
@@ -3415,7 +3420,7 @@ test.describe('«Ванягоччи» — the key hunt', () => {
       await expect(dots(page)).toHaveCount(i + 1);
     }
 
-    await expect(petLine(page)).toHaveText('');
+    await expect(petLine(page)).toHaveCount(0);
     expect(
       await petLineLog(page),
       'the yard announced a hunt that nobody watching it saw start',

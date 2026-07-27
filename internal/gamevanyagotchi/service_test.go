@@ -2628,7 +2628,8 @@ func TestTheComplaintIsChosenOnceAndCarriedOnTheWalk(t *testing.T) {
 // nerves rather than for any of the reasons that are the player's fault.
 func TestThePhrasePoolsAreDisjoint(t *testing.T) {
 	pools := map[string][]string{
-		"tiredSays": tiredSays, "idleSays": idleSays, "shySays": shySays, "reekSays": reekSays,
+		"tiredSays": tiredSays, "idleSays": idleSays, "shySays": shySays,
+		"reekSays": reekSays, "enviousSays": enviousSays,
 	}
 	for name, pool := range pools {
 		if len(pool) == 0 {
@@ -3432,9 +3433,14 @@ func TestTheHeadCountIsPerLocationAndCountsOnlyPeople(t *testing.T) {
 // An NPC is catalogue plus arithmetic and has no row, so where he is is a
 // content property like his art and his pattern — and getting it wrong is
 // invisible twice over: a character with a location nothing matches appears
-// nowhere at all, and one with no location appears in every place at once. The
-// three regulars are in двор and none of them names it, which is the "empty means
-// the yard" rule doing its job.
+// nowhere at all, and one with no location appears in every place at once.
+//
+// IT ONLY STARTED MEANING ANYTHING WHEN THE CAST SPREAD OUT. While every regular
+// was in двор and none of them named it, every comparison below was `"" == ""` —
+// the test passed and asserted nothing, and a `cast` that had dropped the `loc`
+// stamp altogether would have passed with it. Five of the seven now name a place,
+// so this is the check that each of them is drawn in his own and only in his own,
+// and that the two who name nothing still resolve to the yard.
 func TestEveryCharacterStaysInTheLocationTheCatalogueGivesHim(t *testing.T) {
 	tr := &fakeTransport{}
 	tr.setMembers(member("1"))

@@ -517,6 +517,50 @@ func TestEveryNPCIsAddressableAndDrawable(t *testing.T) {
 	}
 }
 
+// TestEveryLocationHasSomebodyLivingInIt is the rule that stops four fifths of
+// the world being scenery.
+//
+// A place with no regular in it reads as unfinished on a phone: you walk in,
+// there is a backdrop and five things to tap, and nothing at all to suggest that
+// anybody has ever been there. It was true of лес, лифт, кусты and заброшка for
+// as long as the whole cast stood in двор, and it is the thing the four new
+// characters were added to fix.
+//
+// IT IS CHECKED HERE BECAUSE THE FAILURE IS SILENT. Nothing breaks when a place
+// empties — the backdrop draws, the hotspots draw, the hunt still runs — so a
+// rename that orphans a character, or a character deleted for a reason that had
+// nothing to do with where he stood, would quietly hollow a location out and
+// nobody would find out until somebody walked into it.
+//
+// Deliberately NOT pinned: how many are in each place, or which. Those are
+// content somebody is meant to move by feel; what may not move is a place going
+// empty.
+func TestEveryLocationHasSomebodyLivingInIt(t *testing.T) {
+	c := Content()
+	if len(c.Locations) == 0 {
+		t.Fatal("the catalogue has no locations at all; there is nowhere for anybody to live and this asserts nothing")
+	}
+	living := map[string]int{}
+	for _, npc := range c.NPCs {
+		living[locationOr(npc.Location)]++
+	}
+	for _, loc := range c.Locations {
+		if living[loc.Key] == 0 {
+			t.Errorf("nobody at all hangs about in %q (%s); a place with a backdrop, five things to tap and not one regular in it reads as a room the game forgot to finish",
+				loc.Key, loc.Label)
+		}
+	}
+	// And nobody is anywhere that is not a place, which would be the same failure
+	// arriving from the other direction: a character with an unmatched location is
+	// drawn nowhere, so his location loses a resident without gaining one.
+	for _, npc := range c.NPCs {
+		if _, ok := LocationByKey(locationOr(npc.Location)); !ok {
+			t.Errorf("%q hangs about in %q, which is no location at all; he is drawn nowhere and the place he was meant to fill is still empty",
+				npc.Key, npc.Location)
+		}
+	}
+}
+
 // TestEveryNPCMovesInAWayThatExists is the join between the two halves of the
 // design — a character is art plus a pattern KEY — and it is the join a rename
 // breaks silently.
@@ -688,27 +732,37 @@ func TestEverythingTheYardDrawsHasASkinToDrawItWith(t *testing.T) {
 	}
 }
 
-// TestTheBeerStoreIsAlwaysOneWalkFromTheDoor is a coupling between two numbers
-// in different parts of this file, and the failure it prevents is a Ваня who
-// cannot get a drink.
+// TestTheBeerStoreIsAlwaysReachableInAFewGuaranteedHops is a coupling between
+// two numbers in different parts of this file, and the failure it prevents is a
+// Ваня who cannot get a drink.
 //
-// The tiredness roll can refuse any walk longer than tiredFrom, and a refused
-// walk leaves him sitting where he gave up. Beer is gated on ARRIVING at the
-// crate, so if the crate were further from the entrance than tiredFrom, a player
-// who has just walked in could be told no repeatedly with no way to see why —
-// and it would be a run of bad luck rather than a bug anybody could reproduce.
+// IT USED TO SAY SOMETHING STRONGER, and the weaker thing it says now is the
+// price of a shop that moves. While the crate was pinned at (0.82, 0.22) in
+// двор it was inside tiredFrom of the entrance, so a player who had just walked
+// in could always reach the beer in ONE tap and the tiredness roll could never
+// refuse him. A crate stood up at a hotspot drawn at random can be at the far
+// end of the place instead, so that guarantee is gone on purpose.
+//
+// WHAT IS LEFT IS THE ONE THAT ACTUALLY STOPS HIM BEING STUCK. tiredFrom is the
+// distance below which a walk is NEVER given up on, so a Ваня can always cross
+// the plane by taking short hops — and this pins how many of them it can take.
+// Three or four is a couple of taps and reads as a journey; thirty would mean
+// somebody had lowered tiredFrom to a number that turns every trip to the shop
+// into a chore, which is the retune that has to fail loudly here rather than in
+// somebody's evening.
 //
 // Retuning either number is expected; retuning one PAST the other is the thing
-// that has to fail loudly, which is why this compares them rather than pinning
-// either.
-func TestTheBeerStoreIsAlwaysOneWalkFromTheDoor(t *testing.T) {
-	crate := mustObjectKind(t, KindCrate)
-	if crate.At == nil {
-		t.Fatal("the beer crate no longer stands anywhere in particular; the arrival gate has nothing to measure against and this rule cannot be stated")
+// this catches, which is why it compares them rather than pinning either.
+func TestTheBeerStoreIsAlwaysReachableInAFewGuaranteedHops(t *testing.T) {
+	if tiredFrom <= 0 {
+		t.Fatalf("tiredFrom is %v; with no distance that is always walkable, every tap can be refused and a Ваня can be stranded away from the beer for ever", tiredFrom)
 	}
-	if d := distance(spawn, *crate.At); d > tiredFrom {
-		t.Errorf("the crate is %v from the entrance and a walk longer than tiredFrom (%v) may be given up on; somebody who has just arrived could be refused a drink for reasons he cannot see",
-			d, tiredFrom)
+	// The worst case: opposite corners of the plane, covered in hops no roll may
+	// refuse. Ceil, because a part-hop is still a tap.
+	const mostHops = 4
+	if hops := math.Ceil(maxDistance / tiredFrom); hops > mostHops {
+		t.Errorf("crossing the plane takes %v walks nothing can refuse, against the %d this game is willing to ask for; the shop can be anywhere now, so the walk to it has to stay a journey rather than a commute",
+			hops, mostHops)
 	}
 	if arriveWithin <= 0 || arriveWithin >= 1 {
 		t.Errorf("arriveWithin is %v; a threshold of nought makes the gate unpassable and one of a whole plane-width makes it meaningless", arriveWithin)
@@ -819,9 +873,12 @@ func TestAStockedKindHasSomethingInItAndNothingElseDoes(t *testing.T) {
 // entry happens to come first, so a key hidden in the second one could never be
 // found — a hunt that is simply unwinnable, with nothing to see. A coordinate off
 // the plane is a row the world-object table's own CHECK refuses, which ends the
-// hunt for ever the first time a key lands there. A hotspot sitting on top of the
-// beer store puts «search here» and «drink here» on the same square of a 360 px
-// screen. And a location with none of them cannot hide anything at all.
+// hunt for ever the first time a key lands there. A hotspot sitting on top of
+// anything that STANDS STILL puts «search here» and «use that» on the same square
+// of a 360 px screen — which no longer includes the beer store, because a crate
+// is stood up on a hotspot on purpose now, but does still include anything that
+// names a pitch or an idle regular who stands at his home for ever. And a
+// location with none of them cannot hide anything at all.
 //
 // Deliberately NOT pinned: how many there are, what they are called, and where
 // exactly they sit. Those are content somebody is meant to move by feel, and a
@@ -862,9 +919,14 @@ func TestEveryLocationsHotspotsAreDistinctAndReachable(t *testing.T) {
 			pin(npc.Location, "npc:"+npc.Key, npc.Params.Home)
 		}
 	}
-	if len(pitched) == 0 {
-		t.Fatal("nothing anywhere stands in a place of its own; this test is checking a clearance the game does not have")
-	}
+	// `pitched` IS LEGITIMATELY EMPTY TODAY, and this used to fatal when it was.
+	// The beer crate was the last thing in the game that stood in a place of its
+	// own, and it gave that up when the shop started moving — a crate is now stood
+	// up ON a hotspot, which is the collision this clearance rule was written to
+	// forbid. The rule is kept rather than deleted because the thing it protects
+	// against is real for anything that DOES stand still: an idle regular, or a
+	// kind that names a pitch again. The clauses either side of it — off the edges,
+	// distinct keys, somewhere to hide — carry the test on their own meanwhile.
 
 	for _, loc := range Content().Locations {
 		t.Run(loc.Key, func(t *testing.T) {
@@ -1131,35 +1193,39 @@ func TestEveryPinnedThingNamesALocationThatExists(t *testing.T) {
 	}
 }
 
-// TestTheStoresLocationIsServedSoTheRulesCanSayIt.
+// TestTheCatalogueServesOnlyWhatIsCONSTANTAboutTheStore.
 //
-// The splash screen's cheatsheet has to be able to tell a player «пиво только во
-// дворе», because somebody who walks into лес and finds the drink button dead
-// needs to know why — and «пиво из ящика» without saying where the ящик is
-// answers a different question. That sentence is DERIVED from here rather than
-// typed into the SPA, which is the whole rule about a game stating its own rules:
-// a hand-typed place is a place that goes stale the first time the shop moves.
+// The catalogue used to publish a `store_location` as well, derived from the
+// crate's pinned place, so the splash cheatsheet could say «пиво только во
+// дворе». The crate now moves to a fresh location every time somebody empties
+// it, which makes any static answer to "where is the beer" a LIE — and a lie the
+// player is told on the one screen he is promised the rules on. So the field went
+// with the pinning, and the only publication of the shop's place is the live
+// `store` block on the frame.
 //
-// It resolves against `Locations` exactly as StoreArt resolves against `Skins`,
-// and it publishes a LOCATION key and never a kind key — the same
-// capability-not-reason split `needs_spot` makes, so the client still holds no
-// content key of this game's own.
-func TestTheStoresLocationIsServedSoTheRulesCanSayIt(t *testing.T) {
+// What is still constant about the shop is what it LOOKS like and what its sign
+// says, so those two are still served — and this pins the split: a picture and a
+// caption never change, a location does, and the difference between the two is
+// what decides whether a fact belongs in the catalogue or on the wire.
+func TestTheCatalogueServesOnlyWhatIsCONSTANTAboutTheStore(t *testing.T) {
 	served := Content()
-	if served.StoreLocation == "" {
-		t.Fatal("the catalogue publishes no store location; the rules cheatsheet cannot say where the beer is without hardcoding it, which is a number that goes stale the first time the shop moves")
+	if served.StoreArt == "" {
+		t.Error("the catalogue publishes no store art; the crate is OffFrame, so the client cannot get an art key from an entity and would draw the shop as nothing at all")
 	}
-	loc, ok := LocationByKey(served.StoreLocation)
-	if !ok {
-		t.Fatalf("the store is published as being in %q, which is not a location in the catalogue; the client would have nothing to label it with", served.StoreLocation)
+	if served.StoreLabel == "" {
+		t.Error("the catalogue publishes no store label; the box would say nothing about what it is for, which is the whole reason the sign replaced a vendor")
 	}
-	if loc.Label == "" {
-		t.Errorf("the store's location %q has no label; the cheatsheet would have to print a wire key at the player", loc.Key)
-	}
+	// The catalogue is a Go struct, so "there is no static location" cannot be
+	// asserted against a missing field — it is asserted against the crate itself
+	// naming no place, which is the thing that would let one be derived again.
 	crate := mustObjectKind(t, KindCrate)
-	if served.StoreLocation != locationOr(crate.Location) {
-		t.Errorf("the store is published as being in %q while the crate is pinned to %q; two answers to one question is the drift the derivation exists to prevent",
-			served.StoreLocation, locationOr(crate.Location))
+	if crate.Location != "" {
+		t.Errorf("the crate is pinned to %q; a pinned crate is a crate a static field could claim to know the location of, and the splash screen would go back to promising a place the shop has since left",
+			crate.Location)
+	}
+	if crate.At != nil {
+		t.Errorf("the crate stands at a fixed (%v,%v); the shop moves, so its pitch belongs to the row that was spawned and not to the kind",
+			crate.At.X, crate.At.Y)
 	}
 }
 

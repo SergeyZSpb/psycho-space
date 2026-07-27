@@ -152,11 +152,11 @@ func peerAt(r gamevanyagotchi.Roster, x, y float64) bool {
 	return false
 }
 
-// regulars is the handles the yard's NPCs are published under.
+// regulars is the handles the world's NPCs are published under.
 //
 // The "npc-" prefix is the server's own naming, and this is where the test suite
 // depends on it — asserted against the wire in
-// TestVanyagotchiTheYardHasItsRegularsInIt and derived from here everywhere else.
+// TestVanyagotchiEveryPlaceHasItsRegularsInIt and derived from here everywhere else.
 // The client needs none of this: to it they are entities like any other, which is
 // the whole reason a new character costs no client work.
 func regulars() map[string]gamevanyagotchi.NPC {
@@ -1140,17 +1140,26 @@ func TestVanyagotchiTheBroadcastTickWritesNothing(t *testing.T) {
 	}
 }
 
-// TestVanyagotchiTheYardHasItsRegularsInIt drives the whole NPC argument end to
-// end, over a real socket.
+// TestVanyagotchiEveryPlaceHasItsRegularsInIt drives the whole NPC argument end
+// to end, over a real socket.
 //
 // The claim being tested is that a character costs nothing: no table, no
 // migration, no client work. What arrives on the wire is therefore an ordinary
 // entity with an art key the browser resolves exactly as it resolves a pet's
 // skin — which is only true if the server publishes him in the roster like
 // anybody else, and if he is kept OUT of the head count, because that number is
-// rendered as «во дворе: N» and a yard of two friends must not claim to have four
-// people in it.
-func TestVanyagotchiTheYardHasItsRegularsInIt(t *testing.T) {
+// rendered as «во дворе: N» and a yard of two friends must not claim to have
+// several more people in it.
+//
+// THE WHOLE CAST IS ON ONE FRAME, wherever its members live, and that is the
+// property to preserve rather than an accident to tidy up: locations are not
+// realtime rooms, so every place rides the same broadcast and each client draws
+// the entities whose `loc` matches its own. Which makes `loc` the field that
+// carries the whole of "he is in лес and not in двор" — so it is asserted here,
+// per character, against the catalogue. It was not, while the entire cast stood
+// in двор and the comparison was «"" == ""»: a server that had stopped stamping
+// the field altogether would have passed.
+func TestVanyagotchiEveryPlaceHasItsRegularsInIt(t *testing.T) {
 	npcs := regulars()
 	if len(npcs) == 0 {
 		t.Fatal("the catalogue has no regulars; there is nothing for this test to look for")
@@ -1204,6 +1213,46 @@ func TestVanyagotchiTheYardHasItsRegularsInIt(t *testing.T) {
 		}
 		if p.X < 0 || p.X > 1 || p.Y < 0 || p.Y > 1 {
 			t.Errorf("%q is at (%v,%v), off the plane", id, p.X, p.Y)
+		}
+		// In HIS OWN PLACE, and in it alone. Empty on the wire means the default
+		// location, which is the convention every entity follows, so a character who
+		// lives in двор is compared against an omitted field and one who lives
+		// anywhere else against his own key.
+		want := npc.Location
+		if want == gamevanyagotchi.Content().DefaultLocation {
+			want = ""
+		}
+		if p.Loc != want {
+			t.Errorf("%q is drawn with loc=%q; the catalogue puts him in %q, which goes on the wire as %q — he is either in every place at once or in none",
+				id, p.Loc, npc.Location, want)
+		}
+	}
+
+	// AND NOBODY'S PLACE IS EMPTY. The four locations behind the yard were scenery
+	// for as long as the whole cast stood in двор: a backdrop, five things to tap,
+	// and nothing to suggest anybody had ever been there. Asserted on the WIRE
+	// rather than on the catalogue — content_test.go already pins the catalogue —
+	// because what a player meets is the frame, and a location whose only resident
+	// were dropped on the way to it would look exactly as empty as one with nobody
+	// in it.
+	for _, loc := range gamevanyagotchi.Content().Locations {
+		on := 0
+		for id := range npcs {
+			p, ok := peerByID(first, id)
+			if !ok {
+				continue
+			}
+			here := p.Loc
+			if here == "" {
+				here = gamevanyagotchi.Content().DefaultLocation
+			}
+			if here == loc.Key {
+				on++
+			}
+		}
+		if on == 0 {
+			t.Errorf("the frame carries nobody at all standing in %q (%s); a client looking at it draws a backdrop, five things to tap and not one soul",
+				loc.Key, loc.Label)
 		}
 	}
 
@@ -1978,8 +2027,9 @@ func TestVanyagotchiGoingToAnotherLocationSurvivesTheRoundTrip(t *testing.T) {
 // of them is UNAMBIGUOUSLY this feature. Over a second player it would not be,
 // because he mutters on the clock, and a test that happened to catch him
 // mid-remark would pass for entirely the wrong reason. It is also the case that
-// actually happens: on a quiet evening the yard is one player and three
-// regulars, so a players-only reaction would be invisible in production.
+// actually happens: on a quiet evening a place holds one player and the one or
+// two regulars who live in it, so a players-only reaction would be invisible in
+// production.
 //
 // THREE PHASES, because two would pass vacuously. Silent before the verb,
 // speaking at the instant it lands, and silent again once the balloon has run
@@ -1990,10 +2040,22 @@ func TestVanyagotchiGoingToAnotherLocationSurvivesTheRoundTrip(t *testing.T) {
 // sidestepped by waiting until the frame itself says a character is within the
 // catalogue's own ArriveWithin, which is the tightest notion of "near" the game
 // has and therefore comfortably inside any radius a smell could have; the
-// duration is FOUND, by walking the world's clock on until the yard goes quiet,
+// duration is FOUND, by walking the world's clock on until the place goes quiet,
 // the same way the muttering test finds its window. Mirroring either constant
 // into this package would be a second copy of a number, and the copy is the one
 // that goes stale.
+//
+// THE CRATE IS STOOD UP BY HAND, ON A PATROLLER'S OWN ROUTE, and that is what
+// makes the waiting terminate rather than merely usually terminate. The shop now
+// goes to a hotspot of a location drawn at random, and most hotspots are nowhere
+// a regular's path reaches: двор's мусорка is 0.2 outside both yard wanderers'
+// boxes, so a run that landed the crate there would have waited out its whole
+// patience and failed on a fact about geometry rather than about recoil. A patrol
+// is the one motion with a guarantee in it — it arrives at each corner of its
+// route exactly, every period, and dwells there — so a crate on a corner is a
+// crate somebody is certain to walk up to. It also puts this test where the
+// change it is protecting actually lives: a shop in лес, with the player sent to
+// it, rather than everything happening in двор for ever.
 func TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem(t *testing.T) {
 	relieve := petAction(t, gamevanyagotchi.ActionRelieve)
 	drink := petAction(t, gamevanyagotchi.ActionDrink)
@@ -2004,11 +2066,25 @@ func TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem(t 
 		t.Fatalf("%q no longer fills %q, which %q needs; there is nothing to press before the bushes",
 			drink.Key, relieve.NeedsStat, relieve.Key)
 	}
-	crate := petObjectKind(t, gamevanyagotchi.KindCrate)
-	if crate.At == nil {
-		t.Fatalf("the catalogue no longer gives %q a pitch of its own; there is nowhere to stand and drink", crate.Key)
-	}
 	reach := gamevanyagotchi.Content().ArriveWithin
+
+	// The regular this test will be objected to by, and the corner of his own
+	// circuit the beer is put on.
+	var host gamevanyagotchi.NPC
+	for _, npc := range gamevanyagotchi.Content().NPCs {
+		if npc.Pattern == gamevanyagotchi.PatternPatrol && len(npc.Params.Route) > 0 {
+			host = npc
+			break
+		}
+	}
+	if host.Key == "" {
+		t.Skip("no regular walks a patrol any more; there is nobody whose position at a given instant this test can rely on")
+	}
+	corner := host.Params.Route[0]
+	where := host.Location
+	if where == "" {
+		where = gamevanyagotchi.Content().DefaultLocation
+	}
 
 	vkSrv := fakeVKDynamic()
 	defer vkSrv.Close()
@@ -2017,11 +2093,35 @@ func TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem(t 
 	defer app.Close()
 
 	cli := loginAs(t, app.URL, "7313", "user")
+	// His pet, BEFORE anything tries to move him. A `goto` sets a row's
+	// location_key and nothing else — it does not conjure the pet — so on an
+	// account that has never read its own state the write lands on no rows, the
+	// journey is silently a no-op, and the next hello reads him back in двор. That
+	// is correct behaviour and a trap for a test: it looks exactly like a broken
+	// goto handler.
+	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+		t.Fatalf("create his pet: status=%d body=%v", s, body)
+	}
 	account := accountIDByUID(t, "7313")
 	// The deposit is durable and this package shares one database, so it is
 	// cleared up after: left behind, it is one more thing lying about in every
 	// other test's yard.
 	t.Cleanup(func() { petForgetWorldObjects(t, account) })
+
+	// THE SHOP, MOVED ONTO HIS BEAT, and before anybody says hello — the hello is
+	// what fills the world cache the arrival gate reads, so a crate stood up after
+	// it would be invisible until the next one. Cleared first and cleared again
+	// afterwards, because the crate is a SINGLETON: a second live one would be
+	// refused by the partial unique index in silence, and one left standing here
+	// would be the crate every later test in this package drank from.
+	crateKind := petObjectKind(t, gamevanyagotchi.KindCrate)
+	petClearTheYardOf(t, crateKind.Key)
+	t.Cleanup(func() { petClearTheYardOf(t, crateKind.Key) })
+	stock := crateKind.Stock
+	if err := gamevanyagotchi.NewPostgresRepository().InsertWorldObject(context.Background(), pool,
+		crateKind.Key, where, corner, "", crateKind.Singleton, &stock, nil); err != nil {
+		t.Fatalf("stand a crate up on %q's route in %q: %v", host.Key, where, err)
+	}
 
 	conn, _, err := dialRealtime(t, app.URL, cookieHeader(t, cli, app.URL), "http://localhost")
 	if err != nil {
@@ -2031,16 +2131,28 @@ func TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem(t 
 	frames := readFrames(t, conn)
 	waitRegistered(t, hub, frames)
 	handle := helloAndWaitForTheLoad(t, conn, frames)
+	crate := petLiveCrate(t)
+	if crate.LocationKey != where {
+		t.Fatalf("the crate this test put out in %q is standing in %q; another one was already lost in the world and the players below would be sent to the wrong place",
+			where, crate.LocationKey)
+	}
 
 	// TO THE CRATE FIRST, because beer has to be fetched from one and «покакать»
-	// is gated on the bladder that beer fills. This tap is a TELEPORT and is
-	// allowed to be: no tick has been fired yet, so the plane has no clock to
-	// measure a journey against and puts him straight where he asked — the same
-	// property petStandAtTheBeerStore leans on. Every tick below comes after it,
-	// so from here on he is simply standing at the beer store and never moves
-	// again.
+	// is gated on the bladder that beer fills. Two frames rather than one, because
+	// the shop moves: it is in лес here rather than in двор, and standing at the
+	// right coordinates of the wrong place is exactly what the arrival gate refuses.
+	//
+	// Both taps are TELEPORTS and are allowed to be: no tick has been fired yet, so
+	// the plane has no clock to measure a journey against and puts him straight
+	// where he asked — the same property petStandAtTheBeerStore leans on. Every
+	// tick below comes after them, so from here on he is simply standing at the
+	// beer store and never moves again.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText,
+		fmt.Appendf(nil, `{"t":"%s","location":%q}`, gamevanyagotchi.TypeGoto, crate.LocationKey)); err != nil {
+		t.Fatalf("sending him to %q, where the crate is: %v", crate.LocationKey, err)
+	}
 	if err := conn.Write(ctx, websocket.MessageText,
 		fmt.Appendf(nil, `{"t":"%s","x":%v,"y":%v}`, gamevanyagotchi.TypeMove, crate.At.X, crate.At.Y)); err != nil {
 		t.Fatalf("sending him to the crate: %v", err)
@@ -2061,6 +2173,18 @@ func TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem(t 
 		t.Fatalf("he is standing at (%v,%v), %v from the crate at (%v,%v) and out of its reach of %v; he cannot drink from there",
 			me.X, me.Y, got, crate.At.X, crate.At.Y, reach)
 	}
+	// And in the crate's own place, which distance alone cannot say: coordinates
+	// are normalised per location, so being at the right (x,y) of somewhere else is
+	// the case `beside` exists to refuse. `Loc` is omitted for the default one, so
+	// it is compared through the same "empty means двор" rule the wire uses.
+	here := me.Loc
+	if here == "" {
+		here = gamevanyagotchi.Content().DefaultLocation
+	}
+	if here != crate.LocationKey {
+		t.Fatalf("he is standing in %q while the crate is in %q; the drink below would be refused for the right reason and this test would learn nothing",
+			here, crate.LocationKey)
+	}
 	if _, err := game.Do(context.Background(), account, []string{drink.Key}, "", base); err != nil {
 		t.Fatalf("a beer at the crate: %v", err)
 	}
@@ -2069,8 +2193,9 @@ func TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem(t 
 	// both senses. The regulars are a closed-form function of the tick's instant,
 	// so walking that instant on IS the simulation and costs nothing but ticks —
 	// where chasing one would be a tap per step, and the socket hangs up on a
-	// client that sends more than a handful a second. Сахур ambles about the top
-	// half of the yard and the crate stands in it, so he comes past soon enough.
+	// client that sends more than a handful a second. Every place has at least one
+	// regular living in it and the crate is standing in one of them, so somebody
+	// comes past soon enough.
 	//
 	// How near is near enough is read off the SAME frame the assertion is made
 	// on, rather than recomputed from the catalogue's motion parameters here: a
@@ -2094,11 +2219,21 @@ func TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem(t 
 		if !ok {
 			t.Fatalf("the player vanished from his own roster while he was waiting: %+v", r)
 		}
+		// ONLY THE REGULARS WHO LIVE WHERE HE IS STANDING, which is the filter
+		// `recoil` applies before it measures any distance at all. The whole cast is
+		// on every frame whatever place it is in — locations are not rooms — and
+		// coordinates are normalised per location, so somebody wandering лифт can be
+		// nearer this player in (x,y) than anybody actually beside him. Picking him
+		// as the nearest would wait ten minutes of clock and then assert that a man
+		// four places away had failed to smell anything.
 		closest, gap := "", math.Inf(1)
 		for id := range regulars() {
 			npc, ok := peerByID(r, id)
 			if !ok {
 				t.Fatalf("the regular %q is not in the roster at all: %+v", id, r)
+			}
+			if npc.Loc != standing.Loc {
+				continue
 			}
 			if d := math.Hypot(npc.X-standing.X, npc.Y-standing.Y); d < gap {
 				closest, gap = id, d
@@ -2110,8 +2245,8 @@ func TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem(t 
 		}
 	}
 	if who == "" {
-		t.Fatalf("across %v of the world's clock no regular came within %v of the beer store — the nearest any of them got was %v — so there is nobody standing close enough to be disgusted by anything",
-			patience, reach, best)
+		t.Fatalf("across %v of the world's clock no regular living in %q came within %v of the beer store — the nearest any of them got was %v — so there is nobody standing close enough to be disgusted by anything",
+			patience, crate.LocationKey, reach, best)
 	}
 
 	// PHASE ONE — SILENT. The baseline that makes the rest unambiguous: nothing

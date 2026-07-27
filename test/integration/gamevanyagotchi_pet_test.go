@@ -179,16 +179,42 @@ func petObjectKind(t *testing.T, key string) gamevanyagotchi.ObjectKind {
 // yard has no clock to measure a journey against and puts him straight where he
 // asked. The walk has its own tests in internal/gamevanyagotchi; what this file
 // needs is somebody standing in the right place.
+//
+// IT IS THREE FRAMES RATHER THAN TWO NOW, and the middle one is the whole of what
+// the wandering shop cost. The crate used to be pinned to двор at a pitch the
+// catalogue published, so every test knew where the beer was before it started;
+// it is now stood up at a hotspot of a location drawn at random, so the fixture
+// has to READ THE ROW BACK and then send the pet to the place it is actually in.
+// Standing at the right coordinates in the wrong location is precisely what
+// `beside` refuses, and it would refuse it in a way that looked like the arrival
+// gate misbehaving rather than like a fixture that had not kept up.
 func petStandAtTheBeerStore(t *testing.T, game *gamevanyagotchi.Service, accountID string) {
 	t.Helper()
-	crate := petObjectKind(t, gamevanyagotchi.KindCrate)
-	if crate.At == nil {
-		t.Fatalf("the catalogue no longer gives %q a pitch of its own; there is nowhere to stand", crate.Key)
-	}
 	m := realtime.Member{ConnID: "conn-" + accountID, AccountID: accountID}
 	game.HandleInbound(context.Background(), m, httpapi.DefaultRoom, []byte(`{"t":"vanyagotchi_hello"}`))
+	crate := petLiveCrate(t)
+	game.HandleInbound(context.Background(), m, httpapi.DefaultRoom,
+		fmt.Appendf(nil, `{"t":"vanyagotchi_goto","location":%q}`, crate.LocationKey))
 	game.HandleInbound(context.Background(), m, httpapi.DefaultRoom,
 		fmt.Appendf(nil, `{"t":"vanyagotchi_move","x":%v,"y":%v}`, crate.At.X, crate.At.Y))
+}
+
+// petFurthestCornerFrom is the corner of the plane a point is least near.
+//
+// It exists because "somewhere too far away to drink from" stopped being a
+// constant the moment the shop began to move: the crate can be stood up at any
+// hotspot of any location, including ones near the middle, so a fixed point — or
+// a mirror through the centre — is only sometimes far away. A corner is at least
+// half the plane's diagonal from anywhere, which is several times the arrival
+// radius whatever anybody retunes it to.
+func petFurthestCornerFrom(at gamevanyagotchi.Point) gamevanyagotchi.Point {
+	best, far := gamevanyagotchi.Point{}, -1.0
+	for _, c := range []gamevanyagotchi.Point{{X: 0, Y: 0}, {X: 1, Y: 0}, {X: 0, Y: 1}, {X: 1, Y: 1}} {
+		if d := math.Hypot(c.X-at.X, c.Y-at.Y); d > far {
+			best, far = c, d
+		}
+	}
+	return best
 }
 
 // petDo presses a batch of verbs the way an inbound socket frame does, and fails
@@ -1479,8 +1505,24 @@ func TestVanyagotchiPetDrinkClampsAtTheMaximum(t *testing.T) {
 	// reliably still alive to do the drinking and reliably far enough down that
 	// reaching the ceiling takes several rounds.
 	petBackdateAll(t, id, petHours(petFatalHours(t, hpDef)/2))
-	// Standing at the crate for every round of this, because a drink he cannot
-	// reach would never get near a ceiling.
+	// A CRATE THAT DOES NOT RUN OUT, put out by hand, and the reason is the shop's
+	// new habit rather than convenience. This drinks its way to a ceiling, which
+	// takes more rounds than the six a crate holds — and the draw that empties one
+	// stands its replacement up in a location drawn afresh, so from the seventh
+	// beer onwards he would be somewhere else entirely. Following it is not open to
+	// him either: a journey is rate-limited to one a second and this loop runs in
+	// microseconds. So the crate is given a stock nothing here can exhaust, and
+	// where a replacement goes is left to the tests that are about that.
+	crate := petObjectKind(t, gamevanyagotchi.KindCrate)
+	petClearTheYardOf(t, crate.Key)
+	t.Cleanup(func() { petClearTheYardOf(t, crate.Key) })
+	deep := 1000
+	if err := gamevanyagotchi.NewPostgresRepository().InsertWorldObject(context.Background(), pool,
+		crate.Key, gamevanyagotchi.LocationYard, petYardHotspot(t, 1).At, "", crate.Singleton, &deep, nil); err != nil {
+		t.Fatalf("put out a crate nobody can empty: %v", err)
+	}
+	// Standing at it for every round of this, because a drink he cannot reach
+	// would never get near a ceiling.
 	petStandAtTheBeerStore(t, game, account)
 
 	state := petDo(t, game, account, drink.Key)
@@ -1572,6 +1614,21 @@ func TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies(t *testing.T)
 		kind.Key, gamevanyagotchi.LocationYard, spot.At, "", kind.Singleton, nil, nil); err != nil {
 		t.Fatalf("hide a key for him to find: %v", err)
 	}
+	// AND THE BEER IN THE SAME PLACE AS THE KEYS, put out by hand at a different
+	// hotspot of двор. He has two things to do here — drink twice, then search —
+	// and a wandering shop would put those in two locations: a journey is rate
+	// limited to one a second, and this test presses its whole evening in
+	// microseconds, so the walk back for the search would simply be refused. What
+	// is under test is the tallies surviving a death; where a fresh crate lands has
+	// its own test.
+	crate := petObjectKind(t, gamevanyagotchi.KindCrate)
+	petClearTheYardOf(t, crate.Key)
+	t.Cleanup(func() { petClearTheYardOf(t, crate.Key) })
+	stock := crate.Stock
+	if err := gamevanyagotchi.NewPostgresRepository().InsertWorldObject(context.Background(), pool,
+		crate.Key, gamevanyagotchi.LocationYard, petYardHotspot(t, 3).At, "", crate.Singleton, &stock, nil); err != nil {
+		t.Fatalf("put the beer out where he can also search: %v", err)
+	}
 
 	// An evening's worth of playing: two rounds in one batch, a visit to the
 	// bushes, and the keys turning up. Every tally the catalogue carries has to end
@@ -1585,8 +1642,11 @@ func TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies(t *testing.T)
 	petStandAtTheBeerStore(t, game, account)
 	petDo(t, game, account, drink.Key, drink.Key)
 	petDo(t, game, account, relieve.Key)
-	// And then he walks to the place the keys are in, because looking for them is
-	// a search now: the beer store is nowhere near a hotspot, deliberately.
+	// And then he walks across двор to the place the keys are in, because looking
+	// for them is a search: he has to name a spot and be standing in it, and the
+	// spot is resolved against the hotspots of the location his pet is in. Both the
+	// beer and the keys were put in двор above precisely so that this is a walk
+	// rather than a journey.
 	petSearchingIn(t, game, account, spot)
 	petSearchIn(t, game, account, spot)
 
@@ -1994,8 +2054,9 @@ func TestVanyagotchiRelievingHimselfLeavesARealDepositInTheWorld(t *testing.T) {
 	// no coordinate, so there is nothing in it to forge. It used to be the
 	// location's entry point, back when nobody in this file had ever been placed
 	// on the plane at all; the beer store is what gave the tests a reason to walk
-	// anybody anywhere.
-	petAtPoint(t, "the deposit", left.x, left.y, *petObjectKind(t, gamevanyagotchi.KindCrate).At)
+	// anybody anywhere. Read off the ROW rather than the catalogue, which stopped
+	// knowing where a crate stands when the shop began to move.
+	petAtPoint(t, "the deposit", left.x, left.y, petLiveCrate(t).At)
 	if left.singleton {
 		t.Errorf("the row was written with singleton=true; the index would then permit exactly one active %q in the whole world", kind.Key)
 	}
@@ -2585,22 +2646,39 @@ func TestVanyagotchiTheCrateCannotBeOversold(t *testing.T) {
 	// crate up at a hello, which is its neighbour's subject; what this test needs
 	// is a crate holding exactly one, so that two players pressing at once is a
 	// race with a loser in it.
+	// Stood up in двор, at one of двор's own hiding places, because that is the
+	// shape the game itself spawns: a hotspot of some location. The location is
+	// named here rather than drawn, so the two players can be sent to it — what is
+	// under test is the race, not the draw.
 	one := 1
 	repo := gamevanyagotchi.NewPostgresRepository()
 	if err := repo.InsertWorldObject(ctx, pool, crate.Key, gamevanyagotchi.LocationYard,
-		*crate.At, "", crate.Singleton, &one, nil); err != nil {
+		petYardHotspot(t, 1).At, "", crate.Singleton, &one, nil); err != nil {
 		t.Fatalf("put out a crate with one beer in it: %v", err)
 	}
 	standing := petContestedRowsOf(t, crate.Key)
 	if len(standing) != 1 {
-		t.Fatalf("%d crates are in the yard before the race; want exactly the one this test put out: %+v", len(standing), standing)
+		t.Fatalf("%d crates are standing in the world before the race; want exactly the one this test put out: %+v", len(standing), standing)
 	}
 	last := standing[0]
 
 	// Both of them at it, and both of them told there is beer — the hello fills
 	// the world cache the arrival gate reads, and the tap puts them at the crate.
+	//
+	// Then A STEP OFF IT, still well inside the arrival radius so both drinks are
+	// allowed. That step is what makes the assertion about the replacement mean
+	// something: a crate stands on a hotspot and a drinker walks onto the crate, so
+	// a replacement placed where the WINNER was standing would land on a hotspot
+	// too and be indistinguishable from one placed by a fresh draw. Standing them
+	// beside it rather than on it separates the two — the shop pinned under
+	// whoever emptied it would land off every hotspot, and it would never move
+	// again.
+	aside := petYardHotspot(t, 1).At
+	aside.X -= gamevanyagotchi.Content().ArriveWithin * 0.9
 	for _, account := range accounts {
 		petStandAtTheBeerStore(t, game, account)
+		game.HandleInbound(ctx, realtime.Member{ConnID: "conn-" + account, AccountID: account},
+			httpapi.DefaultRoom, fmt.Appendf(nil, `{"t":"vanyagotchi_move","x":%v,"y":%v}`, aside.X, aside.Y))
 	}
 
 	// BOTH ON THE SAME CRATE, and that is arranged rather than hoped for.
@@ -2695,6 +2773,35 @@ func TestVanyagotchiTheCrateCannotBeOversold(t *testing.T) {
 		t.Errorf("the replacement crate holds %v; want the catalogue's %d — a fresh crate was put out rather than the empty one being left",
 			replacement.remaining, crate.Stock)
 	}
+	// AND THE SHOP MOVED, which is the half of this the wandering crate added.
+	// The replacement is stood up in a location drawn with crypto/rand and at one
+	// of that location's own hotspots — the identical machinery a fresh key uses —
+	// so what can be asserted is not WHERE it went but that it went somewhere a
+	// player can be sent. Read back out of Postgres rather than off the insert,
+	// because a coordinate that survived the column's CHECK is not the same claim
+	// as a coordinate that is one of the places the frame can point at. Judged
+	// against the location the ROW names and never against двор, which would be a
+	// test that passed one time in five for the wrong reason.
+	landedIn, ok := gamevanyagotchi.LocationByKey(petLocationOf(t, replacement.id))
+	if !ok {
+		t.Fatalf("the replacement crate is in %q, which is no location at all; the frame would name a place no client can match and nobody would ever be shown a shop again",
+			petLocationOf(t, replacement.id))
+	}
+	pitch, err := petWorldObjectPoint(t, replacement.id)
+	if err != nil {
+		t.Fatalf("read where the replacement crate stands: %v", err)
+	}
+	stoodAt := ""
+	for _, h := range landedIn.Hotspots {
+		if h.At == pitch {
+			stoodAt = h.Key
+		}
+	}
+	if stoodAt == "" {
+		t.Fatalf("the replacement crate stands at (%v,%v) in %q, which is none of its hotspots; a shop in the middle of nowhere is one nobody has a reason to walk past",
+			pitch.X, pitch.Y, landedIn.Key)
+	}
+	t.Logf("the next crate is at %q, in %q", stoodAt, landedIn.Key)
 
 	// The winner drank, and it is on his tally.
 	beers := petEffectOn(drink, gamevanyagotchi.StatBeersDrunk)
@@ -2751,13 +2858,21 @@ func TestVanyagotchiDrinkingIsRefusedFromAcrossTheYardAndWritesNothing(t *testin
 	account := accountIDByUID(t, "7262")
 	id := petID(t, account)
 
-	// At the store first — which is what fills the world cache and guarantees a
-	// crate exists — and then walked away from it, to the opposite corner of the
-	// plane. Walking away rather than never arriving is the case worth driving:
-	// it proves the gate reads his position now rather than remembering that he
-	// once qualified.
+	// At the store first — which is what fills the world cache, guarantees a crate
+	// exists and sends him to whichever place it turned out to be in — and then
+	// walked away from it, to the corner of that place furthest from it. Walking
+	// away rather than never arriving is the case worth driving: it proves the gate
+	// reads his position now rather than remembering that he once qualified.
+	//
+	// THE FURTHEST CORNER RATHER THAN THE MIRROR POINT, and the difference is a
+	// test that used to be sound and would now fail one run in five. Mirroring
+	// through the middle of the plane was "the opposite corner" only because the
+	// crate was pinned at (0.82, 0.22); a crate stood up at a hotspot near the
+	// middle — бочка in заброшка is (0.50, 0.48) — mirrors to a point four
+	// hundredths away, which is well inside the arrival radius and would have been
+	// a drink the gate rightly allowed.
 	petStandAtTheBeerStore(t, game, account)
-	away := gamevanyagotchi.Point{X: 1 - crate.At.X, Y: 1 - crate.At.Y}
+	away := petFurthestCornerFrom(petLiveCrate(t).At)
 	game.HandleInbound(ctx, realtime.Member{ConnID: "conn-" + account, AccountID: account},
 		httpapi.DefaultRoom, fmt.Appendf(nil, `{"t":"vanyagotchi_move","x":%v,"y":%v}`, away.X, away.Y))
 
@@ -2803,21 +2918,39 @@ func TestVanyagotchiDrinkingIsRefusedFromAcrossTheYardAndWritesNothing(t *testin
 // since nothing sweeps.
 func petLiveCrateStock(t *testing.T) int {
 	t.Helper()
+	crate := petLiveCrate(t)
+	if crate.Remaining == nil {
+		t.Fatalf("the crate standing in %q has a NULL remaining; nothing could ever draw from it", crate.LocationKey)
+	}
+	return *crate.Remaining
+}
+
+// petLiveCrate is the one crate standing in the world, wherever it happens to be.
+//
+// WHEREVER IT HAPPENS TO BE is the whole reason this exists rather than a
+// catalogue lookup. The crate used to name its own location and its own pitch, so
+// "where is the beer" was a question the compiled-in content answered; a crate is
+// now stood up at a hotspot of a location drawn at random each time one is
+// emptied, so the only thing that knows is the row. Everything in this file that
+// wants to walk to the shop, count what is in it, or assert where a replacement
+// landed asks here.
+//
+// It reads through the real repository rather than a hand-written SELECT so that
+// the per-location cap and the singleton ordering are the ones the game itself
+// uses; the limit is far above anything a test leaves lying about.
+func petLiveCrate(t *testing.T) gamevanyagotchi.WorldObject {
+	t.Helper()
 	live, err := gamevanyagotchi.NewPostgresRepository().LiveWorldObjects(context.Background(), pool, 200)
 	if err != nil {
-		t.Fatalf("read the yard: %v", err)
+		t.Fatalf("read the world: %v", err)
 	}
 	for _, o := range live {
-		if o.Kind != gamevanyagotchi.KindCrate {
-			continue
+		if o.Kind == gamevanyagotchi.KindCrate {
+			return o
 		}
-		if o.Remaining == nil {
-			t.Fatalf("the crate standing in the yard has a NULL remaining; nothing could ever draw from it")
-		}
-		return *o.Remaining
 	}
-	t.Fatal("there is no crate standing in the yard at all; a hello stands one up when it finds none, so this is a store that will never restock")
-	return 0
+	t.Fatal("there is no crate standing anywhere in the world; a hello stands one up when it finds none, so this is a store that will never restock")
+	return gamevanyagotchi.WorldObject{}
 }
 
 // petStoredValue is one stat's stored value, undecayed. A counter never decays,

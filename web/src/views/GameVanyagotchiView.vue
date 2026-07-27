@@ -176,9 +176,19 @@
              names the picture once in the catalogue. The browser draws what it is
              told and could not pick the crate out of the yard if it wanted to.
 
-             `pointer-events: none`, like every dot, so a tap falls through to the
-             plane and walks him over — which is already how you reach it, and the
-             reason the shop needs no press of its own.
+             AND IT IS THE CONTROL FOR DRINKING, which it was not: a tap used to
+             fall through to the plane and merely walk him over, and the verb was
+             a button in a row underneath that stayed greyed out until he got
+             there. So the control that told you what to do was the one you could
+             not use, and walking over was a separate errand you had to know to
+             run first. One tap on the box is the whole thing now — see
+             `onShopTap`. It stops the plane's own handler for the reason a hiding
+             place does: arrival is measured against the crate's own coordinates,
+             and a tap forty pixels off centre could leave him a hair outside
+             `arrive_within` for a reason nothing on screen explains.
+
+             A BUTTON, so a keyboard reaches it too, with everything a button
+             brings undone in the stylesheet exactly as `.hotspot` does.
 
              It carries `--band` and `--depth` like everybody else, and it is
              anchored at its feet. That is not decoration: an object at a fixed
@@ -186,10 +196,14 @@
              high on the plane, `bandFor` puts it in band 0, and an absent z-index
              also resolves to 0 — so it would look right today and start drawing
              through people the day the shop moved down the yard. -->
-        <div
+        <button
           v-if="shopHere"
           class="shop"
           data-test="shop"
+          type="button"
+          :aria-label="storeAria"
+          :disabled="isStale || !storeAction"
+          @pointerdown.stop="onShopTap"
           :style="{
             '--x': String(shopHere.x),
             '--y': String(shopHere.y),
@@ -216,7 +230,7 @@
           <span v-if="config?.store_label" class="shop-sign" data-test="shop-sign">{{
             config.store_label
           }}</span>
-        </div>
+        </button>
         <div
           v-for="peer in drawn"
           :key="peer.id"
@@ -347,6 +361,52 @@
           {{ emptyMessage }}
         </p>
 
+        <!-- HOW HE IS DOING, ON THE YARD RATHER THAN UNDER IT.
+             This was a block of bars, a row of lifetime tallies, a line of prose
+             and a status row, in a panel the plane paid for in height — on a
+             360px phone about two fifths of the screen spent saying things that
+             are true for minutes at a time. The yard is the game, so the readout
+             moved onto it and shrank to what changes: the bars, because they are
+             what kills him, and one word about the crate and the socket.
+             The lifetime tallies went to the death screen, where a total is
+             actually a score rather than a number nobody is reading.
+             It takes no taps — the ground underneath it is still walkable, which
+             matters because it covers the top of the plane where the far band
+             stands. -->
+        <div v-if="bars.length" class="readout" data-test="pet-stats">
+          <div
+            v-for="bar in bars"
+            :key="bar.key"
+            class="stat"
+            :data-test="`stat-${bar.key}`"
+            :data-trouble="bar.trouble ? '1' : undefined"
+          >
+            <span class="stat-emoji" aria-hidden="true">{{ bar.emoji }}</span>
+            <span class="stat-track" role="img" :aria-label="`${bar.label}: ${bar.shown}`">
+              <span class="stat-fill" :style="{ width: `${bar.percent}%` }" />
+            </span>
+            <span class="stat-value" :data-test="`stat-value-${bar.key}`">{{ bar.shown }}</span>
+          </div>
+        </div>
+
+        <!-- The crate and the connection, which are facts about the WORLD rather
+             than about him — so they sit apart from the bars, quietly, in the
+             opposite corner. The crate line says where it is when it is somewhere
+             else, which it can now be. -->
+        <div class="worldline">
+          <span v-if="storeNote" class="worldline-store" data-test="store">{{ storeNote }}</span>
+          <span
+            class="worldline-status"
+            data-test="status"
+            :class="`worldline-status--${store.status}`"
+            >{{ statusLabel }}</span
+          >
+        </div>
+
+        <!-- What just happened, for as long as it is worth saying. Absent rather
+             than empty, because there is no row for it to hold open any more. -->
+        <p v-if="petLine" class="petline" data-test="pet-line">{{ petLine }}</p>
+
         <!-- WHERE YOU ARE, AND THE DOOR OUT OF IT.
              The head count used to be a third item in the status row below,
              saying «во дворе: N» about a game that had one place in it. It is
@@ -426,105 +486,83 @@
             </button>
           </div>
         </div>
-      </div>
-      </div>
+        <!-- THE VERBS THAT HAVE NOWHERE BETTER TO BE.
+             One round button over the yard rather than a row under it, and the
+             row's absence is the point: searching went onto the hiding places,
+             drinking onto the crate and reviving onto the death screen, so what is
+             left is a single verb — and a row of one is a row that should not
+             exist. It floats in the corner the yard can most afford to lose, which
+             is the same corner the place caption has always taken on the other
+             side.
+             Never greyed for a verb that may simply not come off: the failure is
+             the joke, and a control that greyed itself at random would read as
+             broken. It IS greyed while a press is in flight and while the world is
+             stale, because both of those are the control genuinely not working.
+             Stacked, not wrapped, so a catalogue with three of them grows upward
+             into the yard rather than sideways into the caption. -->
+        <div v-if="actions.length" class="verbs">
+          <button
+            v-for="action in actions"
+            :key="action.key"
+            type="button"
+            class="verb"
+            :data-test="`action-${action.key}`"
+            :aria-label="action.label"
+            :title="action.label"
+            :disabled="acting || isStale || notReady(action)"
+            @pointerdown.stop
+            @click="act(action)"
+          >
+            <span class="verb-emoji" aria-hidden="true">{{ action.emoji }}</span>
+          </button>
+        </div>
 
-      <!-- Everything that is not the plane, in one block.
-           Grouped rather than laid out as four siblings so that the landscape
-           rule below can move the whole lot beside the plane with one
-           `flex-direction`, instead of each row having to opt out of being
-           squeezed into a column that is 350px tall. -->
-      <div class="panel">
-      <!-- Fixed-size stat row: it costs the plane its height, never the other
-           way round. Bars rather than numbers because the number that matters is
-           "is he all right", and every label, bound and threshold in here comes
-           from the catalogue. -->
-      <div v-if="bars.length" class="stats" data-test="pet-stats">
-        <div
-          v-for="bar in bars"
-          :key="bar.key"
-          class="stat"
-          :data-test="`stat-${bar.key}`"
-          :data-trouble="bar.trouble ? '1' : undefined"
-        >
-          <span class="stat-emoji" aria-hidden="true">{{ bar.emoji }}</span>
-          <span class="stat-track" role="img" :aria-label="`${bar.label}: ${bar.shown}`">
-            <span class="stat-fill" :style="{ width: `${bar.percent}%` }" />
-          </span>
-          <span class="stat-value" :data-test="`stat-value-${bar.key}`">{{ bar.shown }}</span>
+        <!-- HE IS DEAD, AND THAT IS A SCREEN RATHER THAN A BUTTON.
+             «Восстать из мертвых» used to be one of four buttons in the row — a
+             control that did nothing at all for the whole of a normal evening and
+             was the only one that mattered for the ten seconds it did. So it is
+             the screen now: the yard goes quiet behind it, the totals he died with
+             are the score, and the one thing to press is the only thing to press.
+             Drawn OVER the plane rather than replacing it, so the world he is lying
+             in is still visible behind — the others are still walking about, which
+             is the part that makes coming back feel like something. -->
+        <div v-if="!alive && petState" class="death" data-test="death">
+          <div class="death-sheet">
+            <div class="death-emoji" aria-hidden="true">💀</div>
+            <p class="death-line">{{ DEATH_LINE }}</p>
+            <!-- The lifetime tallies, which live here now. They are a SCORE at this
+                 moment and were merely a number under the yard before it — the
+                 same three totals, in the one place somebody actually reads
+                 them. -->
+            <div v-if="tallies.length" class="death-tallies" data-test="pet-tallies">
+              <span
+                v-for="tally in tallies"
+                :key="tally.key"
+                class="tally"
+                :data-test="`tally-${tally.key}`"
+              >
+                <span class="tally-emoji" aria-hidden="true">{{ tally.emoji }}</span>
+                <span class="tally-label">{{ tally.label }}</span>
+                <span class="tally-value" :data-test="`tally-value-${tally.key}`">{{
+                  tally.shown
+                }}</span>
+              </span>
+            </div>
+            <button
+              v-if="reviveAction"
+              type="button"
+              class="death-cta"
+              :data-test="`action-${reviveAction.key}`"
+              :disabled="acting"
+              @click="act(reviveAction)"
+            >
+              {{ reviveAction.emoji }} {{ reviveAction.label }}
+            </button>
+          </div>
         </div>
       </div>
-
-      <!-- The lifetime tallies, and deliberately NOT bars: a counter's scale
-           runs to a million so the clamp has a bound, so a track drawn against
-           it would sit empty forever and say the opposite of what the number
-           means. One wrapping row of «emoji label число», which is the whole of
-           what a total needs — the panel is the tightest thing on this screen
-           and the 320x568 case in the mobile suite is what holds that. -->
-      <div v-if="tallies.length" class="tallies" data-test="pet-tallies">
-        <span
-          v-for="tally in tallies"
-          :key="tally.key"
-          class="tally"
-          :data-test="`tally-${tally.key}`"
-        >
-          <span class="tally-emoji" aria-hidden="true">{{ tally.emoji }}</span>
-          <span class="tally-label">{{ tally.label }}</span>
-          <span class="tally-value" :data-test="`tally-value-${tally.key}`">{{ tally.shown }}</span>
-        </span>
       </div>
 
-      <!-- What is going on with him, in one line. Fixed height whether or not
-           there is anything to say, so the plane above never resizes as the text
-           comes and goes. -->
-      <p class="petline" data-test="pet-line">{{ petLine }}</p>
-
-      <!-- Fixed-size action row. One button per catalogue action, so adding a
-           verb that moves a stat needs no change here.
-           A verb gated on a PLACE is greyed when he is not at it, or when the
-           thing he draws from is empty; a verb gated on one of his own NUMBERS
-           is greyed until he has enough of it. Both are a courtesy on top of the
-           server's own refusal, never instead of it, and both test only that the
-           action HAS the field, never what it names — so this row still holds no
-           content key. The line in the status row below is what says which of
-           the place reasons applies.
-
-           What is deliberately NOT greyed is a verb that may simply not come off
-           (`fail_chance`): the failure is the joke, and a control that greyed
-           itself at random would read as broken. The player is told about that
-           one on the splash instead. -->
-      <div v-if="actions.length" class="actions">
-        <v-btn
-          v-for="action in actions"
-          :key="action.key"
-          class="action-btn"
-          :data-test="`action-${action.key}`"
-          color="primary"
-          variant="tonal"
-          :disabled="acting || unreachable(action) || notReady(action)"
-          @click="act(action)"
-        >
-          {{ action.emoji }} {{ action.label }}
-        </v-btn>
-      </div>
-
-      <!-- Fixed-size status row.
-           TWO ITEMS RATHER THAN THREE now, and the head count is the one that
-           left: it says which PLACE you are in as well as how many are in it, so
-           it belongs on the place rather than under it, and it took a 320px row
-           that had broken this screen before back down to a width nobody has to
-           worry about. What is left is the crate and the connection, which are
-           both facts about the world rather than about where you are standing.
-           The store line is absent entirely when the frame carries no crate,
-           which keeps the row at one item; it wraps rather than overflowing
-           either way, which is what the 320px case in the mobile suite holds. -->
-      <div class="hud">
-        <span v-if="storeLine" class="hud-store" data-test="store">{{ storeLine }}</span>
-        <span class="hud-status" data-test="status" :class="`hud-status--${store.status}`">
-          {{ statusLabel }}
-        </span>
-      </div>
-      </div>
     </div>
   </v-container>
 </template>
@@ -549,7 +587,6 @@ import {
   hueFor,
   huntRestarted,
   isRenderablePosition,
-  outOfReach,
   shortOf,
   peersIn,
   propScale,
@@ -706,32 +743,62 @@ const stats = computed(() => config.value?.stats ?? []);
 const searchAction = computed(() => searchVerb(config.value?.actions));
 
 /**
- * One button per catalogue action — MINUS the one the yard itself offers.
+ * The verb the CRATE offers, or none.
  *
- * THE SEARCHING VERB IS NOT IN THIS ROW, and its removal is the other half of
- * this iteration rather than tidying. It used to be an ordinary button pressable
- * from anywhere, which is exactly what stopped the hunt being a search: the key
- * was drawn on the plane, so everybody could see it, and finding it was a race
- * to press rather than a race to look. Now the hiding places are the control —
- * tap one, walk over, and arriving is the search — so a button beside them would
- * be a SECOND PATH TO THE SAME OUTCOME, which this codebase does not keep
- * (CLAUDE.md → *No legacy code*).
+ * The action whose `needs_near` names something — which today is exactly the one
+ * that wants a beer, and which this screen is careful never to know is called
+ * «выпить пива». It is worked out from the catalogue's shape for the same reason
+ * `searchVerb` is: a key held here would make a second gated verb a client
+ * deploy, and a game whose verbs live in `content.go` would have half of one
+ * living in a browser.
  *
- * Removed rather than greyed, and the difference is worth stating because a
- * disabled control is the obvious alternative. A button that can never be
- * enabled is not a control at all, it is a label taking up a quarter of the
- * tightest row on the screen — the one four Russian verbs already had to be
- * re-typeset to fit at 320px. Three buttons is more room for the three that
- * still do something, and the cheatsheet is where the player is told that
- * searching moved onto the plane (`searchNotes` in lib/vanyagotchiRules).
+ * The first such verb when there are several, which is honest rather than clever:
+ * one thing can be tapped, so one verb can be offered by it, and the catalogue
+ * does not today describe a world where two verbs want the same crate.
+ */
+const storeAction = computed(() =>
+  (config.value?.actions ?? []).find((action) => !!action.needs_near),
+);
+
+/**
+ * The verb that raises the dead, or none.
  *
- * An older catalogue, in which no verb fits the search shape, is unfiltered —
- * which is exactly the row it has always drawn.
+ * Identified by the field rather than by a key, like the two above. It has left
+ * the controls entirely: a button that does nothing at all until he dies is a
+ * quarter of the row spent on a state the player is not in, and when he IS in it
+ * the thing that has to be unmissable is that his Ваня is dead — which is a
+ * screen, not a button. See the death splash in the template.
+ */
+const reviveAction = computed(() =>
+  (config.value?.actions ?? []).find((action) => action.revives_fatal),
+);
+
+/**
+ * WHAT IS LEFT FOR A BUTTON, which is the smallest set this screen has ever had.
+ *
+ * Every verb that has somewhere better to be has gone there. Searching went onto
+ * the hiding places — the key is hidden, so finding it is looking somewhere, and
+ * a button pressable from anywhere is what stopped it being a search. Drinking
+ * went onto the crate, for the same reason one step later: a verb gated on
+ * standing somewhere had a control that was greyed out until you had walked over,
+ * so the thing telling you what to do was the thing you could not use. Reviving
+ * went onto the death screen. Each of those is now the ONLY path to its outcome,
+ * which is what this codebase asks for rather than a control and a tap doing the
+ * same job (CLAUDE.md → *No legacy code*).
+ *
+ * Filtered on the SHAPE of an action and never on its key, so the row still holds
+ * no content: a verb that names no `needs_near`, does not revive and is not the
+ * search is a verb with nowhere else to go. Today there is exactly one of them,
+ * which is why it is drawn as a single round button over the yard rather than as
+ * a row under it — a row of one is a row that should not exist. A catalogue with
+ * three would stack three.
  */
 const actions = computed(() => {
-  const all = config.value?.actions ?? [];
   const search = searchAction.value;
-  return search ? all.filter((action) => action.key !== search.key) : all;
+  return (config.value?.actions ?? []).filter(
+    (action) =>
+      !action.needs_near && !action.revives_fatal && (!search || action.key !== search.key),
+  );
 });
 
 /**
@@ -887,11 +954,19 @@ const tallies = computed(() =>
 
 const alive = computed(() => petState.value?.alive !== false);
 
-const petLine = computed(() => {
-  if (!petState.value) return '';
-  if (!alive.value) return 'Ваня не выдержал. Откачай его.';
-  return flash.value;
-});
+/** What the death screen says. */
+const DEATH_LINE = 'Ваня не выдержал';
+
+/**
+ * The one transient line the yard shows, or nothing.
+ *
+ * IT NO LONGER CARRIES THE DEATH, and that is the death screen's doing: a
+ * sentence in a thin line over the plane was the whole of how being dead was
+ * communicated, competing with the balloons for the same glance. Being dead is a
+ * screen now, so this is back to what it was for — the flavour line when
+ * somebody has lost the keys again.
+ */
+const petLine = computed(() => (petState.value ? flash.value : ''));
 
 /**
  * Loads the catalogue and the pet.
@@ -1132,7 +1207,7 @@ function travelTo(place: TravelPlace): void {
   travelling.value = false;
   if (place.here) return;
   if (!client.send({ t: TYPE_GOTO, location: place.key })) return;
-  forgetSearch();
+  forgetErrand();
 }
 
 /**
@@ -1184,45 +1259,42 @@ const beerStore = ref<VanyagotchiStore | undefined>(undefined);
 const atStore = ref(false);
 
 /**
- * The status row's line about the store, or nothing when there is no crate.
+ * One line about the crate: how much is in it, or where it has gone.
  *
- * Derived rather than stored, because both of its inputs are already refs and
- * the sentence is a pure function of them — see `storeLabel` for why the three
- * states are spelled out rather than collapsed into a greyed button.
+ * IT NAMES THE PLACE NOW, and it has to. The crate used to be pinned to the yard,
+ * so a player standing anywhere else was told nothing about it at all — correct,
+ * because a shop four places away is one he can neither see nor walk to. The
+ * crate moves when it is exhausted, so silence would mean a player who ran it dry
+ * had no way of finding out where the next one stood except by walking into all
+ * five places. Saying where it is turns that back into an errand.
+ *
+ * The label comes from the catalogue's own locations, so this holds no place name
+ * and a sixth location needs no client deploy.
  */
-// THE FILTERED STORE, not the raw block: a player standing in лес must not be
-// told «🍺 ящик: 6 — дойди» about a shop four places away that he cannot see and
-// could not walk to.
-const storeLine = computed(() => storeLabel(shopHere.value, atStore.value));
+const storeNote = computed(() => {
+  const here = shopHere.value;
+  if (here) return storeLabel(here, atStore.value);
+  const store = beerStore.value;
+  if (!store) return '';
+  const where = store.loc || config.value?.default_location || '';
+  const place = (config.value?.locations ?? []).find((l) => l.key === where);
+  // A crate whose location this client cannot name is one it says nothing about,
+  // which is the same answer it gave before the crate could move at all.
+  return place?.label ? `🍺 ${place.label}` : '';
+});
 
 /**
- * What to draw the beer store with, resolved against the catalogue exactly as a
- * pet's skin or an NPC's art is.
+ * What a screen reader is told the crate is for.
  *
- * The key comes from `store_art`, served ONCE with the catalogue rather than on
- * the frame — a picture that never changes has no business riding a payload sent
- * five times a second. And it is the one thing the store block cannot carry:
- * every other object gets its art from the entity it arrives as, and the store
- * deliberately no longer arrives as one.
+ * The box is a button now, and its content is a picture and a number — so
+ * without this it announces as «6», which says neither what it is nor what
+ * pressing it does. The words come from the catalogue.
  */
+const storeAria = computed(() =>
+  [config.value?.store_label, storeAction.value?.label].filter(Boolean).join(' — '),
+);
+
 const storeArt = computed(() => resolveArt(config.value?.skins, config.value?.store_art ?? ''));
-
-/**
- * Is this verb unpressable because of where he is standing, or because the thing
- * he draws from is empty?
- *
- * A courtesy and never the rule: the server enforces all of it regardless, and
- * this exists so that a control which cannot work looks like one. Note it tests
- * the PRESENCE of the action's `needs_near` and never its value — the client
- * holds no content keys, and the store arrives as a place rather than as a kind
- * precisely so it never has to (ADR-028).
- */
-function unreachable(action: VanyagotchiAction): boolean {
-  // Filtered, for the same reason the line above is: a shop in another location
-  // cannot be reached from here, so the button greys — which is what the server's
-  // own `beside` already decides, and the two must agree.
-  return outOfReach(action, shopHere.value, atStore.value);
-}
 
 /**
  * Is this verb unpressable because the pet has not got enough of what it needs?
@@ -1240,7 +1312,17 @@ function notReady(action: VanyagotchiAction): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// A search in progress: tap a hiding place, walk there, and claim on arrival.
+// AN ERRAND IN PROGRESS: tap a thing, walk to it, and act on arrival.
+//
+// It began as ONE errand — tap a bush, search it when you get there — and became
+// a seam when the beer got its own, which is the order this codebase asks for:
+// the abstraction is earned by a second use rather than anticipated by one. The
+// two are the same shape and would otherwise be the same twenty lines twice, with
+// two arming sites, two expiry backstops and two places for "a new tap cancels
+// the old walk" to be got subtly differently wrong.
+//
+// What differs between them is only what is SENT on arrival, so that is the whole
+// of what the errand carries.
 //
 // THE CLIENT ANNOUNCING ARRIVAL IS A REQUEST AND NEVER A FACT. What is sent when
 // he gets there is a claim naming the place, and the server checks it against
@@ -1258,26 +1340,68 @@ function notReady(action: VanyagotchiAction): boolean {
 // rule at the head of this file is that a position never enters Vue.
 // ---------------------------------------------------------------------------
 
-/** The hiding place he is on his way to, or the empty string. */
+/**
+ * The hiding place he is on his way to, or the empty string.
+ *
+ * REACTIVE WHERE THE REST OF THE ERRAND IS NOT, because the yard draws that one
+ * hotspot differently and the change happens on a tap rather than on a frame. A
+ * drink errand leaves it empty: the crate is drawn the same whether or not
+ * somebody is walking to it, so there is nothing for a render to do.
+ */
 const seeking = ref('');
 /**
- * Where that place is, and when to stop believing he is still walking to it.
+ * What he is walking to, what to do when he gets there, and when to stop
+ * believing he is still on his way.
  *
- * Plain `let`s, like `clockSkew` and `seenHunt`: nothing renders either of them,
+ * Plain `let`s, like `clockSkew` and `seenHunt`: nothing renders any of them,
  * they are read once per frame inside `onFrame`, and a coordinate in particular
  * is the one thing this screen keeps out of reactivity on purpose.
  */
-let seekingAt: { x: number; y: number } | undefined;
-let seekingUntil = 0;
+let errandAt: { x: number; y: number } | undefined;
+let errandVerb: VanyagotchiAction | undefined;
+let errandUntil = 0;
 
-/** Forgets whatever search was in flight, if any. */
-function forgetSearch(): void {
+/** Forgets whatever errand was in flight, if any. */
+function forgetErrand(): void {
   // Guarded, like every other assignment this screen makes to a ref: the common
   // case is that there was nothing to forget, and an unguarded write would be a
-  // render five times a second for a yard in which nobody is searching anything.
+  // render five times a second for a yard in which nobody is walking anywhere.
   if (seeking.value) seeking.value = '';
-  seekingAt = undefined;
-  seekingUntil = 0;
+  errandAt = undefined;
+  errandVerb = undefined;
+  errandUntil = 0;
+}
+
+/**
+ * Sets one going: walk to a point, and do this when he arrives.
+ *
+ * A SECOND TAP MID-WALK SIMPLY REPLACES THE FIRST, which is the rule the yard
+ * already plays by for movement — a new tap always cancels the old walk, which is
+ * why nobody can get stuck — and an errand is a walk with an intention on the end
+ * of it, so there is exactly one of each. Anything else would mean arriving at
+ * the second bush and searching the first, or walking to the crate and relieving
+ * himself on it.
+ *
+ * Dropped rather than queued when the socket is down, the same rule a tap on the
+ * ground and a verb both follow: the server stamps every event, so a walk queued
+ * now and delivered in a minute would start from the wrong place.
+ */
+function startErrand(
+  verb: VanyagotchiAction,
+  at: { x: number; y: number },
+  spot: string,
+): void {
+  if (!client.send({ t: TYPE_MOVE, x: at.x, y: at.y })) return;
+  if (seeking.value !== spot) seeking.value = spot;
+  errandAt = { x: at.x, y: at.y };
+  errandVerb = verb;
+  // A local clock rather than the server's, unlike everything else on this
+  // screen that measures time. It is comparing two readings of THIS device's
+  // clock a few seconds apart to decide whether a walk this device started is
+  // still plausibly running, so skew cancels out exactly — and the alternative,
+  // `displayNow`, only ticks once a second and would make the backstop coarse
+  // for no gain.
+  errandUntil = Date.now() + SEARCH_WALK_MS;
 }
 
 /**
@@ -1294,11 +1418,8 @@ function forgetSearch(): void {
  * explains. A tap on a bush is a different INTENT from a tap on the ground —
  * "search that" rather than "stand there" — so it is one message, not both.
  *
- * A SECOND TAP MID-WALK SIMPLY REPLACES THE FIRST. That is the rule the yard
- * already plays by for movement — a new tap always cancels the old walk, which
- * is why nobody can get stuck — and a search is a walk with an intention on the
- * end of it, so there is exactly one of each. Anything else would mean arriving
- * at the second bush and searching the first.
+ * See `startErrand` for what a second tap does and why the message is dropped
+ * rather than queued when the socket is down.
  */
 function onHotspotTap(spot: VanyagotchiHotspot): void {
   // Nothing to search with. The layer is not drawn in that case, so this is the
@@ -1306,19 +1427,35 @@ function onHotspotTap(spot: VanyagotchiHotspot): void {
   // between a tap and its handler, and firing a claim naming no verb would be a
   // frame the server has to reject.
   if (!searchAction.value) return;
-  // Dropped rather than queued when the socket is down, the same rule a tap on
-  // the ground and a verb both follow: the server stamps every event, so a walk
-  // queued now and delivered in a minute would start from the wrong place.
-  if (!client.send({ t: TYPE_MOVE, x: spot.at.x, y: spot.at.y })) return;
-  if (seeking.value !== spot.key) seeking.value = spot.key;
-  seekingAt = { x: spot.at.x, y: spot.at.y };
-  // A local clock rather than the server's, unlike everything else on this
-  // screen that measures time. It is comparing two readings of THIS device's
-  // clock a few seconds apart to decide whether a walk this device started is
-  // still plausibly running, so skew cancels out exactly — and the alternative,
-  // `displayNow`, only ticks once a second and would make the backstop coarse
-  // for no gain.
-  seekingUntil = Date.now() + SEARCH_WALK_MS;
+  startErrand(searchAction.value, spot.at, spot.key);
+}
+
+/**
+ * A tap on the crate: walk over and drink when he gets there.
+ *
+ * DRINKING USED TO BE A BUTTON IN A ROW UNDER THE PLANE, and it is the same
+ * change the search made before it and for the same reason. A verb gated on
+ * standing somewhere wants to be pressed ON that somewhere: the button had to be
+ * greyed out until he had walked over, which meant the control that told you what
+ * to do was the one you could not use, and the walking was a separate errand you
+ * had to know to run first. One tap on the box now means the whole thing — go
+ * there, and have a beer when you arrive.
+ *
+ * It stops the plane's own handler for the reason a hiding place does: arrival is
+ * measured against the crate's own coordinates, so a tap forty pixels off centre
+ * could land him a hair outside `arrive_within` and have the drink refused
+ * «далековато» for a reason nothing on screen explains.
+ *
+ * Nothing here knows the verb is called «выпить пива». It is the action whose
+ * `needs_near` names the thing that was tapped, which is a fact about the
+ * catalogue's shape — the same discipline `searchVerb` keeps, and what lets a
+ * second gated verb arrive without a client deploy.
+ */
+function onShopTap(): void {
+  const where = shopHere.value;
+  const verb = storeAction.value;
+  if (!where || !verb) return;
+  startErrand(verb, { x: where.x, y: where.y }, '');
 }
 
 /**
@@ -1531,7 +1668,7 @@ function forgetWorld() {
   // promise to send one the moment it thinks he has arrived — so the first frame
   // after a reconnect, which may well put him somewhere else entirely, would
   // otherwise fire a search the player asked for in a different world.
-  forgetSearch();
+  forgetErrand();
   lastPos.clear();
   peerEls.clear();
 }
@@ -1757,19 +1894,22 @@ function onFrame(frame: RealtimeFrame) {
   // the wrong place, and re-sending it on the next frame — and the one after, at
   // five a second, for as long as he stands there — would be this client
   // hammering a question it has already been answered.
-  if (seekingAt) {
-    if (Date.now() > seekingUntil) {
+  if (errandAt) {
+    if (Date.now() > errandUntil) {
       // He never got there. The walk can genuinely end short — a long one rolls
       // «устал» and he sits down where he gave up — and that is the whole reason
-      // distance costs something now. Forgetting it is what stops the claim
+      // distance costs something now. Forgetting it is what stops the verb
       // firing minutes later, the first time the player happens to walk him past
       // that bush on his way somewhere else.
-      forgetSearch();
-    } else if (beside(mine, seekingAt, config.value?.arrive_within)) {
-      const verb = searchAction.value;
+      forgetErrand();
+    } else if (beside(mine, errandAt, config.value?.arrive_within)) {
+      const verb = errandVerb;
       const spot = seeking.value;
-      forgetSearch();
-      if (verb && spot) client.send({ t: TYPE_DO, verbs: [verb.key], spot });
+      forgetErrand();
+      // The hotspot key rides along only for a search, which is the one verb the
+      // server has to be told WHICH place was meant. A drink names no place: the
+      // crate is where it is and the server measures the distance itself.
+      if (verb) client.send(spot ? { t: TYPE_DO, verbs: [verb.key], spot } : { t: TYPE_DO, verbs: [verb.key] });
     }
   }
 
@@ -1822,7 +1962,7 @@ function onPlaneTap(event: PointerEvent) {
   // happened to pass within reach of a place the player had stopped caring
   // about — a search nobody asked for, minutes after the tap that meant it.
   // (A tap on a hiding place never reaches here: see `onHotspotTap`.)
-  forgetSearch();
+  forgetErrand();
 }
 
 /**
@@ -1875,7 +2015,7 @@ onBeforeUnmount(() => {
   // the socket outlives this view by its grace period and the next visit reuses
   // this module's state, so it is disarmed here rather than left to be somebody
   // else's surprise.
-  forgetSearch();
+  forgetErrand();
   // The socket may outlive this view by the grace period, but nothing is
   // rendering its frames any more — leaving the roster behind would show the
   // next visit a world that stopped updating when we left.
@@ -2025,12 +2165,20 @@ onBeforeUnmount(() => {
   max-width: 560px;
 }
 
+/* THE YARD IS THE SCREEN NOW.
+   This used to be a column: the plane, then a panel of bars, tallies, a line of
+   prose and a status row — about two fifths of a 360px phone spent saying things
+   that are true for minutes at a time, taken from the one part of the screen the
+   game actually happens in. The panel is gone; what survived it is drawn ON the
+   plane, and everything here exists to give the plane the whole width.
+   The padding went with the panel. The container is already `pa-0` for this
+   phase, so with nothing of its own here the yard reaches both edges of the
+   phone — which is what "full width" means and what the old 12px gutter, sized
+   for text, was quietly costing it. */
 .stage {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px 12px 12px;
   overflow: hidden;
 }
 
@@ -2273,9 +2421,16 @@ onBeforeUnmount(() => {
    `max-width` is what stops a long place name reaching across the world; the
    chip ellipsises rather than wrapping, because two lines of caption over the
    yard is a panel. */
+/* MOVED TO THE BOTTOM LEFT, because the top of the plane is the readout's now.
+   The corner it occupies is still the cheapest part of the yard to lose — it
+   swallows the taps that land on it, and a Ваня standing in it is drawn behind
+   the caption rather than under an unwalkable hole in the middle of the world —
+   and the bottom is if anything cheaper than the top was: the near depth band is
+   where the figures are biggest, so there is less of the yard visible down there
+   to begin with. */
 .place-pill {
   position: absolute;
-  top: 0;
+  bottom: 0;
   left: 0;
   z-index: 5;
   min-width: 44px;
@@ -2986,37 +3141,47 @@ onBeforeUnmount(() => {
   /* Every length here is a world unit, and every one of them had its fraction cut
      when the unit grew — a balloon is interface drawn over the yard rather than a
      thing standing in it, so it keeps the size it had while the figures around it
-     grew (see `.plane`). 2.182 → 1.35 also keeps it inside the 34%-of-the-plane
-     bound the mobile suite enforces, which the old fraction at the new unit would
-     have blown through. The text has the same 10px floor the name does and for
-     the same reason.
+     grew (see `.plane`). It went 2.182 → 1.35 → 1.9: the first cut was too deep
+     and the cut is what made the ellipsis bite, so it was widened again to the
+     most it can be and stay inside the 34%-of-the-plane bound the mobile suite
+     enforces (1.9 × 0.17 = 32%). The text has the same 10px floor the name does
+     and for the same reason.
      The flip distance is still exactly TWO units, which is what 88px always was:
      it has to clear the figure and the name hanging under it, and both of those
      are still `--unit`-sized, so a fixed 88px would under-clear on a desktop and
      over-clear on a phone. */
   bottom: calc(100% + var(--unit) * 0.084);
   transform: translateX(-50%) translateY(calc(var(--say-below, 0) * var(--unit) * 2));
-  max-width: calc(var(--unit) * 1.35);
+  /* `max-content` FIRST, and then capped. A balloon is absolutely positioned at
+     `left: 50%` inside a box one world unit wide, so the space available to
+     shrink-to-fit is half a unit — about thirty pixels. That did not matter
+     while the line was `nowrap` and simply overflowed; the moment it wrapped it
+     wrapped at thirty pixels, and «нашел ключи» came out as four stacked
+     fragments. Asking for `max-content` makes the cap below the thing that
+     decides the width, which is what it was always meant to be. */
+  width: max-content;
+  max-width: calc(var(--unit) * 1.9);
   padding: calc(var(--unit) * 0.028) calc(var(--unit) * 0.084);
   border-radius: calc(var(--unit) * 0.126);
   background: rgba(12, 18, 26, 0.86);
   color: rgba(255, 255, 255, 0.95);
   font-size: max(10px, calc(var(--unit) * 0.15));
-  line-height: 1.3;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.25;
+  /* IT WRAPS RATHER THAN BEING CUT OFF, which is a bug fixed rather than a
+     preference. It was `nowrap` with an ellipsis, and the cap is a fraction of a
+     world unit — so «нашел ключи» came out as «нашел клю…», which is not a
+     shorter version of what he said, it is a different sentence. A name may be
+     ellipsed, because half a name is still recognisably whose it is; a line he
+     says for four seconds is either readable now or it is nothing.
+     The server caps the line at 24 code points, so two lines is enough for any
+     of them and there is no third to plan for. */
+  white-space: normal;
+  /* Broken BETWEEN words, not inside them. `anywhere` was the first attempt and
+     it hyphenlessly split «нашел» across two lines, which is harder to read than
+     the ellipsis it replaced; a word longer than the cap is still broken rather
+     than allowed to overflow, which is what `break-word` buys over `normal`. */
+  overflow-wrap: break-word;
   pointer-events: none;
-}
-
-/* The non-plane block: fixed size, and the plane pays for it rather than the
-   other way round. */
-.panel {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
 }
 
 /* The backdrop image, behind every entity and behind the hiding places. It sits
@@ -3033,172 +3198,202 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-/* Stat bars. Fixed height, and one row per stat that IS a bar — three today, the
-   lifetime tallies having their own row below — and the row is a grid so a
-   fourth arrives without a layout decision. Each row costs about 19px and the
-   plane pays for it, which is measured rather than assumed — the 320x568 case in
-   the mobile suite is what holds that. */
-.stats {
-  flex: 0 0 auto;
+/* HOW HE IS DOING, DRAWN ON THE YARD.
+   It was a block under the plane and the plane paid for it in height; it is a
+   translucent strip over the top of the plane now, which costs the yard the band
+   nothing walks in — the horizon is at y = 0.25 and the far depth band starts
+   below it. Taking no pointer events is what keeps that ground walkable: a tap
+   through the strip still reaches the plane.
+   Capped in width rather than stretched, so a wide screen gets a readout the size
+   of a readout instead of one three feet across, and so the world line in the
+   opposite corner always has room. */
+.readout {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
+  padding: 6px 8px;
+  /* A DEFINITE WIDTH RATHER THAN A CAP, and the difference is the whole rule
+     working. This is absolutely positioned, so its width is shrink-to-fit — and
+     a track has no intrinsic width at all, so the middle column collapsed to
+     nothing and the strip drew three emoji beside three numbers with no bars
+     between them. `max-width` could not fix that: the box was already narrower
+     than the cap. */
+  width: min(58%, 240px);
+  pointer-events: none;
 }
 .stat {
   display: grid;
-  grid-template-columns: 20px 1fr 34px;
+  grid-template-columns: 14px 1fr 24px;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
 }
 .stat-emoji {
-  font-size: 15px;
+  font-size: 12px;
   line-height: 1;
   text-align: center;
+  /* Legible over a photograph rather than over a panel, which is what the strip
+     now sits on: a backdrop can be any colour under any part of it. */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
 .stat-track {
-  height: 8px;
-  border-radius: 4px;
-  background: rgba(127, 127, 127, 0.28);
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
   overflow: hidden;
 }
 .stat-fill {
   display: block;
   height: 100%;
-  border-radius: 4px;
-  background: rgb(var(--v-theme-success));
-  transition: width 400ms linear;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.85);
+  transition: width 400ms ease;
 }
-/* Trouble is a colour, and which values count as trouble is catalogue data —
-   the stylesheet is told, it does not know that 30 is a bad amount of health. */
+/* A stat in trouble, which is the one thing on this strip worth interrupting
+   somebody for. Colour AND a pulse, because colour alone is not a cue everybody
+   receives; the pulse stops under reduced motion, where the colour is left. */
 .stat[data-trouble='1'] .stat-fill {
-  background: rgb(var(--v-theme-warning));
+  background: #ff6b6b;
+}
+.stat[data-trouble='1'] .stat-emoji {
+  animation: stat-alarm 1.4s ease-in-out infinite;
+}
+@keyframes stat-alarm {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 .stat-value {
-  font-size: 0.72rem;
-  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 1;
   text-align: right;
-  opacity: 0.85;
-}
-
-/* The lifetime tallies. ONE ROW, and staying one row is the constraint: the
-   panel is what the plane pays for, and the 320px case has about 296px of usable
-   width for two of these. `flex-wrap` is the honest fallback rather than a
-   preference — a third counter, or a longer label, takes a second line and the
-   plane gives up another sixteen pixels, which is a better failure than a label
-   truncated to something unreadable. Smaller than the bar row on purpose: a
-   total is something you check, not something you watch. */
-.tallies {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  font-size: 0.7rem;
-  line-height: 1.15;
-  opacity: 0.8;
-}
-.tally {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  min-width: 0;
-}
-.tally-emoji {
-  font-size: 0.8rem;
-}
-.tally-label {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tally-value {
+  color: rgba(255, 255, 255, 0.95);
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  opacity: 0.95;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
 
-/* Always present, empty or not, so the plane above does not resize when a line
-   of text appears and disappears. */
-.petline {
-  flex: 0 0 auto;
-  min-height: 1.1rem;
-  font-size: 0.76rem;
-  line-height: 1.1rem;
-  text-align: center;
-  opacity: 0.85;
+/* The crate and the connection: facts about the WORLD rather than about him, so
+   they sit in the opposite corner from his bars and read as a different kind of
+   thing. Right-aligned so a long place name grows away from the readout rather
+   than into it. */
+.worldline {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 6px 8px;
+  max-width: 40%;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: right;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+}
+.worldline-store,
+.worldline-status {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 100%;
+}
+.worldline-store {
+  color: rgba(255, 255, 255, 0.95);
+}
+.worldline-status {
+  opacity: 0.85;
+}
+.worldline-status--open {
+  color: #7ee0a8;
+}
+.worldline-status--closed {
+  color: #ffcf6b;
+}
+.worldline-status--terminal {
+  color: #ff8a8a;
 }
 
-/* auto-fit so one button fills the row and four share it, each still at least a
-   thumb wide. 6px of gutter rather than 8 buys each of the four another pixel
-   and a half of label at 320px, which is where the row is tightest. */
-.actions {
-  flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
-  gap: 6px;
-}
-
-/* MAKING FOUR RUSSIAN VERBS FIT A 320px PHONE, which they did not.
-
-   The row is one verb per catalogue action and the catalogue now carries four —
-   «выпить пива», «покакать», «искать ключи», «восстать из мертвых» — sharing
-   about 288px. Vuetify draws a button UPPERCASE, letter-spaced, at 0.875rem,
-   inside 16px of horizontal padding, with `white-space: nowrap` on its content:
-   at ~66px a track that is roughly a third of what «ВЫПИТЬ ПИВА» needs, and the
-   overflow was simply cut. The owner read it on a phone and reported exactly
-   that.
-
-   Four changes, each undoing one of those, and NONE of them touching the words
-   themselves — the labels come from the server's catalogue, so truncating one
-   here would be this screen inventing content, and an abbreviation would go
-   stale the moment a verb is renamed. Wrapping is the honest way to fit text you
-   do not own:
-     - the type drops to 0.62rem and the tracking to nothing (uppercase Russian
-       with 0.089em of letter-spacing is the single most expensive thing here);
-     - the padding goes from 16px a side to 2, which on a 66px track is a fifth
-       of it back;
-     - `text-transform: none` — lower case is narrower, and it also matches the
-       catalogue's own wording, which is written lower case;
-     - the content is allowed to WRAP, and to break inside a word if some future
-       verb has one longer than the track.
-
-   `height: auto` is what lets a two- or three-line label make the button taller
-   instead of being clipped by a fixed 36px box; `min-height: 44px` keeps the
-   floor. Both matter: the panel is what the plane pays for, so a button that
-   grows costs the yard a few pixels, and a button that clips costs the player
-   the ability to read what he is pressing. Measured at 320 and 360 by the pet
-   suite, which asserts no content box overflows its button in either axis. */
-.action-btn {
-  min-height: 44px;
-  height: auto;
-  padding: 3px 2px;
-  min-width: 0;
-  text-transform: none;
-  letter-spacing: 0;
-  text-indent: 0;
-}
-.action-btn :deep(.v-btn__content) {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  font-size: 0.62rem;
-  line-height: 1.12;
+/* What just happened, above the place caption and out of the way of both
+   corners. It is the only prose on the yard and it is transient, so it is absent
+   rather than empty — there is no row left for it to hold open. */
+.petline {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  z-index: 5;
+  max-width: 84%;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(12, 18, 26, 0.82);
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 12px;
+  line-height: 1.3;
   text-align: center;
+  pointer-events: none;
 }
 
-.hud {
-  flex: 0 0 auto;
+/* THE ONE BUTTON. Bottom-right, which is the corner a thumb reaches on a phone
+   held in either hand and the one the yard can most afford to lose — the place
+   caption has always taken the other. Stacked upward so a catalogue with three
+   verbs grows into the yard rather than sideways into the caption.
+   Above the depth bands and the confetti, below the travel sheet, because a
+   sheet that opens over the world has to cover this too. */
+.verbs {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+}
+.verb {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: rgba(12, 18, 26, 0.82);
+  color: inherit;
+  font: inherit;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-  font-size: 0.78rem;
-  line-height: 1.2;
-  opacity: 0.85;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  transition:
+    transform 120ms ease,
+    opacity 160ms ease;
 }
+.verb-emoji {
+  font-size: 26px;
+  line-height: 1;
+}
+.verb:active {
+  transform: scale(0.92);
+}
+.verb:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.verb:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: 3px;
+}
+
 /* THE BEER STORE — a shop, not a dot.
    It is drawn from the frame's `store` block rather than from an entity, which
    is what lets it have its own shape at all: an object arriving in the roster
@@ -3209,6 +3404,17 @@ onBeforeUnmount(() => {
   position: absolute;
   top: 0;
   left: 0;
+  /* A BUTTON NOW, so a keyboard reaches the beer as well as a thumb — which
+     means undoing everything a button brings with it, exactly as `.hotspot`
+     does. None of this is decoration: a UA background and border would draw a
+     grey box round the crate, and the default font would resize the count
+     inside it. */
+  padding: 0;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
   /* Off `--unit-base` rather than `--unit`, exactly as `.peer--prop` is: a
      self-referential `--unit` is a cycle, and the plane's own comment says so. */
   width: calc(var(--unit-base) * 1.55);
@@ -3231,7 +3437,7 @@ onBeforeUnmount(() => {
   /* A tap falls THROUGH to the plane and walks him over, which is already how
      you reach it — so the shop needs no press of its own and must not swallow
      one. Same rule as every dot. */
-  pointer-events: none;
+  pointer-events: auto;
 }
 .shop-face {
   font-size: calc(var(--unit-base) * 0.62);
@@ -3283,41 +3489,105 @@ onBeforeUnmount(() => {
   line-height: 1.5;
   text-align: center;
 }
+.shop:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.shop:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: 3px;
+}
+.shop:active .shop-face {
+  transform: scale(0.94);
+}
 
-.hud-store,
-.hud-status {
-  white-space: nowrap;
+/* HE IS DEAD. Over the whole yard rather than replacing it: the others are still
+   walking about behind the sheet, which is the part that makes coming back feel
+   like something. Nothing behind it is tappable while it is up — the overlay
+   takes every pointer event, which is deliberate, because the one thing to do
+   here is the one thing on it. */
+.death {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 9, 14, 0.72);
+  backdrop-filter: blur(2px);
+}
+.death-sheet {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 300px;
+  width: 100%;
+  padding: 18px 16px;
+  border-radius: 16px;
+  background: rgba(12, 18, 26, 0.94);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  text-align: center;
+}
+.death-emoji {
+  font-size: 44px;
+  line-height: 1;
+}
+.death-line {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+/* The totals he died with, which is the one moment they are a score rather than
+   a number nobody is reading. */
+.death-tallies {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  font-size: 0.82rem;
+  opacity: 0.9;
+}
+.tally {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: baseline;
+  gap: 6px;
+  text-align: left;
+}
+.tally-emoji {
+  text-align: center;
+}
+.tally-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
-/* The one item in the row allowed to lose characters when it is tight. The
-   connection state is short and effectively fixed width; the store line is the
-   longer of the two and the only one whose tail («— дойди») is a hint rather
-   than a fact, so it is the right thing to truncate.
-   `min-width: 0` is what lets a flex child shrink below its own content at all —
-   without it the `text-overflow` above never fires and the row overflows
-   sideways instead, which is exactly what the 320px case in the mobile suite
-   fails on. */
-.hud-store {
-  min-width: 0;
-  flex: 0 1 auto;
+.tally-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
-/* Pushed to the end of the row itself rather than left to `space-between`, which
-   stopped doing the job when the head count moved onto the plane: with the store
-   line absent — a yard with no crate — the row has ONE item, and `space-between`
-   puts a lone child on the left. The connection state has always sat on the
-   right, and it should not move about depending on whether there is beer. */
-.hud-status {
-  margin-left: auto;
+.death-cta {
+  min-height: 44px;
+  width: 100%;
+  padding: 0 14px;
+  border: none;
+  border-radius: 10px;
+  background: rgb(var(--v-theme-primary));
+  color: rgb(var(--v-theme-on-primary));
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
-.hud-status--open {
-  color: rgb(var(--v-theme-success));
+.death-cta:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
-.hud-status--closed {
-  color: rgb(var(--v-theme-warning));
-}
-.hud-status--terminal {
-  color: rgb(var(--v-theme-error));
+.death-cta:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3354,6 +3624,11 @@ onBeforeUnmount(() => {
   .burst-bit {
     animation: none;
   }
+  /* The pulse on a stat in trouble. The COLOUR stays, which is what carries the
+     warning for anybody who does not receive a pulse anyway. */
+  .stat[data-trouble='1'] .stat-emoji {
+    animation: none;
+  }
   .stat-fill {
     transition: none;
   }
@@ -3361,27 +3636,10 @@ onBeforeUnmount(() => {
 
 /* Landscape phones have ~350px of height: keep the status row beside the plane
    rather than under it, or the plane collapses to nothing. */
-@media (orientation: landscape) and (max-height: 600px) {
-  .stage {
-    flex-direction: row;
-    align-items: stretch;
-  }
-  /* Beside the plane rather than under it: there are ~350px of height here, and
-     stacking four fixed rows below the plane collapses it to nothing. Capped so
-     a wide screen does not hand the panel half the world. */
-  .panel {
-    width: min(46%, 260px);
-    justify-content: flex-start;
-    overflow: hidden;
-  }
-  .hud {
-    flex: 0 0 auto;
-    flex-direction: column;
-    justify-content: flex-start;
-    align-items: flex-end;
-  }
-  .plane-frame {
-    min-width: 0;
-  }
-}
+/* LANDSCAPE. There is nothing to lay out beside the plane any more — the panel
+   it used to move there is gone and everything that survived it is drawn ON the
+   plane — so all that is left is the plane fitting a short, wide frame, which
+   `min(100cqw, 75cqh)` already does on its own. The rule that moved a column of
+   rows to the side went with the rows. */
+
 </style>

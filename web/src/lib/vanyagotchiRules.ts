@@ -178,7 +178,6 @@ export function buildRules(config: VanyagotchiConfig | null | undefined): Vanyag
         revivers,
         action.key === search?.key,
         places,
-        config?.store_location,
       ),
     ),
   };
@@ -265,7 +264,6 @@ function actionRow(
   revivers: number,
   searches: boolean,
   places: readonly SearchPlace[],
-  storeLocation: string | undefined,
 ): RuleAction {
   const notes: string[] = [];
   // BEFORE EVERYTHING, on the one verb it applies to, because it corrects the
@@ -274,6 +272,19 @@ function actionRow(
   // has no button at all, and a player who went looking for one would find
   // three and conclude that finding keys had been removed from the game.
   for (const line of searchNotes(searches, places)) notes.push(line);
+  // AND THE SAME CORRECTION FOR THE OTHER TWO VERBS THAT LOST THEIR BUTTONS.
+  // The heading above these rows promises a button and there is exactly one
+  // left, so every verb that is used some other way has to say so on its own row
+  // — a player who went looking for «выпить пива» in the controls would find
+  // nothing and conclude that beer had been removed from the game, which is the
+  // mistake `searchNotes` already exists to prevent for the hunt.
+  //
+  // Attached to the verb by its own FIELD rather than by its key, exactly as the
+  // search note is: a verb gated on standing somewhere is used by tapping that
+  // somewhere, and the verb that undoes a death is used on the screen a death
+  // puts you on. A catalogue that gains a second gated verb describes it
+  // correctly with no edit here.
+  for (const line of controlNotes(def)) notes.push(line);
   // FIRST, because it says when the button is not available at all. The client
   // greys it for this now, so the cheatsheet is no longer the only warning the
   // player gets — but it is still the only one that says WHY the control is
@@ -300,7 +311,7 @@ function actionRow(
   // player who walked to лес looking for beer has otherwise been told nothing at
   // all, and «нужно стоять рядом: ящик пива» is cruelly incomplete advice when
   // the ящик is two locations away.
-  const where = storeWhereNote(def, storeLocation, places);
+  const where = storeWhereNote(def, places);
   if (where) notes.push(where);
   // Then what he is drawing FROM, which is a fact about the world rather than
   // about the press: the thing he had to walk to is not bottomless.
@@ -369,6 +380,16 @@ interface SearchPlace {
  * enumeration and is a lie about the other two — the count is still true, so the
  * honest degradation is to keep it and say no more.
  */
+function controlNotes(def: VanyagotchiAction): string[] {
+  // ==> HARDCODED, both of them: they describe CONTROLS, which are a property of
+  // ==> this screen rather than of the game, so no catalogue field could carry
+  // ==> either. If the crate stops being tappable, or reviving comes back to the
+  // ==> controls, these are the sentences that go wrong.
+  if (def.needs_near) return ['не кнопка: тапни ящик, и он выпьет, когда дойдёт'];
+  if (def.revives_fatal) return ['не кнопка: появится сама, когда он помрёт'];
+  return [];
+}
+
 function searchNotes(searches: boolean, places: readonly SearchPlace[]): string[] {
   if (!searches) return [];
   // ==> HARDCODED. This half describes the CONTROL, which is not on the wire.
@@ -507,31 +528,36 @@ function needsNearNote(
  * above — the label is this sentence's subject.
  */
 /**
- * Which place the thing this verb is gated on stands in, or nothing when there
- * is only one place to be in.
+ * That the thing this verb is gated on MOVES, and where to find out where it is.
  *
- * DERIVED IN TWO HOPS like every other note here: the config names the store's
- * location key, and `locations` names that key. So moving the shop to заброшка
- * changes this sentence on its own.
+ * IT USED TO NAME THE PLACE, derived in two hops from a `store_location` the
+ * catalogue served — and that field is gone, because the crate stopped standing
+ * still. A replacement is now hidden in a random location the way a fresh key
+ * is, so the answer changes during a session and no catalogue field could hold
+ * it: the only truth is the live `store` block on the roster, which the yard's
+ * own readout already draws.
  *
- * SILENT WITH ONE LOCATION, deliberately. «пиво только во дворе» is information
- * only when there is somewhere else to be; in a one-place world it is a rule
- * about a distinction the player cannot make, which is noise. It is also silent
- * for a verb that is not gated on a place at all, and for a location the
- * catalogue does not name — the same discipline `needsNearNote` follows, and for
- * the same reason: naming a key at a player is worse than saying nothing.
+ * So the sentence changed from an ANSWER to a POINTER, which is the honest
+ * version of it: a player who walked to лес looking for beer has been told where
+ * to look for the answer rather than an answer that was true when the screen
+ * loaded and false by the time he read it.
+ *
+ * SILENT WITH ONE LOCATION, deliberately, exactly as the old sentence was. A
+ * crate that moves between one place is a crate that does not move, and a rule
+ * about a distinction the player cannot make is noise. It is also silent for a
+ * verb that is not gated on a place at all.
+ *
+ * ==> HARDCODED. That the crate moves is a property of the server's replacement
+ * ==> write (`locationFor` in world.go), and where it is now is a property of a
+ * ==> frame — neither is in the catalogue, so neither can be derived here.
  */
 function storeWhereNote(
   def: VanyagotchiAction,
-  storeLocation: string | undefined,
   places: readonly SearchPlace[],
 ): string | null {
-  if (!def.needs_near || !storeLocation) return null;
+  if (!def.needs_near) return null;
   if (places.length < 2) return null;
-
-  const place = places.find((entry) => entry.key === storeLocation);
-  if (!place?.label) return null;
-  return `только тут: ${place.label}`;
+  return 'ящик кочует: где он сейчас — написано сверху';
 }
 
 function stockNote(
@@ -787,6 +813,6 @@ export const YARD_PROSE: readonly string[] = [
   'Остальные рядом — живые люди. Кто ушёл, тот лежит спит там, где стоял. А пара местных вообще ничьи.',
   'Не всё вокруг — люди. Что кто-то оставил на земле, то там и лежит: видно всем, но в счётчике народу не числится.',
   'Ключи одни на все места сразу, а не по штуке на каждое, и где они — не видно никому: их прячут в одном из укрытий, и на карте они не нарисованы. Тапни укрытие — Ваня пойдёт туда и обыщет его, когда дойдёт. Не дошёл — не обыскал, так что дальнее укрытие это риск.',
-  'Обыскал не то — «тут пусто»: ключи всё ещё где-то, а ты уже сходил. Нашёл первым — твои; опоздавшему не будет ничего, только грустная морда на пару секунд. И новые ключи теряются сразу же, так что искать можно вечно.',
+  'Обыскал не то — «тут пусто»: ключи всё ещё где-то, а ты уже сходил. Нашёл первым — твои; опоздавшему не будет ничего, только грустная морда на пару секунд — и он громко об этом скажет, и все вокруг тоже. И новые ключи теряются сразу же, так что искать можно вечно.',
   'Пиво не берётся из воздуха: до ящика надо дойти ногами. Ящик один на всех, и разбирают его вместе — кто дошёл, тот и налил. Кончилось — тут же выкатывают новый, так что ждать долго не придётся.',
 ];

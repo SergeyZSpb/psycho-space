@@ -169,7 +169,11 @@ const CONFIG_URL = '/api/game-vanyagotchi/config';
 const STATE_URL = '/api/game-vanyagotchi/state';
 
 /** The death notice, which is the screen's own line rather than the catalogue's. */
-const DEATH_LINE = 'Ваня не выдержал. Откачай его.';
+// What the DEATH SCREEN says. It used to be a line in the status row telling him
+// to press a button; being dead is a screen now, and the screen carries the
+// instruction as its only control rather than as a sentence.
+const DEATH_LINE = 'Ваня не выдержал';
+const deathScreen = (page: Page) => page.locator('[data-test="death"]');
 
 /** Opens a logged-in phone-sized page already standing in the yard. */
 async function enterYard(context: BrowserContext, baseURL: string): Promise<Page> {
@@ -263,6 +267,29 @@ async function shown(page: Page, key: string): Promise<number> {
 const shownHp = (page: Page) => shown(page, 'hp');
 const actionBtn = (page: Page, key: string) => page.locator(`[data-test="action-${key}"]`);
 
+/** The crate, which is a control now as well as a picture. */
+const crate = (page: Page) => page.locator('[data-test="shop"]');
+
+/**
+ * The thing you press to fire a verb, which is no longer always a button.
+ *
+ * Three of the four verbs left the controls: drinking is a tap on the crate,
+ * searching is a tap on a hiding place, and reviving is a button on the screen a
+ * death puts you on. The last of those still answers to `action-<key>`, because
+ * the death screen's own CTA carries it; drinking answers to nothing of the sort,
+ * because the crate is a picture of a crate.
+ *
+ * IT NAMES A KEY, WHICH THE CLIENT MAY NOT AND A TEST MAY. The SPA works out
+ * which verb belongs to the crate from the catalogue's shape, precisely so a
+ * second gated verb needs no deploy; this file is allowed to know which game it
+ * is testing, and pretending otherwise would mean re-deriving the mapping here
+ * from the same config the client reads — which would agree with the client by
+ * construction and could never catch it being wrong.
+ */
+function control(page: Page, key: string) {
+  return key === 'drink' ? crate(page) : actionBtn(page, key);
+}
+
 /**
  * Presses a verb until it actually comes off, and returns once it has.
  *
@@ -283,18 +310,24 @@ const actionBtn = (page: Page, key: string) => page.locator(`[data-test="action-
  * bare balloon locator would sooner or later read an NPC's line instead.
  */
 async function pressUntilItLands(page: Page, key: string, done: string): Promise<void> {
+  // EIGHT ATTEMPTS AND A SHORTER WINDOW EACH, which is a budget rather than a
+  // patience setting. A quarter of presses are refused, so eight is one failure
+  // in sixty-five thousand runs — and twelve attempts at fifteen seconds each is
+  // over three minutes, which is longer than the test is allowed to take, so the
+  // old numbers turned an unlucky run into a timeout with no diagnosis rather
+  // than into the loud throw below.
   const say = yourDot(page).locator('[data-test="peer-say"]');
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    await actionBtn(page, key).click();
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await control(page, key).click();
     // The server says SOMETHING about every press — the confirmation, or the
     // line he backs out with.
-    await expect(say).toHaveCount(1, { timeout: 15_000 });
+    await expect(say).toHaveCount(1, { timeout: 8_000 });
     if (((await say.first().textContent()) ?? '').trim() === done) return;
     await expect(say, 'the balloon never cleared, so the next press cannot be read').toHaveCount(0, {
-      timeout: 15_000,
+      timeout: 8_000,
     });
   }
-  throw new Error(`«${key}» never came off in 12 presses`);
+  throw new Error(`«${key}» never came off in 8 presses`);
 }
 
 /** The one line the status row says about the beer store, or nothing at all. */
@@ -367,20 +400,30 @@ async function you(page: Page): Promise<{ x: number; y: number }> {
 }
 
 /**
- * Where the beer store stands. Mirrored from `cratePlace` in
- * internal/gamevanyagotchi/content.go.
+ * Where the crate is standing RIGHT NOW, read off the yard.
  *
- * MIRRORED BECAUSE IT IS NOT ON THE WIRE, and that absence is deliberate rather
- * than an oversight: `ObjectKind.At` is `json:"-"`, because the browser is
- * kind-agnostic — it is TOLD where the store is, as a place on the roster frame,
- * instead of being asked to find the entity whose kind is a crate. So a test
- * that wants to tap the crate has nowhere to read its pitch from and writes it
- * down, at the same cost and under the same rule as `NEVER_TIRES_WITHIN` in the
- * sibling spec: it is here to REASON about a fixture, never to make one pass.
- * Move the crate in content.go without moving this and the walk below simply
- * never arrives, which is a loud failure rather than a silent pass.
+ * IT USED TO BE A CONSTANT MIRRORED FROM THE CATALOGUE, because the crate was
+ * pinned to one pitch in двор and `ObjectKind.At` is `json:"-"`. Both halves of
+ * that are gone: the crate is hidden in a random location the way a fresh key
+ * is, so there is no fixed pitch to mirror, and the frame's `store` block is now
+ * the only statement of where it is.
+ *
+ * Read off the ELEMENT rather than off the frame, because the element is what a
+ * player can see and tap — a test that fetched the roster itself would agree
+ * with the server about a crate the screen might be drawing somewhere else. The
+ * custom properties are the same ones the stylesheet maps to pixels, so this is
+ * the coordinate the yard is actually using.
  */
-const CRATE_PLACE = { x: 0.82, y: 0.22 };
+async function cratePitch(page: Page): Promise<{ x: number; y: number }> {
+  return page.evaluate(() => {
+    const el = document.querySelector('[data-test="shop"]') as HTMLElement | null;
+    if (!el) throw new Error('there is no crate in this place to walk to');
+    return {
+      x: Number(el.style.getPropertyValue('--x')),
+      y: Number(el.style.getPropertyValue('--y')),
+    };
+  });
+}
 
 /**
  * Somewhere emphatically not the crate: the far corner, about 0.95 plane-widths
@@ -409,49 +452,119 @@ const ACROSS_THE_YARD = { x: 0.12, y: 0.86 };
  * loop is here for the other case, a Ваня an earlier test walked into a corner.
  */
 async function walkToTheCrate(page: Page): Promise<void> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    await tapAt(page, CRATE_PLACE.x, CRATE_PLACE.y);
+  // TRAVELLING IS PART OF WALKING TO IT NOW. The crate used to be pinned to
+  // двор, so "walk to the crate" was always a walk; it is hidden in a random
+  // location on every restock, so from here it may be four places away and there
+  // is no crate on this plane to tap at all. Folded in rather than left to each
+  // caller, because a caller that forgot would fail with "there is no crate in
+  // this place" — which is true, unhelpful, and nothing to do with what it was
+  // testing.
+  // MORE ATTEMPTS AND SHORTER ONES THAN IT USED TO NEED, and the crate moving is
+  // why. It used to stand 0.425 from the yard's spawn — inside `tiredFrom`, so a
+  // walk to it never rolled a give-up and one tap always arrived. It is hidden at
+  // a hotspot in a random location now, which can be most of a plane from that
+  // location's entry, so giving up part way is the ORDINARY case rather than the
+  // exceptional one. Each attempt starts from where he sat down, so the distance
+  // left shrinks every time and is soon under the threshold at which he never
+  // gives up at all — but that convergence needs room to happen in.
+  //
+  // AND THE LOCATION IS RE-CHECKED EVERY TIME ROUND, not once at the top. This
+  // suite shares one world and one process: another test finishing its last beer
+  // restocks the crate somewhere new, and it can do that between two taps of this
+  // loop. `travelToTheCrate` returns immediately when the crate is already on
+  // screen, so the common case costs one DOM count.
+  //
+  // MANY SHORT ATTEMPTS RATHER THAN A FEW LONG ONES, which is also how a player
+  // behaves. A tap re-targets the walk from wherever he has got to, so tapping
+  // again after two seconds is not a wasted press — it starts a shorter walk from
+  // closer in, and the sequence converges on the crate whether he is walking, has
+  // sat down tired, or is chasing a crate another test has just moved. Waiting out
+  // a long window per attempt instead spends the whole test budget discovering
+  // that one walk did not finish.
+  const REACHES = 15;
+  for (let attempt = 0; attempt < REACHES; attempt += 1) {
+    await travelToTheCrate(page);
+    const pitch = await cratePitch(page).catch(() => undefined);
+    if (!pitch) continue;
+    await tapAt(page, pitch.x, pitch.y);
     try {
-      await expect(actionBtn(page, 'drink')).toBeEnabled({ timeout: 15_000 });
+      // KEYED ON THE LINE RATHER THAN ON A BUTTON, because the button is gone.
+      // «дойди» is what the readout says while the crate is out of reach, and its
+      // absence is the same fact the greyed button used to carry — the client
+      // measures its own distance to the crate either way.
+      await expect(storeLine(page)).not.toContainText('дойди', { timeout: 2_000 });
       return;
     } catch {
       // He sat down part way and said so. Ask again from where he is now.
     }
   }
   const at = await you(page);
+  const pitch = await cratePitch(page).catch(() => undefined);
   throw new Error(
-    `he never got within reach of the crate — he is at ${at.x.toFixed(3)},${at.y.toFixed(3)} ` +
-      'and the drink is still greyed',
+    `he never got within reach of the crate in ${REACHES} taps — he is at ` +
+      `${at.x.toFixed(3)},${at.y.toFixed(3)} and it is at ` +
+      (pitch ? `${pitch.x.toFixed(3)},${pitch.y.toFixed(3)}` : 'no place he can see'),
   );
 }
 
 /**
- * Puts him back beside the crate from wherever he has ended up.
+ * Puts him in whatever LOCATION the crate is in, from wherever he has ended up.
  *
- * Needed because a REVIVAL now relocates him: he wakes in a place chosen by the
- * server, which is the whole mechanic — death costs you the walk you had done.
- * So a test that wants to press a verb gated on standing at the crate has to
- * travel back to the crate's own location first, and only then walk.
+ * Needed twice over. A revival relocates him — he wakes in a place the server
+ * chooses, which is the whole mechanic, since death costs you the walk you had
+ * done — and the crate itself moves, so "the crate's own location" is a question
+ * with a different answer every few beers.
  *
- * Which location that is comes off the served config (`store_location`) rather
- * than being named here, exactly as the client reads it: the crate is pinned by
- * a catalogue field, and a test that hardcoded «двор» would pass until somebody
- * moved the shop.
+ * Where it is comes off the yard's readout rather than off the catalogue, which
+ * no longer says: `store_location` is gone because a static field could only
+ * ever have named the place the shop happened to start in. That is also how a
+ * player finds out — see the note in the body.
  */
-async function returnToTheCrate(page: Page): Promise<void> {
+async function travelToTheCrate(page: Page): Promise<void> {
   const res = await page.request.get(CONFIG_URL);
   expect(res.status(), `GET ${CONFIG_URL}`).toBe(200);
-  const cfg = (await res.json()) as {
-    store_location?: string;
-    locations?: { key: string; label: string }[];
-  };
-  const key = cfg.store_location;
-  if (key) {
-    const label = (cfg.locations ?? []).find((l) => l.key === key)?.label ?? '';
-    const here = (await page.locator('[data-test="here"]').textContent()) ?? '';
-    if (label && !here.includes(label)) await travelToPlace(page, key, label);
+  const cfg = (await res.json()) as { locations?: { key: string; label: string }[] };
+  // THE CRATE BEING DRAWN IS THE SIGNAL, not a field and not a coordinate. The
+  // client only draws a shop for a crate in the place it is looking at, so its
+  // presence is exactly the question "is the beer here" — the same question a
+  // player answers by looking. `store_location` used to answer it off the
+  // catalogue and is gone, because a static field could only name the place the
+  // shop happened to start in.
+  //
+  // LOOPED, because two things can be true on the way: the first roster may not
+  // have arrived yet, in which case the readout says nothing at all and there is
+  // nowhere to travel to; and the crate can be drained by something else between
+  // the read and the arrival, which moves it again. Four attempts is a great deal
+  // more than either needs.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await crate(page).count()) return;
+    const line = (await storeLine(page).textContent()) ?? '';
+    // When it is somewhere else the line is that place's own name and nothing
+    // else, which is what a player is told too.
+    const away = (cfg.locations ?? []).find((l) => !!l.label && line.includes(l.label));
+    if (!away) {
+      await page.waitForTimeout(500);
+      continue;
+    }
+    try {
+      await travelToPlace(page, away.key, away.label);
+      // The journey is answered with state and the yard redraws on the next
+      // frame, so the shop is not on screen the instant `travelToPlace` returns.
+      // Eight seconds, not twenty. This runs inside the walk's own retry loop, so
+      // a generous window here is multiplied by every attempt and eats the whole
+      // test budget discovering the same thing four times over.
+      await expect(crate(page), `the crate was not in ${away.label} after all`).toBeVisible({
+        timeout: 8_000,
+      });
+      return;
+    } catch {
+      // The journey did not take, or the crate had moved again by the time he
+      // arrived — somebody else's last beer restocks it somewhere new, and this
+      // suite shares one world. Both are answered the same way: look again at
+      // where the yard says the beer is now, and go there.
+    }
   }
-  await walkToTheCrate(page);
+  throw new Error('the yard never said where the beer is, in three attempts');
 }
 
 
@@ -468,7 +581,7 @@ async function walkAwayFromTheCrate(page: Page): Promise<void> {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     await tapAt(page, ACROSS_THE_YARD.x, ACROSS_THE_YARD.y);
     try {
-      await expect(actionBtn(page, 'drink')).toBeDisabled({ timeout: 15_000 });
+      await expect(storeLine(page)).toContainText('дойди', { timeout: 15_000 });
       return;
     } catch {
       // As above: he gave up part way, which is a shorter walk to ask for again.
@@ -477,7 +590,7 @@ async function walkAwayFromTheCrate(page: Page): Promise<void> {
   const at = await you(page);
   throw new Error(
     `he would not leave the crate — he is at ${at.x.toFixed(3)},${at.y.toFixed(3)} and the ` +
-      'drink is still lit',
+      'the readout still says he is at it',
   );
 }
 
@@ -624,8 +737,14 @@ test('a freshly seeded account gets a Ваня the first time it opens the yard'
     await expect(page.locator('[data-test="stat-hp"]')).toBeVisible();
     await expect(page.locator('[data-test="stat-beer"]')).toBeVisible();
     await expect(page.locator('[data-test="stat-bladder"]')).toBeVisible();
-    await expect(actionBtn(page, 'drink')).toBeVisible();
+    // The crate IS the drink control now, so what has to be on screen for the
+    // two verbs is a box and a button rather than two buttons — and the box is
+    // wherever the crate has wandered to rather than reliably in the yard he
+    // starts in, which is why he goes and finds it first.
+    await travelToTheCrate(page);
+    await expect(crate(page)).toBeVisible();
     await expect(actionBtn(page, 'relieve')).toBeVisible();
+    await expect(actionBtn(page, 'drink'), 'the drink is a button again').toHaveCount(0);
 
     // A new Ваня starts BELOW the maximum — deliberately, so that the first
     // press of an action has something to do — and has had no time to decay
@@ -638,7 +757,7 @@ test('a freshly seeded account gets a Ваня the first time it opens the yard'
     // rate is negative.
     await expect(page.locator('[data-test="stat-value-bladder"]')).toHaveText('0');
     // Alive, so no death line.
-    await expect(page.locator('[data-test="pet-line"]')).toHaveText('');
+    await expect(page.locator('[data-test="pet-line"]')).toHaveCount(0);
   } finally {
     await context.close();
   }
@@ -655,7 +774,11 @@ test('one drink moves three stats, and all three survive a reload', async ({ bro
   // bought: drinking tops him up, cheers him up and fills his bladder. The
   // client sends a verb and never a value, so every number below was computed
   // and stored by the server.
-  test.setTimeout(90_000);
+  // A BIGGER BUDGET THAN A PINNED CRATE NEEDED. The beer used to stand 0.425 from
+  // the spawn, inside `tiredFrom`, so reaching it was one tap that never rolled a
+  // give-up. It is hidden at a hotspot in a random location now, so getting to it
+  // can be a journey plus several walks, each of which may end early on purpose.
+  test.setTimeout(120_000);
   const base = baseURL ?? 'http://127.0.0.1:8081';
   const seeded = await stack();
   forgetPet(seeded[PLAYER_A]);
@@ -682,7 +805,7 @@ test('one drink moves three stats, and all three survive a reload', async ({ bro
     // that changed. What it is still about is the three numbers below.
     await walkToTheCrate(page);
 
-    await actionBtn(page, 'drink').click();
+    await crate(page).click();
     await expect(page.locator('[data-test="peer-say"]')).toHaveText('хорошо пошло');
 
     const after = {
@@ -790,7 +913,7 @@ test('relieving himself empties the bladder and leaves the rest alone', async ({
   }
 });
 
-test('a dead Ваня refuses everything but the one verb that raises him', async ({
+test('a dead Ваня is a screen with one control on it, and that control raises him', async ({
   browser,
   baseURL,
 }) => {
@@ -859,32 +982,49 @@ test('a dead Ваня refuses everything but the one verb that raises him', asyn
     // number. The page is already in the yard, so it is nudged into re-reading
     // the row this test changed behind its back.
     await refreshTheYardsIdeaOf(page);
-    await expect(page.locator('[data-test="pet-line"]')).toHaveText(DEATH_LINE);
+    await expect(deathScreen(page)).toContainText(DEATH_LINE);
 
     // He is still standing at the crate, which the reload did not move him from:
     // a placement is in memory and is only replaced by a stored position when
     // the yard has none or has only the provisional spawn it invents for a
-    // connection it has not been greeted by. So the button is LIT over a corpse,
+    // connection it has not been greeted by. So he is IN REACH over a corpse,
     // and the refusal about to arrive can only be about the death.
     await expect(
-      actionBtn(page, 'drink'),
-      'the drink is greyed, so the refusal below would be about distance rather than death',
-    ).toBeEnabled({ timeout: 20_000 });
-    await expect(storeLine(page), 'the walk to the crate did not survive the reload').not.toContainText(
-      'дойди',
-    );
+      storeLine(page),
+      'he is out of reach, so the refusal below would be about distance rather than death',
+    ).not.toContainText('дойди', { timeout: 20_000 });
 
-    // A beer is refused now, and pressing it first is the point: it proves the
-    // corpse turns down the verb that used to be its way out, over the real
-    // stack, before the verb that actually works is tried. «Он не встаёт» rather
-    // than «далековато» is the whole of the ordering claim above — he is beside
-    // the crate, so the only thing left to refuse him is being dead.
-    await actionBtn(page, 'drink').click();
-    await expect(page.locator('.peer--you [data-test="peer-say"]')).toHaveText('он не встаёт');
-    expect((await readState(page)).alive, 'a beer brought him round; only the revival may').toBe(
-      false,
-    );
-    await expect(page.locator('[data-test="peer-say"]')).toHaveCount(0, { timeout: 15_000 });
+    // A BEER CANNOT EVEN BE ASKED FOR, and that is the change. This used to press
+    // the crate over the corpse and read «он не встаёт» off the balloon, proving
+    // the server refuses the verb that used to be a death's way out. The death
+    // screen covers the plane now and takes every pointer event, so there is no
+    // longer a way to ask — which is a stronger version of the same rule, and the
+    // one the player actually meets: while he is dead the only control that
+    // exists is the one that raises him.
+    //
+    // That the SERVER refuses it regardless is owned by the Go tests, and has to
+    // be: it is a rule about a batch reaching `Do`, and a browser that cannot
+    // send one can say nothing about it either way.
+    // Asserted with `elementFromPoint` rather than with visibility, because both
+    // controls are still DRAWN — the yard is deliberately left visible behind the
+    // sheet, so the others walking about in it are what makes coming back feel
+    // like something. What has changed is that a finger landing on either of them
+    // lands on the death screen instead, which is the only form of "you cannot
+    // press this" a covering overlay produces.
+    for (const [what, selector] of [
+      ['the crate', '[data-test="shop"]'],
+      ['a verb button', '.verbs .verb'],
+    ] as const) {
+      const blocked = await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return true; // not drawn at all is also not pressable
+        const box = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return !!hit?.closest('[data-test="death"]');
+      }, selector);
+      expect(blocked, `${what} can be pressed over a corpse`).toBe(true);
+    }
+    expect((await readState(page)).alive, 'he came round on his own').toBe(false);
 
     // And the revival is a RESET: he comes back as a new Ваня rather than as the
     // old one plus a number, so health is the catalogue's starting value and not
@@ -900,53 +1040,31 @@ test('a dead Ваня refuses everything but the one verb that raises him', asyn
       'the death was still recorded after a revival',
     ).toBeNull();
 
-    // Now kill him again BEHIND THE PAGE'S BACK, which is the honest way a
-    // refusal reaches a player: nothing re-reads between actions, so the first
-    // the client hears of a death is the server turning an action down.
+    // THE SECOND HALF OF THIS TEST IS GONE, AND ITS ABSENCE IS THE FEATURE.
     //
-    // Killing him a second time rather than pressing a verb while the screen
-    // already said so, because that assertion would have been vacuous — the
-    // balloon has to CHANGE, from the drink's own `done` text to the refusal,
-    // and only a genuinely refused verb can do that.
+    // It used to kill him again behind the page's back and press a verb, to show
+    // that a refusal reaches a player who has NOT re-read — as a line over his own
+    // Ваня rather than as the global error modal. That scenario cannot be staged
+    // through this UI any more, and the reason is the death screen doing its job:
+    // every path that leaves a verb pressable also tells the client he is dead.
+    // Reaching the crate can mean a journey, and a journey is answered with
+    // `vanyagotchi_state`; the yard's own button is gated on a stat, so un-greying
+    // it means re-reading — and either read records the death and raises the
+    // screen over both controls. A player simply cannot press a verb on a Ваня his
+    // own screen knows is a corpse.
     //
-    // THE VERB HERE IS THE DRINK AGAIN, AND «ПОКАКАТЬ» CANNOT BE. The revival is
-    // a reset, so it put the bladder back to its catalogue start — and the
-    // client greys a verb gated on a stat it believes is empty. That grey is
-    // correct: the browser's copy is right, and nothing has re-read since. So
-    // pressing «покакать» here would be clicking a control that is disabled for
-    // an honest reason and has nothing to do with the death this test is about.
-    // Which verb is refused is not what is under test — that every verb but the
-    // revival is refused on a corpse is owned by the Go tests, as the header
-    // says; what is under test is that a refusal reaches a player who never
-    // re-read, as a line that appears from nothing.
-    setStats(seeded[PLAYER_A], { hp: 0 });
-
-    // Wait for the drink's own line to expire before pressing again. Two
-    // reasons, and both are real behaviour rather than test hygiene: a verb is
-    // rate-limited to one a second per account and would otherwise be dropped
-    // in silence, and starting from an empty balloon is what makes the next
-    // assertion mean something — the line has to APPEAR, not merely differ.
-    await expect(page.locator('[data-test="peer-say"]')).toHaveCount(0, { timeout: 15_000 });
-
-    // AND HE HAS MOVED. The revival above put him down somewhere the server
-    // chose, so the crate this verb is gated on is no longer where he is
-    // standing — bring him back, or the refusal below would be about distance
-    // rather than about death, which is the one thing this test is for.
-    await returnToTheCrate(page);
-
-    await actionBtn(page, 'drink').click();
-    // The refusal arrives the way everything else does: as STATE, in the world.
-    // There is no reply to catch — the socket owes none — so what the player
-    // gets is a line over his own Ваня that the rest of the yard reads too, and
-    // the global "something went wrong" modal never opens over a situation the
-    // game is already explaining in words.
-    await expect(page.locator('[data-test="peer-say"]')).toHaveText('он не встаёт');
-    await expect(page.getByText('Ой, ошибка')).toHaveCount(0);
-    expect((await readState(page)).alive, 'he should still be dead').toBe(false);
-    // And the panel catches up on the next read, which is the honest cost of
-    // having no reply: the bars are stale until something re-reads them.
+    // What that leg protected is not lost. That the SERVER refuses every verb but
+    // the revival on a corpse is owned by the Go tests, which is where a rule about
+    // a batch reaching `Do` belongs; and that a refusal arrives as a balloon rather
+    // than as the error modal is pinned by the shy refusal in the stubbed suite,
+    // which needs no corpse to produce one.
+    //
+    // What is worth keeping is that the screen goes and stays gone: a revival that
+    // cleared the row but left the sheet up would be a Ваня who is alive on the
+    // wire and dead on the screen.
     await refreshTheYardsIdeaOf(page);
-    await expect(page.locator('[data-test="pet-line"]')).toHaveText(DEATH_LINE);
+    await expect(deathScreen(page)).toHaveCount(0);
+    await expect(actionBtn(page, 'relieve')).toBeVisible();
   } finally {
     await context.close();
   }
@@ -1059,7 +1177,7 @@ test('two accounts have two Ваняs, and an action on one does not touch the o
     // the only thing that happens to B at all.
     await walkToTheCrate(pageA);
 
-    await actionBtn(pageA, 'drink').click();
+    await crate(pageA).click();
     // Scoped to A's OWN Ваня, and this is the one test in the file where that
     // matters: B is a second real player standing in the same yard, and a Ваня
     // who is standing still is entitled to mutter on a schedule of his own
@@ -1437,14 +1555,20 @@ test('the beer is behind a walk, and the draw that follows it reaches Postgres',
     // claim: the geometry (he really is further away than the gate allows), the
     // control (it is greyed), and the words (the row tells him to walk rather
     // than to wait, which is the difference between the two refusals).
+    // He goes to WHEREVER the beer is first, because it is no longer reliably in
+    // the place he starts in — and then the pitch is read off the yard rather
+    // than from a constant, because the crate no longer has a fixed one. Read
+    // before he walks away, since the readout stops naming a pitch he cannot see.
+    await travelToTheCrate(page);
+    const pitch = await cratePitch(page);
     await walkAwayFromTheCrate(page);
     const far = await you(page);
     expect(
-      Math.hypot(far.x - CRATE_PLACE.x, far.y - CRATE_PLACE.y),
+      Math.hypot(far.x - pitch.x, far.y - pitch.y),
       `he is standing at ${far.x.toFixed(3)},${far.y.toFixed(3)}, which is within reach of the ` +
         'crate — the greyed button below would be greyed for some other reason',
     ).toBeGreaterThan(within);
-    await expect(actionBtn(page, 'drink')).toBeDisabled();
+    await expect(storeLine(page)).toContainText('дойди');
     await expect(storeLine(page)).toContainText('дойди');
 
     // The count on the frame and the count in the table are the same number, and
@@ -1462,14 +1586,14 @@ test('the beer is behind a walk, and the draw that follows it reaches Postgres',
     await walkToTheCrate(page);
     const near = await you(page);
     expect(
-      Math.hypot(near.x - CRATE_PLACE.x, near.y - CRATE_PLACE.y),
+      Math.hypot(near.x - pitch.x, near.y - pitch.y),
       `the drink lit up while he was standing at ${near.x.toFixed(3)},${near.y.toFixed(3)}, ` +
         'which is not at the crate',
     ).toBeLessThanOrEqual(within);
-    await expect(actionBtn(page, 'drink')).toBeEnabled();
+    await expect(storeLine(page)).not.toContainText('дойди');
     await expect(storeLine(page)).not.toContainText('дойди');
 
-    await actionBtn(page, 'drink').click();
+    await crate(page).click();
     await expect(page.locator('.peer--you [data-test="peer-say"]')).toHaveText('хорошо пошло');
 
     // On screen…
@@ -1496,7 +1620,7 @@ test('the beer is behind a walk, and the draw that follows it reaches Postgres',
   }
 });
 
-test('the last beer exhausts the crate, and a fresh one is standing there already', async ({
+test('the last beer exhausts the crate, and a fresh one is standing somewhere already', async ({
   browser,
   baseURL,
 }) => {
@@ -1530,6 +1654,11 @@ test('the last beer exhausts the crate, and a fresh one is standing there alread
 
     await enterYardFrom(page);
     await expect(storeLine(page)).toBeVisible({ timeout: 20_000 });
+    // TO WHEREVER IT IS, before anything is read off the readout. The line only
+    // carries a COUNT for a crate in this place; for one somewhere else it is the
+    // other place's name, which is what a player is told and what `storeLeft`
+    // honestly reports as NaN.
+    await travelToTheCrate(page);
 
     const opened = liveCrates(kind.key);
     expect(opened, 'the hello did not leave exactly one crate to drain').toHaveLength(1);
@@ -1553,9 +1682,15 @@ test('the last beer exhausts the crate, and a fresh one is standing there alread
       .toBe(1);
 
     await walkToTheCrate(page);
-    await actionBtn(page, 'drink').click();
+    await crate(page).click();
     await expect(page.locator('.peer--you [data-test="peer-say"]')).toHaveText('хорошо пошло');
 
+    // AND THE REPLACEMENT IS SOMEWHERE ELSE, most of the time. The crate used to
+    // restock in the same square, and this test used to end by reading the fresh
+    // count off the same readout; a replacement is hidden in a random location
+    // now, so the yard he is standing in usually has no crate in it at all and
+    // the count is read from the database instead. Where it went is the server's
+    // own test's business.
     // The row he drank from is used up, and says so in the column both
     // disciplines share.
     await expect
@@ -1567,30 +1702,33 @@ test('the last beer exhausts the crate, and a fresh one is standing there alread
     const drained = crates(kind.key).find((crate) => crate.id === opened[0].id) as CrateRow;
     expect(drained.remaining, 'the exhausted crate still has beer in it').toBe(0);
 
-    // And there is a new one, standing in the same place. The pitch matters:
-    // a replacement drawn a hiding place — the branch `placeFor` takes for a kind
-    // with no pitch of its own — would be a shop that moved when it restocked,
-    // which is the key hunt wearing an apron.
+    // And there is a new one — somewhere. WHERE is the thing that changed: the
+    // crate used to be pinned to one pitch in двор and its replacement stood in
+    // exactly the same square, which is what this used to assert. It is hidden
+    // the way a fresh key is now, so what is left to pin is that there is exactly
+    // ONE of them, that it is a new row rather than the old one refilled, and
+    // that it came out full. Where it went is the server's own test's business.
     const live = liveCrates(kind.key);
     expect(live, 'the yard was left without a beer store').toHaveLength(1);
     expect(live[0].id, 'the exhausted crate was reused rather than replaced').not.toBe(opened[0].id);
     expect(live[0].remaining, 'the replacement did not come out full').toBe(kind.stock);
-    expect(live[0].x, 'the new crate is standing somewhere else').toBeCloseTo(CRATE_PLACE.x, 3);
-    expect(live[0].y, 'the new crate is standing somewhere else').toBeCloseTo(CRATE_PLACE.y, 3);
 
     // The yard is already telling everybody about it — no reload, no hello. The
     // verb refreshed the world cache on its own goroutine, so the very next frame
     // carries the fresh crate rather than an empty store somebody has to wait
-    // out.
+    // out. What it says depends on where the replacement landed, and BOTH answers
+    // are the frame having arrived: a full count if it is here, the name of
+    // another place if it is not. What it must never still say is «пуст».
     await expect
-      .poll(() => storeLeft(page), {
+      .poll(async () => (await storeLine(page).textContent()) ?? '', {
         message: 'the replacement crate never reached the frame',
         timeout: 20_000,
       })
-      .toBe(kind.stock);
-    // And he is still standing at it, so the next drink is one tap away: the
-    // replacement is in the same place, which is the whole point of the pitch.
-    await expect(actionBtn(page, 'drink')).toBeEnabled({ timeout: 20_000 });
+      .not.toContain('пуст');
+    // And a walk to it still ends at it, wherever it went — which is the property
+    // that replaced "the replacement stands on the same pitch".
+    await walkToTheCrate(page);
+    await expect(storeLine(page)).not.toContainText('дойди', { timeout: 20_000 });
   } finally {
     await context.close();
   }
@@ -1642,14 +1780,22 @@ test('a hello puts a beer store back into an empty yard', async ({ browser, base
       .toBe(1);
     const [standing] = liveCrates(kind.key);
     expect(standing.remaining, 'the new crate did not come out full').toBe(kind.stock);
-    expect(standing.x, 'the crate was not put where the store stands').toBeCloseTo(CRATE_PLACE.x, 3);
-    expect(standing.y, 'the crate was not put where the store stands').toBeCloseTo(CRATE_PLACE.y, 3);
+    // Somewhere on the plane, rather than at a pitch this file knows: the crate
+    // moves, so a coordinate assertion here would be a mirror of a random draw.
+    for (const axis of ['x', 'y'] as const) {
+      expect(standing[axis], `the crate was stood outside the plane on ${axis}`).toBeGreaterThan(0);
+      expect(standing[axis], `the crate was stood outside the plane on ${axis}`).toBeLessThan(1);
+    }
 
-    // It reached the screen, with the catalogue's own stock in it. Not asserted
-    // against «дойди» either way: where he is standing is left over from whatever
-    // this shared process last saw him do, and this test is about the crate
-    // existing rather than about his feet.
+    // It reached the screen, with the catalogue's own stock in it — after he has
+    // gone to look at it. The readout only carries a COUNT for a crate in the
+    // place he is standing in; for one somewhere else it is that place's name,
+    // which is the whole of what the crate moving cost this assertion. Not
+    // asserted against «дойди» either way: where he ends up standing is left over
+    // from whatever this shared process last saw him do, and this test is about
+    // the crate existing rather than about his feet.
     await expect(storeLine(page)).toBeVisible({ timeout: 20_000 });
+    await travelToTheCrate(page);
     await expect(storeLine(page)).toContainText(String(kind.stock));
 
     // And it is drawn — as a SHOP rather than as an entity, which is the change
@@ -1661,9 +1807,10 @@ test('a hello puts a beer store back into an empty yard', async ({ browser, base
     // drawn from the block.
     await expect(page.locator('[data-test="shop"]')).toBeVisible({ timeout: 20_000 });
     await expect(page.locator('[data-test="shop-left"]')).toHaveText(String(kind.stock));
+    const shopAt = await cratePitch(page);
     expect(
       (await objectsOnThePlane(page)).some(
-        (at) => Math.hypot(at.x - CRATE_PLACE.x, at.y - CRATE_PLACE.y) < 0.01,
+        (at) => Math.hypot(at.x - shopAt.x, at.y - shopAt.y) < 0.01,
       ),
       'the crate is still drawn as an entity as well as as a shop',
     ).toBe(false);

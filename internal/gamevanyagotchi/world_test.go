@@ -111,48 +111,102 @@ func anObjectIn(n int, kind, locationKey string, at Point, expires time.Time) Wo
 // crate somebody else has just emptied.
 func atTheStore(t *testing.T, svc *Service, repo *fakeRepo, accountID string, left int) {
 	t.Helper()
-	standAt(svc, accountID, *crateInTheYard(t, svc, repo, left).At)
+	standAt(svc, accountID, crateInTheYard(t, svc, repo, left).At)
+}
+
+// theStoresPitch is the hotspot these tests stand the beer crate on.
+//
+// A CHOICE THE FIXTURE HAS TO MAKE NOW, because the catalogue stopped making it.
+// The crate used to name a pitch of its own, so every test could ask the
+// catalogue where the beer was; a crate is now stood up at a hotspot of a
+// location drawn at random, which makes "where the crate is" a property of the
+// ROW and leaves each test to say where it put one.
+//
+// Written down once because three separate tests below lean on the same three
+// properties of it, and rediscovering them one failure at a time is how a fixture
+// quietly stops testing what it says it does:
+//
+//   - it is NOT the hotspot searches are run against (index 0), so "he is at the
+//     beer" and "he is at the hiding place" stay two facts a test can tell apart;
+//   - it is more than tiredFrom from the left-hand edge, so a test can set
+//     somebody off from a full never-refused walk away and still be on the plane;
+//   - it and its mirror through the middle of the plane are much further apart
+//     than arriveWithin, so «the opposite corner» is genuinely too far to drink
+//     from; and it is further than arriveWithin from `spawn`, so an account the
+//     yard has never placed is refused rather than accidentally standing at it.
+func theStoresPitch(t *testing.T) Hotspot {
+	t.Helper()
+	return aHotspot(t, LocationYard, 3)
 }
 
 // crateInTheYard puts the beer crate into the world — into the cache the frame
-// and the gate read, AND into what the repository hands back — and returns its
-// catalogue entry, without placing anybody.
+// and the gate read, AND into what the repository hands back — and returns the
+// row it wrote, without placing anybody.
 //
 // Both halves, because a verb that changes the world refreshes the cache from
 // the repository afterwards. A fixture that wrote only the cache would give the
 // first drink a crate and the second one an empty yard, which is a test failing
 // for a reason that has nothing to do with its subject.
 //
+// IT RETURNS THE ROW RATHER THAN THE CATALOGUE ENTRY, and that is the shape the
+// wandering shop forced: the kind no longer knows where one of these stands, so
+// the only thing that can tell a caller is the object the fixture just made.
+//
 // Separate from atTheStore because half the tests of the gate are about somebody
 // who is NOT at the crate, and "there is a crate" and "he is beside it" are the
 // two independent facts the gate reads.
-func crateInTheYard(t *testing.T, svc *Service, repo *fakeRepo, left int) ObjectKind {
+func crateInTheYard(t *testing.T, svc *Service, repo *fakeRepo, left int) WorldObject {
 	t.Helper()
-	kind := mustObjectKind(t, KindCrate)
-	if kind.At == nil {
-		t.Fatalf("the catalogue no longer gives %q a pitch of its own; there is nothing for the arrival gate to measure against", kind.Key)
-	}
-	crate := aCrate(t, 42, left)
+	return crateStanding(t, svc, repo, LocationYard, theStoresPitch(t).At, left)
+}
+
+// crateStanding is the same fixture with the place spelled out, for the tests
+// that are about the crate being somewhere in particular rather than about
+// drinking from it.
+func crateStanding(t *testing.T, svc *Service, repo *fakeRepo, locationKey string, at Point, left int) WorldObject {
+	t.Helper()
+	crate := aCrate(t, 42, locationKey, at, left)
 	repo.objects = append(repo.objects, crate)
 	svc.mu.Lock()
 	svc.world = append(svc.world, crate)
 	svc.mu.Unlock()
-	return kind
+	return crate
 }
 
-// aCrate is the beer store as the database hands it back: standing on the
-// catalogue's own pitch, holding however much the test wants left in it, and
-// never expiring — a crate ends when it is empty rather than when it times out.
-func aCrate(t *testing.T, n int, left int) WorldObject {
+// aCrate is the beer store as the database hands it back: standing wherever the
+// caller says, holding however much the test wants left in it, and never
+// expiring — a crate ends when it is empty rather than when it times out.
+//
+// THE PLACE IS AN ARGUMENT because it is no longer a fact about the kind. Every
+// crate the game stands up goes to a hotspot of a location drawn at random, so a
+// test that wants to reason about the beer has to choose the draw the game would
+// otherwise have made for it.
+func aCrate(t *testing.T, n int, locationKey string, at Point, left int) WorldObject {
 	t.Helper()
 	kind := mustObjectKind(t, KindCrate)
-	if kind.At == nil {
-		t.Fatalf("the catalogue no longer gives %q a pitch of its own", kind.Key)
+	if kind.At != nil {
+		t.Fatalf("the catalogue gives %q a pitch of its own again at %+v; a shop that stands still is a different game from the one these tests are about", kind.Key, *kind.At)
 	}
-	o := anObject(n, kind.Key, *kind.At, time.Time{})
+	o := anObjectIn(n, kind.Key, locationKey, at, time.Time{})
 	o.ExpiresAt = nil
 	o.Remaining = &left
 	return o
+}
+
+// aRegularIn is a character who lives in a given place.
+//
+// It exists because `recoil` and every other rule about the cast asks WHERE
+// somebody is before it asks anything else, and the catalogue's order is content:
+// a test that reached for `catalogue.NPCs[0]` was asserting something about the
+// first character somebody happened to type, which stopped being a yard regular
+// the moment the cast spread across five places.
+func aRegularIn(locationKey string) (NPC, bool) {
+	for _, npc := range catalogue.NPCs {
+		if locationOr(npc.Location) == locationKey {
+			return npc, true
+		}
+	}
+	return NPC{}, false
 }
 
 // aLostKey is the singleton key as the database hands it back.
@@ -246,10 +300,13 @@ func readyFor(t *testing.T, svc *Service, repo *fakeRepo, accountID string, acti
 	if !ok || !def.Hidden {
 		return ""
 	}
-	// A searching verb wants him somewhere else entirely — a hotspot is nowhere
-	// near the beer store, by design — so this overrides any placement above. No
-	// verb is gated on both today, and one that were would be a rule nobody could
-	// satisfy rather than a fixture problem.
+	// A searching verb wants him at a hotspot, so this overrides any placement
+	// above. It USED to be able to say that a hotspot is nowhere near the beer
+	// store by design; the crate now stands on one, so what keeps the two apart is
+	// the fixture rather than the catalogue — `theStoresPitch` deliberately picks a
+	// different hotspot from the one searches are run against. No verb is gated on
+	// both today, and one that were would be a rule nobody could satisfy rather
+	// than a fixture problem.
 	return searchingIn(t, svc, repo, accountID, aHotspot(t, LocationYard, 0))
 }
 
@@ -1274,16 +1331,17 @@ func insertedOf(got []insertedObject, kind string) (insertedObject, bool) {
 // regression — what is pinned is that the row AGREES with the content.
 func assertSpawned(t *testing.T, got insertedObject, def ObjectKind) {
 	t.Helper()
-	// WHERE IT WENT IS THE CATALOGUE'S ANSWER, and there are two of them. A kind
-	// that names a location is pinned to it — the crate is always in the yard, so
-	// a player can be told to walk to the beer. A kind that names none may be in
-	// any of the five, which is the key: the location is drawn with crypto/rand
-	// every time one is hidden, so the only assertion that can be made is that it
-	// is somewhere the catalogue knows about. A spawn into a location that is not
-	// in the catalogue would be a key nobody could ever reach, because a search is
-	// judged against the hotspots of the searcher's own location.
+	// WHERE IT WENT IS THE CATALOGUE'S ANSWER, and there are two of them — though
+	// only one is in use. A kind that names a location is pinned to it; a kind that
+	// names none may be in any of the five, its location drawn with crypto/rand
+	// every time one is stood up, which is what both singletons now are. So the
+	// only assertion that can be made about the place is that the catalogue knows
+	// it: a spawn into a location that is not in the catalogue would be a key
+	// nobody could ever reach, because a search is judged against the hotspots of
+	// the searcher's own location, and a crate nobody could ever walk to, because
+	// the client draws no shop for a place it cannot name.
 	if def.Location != "" && got.locationKey != def.Location {
-		t.Errorf("%q was stood up in %q; the catalogue pins it to %q, and a shop that wandered would make the walk to it a matter of luck",
+		t.Errorf("%q was stood up in %q; the catalogue pins it to %q, and a pinned kind that wandered would make the walk to it a matter of luck",
 			def.Key, got.locationKey, def.Location)
 	}
 	if _, known := LocationByKey(got.locationKey); !known {
@@ -1305,13 +1363,27 @@ func assertSpawned(t *testing.T, got insertedObject, def ObjectKind) {
 		t.Errorf("%q was put at (%v,%v), off the plane; the column itself CHECKs 0..1, so that insert would be refused outright",
 			def.Key, got.at.X, got.at.Y)
 	}
-	// A kind with a pitch stands ON it, and one without is hidden somewhere the
-	// catalogue does not name. That nil is the entire difference between a shop
-	// and a lost key, and it is read in one place — a spawn that ignored it would
-	// put the beer store somewhere new on every restart.
+	// A kind with a pitch stands ON it; a kind without lands at one of its
+	// location's own hotspots, which is where both singletons go now. The second
+	// half is the one with teeth: a key at a point that is no hotspot is a hunt
+	// only `nearestHotspot`'s tolerance keeps winnable, and a crate at one is a
+	// shop standing in the middle of nowhere.
 	if def.At != nil && !samePoint(got.at, *def.At) {
-		t.Errorf("%q was put at (%v,%v); want the catalogue's own pitch (%v,%v) — a shop that moved would make the walk to it a matter of luck",
+		t.Errorf("%q was put at (%v,%v); want the catalogue's own pitch (%v,%v) — a pinned kind that moved would make the walk to it a matter of luck",
 			def.Key, got.at.X, got.at.Y, def.At.X, def.At.Y)
+	}
+	if def.At == nil {
+		loc, known := LocationByKey(got.locationKey)
+		if known {
+			landed := false
+			for _, h := range loc.Hotspots {
+				landed = landed || samePoint(got.at, h.At)
+			}
+			if !landed {
+				t.Errorf("%q was put at (%v,%v) in %q, which is none of its hotspots; nothing the world stands up is supposed to land between the places a player can go and look",
+					def.Key, got.at.X, got.at.Y, got.locationKey)
+			}
+		}
 	}
 	switch def.Contest {
 	case ContestStock:
@@ -1512,15 +1584,16 @@ func TestDrinkingIsRefusedFromAcrossTheYardAndAllowedBesideTheCrate(t *testing.T
 	if drink.NeedsNear == "" {
 		t.Fatalf("the catalogue no longer gates %q on standing near anything; this test is about a rule the game does not have", drink.Key)
 	}
-	crate := mustObjectKind(t, drink.NeedsNear)
-	if crate.At == nil {
-		t.Fatalf("%q has no pitch; there is nothing to measure a distance to", crate.Key)
-	}
+	// Where the fixture will put the crate. Read from the same helper the fixture
+	// reads rather than from the catalogue, which no longer knows: the crate is
+	// stood up at a hotspot drawn at random, so the only way to say "just inside
+	// the threshold of it" is to have chosen the draw yourself.
+	pitch := theStoresPitch(t).At
 	// Just inside and just outside the threshold, expressed as fractions of it so
 	// the case still means "barely there" and "barely not" after a retune. On one
 	// axis, so the distance IS the offset and no test has to redo the hypotenuse.
-	near := Point{X: crate.At.X - arriveWithin*0.9, Y: crate.At.Y}
-	beyond := Point{X: crate.At.X - arriveWithin*1.1, Y: crate.At.Y}
+	near := Point{X: pitch.X - arriveWithin*0.9, Y: pitch.Y}
+	beyond := Point{X: pitch.X - arriveWithin*1.1, Y: pitch.Y}
 
 	for _, tc := range []struct {
 		name  string
@@ -1530,7 +1603,7 @@ func TestDrinkingIsRefusedFromAcrossTheYardAndAllowedBesideTheCrate(t *testing.T
 	}{
 		{
 			name:  "standing right at it",
-			stand: func(svc *Service) { standAt(svc, testAccount, *crate.At) },
+			stand: func(svc *Service) { standAt(svc, testAccount, pitch) },
 			why:   "the ordinary case: he walked over and pressed the button",
 		},
 		{
@@ -1546,7 +1619,7 @@ func TestDrinkingIsRefusedFromAcrossTheYardAndAllowedBesideTheCrate(t *testing.T
 		},
 		{
 			name:  "across the yard",
-			stand: func(svc *Service) { standAt(svc, testAccount, Point{X: 1 - crate.At.X, Y: 1 - crate.At.Y}) },
+			stand: func(svc *Service) { standAt(svc, testAccount, Point{X: 1 - pitch.X, Y: 1 - pitch.Y}) },
 			want:  ErrTooFar,
 			why:   "beer comes out of the crate, so a Ваня nowhere near it cannot have any",
 		},
@@ -1554,7 +1627,7 @@ func TestDrinkingIsRefusedFromAcrossTheYardAndAllowedBesideTheCrate(t *testing.T
 			name:  "somebody the yard has never placed at all",
 			stand: func(*Service) {},
 			want:  ErrTooFar,
-			why:   "an unplaced account falls back to the entrance, which is a walk away — refusing is right, and it is why the crate is inside one walk of the door",
+			why:   "an unplaced account falls back to the entrance, and the shop is no longer guaranteed to be a step from it — refusing him is right, and `theStoresPitch` keeps this case honest by standing the crate well clear of `spawn`",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1629,14 +1702,13 @@ func TestDrinkingIsRefusedFromAcrossTheYardAndAllowedBesideTheCrate(t *testing.T
 // instant he pressed "go", and one that read its origin would refuse him after he
 // had plainly arrived; both would look right in a screenshot.
 func TestTheGateReadsWhereHeHasGotToAndNotWhereHeSetOff(t *testing.T) {
-	crate := mustObjectKind(t, KindCrate)
-	if crate.At == nil {
-		t.Fatalf("%q has no pitch; there is nothing to walk to", crate.Key)
-	}
+	// Where the fixture stands the crate, since the catalogue no longer says.
+	pitch := theStoresPitch(t).At
 	// As long a walk as can never be refused, ending at the crate — so this test
 	// is about the clock rather than about luck, and its halfway point is
-	// comfortably outside the arrival threshold.
-	from := Point{X: crate.At.X - tiredFrom*0.95, Y: crate.At.Y}
+	// comfortably outside the arrival threshold. `theStoresPitch` is chosen to be
+	// far enough from the left-hand edge that this origin is still on the plane.
+	from := Point{X: pitch.X - tiredFrom*0.95, Y: pitch.Y}
 
 	repo := playedFor()
 	tr := &fakeTransport{}
@@ -1650,11 +1722,11 @@ func TestTheGateReadsWhereHeHasGotToAndNotWhereHeSetOff(t *testing.T) {
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
-	w := tap(t, svc, member("1"), *crate.At)
+	w := tap(t, svc, member("1"), pitch)
 
 	// Halfway there, which is still further than the threshold.
 	midway := partWayThrough(w)
-	if d := distance(w.at(midway), *crate.At); d <= arriveWithin {
+	if d := distance(w.at(midway), pitch); d <= arriveWithin {
 		t.Fatalf("halfway along a walk of %v he is already within %v of the crate; this test needs a journey whose middle is genuinely too far away",
 			distance(w.from, w.to), arriveWithin)
 	}
@@ -1755,7 +1827,20 @@ func TestTheCrateIsReplacedOnlyByTheDrawThatEmptiesIt(t *testing.T) {
 	// Two left, so the test watches an ordinary draw and the last one.
 	repo.stock = map[string]int{crate.Key: 2}
 	svc := planeService(&fakeTransport{}, repo)
-	atTheStore(t, svc, repo, testAccount, 2)
+	pitch := crateInTheYard(t, svc, repo, 2).At
+	// A STEP AWAY FROM THE CRATE RATHER THAN ON TOP OF IT — inside the arrival
+	// radius, so the drink is allowed, but not on the hotspot the crate is
+	// standing on.
+	//
+	// It is the difference between this test and a weaker one, and the reason is
+	// that the crate now stands where a player stands: on one of the location's
+	// hiding places. A drinker exactly on the crate makes "the replacement was
+	// placed by a fresh draw" and "the replacement was placed where the drinker
+	// was standing" produce the identical row, so the second — which would pin the
+	// shop under whoever emptied it and stop it ever moving again — would pass
+	// every assertion below. Standing him off the spot makes only the first of
+	// those land on a hotspot, which `assertSpawned` checks.
+	standAt(svc, testAccount, Point{X: pitch.X - arriveWithin*0.9, Y: pitch.Y})
 
 	if _, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, "", at(0)); err != nil {
 		t.Fatalf("the first drink: %v", err)
@@ -1777,8 +1862,11 @@ func TestTheCrateIsReplacedOnlyByTheDrawThatEmptiesIt(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("%d crates were stood up by the draw that emptied the last one; want exactly the replacement: %+v", len(got), got)
 	}
-	// A FULL one, in the same place, owned by nobody — another crate was put out,
-	// rather than somebody putting the empty one back.
+	// A FULL one, owned by nobody, at a hotspot of whichever place the draw sent it
+	// to — another crate was put out, rather than somebody putting the empty one
+	// back. Where it went is deliberately NOT compared against where the empty one
+	// stood: the replacement is placed by a fresh draw, so a test that demanded the
+	// same place would be demanding the pinning this game gave up.
 	assertSpawned(t, got[0], crate)
 }
 
@@ -1933,8 +2021,11 @@ func TestAnEmptyCrateRefusesTheDrinkAndCostsHimNothing(t *testing.T) {
 // quietly re-read would produce identical frames and be invisible everywhere
 // else.
 func TestTheFrameCarriesTheStoreOnceAndAsksNobodyWhatIsLeft(t *testing.T) {
-	crate := mustObjectKind(t, KindCrate)
 	relief := leavingKind(t, ActionRelieve)
+	// The place is the fixture's to choose now that the kind has none, so the
+	// expected block is built from the same point the row was written at rather
+	// than from the catalogue.
+	pitch := theStoresPitch(t).At
 
 	for _, tc := range []struct {
 		name    string
@@ -1944,8 +2035,8 @@ func TestTheFrameCarriesTheStoreOnceAndAsksNobodyWhatIsLeft(t *testing.T) {
 	}{
 		{
 			name:    "a crate with beer in it",
-			objects: []WorldObject{aCrate(t, 1, 3), anObject(2, relief.Key, Point{X: 0.2, Y: 0.2}, at(60))},
-			want:    &Store{X: crate.At.X, Y: crate.At.Y, Left: 3},
+			objects: []WorldObject{aCrate(t, 1, LocationYard, pitch, 3), anObject(2, relief.Key, Point{X: 0.2, Y: 0.2}, at(60))},
+			want:    &Store{X: pitch.X, Y: pitch.Y, Left: 3},
 			why:     "where it is and how much is in it are the two things a client needs to grey the button, and it holds no kind key to find either out for itself",
 		},
 		{
@@ -2070,9 +2161,16 @@ func TestTheKeyIsNeverDrawnOnThePlane(t *testing.T) {
 	if props[0].ID == "obj-"+shortID(lost.ID) {
 		t.Errorf("the key is in the roster under its own id %q; hiding it means it is not an entity at all", props[0].ID)
 	}
-	// Nothing anywhere in the frame stands where the key is, which is the strong
-	// form: not merely "no entity is labelled key" but "no coordinate leaks it".
+	// Nothing IN THE KEY'S OWN LOCATION stands where the key is, which is the
+	// strong form: not merely "no entity is labelled key" but "no coordinate leaks
+	// it". Scoped to the location, because coordinates are normalised per place and
+	// the frame carries all five: a regular in лифт who happens to be at the same
+	// (x, y) as a hotspot of двор gives nothing away, since nobody looking at двор
+	// is drawn him at all.
 	for _, p := range frame.Peers {
+		if locationOr(p.Loc) != lost.LocationKey {
+			continue
+		}
 		if samePoint(Point{X: p.X, Y: p.Y}, spot.At) {
 			t.Errorf("entity %q is standing exactly where the key is hidden, (%v,%v); a client that noticed would have the answer",
 				p.ID, p.X, p.Y)
@@ -2471,12 +2569,11 @@ func TestTheBeerStoreIsCarriedAsAStructureAndNotAsAnEntity(t *testing.T) {
 	if frame.Store.Left != 4 {
 		t.Errorf("the store says %d left, want 4", frame.Store.Left)
 	}
-	kind := mustObjectKind(t, KindCrate)
-	if kind.At == nil {
-		t.Fatal("the crate has no pitch in the catalogue")
-	}
-	if frame.Store.X != kind.At.X || frame.Store.Y != kind.At.Y {
-		t.Errorf("the store is at %v,%v, want the catalogue's %v", frame.Store.X, frame.Store.Y, *kind.At)
+	// Against the ROW the fixture wrote rather than against the catalogue, which
+	// stopped knowing where a crate stands the day the shop began to move.
+	pitch := theStoresPitch(t).At
+	if frame.Store.X != pitch.X || frame.Store.Y != pitch.Y {
+		t.Errorf("the store is at %v,%v, want the crate's own %v", frame.Store.X, frame.Store.Y, pitch)
 	}
 
 	// And nothing is drawn for it. The crate is the only thing in the world here,
@@ -2544,45 +2641,69 @@ func TestTheKeyIsHiddenSomewhereAndTheOtherPlacesAreEmpty(t *testing.T) {
 	}
 }
 
-// TestAFreshKeyGoesAnywhereAndTheCrateNeverLeavesTheYard is the two answers
-// `locationFor` gives, and the reason the field has two of them.
+// TestAFreshKeyAndAFreshCrateBothGoAnywhereAndBothLandOnAHotspot is what
+// `locationFor` and `placeFor` do for every singleton the world stands up.
 //
-// A kind naming no location is scattered: hidden in a place drawn with
-// crypto/rand each time, so finding one tells you nothing about where the next
-// will be. A kind naming one is pinned: the beer store is in двор every time it
-// is stood up, because a shop that wandered between five places would be a
-// second key hunt wearing an apron and no player could ever be told to walk to
-// it.
+// IT USED TO ASSERT THE OPPOSITE ABOUT THE CRATE, and the reversal is the point.
+// The beer store was pinned to двор on the argument that a shop wandering between
+// five places would be a second key hunt wearing an apron, and that nobody could
+// be told to walk to it. The second half was the mistaken one: the frame's `store`
+// block carries the crate's location and pitch on every tick, so a player is
+// always TOLD where the beer is — he simply has to go there, which is the only
+// thing that gives the four places behind the yard traffic when no hunt is
+// tempting anybody into them. The key stays a search because it is `Hidden`; the
+// crate is `OffFrame`, so it is placed the same way and published anyway.
 //
-// The spread is asserted rather than the distribution. A hundred draws over five
+// The SPREAD is asserted rather than the distribution. A hundred draws over five
 // locations lands in every one of them with overwhelming probability, and a
 // tighter claim would be a statistical test in a suite that has to be green every
 // time.
-func TestAFreshKeyGoesAnywhereAndTheCrateNeverLeavesTheYard(t *testing.T) {
-	key := mustObjectKind(t, KindKey)
-	if key.Location != "" {
-		t.Fatalf("the catalogue now pins %q to %q; this test is about a kind that may be anywhere", key.Key, key.Location)
-	}
-	crate := mustObjectKind(t, KindCrate)
-	if crate.Location == "" {
-		t.Fatalf("the catalogue no longer pins %q anywhere; the store would move and the walk to it would be a matter of luck", crate.Key)
-	}
+//
+// And both land ON A HOTSPOT, which is the half `placeFor` decides and the half
+// that would otherwise fail silently: a kind that quietly regained a pitch would
+// still spread across the locations and still pass everything above, while
+// standing in the same corner of each of them for ever.
+func TestAFreshKeyAndAFreshCrateBothGoAnywhereAndBothLandOnAHotspot(t *testing.T) {
+	svc := planeService(&fakeTransport{}, playedFor())
+	for _, def := range []ObjectKind{mustObjectKind(t, KindKey), mustObjectKind(t, KindCrate)} {
+		t.Run(def.Key, func(t *testing.T) {
+			if def.Location != "" {
+				t.Fatalf("the catalogue now pins %q to %q; both singletons are supposed to be stood up somewhere fresh each time", def.Key, def.Location)
+			}
+			if def.At != nil {
+				t.Fatalf("the catalogue gives %q a pitch of its own at %+v; it would then stand in the identical corner of whichever location it landed in", def.Key, *def.At)
+			}
 
-	seen := map[string]int{}
-	const draws = 100
-	for i := 0; i < draws; i++ {
-		where := locationFor(key)
-		if _, ok := LocationByKey(where); !ok {
-			t.Fatalf("a fresh %q was sent to %q, which is not a location in the catalogue; nothing could ever be searched there", key.Key, where)
-		}
-		seen[where]++
-		if got := locationFor(crate); got != crate.Location {
-			t.Fatalf("a fresh %q was sent to %q; want the catalogue's %q every single time", crate.Key, got, crate.Location)
-		}
-	}
-	if len(seen) != len(Content().Locations) {
-		t.Errorf("%d draws reached %d of the %d locations (%v); a place the key can never be hidden in is a place nobody would ever have a reason to visit",
-			draws, len(seen), len(Content().Locations), seen)
+			seen := map[string]int{}
+			const draws = 100
+			for i := 0; i < draws; i++ {
+				where := locationFor(def)
+				loc, ok := LocationByKey(where)
+				if !ok {
+					t.Fatalf("a fresh %q was sent to %q, which is not a location in the catalogue; nothing could ever be found there", def.Key, where)
+				}
+				seen[where]++
+
+				// And it is stood up at one of that location's own published places,
+				// which for the key is where a search can reach it and for the crate is
+				// where the frame will tell everybody to walk.
+				at := svc.placeFor(def, where)
+				landed := ""
+				for _, h := range loc.Hotspots {
+					if h.At == at {
+						landed = h.Key
+					}
+				}
+				if landed == "" {
+					t.Fatalf("a fresh %q was stood up at (%v,%v) in %q, which is none of its hotspots; the key would be unfindable there and the crate would be a shop standing in the middle of nowhere",
+						def.Key, at.X, at.Y, where)
+				}
+			}
+			if len(seen) != len(Content().Locations) {
+				t.Errorf("%d draws reached %d of the %d locations (%v); a place %q can never be stood up in is a place nobody would ever have a reason to visit",
+					draws, len(seen), len(Content().Locations), seen, def.Key)
+			}
+		})
 	}
 }
 
@@ -2644,11 +2765,20 @@ func TestThingsInOtherLocationsStillRideTheFrameCarryingTheirOwnPlace(t *testing
 //
 // One frame goes to the whole world, so «where the shop is» stopped being a pair
 // of coordinates and became a place plus a pair of coordinates. Without the
-// place, a Ваня in лес would be shown a store at (0.82, 0.22) of лес — a shop
-// that is not there, inviting him to walk to a crate he cannot see and be refused
-// when he presses. The client compares it against its own location and draws
-// nothing when they differ; the server refuses regardless, because a greyed
-// button is a suggestion.
+// place, a Ваня in лес would be shown a store at the yard crate's coordinates OF
+// лес — a shop that is not there, inviting him to walk to a crate he cannot see
+// and be refused when he presses. The client compares it against its own location
+// and draws nothing when they differ; the server refuses regardless, because a
+// greyed button is a suggestion.
+//
+// IT IS NOW THE ONLY PUBLICATION OF WHERE THE BEER IS, which is what turned this
+// from a field kept free for later into the load-bearing one. The catalogue used
+// to carry a constant `store_location` beside it, derived from the crate's pinned
+// place; the crate moves every time it is emptied, so that constant went and this
+// block is the whole answer. The raw JSON is asserted as well as the decoded
+// struct, because a client reads bytes: `omitempty` dropping `loc` for the
+// default location is a convention the browser has to be able to rely on in both
+// directions — present means somewhere else, absent means двор.
 func TestTheStoreIsCarriedWithTheLocationItStandsIn(t *testing.T) {
 	repo := playedFor()
 	tr := &fakeTransport{}
@@ -2663,15 +2793,18 @@ func TestTheStoreIsCarriedWithTheLocationItStandsIn(t *testing.T) {
 	if store == nil {
 		t.Fatal("the frame carries no store at all while a crate is standing in the yard")
 	}
-	// Omitted, because the crate is pinned to the default location — so the field
-	// costs nothing today and is what keeps it free to move the shop.
+	// Omitted for a crate that has landed in the default location, which is one
+	// draw in five rather than the certainty it used to be. The convention is the
+	// same one Peer.Loc follows: the common case is absent.
 	if store.Loc != "" {
 		t.Errorf("the store publishes loc=%q while it stands in the default location; the whole convention is that the common case is absent", store.Loc)
 	}
 
-	// And a crate somewhere else says so, which is the case the field exists for.
-	elsewhere := aCrate(t, 43, crateStock)
-	elsewhere.LocationKey = LocationZabroshka
+	// And a crate somewhere else says so, which is the case that is now ordinary
+	// rather than hypothetical. Stood up at a real hotspot of лес, because that is
+	// where the game puts one.
+	spot := aHotspot(t, LocationLes, 0)
+	elsewhere := aCrate(t, 43, LocationLes, spot.At, crateStock)
 	svc.mu.Lock()
 	svc.world = []WorldObject{elsewhere}
 	svc.mu.Unlock()
@@ -2680,11 +2813,20 @@ func TestTheStoreIsCarriedWithTheLocationItStandsIn(t *testing.T) {
 	}
 	moved := tr.frames()[1].Store
 	if moved == nil {
-		t.Fatal("the frame carries no store while a crate is standing in заброшка")
+		t.Fatal("the frame carries no store while a crate is standing in лес")
 	}
-	if moved.Loc != LocationZabroshka {
+	if moved.Loc != LocationLes {
 		t.Errorf("the store publishes loc=%q while its crate stands in %q; a client looking at the yard would draw a shop that is not there",
-			moved.Loc, LocationZabroshka)
+			moved.Loc, LocationLes)
+	}
+	if moved.X != spot.At.X || moved.Y != spot.At.Y || moved.Left != crateStock {
+		t.Errorf("the store is published as (%v,%v) with %d left; want the row's own %+v with %d — the pitch and the count travel together or the client greys the wrong button",
+			moved.X, moved.Y, moved.Left, spot.At, crateStock)
+	}
+	// The bytes, because the client parses those and not the struct.
+	want := fmt.Sprintf(`"store":{"x":%v,"y":%v,"loc":%q,"left":%d}`, spot.At.X, spot.At.Y, LocationLes, crateStock)
+	if raw := string(tr.rawFrames()[1]); !strings.Contains(raw, want) {
+		t.Errorf("the frame carries %s;\nwant a store block reading %s — an absent `loc` has to keep meaning двор rather than «nowhere»", raw, want)
 	}
 }
 
@@ -2895,22 +3037,22 @@ func TestTheYardObjectsInSeveralVoicesRatherThanInChorus(t *testing.T) {
 	svc := planeService(nil, nil)
 	seen := make(map[string]bool, len(reekSays))
 	for i := 0; i < 200; i++ {
-		seen[svc.reekLine(fmt.Sprintf("witness-%d", i), "actor", at(0))] = true
+		seen[svc.witnessLine(reekSays, "reek", fmt.Sprintf("witness-%d", i), "actor", at(0))] = true
 	}
 	if len(seen) < 2 {
 		t.Fatalf("two hundred witnesses of one deed produced %d distinct line(s); the roll is not keyed on the witness at all", len(seen))
 	}
 	// And the SAME witness of the SAME deed says the same thing every time it is
 	// asked, which is what lets a balloon survive being recomputed.
-	first := svc.reekLine("witness-1", "actor", at(0))
-	if again := svc.reekLine("witness-1", "actor", at(0)); again != first {
+	first := svc.witnessLine(reekSays, "reek", "witness-1", "actor", at(0))
+	if again := svc.witnessLine(reekSays, "reek", "witness-1", "actor", at(0)); again != first {
 		t.Errorf("the same witness of the same deed said %q and then %q; a line has to be a property of the deed rather than of when it was asked about", first, again)
 	}
 	// A second deed at a second instant gets its own draw, or somebody standing
 	// through an evening of them repeats himself all night.
 	sweep := make(map[string]bool, len(reekSays))
 	for i := 0; i < 200; i++ {
-		sweep[svc.reekLine("witness-1", "actor", at(0).Add(time.Duration(i)*time.Second))] = true
+		sweep[svc.witnessLine(reekSays, "reek", "witness-1", "actor", at(0).Add(time.Duration(i)*time.Second))] = true
 	}
 	if len(sweep) < 2 {
 		t.Fatalf("one witness standing through two hundred deeds said %d distinct line(s); the roll is not keyed on the deed", len(sweep))
@@ -2920,14 +3062,11 @@ func TestTheYardObjectsInSeveralVoicesRatherThanInChorus(t *testing.T) {
 // TestTheRegularsRecoilTooBecauseOtherwiseNobodyDoes.
 //
 // The reason `npcSaid` exists at all, and the reason it was worth giving the cast
-// its first piece of remembered state. On the evening this is actually played the
-// yard is one player and three regulars, so a players-only reaction would be
-// invisible in its commonest case — this is that case, driven with a single
-// member in the room.
+// its first piece of remembered state. On the evening this is actually played a
+// place holds one player and one or two regulars, so a players-only reaction
+// would be invisible in its commonest case — this is that case, driven with a
+// single member in the room.
 func TestTheRegularsRecoilTooBecauseOtherwiseNobodyDoes(t *testing.T) {
-	if len(catalogue.NPCs) == 0 {
-		t.Skip("the catalogue has no regulars, so there is nobody for a deed to be witnessed by")
-	}
 	repo := playedFor(enoughFor(t, ActionRelieve, epoch))
 	tr := &fakeTransport{}
 	tr.setMembers(member("1"))
@@ -2936,9 +3075,19 @@ func TestTheRegularsRecoilTooBecauseOtherwiseNobodyDoes(t *testing.T) {
 	if err := svc.broadcast(context.Background(), at(0)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
-	// Standing on top of a regular, so the distance filter cannot be what decides
-	// this: the deed happens exactly where somebody is already standing.
-	npc := catalogue.NPCs[0]
+	// A regular who lives WHERE THE PET IS, which is the yard, because a pet
+	// nobody has sent anywhere is in the default location. Picked by his location
+	// rather than by his index in the catalogue: `recoil` filters on the place
+	// BEFORE it measures any distance, so a cast reshuffled until some regular from
+	// лифт came first would have turned this into a test that silently proved
+	// nothing — everybody standing about in silence, exactly as they should when a
+	// deed happens four places away.
+	npc, ok := aRegularIn(locationOr(repo.pet.LocationKey))
+	if !ok {
+		t.Skipf("no regular lives in %q, so there is nobody there for a deed to be witnessed by", locationOr(repo.pet.LocationKey))
+	}
+	// Standing on top of him, so the distance filter cannot be what decides this:
+	// the deed happens exactly where somebody is already standing.
 	standAt(svc, testAccount, evaluate(npc.Pattern, npc.Params, at(0).Sub(worldEpoch)))
 
 	_, when, err := pressPastNerves(t, svc, testAccount, []string{ActionRelieve}, "", at(0))
@@ -2977,5 +3126,105 @@ func TestTheRegularsRecoilTooBecauseOtherwiseNobodyDoes(t *testing.T) {
 	svc.mu.Unlock()
 	if held != 0 {
 		t.Errorf("the cast still holds %d remembered line(s) after they expired; the read is supposed to be what forgets them", held)
+	}
+}
+
+// TestLosingTheKeysIsSaidOutLoudAndNotOnlyWorn.
+//
+// Winning and losing move no stat — that is the settled ruling, and it is what
+// makes another player turning up never bad news — so the whole consequence of
+// the race is cosmetic. A face was the entirety of it, which is a small thing to
+// hang a mechanic's payoff on and easily missed in four seconds by somebody
+// looking at another corner of the yard. This pins the half that carries.
+func TestLosingTheKeysIsSaidOutLoudAndNotOnlyWorn(t *testing.T) {
+	winner, loser, faraway := member("1"), member("2"), member("3")
+	if winner.AccountID != testAccount {
+		t.Fatalf("the winner's connection belongs to %q and the fake repository holds the pet of %q; the verb below would act for somebody else",
+			winner.AccountID, testAccount)
+	}
+	lift, ok := LocationByKey(LocationLift)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", LocationLift)
+	}
+
+	repo := playedFor()
+	tr := &fakeTransport{}
+	tr.setMembers(winner, loser, faraway)
+	svc := planeService(tr, repo)
+
+	// One tick, so all three have a placement — a line is hung on one, and
+	// somebody the yard has never placed has nowhere to wear it.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	// And the third leaves, through the production path so the fixture cannot
+	// disagree with what a real journey does.
+	svc.arrive(faraway.AccountID, lift)
+
+	repo.claimWon = true
+	spot := searchingIn(t, svc, repo, testAccount, aHotspot(t, LocationYard, 0))
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, spot, at(0)); err != nil {
+		t.Fatalf("Do(%q): %v", ActionClaim, err)
+	}
+
+	if err := svc.broadcast(context.Background(), at(0).Add(moodFor/2)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	f := frames[len(frames)-1]
+
+	said := func(who realtime.Member) string {
+		t.Helper()
+		p, ok := peerOf(svc, f, who.AccountID)
+		if !ok {
+			t.Fatalf("%s is not in the frame at all: %+v", who.ConnID, f)
+		}
+		return p.Say
+	}
+
+	if line := said(loser); !slices.Contains(enviousSays, line) {
+		t.Errorf("the man who lost the race says %q; want one of enviousSays — a sad face for four seconds is the whole of losing, and it is easily missed",
+			line)
+	}
+	// IN THE PLACE IT HAPPENED, like the face beside it. The room is the whole
+	// world, so a Ваня in лифт would otherwise announce his envy of something he
+	// could not see, had no part in, and would be given no explanation of.
+	if line := said(faraway); slices.Contains(enviousSays, line) {
+		t.Errorf("somebody standing in %q says %q about a race he could not see; a reaction with no local cause reads as a broken game rather than as a loss",
+			LocationLift, line)
+	}
+	// And the winner is not envying himself. His own «нашел ключи» is what belongs
+	// over his head, and the verb path puts it there once the batch is accepted.
+	if line := said(winner); slices.Contains(enviousSays, line) {
+		t.Errorf("the man who found them says %q, which is one of the losers' lines", line)
+	}
+
+	// AND THE REGULARS ENVY HIM TOO, which is the case that actually happens: on a
+	// quiet evening the yard is one player and three of them, so a reaction only
+	// other players could have would be invisible almost every time.
+	var regularsSpoke int
+	for _, p := range f.Peers {
+		if !strings.HasPrefix(p.ID, npcPrefix) {
+			continue
+		}
+		if slices.Contains(enviousSays, p.Say) {
+			regularsSpoke++
+		}
+	}
+	if regularsSpoke == 0 {
+		t.Errorf("not one regular in the yard said anything about a key being found in front of them: %+v", f.Peers)
+	}
+
+	// It expires with the face it belongs to, by comparison against the tick's
+	// clock — nothing schedules its removal.
+	if err := svc.broadcast(context.Background(), at(0).Add(moodFor)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames = tr.frames()
+	after := frames[len(frames)-1]
+	for _, p := range after.Peers {
+		if slices.Contains(enviousSays, p.Say) {
+			t.Errorf("%q is still going on about it after moodFor; a line the tick never drops is state somebody has to clean up", p.ID)
+		}
 	}
 }

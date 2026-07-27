@@ -361,16 +361,25 @@ func (s *Service) ensureSingleton(ctx context.Context, def ObjectKind) {
 // down, and read in the same two places: the hello that stands a missing
 // singleton up, and the write that replaces one that has just been used up.
 //
-// THE RANDOM ONE IS THE KEY, and it is what makes the four locations a game
-// rather than four backdrops. Nobody is told which place holds it, so the only
-// way to find out is to go and look — and because the choice is made afresh
-// every time a key is claimed, watching where the last one was tells you nothing
-// about the next.
+// NOTHING NAMES ONE TODAY, so in practice every spawn takes the random branch;
+// the catalogue branch is kept for the reason ObjectKind.Location gives.
+//
+// THE RANDOM ONE IS BOTH SINGLETONS NOW, and it is what makes the four locations
+// a game rather than four backdrops. For the key it is secrecy: nobody is told
+// which place holds it, so the only way to find out is to go and look — and
+// because the choice is made afresh every time a key is claimed, watching where
+// the last one was tells you nothing about the next. For the crate it is
+// traffic: the beer is somewhere in the world and the frame says where, so
+// emptying one sends everybody who wants a drink to a place they had no other
+// reason to walk to. SAME DRAW, OPPOSITE PUBLICITY — which the two kinds express
+// through `Hidden` and `OffFrame` rather than by being placed differently.
 //
 // crypto/rand rather than math/rand, for the reason `hideIn` gives about the
-// hotspot one level down: this is half of the answer to the game, so a
-// predictable sequence would let somebody who watched a few rounds know where
-// the next key is before it is hidden.
+// hotspot one level down: for the key this is half of the answer to the game, so
+// a predictable sequence would let somebody who watched a few rounds know where
+// the next one is before it is hidden. The crate does not need that guarantee
+// and costs nothing by sharing it — two randomisers with different promises in
+// one file would be a distinction somebody has to keep straight.
 func locationFor(def ObjectKind) string {
 	if def.Location != "" {
 		return def.Location
@@ -395,10 +404,12 @@ func locationFor(def ObjectKind) string {
 // placeFor decides where a freshly spawned object of a kind stands.
 //
 // The catalogue's own pitch for a kind that has one, and one of the location's
-// hotspots for a kind that does not. That nil is the entire difference between a
-// shop and a lost key, and reading it here is what keeps the difference out of
-// the two places that spawn things — the hello above and the exhausting write in
-// Do — so neither of them has to know which kinds stand still.
+// hotspots for a kind that does not. NO KIND HAS ONE TODAY — the crate carried
+// the last pitch there was and gave it up when the shop started moving — so both
+// singletons come out of `hideIn`, and the two spawns are one path rather than a
+// shop path and a key path. Reading the catalogue here is what keeps even that
+// out of the two places that spawn things: the hello above and the exhausting
+// write in Do neither of them has to know which kinds stand still.
 //
 // IT TAKES THE LOCATION, which is the shape the four locations after the yard
 // reuse: a thing is hidden among the places in the location it is spawned into,
@@ -551,9 +562,17 @@ func (s *Service) beside(accountID, kind, locationKey string, now time.Time) boo
 // no query.
 //
 // It carries WHERE the shop is as well as its place within that location, and
-// the two are not the same question now that there are five: a client looking at
-// заброшка is told the store is in двор and draws nothing. One field rather than
-// a store block per location, because there is one crate in the world.
+// the two are not the same question now that there are five: a client looking
+// somewhere other than the crate's own location is told so and draws nothing.
+// One field rather than a store block per location, because there is one crate
+// in the world.
+//
+// THIS IS THE ONLY ANSWER TO "WHERE IS THE BEER" THERE IS. The catalogue used to
+// carry a second one — a static `store_location` derived from the crate's pinned
+// place — and it went with the pinning rather than being left to go stale: a
+// crate that moves every time it is emptied makes a constant field a lie the
+// splash screen would repeat. One fact, published once, on the frame that already
+// has to carry it.
 func (s *Service) store(now time.Time) *Store {
 	crate, ok := s.objectOf(KindCrate, now)
 	if !ok || crate.Remaining == nil {
@@ -632,7 +651,31 @@ func (s *Service) settleHunt(ctx context.Context, winner, where string, now time
 			continue
 		}
 		s.setMood(m.AccountID, PoseSad, until)
+		// AND HE SAYS SO. The face was the whole consequence of losing the race,
+		// which is a small thing to hang a mechanic's payoff on and easily missed
+		// in four seconds by somebody looking at another corner of the yard. The
+		// line is the half that carries — and it is envy rather than
+		// congratulation, which is the register this game is written in.
+		s.Say(m.AccountID, s.witnessLine(enviousSays, "envy", m.AccountID, winner, now), moodFor)
+
 	}
+	// THE REGULARS ENVY HIM TOO, for the reason they recoil at a deposit: on the
+	// evening this is actually played the yard is one player and three of them, so
+	// a reaction only other players could have would be invisible in its
+	// commonest case. No distance test, unlike the recoil — a face going sad is
+	// already location-wide, and it would be strange for the yard to pull a face
+	// at something it would not comment on.
+	s.mu.Lock()
+	for _, npc := range catalogue.NPCs {
+		if locationOr(npc.Location) != locationOr(where) {
+			continue
+		}
+		s.npcSaid[npc.Key] = spoken{
+			text:  s.witnessLine(enviousSays, "envy", npcPrefix+npc.Key, winner, now),
+			until: until,
+		}
+	}
+	s.mu.Unlock()
 }
 
 // recoil is the yard objecting, out loud, to somebody relieving himself in it.
@@ -652,10 +695,12 @@ func (s *Service) settleHunt(ctx context.Context, winner, where string, now time
 // about being anywhere near it.
 //
 // THE REGULARS REACT TOO, and they are the reason this exists in the shape it
-// does. On a quiet evening the yard is one player and three of them, so a
-// players-only version of this would be invisible in its commonest case — see
-// `npcSaid` for what that costs. They are placed the way the tick places them,
-// closed-form at this instant, so nobody has to be told where a regular is.
+// does. On a quiet evening a place holds one player and the one or two regulars
+// who live in it, so a players-only version of this would be invisible in its
+// commonest case — see `npcSaid` for what that costs. They are placed the way the
+// tick places them, closed-form at this instant, so nobody has to be told where a
+// regular is. The location filter above them is what stops somebody in лифт
+// gagging at a deed done in заброшка now that every place has somebody in it.
 //
 // The lock discipline is the one `locations` documents: `Say` and `standing` both
 // take `s.mu`, so nothing here may call them while holding it.
@@ -680,7 +725,7 @@ func (s *Service) recoil(ctx context.Context, actor, where string, now time.Time
 			continue
 		}
 		s.npcSaid[npc.Key] = spoken{
-			text:  s.reekLine(npcPrefix+npc.Key, actor, now),
+			text:  s.witnessLine(reekSays, "reek", npcPrefix+npc.Key, actor, now),
 			until: now.Add(reekFor),
 		}
 	}
@@ -712,7 +757,7 @@ func (s *Service) recoil(ctx context.Context, actor, where string, now time.Time
 		if distance(s.standing(m.AccountID, now), at) > reekWithin {
 			continue
 		}
-		s.Say(m.AccountID, s.reekLine(m.AccountID, actor, now), reekFor)
+		s.Say(m.AccountID, s.witnessLine(reekSays, "reek", m.AccountID, actor, now), reekFor)
 	}
 }
 

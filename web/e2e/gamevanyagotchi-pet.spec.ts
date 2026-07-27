@@ -1037,24 +1037,48 @@ const AT_THE_CRATE = { x: STORE.x, y: STORE.y };
 const ACROSS_THE_YARD = { x: 0.2, y: 0.8 };
 
 /**
- * Walks the player's own Ваня to the crate, so that a verb gated on the place is
- * pressable at all.
+ * Puts a Ваня of our own in the yard with the crate across it, ready to be
+ * tapped.
  *
- * EVERY TEST THAT PRESSES «выпить пива» NEEDS THIS NOW, and that is the whole
- * shape of the iteration rather than an inconvenience of the harness: beer comes
- * out of a crate, so you have to be at the crate. It is two frames because the
- * gate is two questions — which entity am I, and where is it — and the client
- * refuses to guess at either.
- *
- * It waits for the button rather than for the frames, because what the caller
- * actually needs is a control it can click; asserting the enabling here also
- * means a test that merely wanted to press a button does not silently become a
- * test of the gate.
+ * Two frames because the errand is two questions the client refuses to guess at
+ * — which entity am I, and where is it standing — and `ACROSS_THE_YARD` is
+ * deliberately further than `arrive_within` from the crate, so that nothing has
+ * arrived anywhere before a test has asked for it.
  */
-async function standAtTheCrate(page: Page, socket: SocketHarness, id = 'me'): Promise<void> {
+async function standAcrossFromTheCrate(
+  page: Page,
+  socket: SocketHarness,
+  id = 'me',
+): Promise<void> {
   await socket.push(youAre(id));
+  await socket.push(rosterWithStore(STORE, { id, ...ACROSS_THE_YARD }));
+  await expect(shop(page), 'the crate never arrived on the plane').toBeVisible();
+}
+
+/**
+ * Taps the crate and delivers the arrival, which is the whole of drinking now.
+ *
+ * EVERY TEST THAT DRINKS NEEDS THIS, and that is the shape of the game rather
+ * than an inconvenience of the harness: there is no drink button anywhere, so
+ * having a beer is one tap on the box plus the walk the server then reports. The
+ * verb is sent by the frame that says he got there — not by the tap — which is
+ * why the arrival has to be pushed and why a test cannot skip straight to it.
+ *
+ * It waits for the move before pushing the arrival, so that the errand is
+ * provably armed: a frame delivered before the tap was handled would put him at
+ * the crate with nothing to do there, and the verb would never be sent for a
+ * reason no assertion would explain.
+ */
+async function drinkAtTheCrate(page: Page, socket: SocketHarness, id = 'me'): Promise<void> {
+  await standAcrossFromTheCrate(page, socket, id);
+  await shop(page).click();
+  await expect.poll(() => movesSent(socket).length, {
+    message: 'tapping the crate never asked to walk anywhere',
+  }).toBe(1);
   await socket.push(rosterWithStore(STORE, { id, ...AT_THE_CRATE }));
-  await expect(actionBtn(page, 'drink'), 'never got within reach of the crate').toBeEnabled();
+  await expect.poll(() => socket.asked().length, {
+    message: 'arriving at the crate never sent the drink',
+  }).toBe(1);
 }
 
 /** Copied, not imported — see the header. */
@@ -1124,28 +1148,55 @@ const dots = (page: Page) => page.locator('[data-test="peer"]');
 /** One entity's face. On every dot, not only on the caller's own. */
 const face = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-face"]`);
+/**
+ * The transient line over the yard — absent, rather than empty, when there is
+ * nothing to say.
+ *
+ * It is `v-if`'d now, which is why every assertion about it below counts
+ * elements rather than reading text: there is no fixed row left for it to hold
+ * open, because it no longer shares a panel with anything.
+ */
 const petLine = (page: Page) => page.locator('[data-test="pet-line"]');
 const statValue = (page: Page, key: string) => page.locator(`[data-test="stat-value-${key}"]`);
-/** A lifetime tally on the yard screen: a number in its own row, never a bar. */
+/**
+ * A lifetime tally, which lives on the DEATH SCREEN and nowhere else.
+ *
+ * A total is a score, and a score belongs on the screen you get when you die —
+ * on the yard it was a number nobody was reading, in a panel the plane was
+ * paying for in height. So every assertion that reads one has to kill him first.
+ */
 const tallyValue = (page: Page, key: string) => page.locator(`[data-test="tally-value-${key}"]`);
 const actionBtn = (page: Page, key: string) => page.locator(`[data-test="action-${key}"]`);
+/** The beer crate, which is the whole of the control for drinking now. */
+const shop = (page: Page) => page.locator('[data-test="shop"]');
+/** The screen that covers the yard while he is dead. */
+const death = (page: Page) => page.locator('[data-test="death"]');
+
+/** Every move the page asked for, in order. */
+const movesSent = (socket: SocketHarness) =>
+  socket.sent().filter((frame) => frame.t === TYPE_MOVE);
 
 /**
- * Every action the ACTION ROW draws, so a layout assertion checks the whole row
- * rather than whichever two buttons it was written against.
+ * Every action that is drawn as a BUTTON OVER THE YARD, which is the smallest
+ * this set has ever been — one.
  *
- * NOT EVERY ACTION IN THE CATALOGUE, and the one that is missing is the point.
- * «искать ключи» has no button any more: the yard's own hiding places are the
- * control, so a button beside them would be a second path to the same outcome.
- * It is still served, still in the cheatsheet, and still the verb the claim
- * carries — it is simply not something you press, which is why the row is three
- * wide and this list is derived from the row rather than from the catalogue.
+ * NOT EVERY ACTION IN THE CATALOGUE, and the three that are missing are each
+ * missing for the same reason: every verb with somewhere better to be has gone
+ * there. «искать ключи» is the yard's own hiding places, «выпить пива» is the
+ * crate, «восстать из мертвых» is the death screen. Each of those is now the ONLY
+ * path to its outcome, so a button beside them would be a second path to one
+ * thing. What is left is the verb with nowhere else to go — and a row of one is
+ * not a row, which is why it is drawn as a single round button in the corner.
+ *
+ * Derived from the shape of the catalogue rather than listed by key, exactly as
+ * the screen itself derives it: a verb that names no place to stand, does not
+ * revive and is not the search.
  */
-const ROW_ACTIONS = [DRINK, RELIEVE, REVIVE];
-const ACTION_KEYS = ROW_ACTIONS.map((action) => action.key);
+const YARD_VERBS = [RELIEVE];
+const VERB_KEYS = YARD_VERBS.map((action) => action.key);
 
 /** The death notice — the one line the screen writes rather than the catalogue. */
-const DEATH_LINE = 'Ваня не выдержал. Откачай его.';
+const DEATH_LINE = 'Ваня не выдержал';
 
 /** Loads the game and steps past the intro into the yard. */
 async function enterYard(page: Page): Promise<void> {
@@ -1164,15 +1215,17 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
       state: () =>
         stateOf({ hp: 72, beer: 44, bladder: 18, beers_drunk: 12, keys_found: 5, shits_taken: 3 }),
     });
-    await stubSocket(page);
+    const socket = await stubSocket(page);
     await enterYard(page);
 
     await expect(page.locator('[data-test="pet-stats"]')).toBeVisible();
     // SIX stats on the wire and THREE bars, which is the point: the three
     // lifetime tallies are not bars and must not be counted as though three more
     // tracks had appeared. The three that remain are the game — hp is the
-    // consequence of what beer and the bladder do to him.
-    await expect(page.locator('.stats .stat')).toHaveCount(3);
+    // consequence of what beer and the bladder do to him. The strip is drawn on
+    // the plane now rather than in a panel under it, which is why the row is
+    // found through `.readout`.
+    await expect(page.locator('.readout .stat')).toHaveCount(3);
     await expect(page.locator('[data-test="stat-hp"]')).toBeVisible();
     await expect(page.locator('[data-test="stat-beer"]')).toBeVisible();
     await expect(page.locator('[data-test="stat-bladder"]')).toBeVisible();
@@ -1183,39 +1236,58 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(statValue(page, 'beer')).toHaveText('44');
     await expect(statValue(page, 'bladder')).toHaveText('18');
 
-    // One button per catalogue action, labelled from it, emoji and all — the
-    // row iterates the catalogue rather than naming a verb, which is what makes
-    // "adding a verb is a backend change" true rather than aspirational.
+    // ONE BUTTON OUT OF FOUR ACTIONS, and the three that are absent are the
+    // point of the row rather than an omission from it: each of them is drawn
+    // somewhere the verb actually belongs — «искать ключи» on the hiding places,
+    // «выпить пива» on the crate, «восстать из мертвых» on the death screen — so
+    // a button for any of them would be a second path to one outcome.
     //
-    // THREE OF THE FOUR, and the exception is the one thing this row does decide
-    // for itself. «искать ключи» is not pressed any more: the yard's hiding
-    // places are the control, so the row leaves out the verb the plane already
-    // offers rather than showing a second way to do one thing. It is left out by
-    // the catalogue's SHAPE — a verb that races other players for something and
-    // names no place to stand — and never by its key, which is what keeps the
-    // browser holding no content at all; the sibling block below is where that
-    // is pinned properly.
-    await expect(page.locator('.actions .v-btn')).toHaveCount(3);
-    await expect(actionBtn(page, 'drink')).toContainText('выпить пива');
-    await expect(actionBtn(page, 'relieve')).toContainText('покакать');
-    await expect(actionBtn(page, 'revive')).toContainText('восстать из мертвых');
+    // The one that is left is still drawn from the catalogue and never named
+    // here: its emoji is the catalogue's, and so is the word a screen reader and
+    // a long-press are given, which is where a label lives now that the button
+    // itself is a picture.
+    await expect(page.locator('.verbs .verb')).toHaveCount(1);
+    await expect(actionBtn(page, 'relieve')).toContainText(RELIEVE.emoji);
+    await expect(actionBtn(page, 'relieve')).toHaveAttribute('aria-label', RELIEVE.label);
+    await expect(actionBtn(page, 'relieve')).toHaveAttribute('title', RELIEVE.label);
+    await expect(actionBtn(page, 'drink')).toHaveCount(0);
     await expect(actionBtn(page, 'claim')).toHaveCount(0);
+    await expect(actionBtn(page, 'revive')).toHaveCount(0);
+
+    // And the verb that moved onto the crate is still labelled from the
+    // catalogue where it landed: the box announces itself with the kind's own
+    // name and the action's own words, which is the whole of what a player who
+    // cannot see it is told about what tapping it will do.
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
+    await expect(shop(page)).toHaveAttribute(
+      'aria-label',
+      `${CRATE_KIND.label} — ${DRINK.label}`,
+    );
   });
 
-  test('a lifetime tally is a number, not a bar', async ({ page }) => {
+  test('a lifetime tally is a score on the death screen, and never a bar', async ({ page }) => {
     // A counter's scale runs to a million so that the clamp has something to
     // clamp to. Drawn as a bar, «выпито пива: 12» is an empty track that will
     // still be an empty track after a year of drinking — the player would read
-    // it as "nearly none" when it means "twelve". So a counter gets a tally row
-    // of its own, and a bar row is exactly what must NOT exist for it.
+    // it as "nearly none" when it means "twelve". So a counter is a number and a
+    // bar row is exactly what must NOT exist for it.
+    //
+    // AND IT IS DRAWN WHERE A TOTAL IS ACTUALLY A SCORE. He has to be dead for
+    // any of this to be on the screen: the tallies moved off the yard and onto
+    // the death sheet, which is the one moment somebody reads them.
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, keys_found: 5, shits_taken: 3 }),
+        stateOf(
+          { hp: 0, beer: 0, bladder: 96, beers_drunk: 12, keys_found: 5, shits_taken: 3 },
+          { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
+        ),
     });
     await stubSocket(page);
     await enterYard(page);
 
+    await expect(death(page)).toBeVisible();
     await expect(page.locator('[data-test="pet-tallies"]')).toBeVisible();
     await expect(tallyValue(page, 'beers_drunk')).toHaveText('12');
     await expect(tallyValue(page, 'keys_found')).toHaveText('5');
@@ -1239,17 +1311,47 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(page.locator('[data-test="pet-tallies"] [data-trouble="1"]')).toHaveCount(0);
   });
 
-  test('a tally that has never moved still reads as zero rather than as trouble', async ({
-    page,
-  }) => {
-    // The day-one case, and the one a bar rule gets wrong: a brand-new Ваня has
-    // drunk nothing, so both totals sit exactly on `warn_at`. Nothing about that
-    // is a warning, and the row still has to appear — a counter that hid itself
-    // until it moved would make the first beer look like a new feature.
+  test('a living Ваня is told nothing about his totals', async ({ page }) => {
+    // THE OTHER HALF OF THE MOVE, and the half a retargeted assertion would
+    // quietly lose. A total is a SCORE, and a score belongs on the screen you get
+    // when you die — on the yard it was three rows of numbers that change a few
+    // times an evening, occupying a panel the plane was paying for in height.
+    // So while he is alive there is no tally row at all, and the same fixture
+    // that puts one on the death screen must produce none here: what differs is
+    // only whether he is dead.
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        stateOf({ hp: 65, beer: 60, bladder: 0, beers_drunk: 0, keys_found: 0, shits_taken: 0 }),
+        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, keys_found: 5, shits_taken: 3 }),
+    });
+    await stubSocket(page);
+    await enterYard(page);
+
+    // The bars are up, so the pet has certainly arrived — without this the
+    // absence below would pass against a screen that had simply not loaded yet.
+    await expect(page.locator('[data-test="pet-stats"]')).toBeVisible();
+    await expect(death(page)).toHaveCount(0);
+    await expect(page.locator('[data-test="pet-tallies"]')).toHaveCount(0);
+    await expect(tallyValue(page, 'beers_drunk')).toHaveCount(0);
+    await expect(tallyValue(page, 'keys_found')).toHaveCount(0);
+    await expect(tallyValue(page, 'shits_taken')).toHaveCount(0);
+  });
+
+  test('a tally that has never moved still reads as zero rather than as trouble', async ({
+    page,
+  }) => {
+    // The day-one case, and the one a bar rule gets wrong: a Ваня who died having
+    // done nothing at all has every total sitting exactly on `warn_at`. Nothing
+    // about that is a warning, and the rows still have to appear — a counter that
+    // hid itself until it moved would make the first beer look like a new
+    // feature, and a death screen with no score on it would look broken.
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () =>
+        stateOf(
+          { hp: 0, beer: 0, bladder: 96, beers_drunk: 0, keys_found: 0, shits_taken: 0 },
+          { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
+        ),
     });
     await stubSocket(page);
     await enterYard(page);
@@ -1260,16 +1362,15 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(page.locator('[data-test="pet-tallies"] [data-trouble="1"]')).toHaveCount(0);
   });
 
-  test('the screen still never scrolls now that the pet panel is on it', async ({ page }) => {
+  test('a crowded yard never makes the screen scroll', async ({ page }) => {
     // The layout rule this game inherited is literal: one flexible child, the
-    // rest fixed, `overflow: hidden`. The panel below the plane keeps growing —
-    // three bars, then a tally row, then a third and a fourth button, then a
-    // third tally — so the plane has to give up the height rather than the panel
-    // being pushed off, which is exactly the regression a growing pet panel is
-    // most likely to cause. The state carries every tally so the row under test
-    // is actually on the screen at its full width: a counter with no value is
-    // skipped, and a layout test against a panel that quietly shed a row proves
-    // nothing.
+    // rest fixed, `overflow: hidden`. There is no panel under the plane any more
+    // — everything that survived it is drawn ON the yard — so what could break
+    // this is no longer a row growing downwards but something inside the plane
+    // pushing the plane itself out: the readout, the world line, the verb button
+    // and the place caption all sit in its corners, and the dots are absolutely
+    // positioned among them. A crowded yard is where a mistake in any of that
+    // shows up first.
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
@@ -1279,8 +1380,6 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await enterYard(page);
     await expect(page.locator('[data-test="pet-stats"]')).toBeVisible();
 
-    // A crowded yard as well as an empty one: dots are absolutely positioned
-    // inside the plane, but a layout mistake would show up here first.
     await socket.push(
       roster(
         ...Array.from({ length: 12 }, (_, i) => ({
@@ -1292,29 +1391,28 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     );
     await expect(dots(page)).toHaveCount(12);
 
-    await expectNoOverflow(page, 'vanyagotchi yard with the pet panel');
-    await expectNoVerticalScroll(page, 'vanyagotchi yard with the pet panel');
-    for (const key of ACTION_KEYS) {
+    await expectNoOverflow(page, 'vanyagotchi yard with twelve in it');
+    await expectNoVerticalScroll(page, 'vanyagotchi yard with twelve in it');
+    for (const key of VERB_KEYS) {
       await expectOnScreen(page, actionBtn(page, key), `the ${key} button`);
     }
-    await expectOnScreen(page, page.locator('[data-test="pet-tallies"]'), 'the tally row');
-    await expectOnScreen(page, page.locator('[data-test="status"]'), 'the status row');
+    await expectOnScreen(page, page.locator('[data-test="pet-stats"]'), 'the stat readout');
+    await expectOnScreen(page, page.locator('[data-test="status"]'), 'the connection line');
+    await expectOnScreen(page, page.locator('[data-test="here"]'), 'the place caption');
   });
 
-  test('the pet panel still fits the smallest screen we support', async ({ page }) => {
-    // 320x568 is the floor — an iPhone SE in portrait, and the size at which the
-    // fixed rows come closest to eating the plane entirely. Set before `goto`
-    // rather than resized afterwards, the same way the sibling spec pins the
-    // disclaimer, so the layout is built for this size rather than reflowed into
-    // it. Three bars, THREE tallies and FOUR buttons is the tallest the panel
-    // has ever been, and this is the assertion that decides whether the next
-    // thing added to it fits — the panel is the tightest part of this screen and
-    // the right answer to "it no longer fits" is to make the row smaller, never
-    // to relax what is checked here. The tally row wrapping onto a second line
-    // at this width is the DESIGNED failure rather than a defect: the plane
-    // gives up another sixteen pixels, which is a better outcome than a label
-    // truncated to something unreadable — so what this really pins is that the
-    // plane can still afford to pay.
+  test('everything the yard draws still fits the smallest screen we support', async ({ page }) => {
+    // 320x568 is the floor — an iPhone SE in portrait, and the width at which
+    // this screen has broken before. Set before `goto` rather than resized
+    // afterwards, the same way the sibling spec pins the disclaimer, so the
+    // layout is built for this size rather than reflowed into it.
+    //
+    // What is being defended has changed shape rather than gone away. There is no
+    // panel to eat the plane any more, so the risk is now the opposite one: four
+    // things drawn IN the plane's corners — the readout, the world line, the verb
+    // button, the place caption — each of which can spill out of it or over each
+    // other on the narrowest phone. The right answer to "it no longer fits" is
+    // still to make the thing smaller, never to relax what is checked here.
     await page.setViewportSize({ width: 320, height: 568 });
     await stubBackend(page, {
       config: CATALOGUE,
@@ -1328,49 +1426,86 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
           shits_taken: 64,
         }),
     });
-    await stubSocket(page);
+    const socket = await stubSocket(page);
     await enterYard(page);
     await expect(page.locator('[data-test="pet-stats"]')).toBeVisible();
-    await expect(page.locator('[data-test="pet-tallies"]')).toBeVisible();
+    // With the crate on the plane as well, since it is the largest thing the
+    // yard draws that is not a person and the one most likely to reach an edge.
+    await standAcrossFromTheCrate(page, socket);
 
     await expectNoOverflow(page, 'vanyagotchi yard at 320x568');
     await expectNoVerticalScroll(page, 'vanyagotchi yard at 320x568');
-    for (const key of ACTION_KEYS) {
+    for (const key of VERB_KEYS) {
       await expectOnScreen(page, actionBtn(page, key), `the ${key} button`);
     }
-    await expectOnScreen(page, page.locator('[data-test="pet-tallies"]'), 'the tally row');
-    await expectOnScreen(page, page.locator('[data-test="status"]'), 'the status row');
-    // And the plane it is sharing the screen with has not been squeezed to
-    // nothing to make room.
+    await expectOnScreen(page, page.locator('[data-test="pet-stats"]'), 'the stat readout');
+    await expectOnScreen(page, page.locator('[data-test="status"]'), 'the connection line');
+    await expectOnScreen(page, page.locator('[data-test="here"]'), 'the place caption');
+    await expectOnScreen(page, shop(page), 'the beer crate');
+    // And the plane everything is drawn on has not been squeezed to nothing.
     const box = await plane(page).boundingBox();
-    expect(box?.height ?? 0, 'the plane collapsed to make room for the panel').toBeGreaterThan(120);
+    expect(box?.height ?? 0, 'the plane collapsed on the smallest phone').toBeGreaterThan(120);
   });
 
-  test('every verb reads in full on the narrowest phones, without spilling out of its button', async ({
-    page,
-  }) => {
-    // THE OWNER'S REPORT, ON A PHONE: the action labels did not fit. Four Russian
-    // verbs share about 288px at 320, and Vuetify draws a button UPPERCASE,
-    // letter-spaced, at 0.875rem, inside 16px of padding a side, with
-    // `white-space: nowrap` — so «ВЫПИТЬ ПИВА» needed roughly three times the
-    // ~66px it had. Nothing clipped it, which is why no existing assertion caught
-    // it: `.v-btn` sets no `overflow`, so the text simply ran out of its button
-    // and across the one beside it.
-    //
-    // MEASURED AS INK RATHER THAN AS A BOX, which is the only way to see that.
-    // A `Range` over the content's own text nodes gives the union of the
-    // rectangles the browser will actually paint glyphs into, so this fails for
-    // BOTH failure modes at once — text spilling outside the button (what was
-    // happening) and text cut off inside it (what a careless fix, an
-    // `overflow: hidden` or a `-webkit-line-clamp`, would produce instead). A
-    // check on the button's own box would notice neither.
-    //
-    // Both widths, because they fail differently: 320 is where the row is
-    // tightest, and 360 is what most of the audience is actually holding.
+  test('the death screen fits the smallest screen we support, score and all', async ({ page }) => {
+    // The tallies live here now, so this is where the growing list of them can
+    // push something off a short phone — three totals, a line, a 💀 and the one
+    // button that gets him back, inside a sheet drawn over the plane. Six-digit
+    // totals, because a long number is what widens a row that has a label in it.
+    await page.setViewportSize({ width: 320, height: 568 });
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, keys_found: 5, shits_taken: 3 }),
+        stateOf(
+          {
+            hp: 0,
+            beer: 0,
+            bladder: 96,
+            beers_drunk: 128_456,
+            keys_found: 42_128,
+            shits_taken: 64_512,
+          },
+          { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
+        ),
+    });
+    await stubSocket(page);
+    await enterYard(page);
+
+    await expect(death(page)).toBeVisible();
+    await expectOnScreen(page, page.locator('[data-test="pet-tallies"]'), 'the score');
+    await expectOnScreen(page, actionBtn(page, REVIVE.key), 'the revive button');
+    await expectNoOverflow(page, 'vanyagotchi death screen at 320x568');
+    await expectNoVerticalScroll(page, 'vanyagotchi death screen at 320x568');
+  });
+
+  test('the one text button on this game reads in full on the narrowest phones', async ({
+    page,
+  }) => {
+    // THE OWNER'S REPORT, ON A PHONE: the action labels did not fit. That row is
+    // gone — the verbs that survived it are drawn as pictures, and a picture
+    // cannot be clipped — but the rule it bought did not go with it, because
+    // there is still exactly one button on this game with WORDS in it, and it is
+    // the one that matters most: the thing you press when дядя Ваня is dead. A
+    // catalogue label is Russian, arbitrarily long, and the server's rather than
+    // this screen's, so it is still what the layout has to accommodate.
+    //
+    // MEASURED AS INK RATHER THAN AS A BOX, which is the only way to see it. A
+    // `Range` over the button's own text nodes gives the union of the rectangles
+    // the browser will actually paint glyphs into, so this fails for BOTH failure
+    // modes at once — text spilling outside the button, and text cut off inside
+    // it, which is what a careless fix (an `overflow: hidden`, a
+    // `-webkit-line-clamp`) would produce instead. A check on the button's own
+    // box would notice neither.
+    //
+    // Both widths, because they fail differently: 320 is the tightest sheet, and
+    // 360 is what most of the audience is actually holding.
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () =>
+        stateOf(
+          { hp: 0, beer: 0, bladder: 96, beers_drunk: 12, keys_found: 5, shits_taken: 3 },
+          { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
+        ),
     });
     await stubSocket(page);
 
@@ -1385,97 +1520,120 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
       await page.setViewportSize(size);
       await enterYard(page);
       const label = `${size.width}x${size.height}`;
+      await expect(death(page)).toBeVisible();
 
-      for (const action of ROW_ACTIONS) {
-        const m = await page.evaluate((key) => {
-          const btn = document.querySelector<HTMLElement>(`[data-test="action-${key}"]`);
-          if (!btn) throw new Error(`no button for ${key}`);
-          const content = btn.querySelector<HTMLElement>('.v-btn__content');
-          if (!content) throw new Error(`no content box for ${key}`);
-          // The union of the rectangles the text is painted into — the ink, not
-          // the box that is supposed to hold it.
-          const range = document.createRange();
-          range.selectNodeContents(content);
-          const ink = range.getBoundingClientRect();
-          const box = btn.getBoundingClientRect();
-          return {
-            text: content.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-            overLeft: box.left - ink.left,
-            overRight: ink.right - box.right,
-            overTop: box.top - ink.top,
-            overBottom: ink.bottom - box.bottom,
-            width: box.width,
-            height: box.height,
-          };
-        }, action.key);
+      const m = await page.evaluate((key) => {
+        const btn = document.querySelector<HTMLElement>(`[data-test="action-${key}"]`);
+        if (!btn) throw new Error(`no button for ${key}`);
+        // The union of the rectangles the text is painted into — the ink, not
+        // the box that is supposed to hold it.
+        const range = document.createRange();
+        range.selectNodeContents(btn);
+        const ink = range.getBoundingClientRect();
+        const box = btn.getBoundingClientRect();
+        return {
+          text: btn.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+          overLeft: box.left - ink.left,
+          overRight: ink.right - box.right,
+          overTop: box.top - ink.top,
+          overBottom: ink.bottom - box.bottom,
+          width: box.width,
+          height: box.height,
+        };
+      }, REVIVE.key);
 
-        // The whole label really is in the DOM. Without this the rest would pass
-        // against a client that had "fixed" the fit by shortening the words —
-        // which it must never do: the labels are the SERVER's, out of the
-        // catalogue, so an abbreviation invented here would be this screen making
-        // up content and would go stale the moment a verb is renamed.
-        expect(m.text, `the ${action.key} button is not showing its full label at ${label}`).toBe(
-          `${action.emoji} ${action.label}`,
-        );
+      // The whole label really is in the DOM. Without this the rest would pass
+      // against a client that had "fixed" the fit by shortening the words —
+      // which it must never do: the labels are the SERVER's, out of the
+      // catalogue, so an abbreviation invented here would be this screen making
+      // up content and would go stale the moment a verb is renamed.
+      expect(m.text, `the revive button is not showing its full label at ${label}`).toBe(
+        `${REVIVE.emoji} ${REVIVE.label}`,
+      );
 
-        // A pixel of slack per edge, because a fractional layout size rounds and
-        // a glyph's ink box is not its advance box. Anything past that is text
-        // outside the button it belongs to.
-        for (const [edge, over] of [
-          ['left', m.overLeft],
-          ['right', m.overRight],
-          ['top', m.overTop],
-          ['bottom', m.overBottom],
-        ] as const) {
-          expect(
-            over,
-            `«${m.text}» runs ${over.toFixed(1)}px past the ${edge} of its ${Math.round(m.width)}x${Math.round(m.height)} button at ${label}`,
-          ).toBeLessThanOrEqual(1);
-        }
+      // A pixel of slack per edge, because a fractional layout size rounds and
+      // a glyph's ink box is not its advance box. Anything past that is text
+      // outside the button it belongs to.
+      for (const [edge, over] of [
+        ['left', m.overLeft],
+        ['right', m.overRight],
+        ['top', m.overTop],
+        ['bottom', m.overBottom],
+      ] as const) {
+        expect(
+          over,
+          `«${m.text}» runs ${over.toFixed(1)}px past the ${edge} of its ${Math.round(m.width)}x${Math.round(m.height)} button at ${label}`,
+        ).toBeLessThanOrEqual(1);
       }
 
-      // And the fix did not buy the fit by growing the panel: the screen still
-      // does not scroll, and the plane still has a yard in it.
-      await expectNoVerticalScroll(page, `vanyagotchi yard at ${label}`);
-      await expectNoOverflow(page, `vanyagotchi yard at ${label}`);
-      const box = await plane(page).boundingBox();
-      expect(
-        box?.height ?? 0,
-        `the plane collapsed to ${Math.round(box?.height ?? 0)}px making room for the buttons at ${label}`,
-      ).toBeGreaterThan(120);
+      // And the sheet it sits in did not buy the fit by growing off the screen.
+      await expectNoVerticalScroll(page, `vanyagotchi death screen at ${label}`);
+      await expectNoOverflow(page, `vanyagotchi death screen at ${label}`);
     }
   });
 
   test('every action is a thumb-sized target', async ({ page }) => {
+    // ALL THREE OF THEM, because the verbs are spread across three different
+    // controls now rather than sharing one row: the button over the yard, the
+    // crate you tap to drink, and the death screen's own CTA. Each is drawn by a
+    // different rule in the stylesheet, so each is a different way to end up
+    // under the floor, and a check that covered only the row would now be
+    // covering a third of the game.
+    let dead = false;
     await stubBackend(page, {
       config: CATALOGUE,
       state: () =>
-        stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, shits_taken: 3 }),
+        dead
+          ? stateOf(
+              { hp: 0, beer: 0, bladder: 96, beers_drunk: 12, shits_taken: 3 },
+              { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
+            )
+          : stateOf({ hp: 61, beer: 33, bladder: 44, beers_drunk: 12, shits_taken: 3 }),
     });
-    await stubSocket(page);
+    const socket = await stubSocket(page);
     await enterYard(page);
 
-    if (isMobile(page)) {
-      // Vuetify's default button is 36px tall; the view overrides it precisely
-      // because this floor is enforced rather than requested. FOUR buttons now
-      // share one row on a 320px screen, so the width is the half that could go
-      // wrong — and it is the half that gets worse every time a verb is added.
-      // The row is `auto-fit, minmax(64px, 1fr)`, so a fifth verb is the one that
-      // wraps rather than the one that shrinks anybody below the floor.
-      for (const key of ACTION_KEYS) {
-        await expectTapTarget(actionBtn(page, key), `${key} action`);
-      }
+    if (!isMobile(page)) return;
+
+    // The yard's own two, with the crate on the plane so there is something to
+    // measure.
+    await standAcrossFromTheCrate(page, socket);
+    for (const key of VERB_KEYS) {
+      await expectTapTarget(actionBtn(page, key), `${key} action`);
     }
+    await expectTapTarget(shop(page), 'the beer crate');
+
+    // And then he dies, which is the only way to put the third one on the
+    // screen. Pushed as state rather than fetched, because that is how a death
+    // actually reaches a screen that is already open.
+    dead = true;
+    await socket.push(
+      JSON.stringify({
+        t: TYPE_STATE,
+        state: stateOf(
+          { hp: 0, beer: 0, bladder: 96, beers_drunk: 12, shits_taken: 3 },
+          { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
+        ),
+      }),
+    );
+    await expect(death(page)).toBeVisible();
+    await expectTapTarget(actionBtn(page, REVIVE.key), 'the revive button');
   });
 
-  test('drinking posts once and moves all three bars and the tally from the answer', async ({
+  test('drinking at the crate moves all three bars from the answer, and sends one verb', async ({
     page,
   }) => {
     // The client sends a VERB and never a value, and the numbers it then shows
     // are the server's own recomputed ones — not a local application of the
-    // catalogue's `effects`. Stubbing the POST with an answer no local sum
-    // produces is what tells the two apart, and drinking is the case where it
-    // matters most: one press moves three stats at once.
+    // catalogue's `effects`. Answering with a state no local sum produces is what
+    // tells the two apart, and drinking is the case where it matters most: one
+    // press moves three stats at once.
+    //
+    // The tally the answer also moves is deliberately not asserted here: a total
+    // is only drawn on the death screen now, and he is very much alive. What it
+    // used to prove — that a counter is redrawn from the answer rather than left
+    // where the first fetch put it — is pinned by the revive test below, which
+    // reads the tallies at the one moment they are on the screen.
     let acted = false;
     const calls = await stubBackend(page, {
       config: CATALOGUE,
@@ -1498,17 +1656,14 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await enterYard(page);
     await expect(statValue(page, 'hp')).toHaveText('26');
     await expect(statValue(page, 'beer')).toHaveText('4');
-    await expect(tallyValue(page, 'beers_drunk')).toHaveText('6');
 
-    // Beer comes out of a crate, so he has to be at the crate before the button
-    // will do anything at all.
-    await standAtTheCrate(page, socket);
-    await actionBtn(page, 'drink').click();
+    // Beer comes out of a crate, so drinking is a tap on the crate and a walk —
+    // there is no drink button anywhere to press instead.
+    await drinkAtTheCrate(page, socket);
 
     await expect(statValue(page, 'hp')).toHaveText('61');
     await expect(statValue(page, 'beer')).toHaveText('88');
     await expect(statValue(page, 'bladder')).toHaveText('47');
-    await expect(tallyValue(page, 'beers_drunk')).toHaveText('7');
     // What the verb DID is the server's to say, and it says it in the BALLOON —
     // where the rest of the yard reads it too — rather than in a caption only
     // its owner sees. The catalogue's own `done` string, which the SPA does not
@@ -1530,10 +1685,12 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
       .toBeGreaterThan(0.5);
   });
 
-  test('relieving sends its own verb and empties the bladder', async ({ page }) => {
-    // The second verb, and the proof the row is really iterating the catalogue:
-    // the frame carries the action's own key, so pressing the second button
-    // must send `relieve` and nothing else.
+  test('the one button over the yard sends its own verb and empties the bladder', async ({
+    page,
+  }) => {
+    // The verb that has nowhere better to be, end to end. The frame carries the
+    // action's own key, which is the proof the button is really drawn from the
+    // catalogue rather than wired to a verb this screen knows the name of.
     let acted = false;
     const calls = await stubBackend(page, {
       config: CATALOGUE,
@@ -1545,21 +1702,20 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
         acted = true;
         // Clamped to the floor by the server: the catalogue's −100 is larger
         // than the whole scale, which is how it says "reset". The tally beside
-        // it goes the other way, up by one, which is the point of the pair — the
-        // bar resets and the total never does.
+        // it goes the other way, up by one — the bar resets and the total never
+        // does — which is a fact this screen keeps for the death sheet and does
+        // not draw on the yard, so it is in the fixture and not in an assertion.
         return stateOf({ hp: 70, beer: 50, bladder: 0, shits_taken: 5 });
       },
     });
     const socket = await stubSocket(page);
     await enterYard(page);
     await expect(statValue(page, 'bladder')).toHaveText('92');
-    await expect(tallyValue(page, 'shits_taken')).toHaveText('4');
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(1);
 
     await actionBtn(page, 'relieve').click();
 
     await expect(statValue(page, 'bladder')).toHaveText('0');
-    await expect(tallyValue(page, 'shits_taken')).toHaveText('5');
     await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, say: 'полегчало' }));
     await expect(page.locator('[data-test="peer-say"]')).toHaveText('полегчало');
     expect(socket.asked()).toEqual([['relieve']]);
@@ -1575,23 +1731,21 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     // a line over the player's own Ваня that the whole yard can read. What must
     // never happen is the generic "something went wrong" modal appearing over a
     // situation the game is already explaining in words.
+    //
+    // Driven with a LIVING Ваня, where it used to be driven with a corpse. Being
+    // dead is a screen now — it covers the plane and offers the one button worth
+    // pressing — so there is no longer any way for a player to press an ordinary
+    // verb and be refused for being dead. The refusal that IS still reachable is
+    // the shy one: «покакать» simply does not come off a quarter of the time,
+    // which is the same shape (a verb sent, nothing applied, a line over his
+    // head) and is a rule of the game rather than a state to get out of.
     await stubBackend(page, {
       config: CATALOGUE,
-      state: () =>
-        stateOf(
-          { hp: 0, beer: 0, bladder: 96 },
-          // A truthful rate for a Ваня with both needs unmet: 1 of his own plus
-          // 6 for the beer plus 6 for the bladder.
-          { alive: false, diedAt: '2026-07-25T03:00:00Z', rates: { hp: 13 } },
-        ),
-      // A corpse is refused EVERY verb but the one that carries
-      // `revives_fatal`, which is now exactly one of them — beer stopped
-      // reviving, so drinking is refused here too. The socket fake sends nothing
-      // back for a refusal, because the server owes no reply.
-      acted: (verb) =>
-        verb === 'revive'
-          ? stateOf({ hp: 65, beer: 60, bladder: 0 })
-          : { status: 409, code: 'pet_dead' },
+      state: () => stateOf({ hp: 70, beer: 50, bladder: 92 }),
+      // Nothing comes back at all: the socket fake sends no frame for a refusal,
+      // exactly as the server sends none, because a verb is not a request with
+      // an answer.
+      acted: () => ({ status: 409, code: 'action_failed' }),
     });
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -1599,25 +1753,29 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     expect(socket.asked(), 'the verb never left the page').toEqual([['relieve']]);
 
     // The server's answer, in the world rather than in a response body.
-    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, pose: 'dead', say: 'он не встаёт' }));
-    await expect(page.locator('[data-test="peer-say"]')).toHaveText('он не встаёт');
+    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, say: 'не получилось' }));
+    await expect(page.locator('[data-test="peer-say"]')).toHaveText('не получилось');
     await expect(page.getByText('Ой, ошибка')).toHaveCount(0);
 
-    // Still playable: the ONE verb that can revive him is still there to press,
-    // and it is a verb of its own rather than a side effect of the button the
-    // player was pressing anyway.
-    await expect(actionBtn(page, 'revive')).toBeEnabled();
+    // The bar did not move either — a refused verb applies nothing, and a client
+    // that had cheerfully drawn the effect it hoped for would be showing a
+    // bladder the server still has full.
+    await expect(statValue(page, 'bladder')).toHaveText('92');
+    // And the control is still live, because a shy verb is one you press again.
+    await expect(actionBtn(page, 'relieve')).toBeEnabled();
   });
 
-  test('reviving starts him over on the catalogue values, and spares the tallies', async ({
-    page,
-  }) => {
-    // THE new verb, end to end. `starts_over` means the server ignores the
-    // action's (empty) effects and puts every bar back to its catalogue `start`
-    // — so the answer is 65/60/0 rather than the numbers he died holding plus
-    // anything. The counters are exempt, which is what makes them lifetime
-    // totals: a Ваня who comes back having drunk nothing would be a lie about
-    // the past rather than a fresh beginning.
+  test('the death screen is the only way back, and spares the tallies', async ({ page }) => {
+    // THE way out of a death, end to end, and it is a SCREEN rather than a button
+    // in a row: «восстать из мертвых» did nothing at all for the whole of a normal
+    // evening and was the only thing that mattered for the ten seconds it did, so
+    // it is drawn over the yard at the moment it becomes the only thing to press.
+    //
+    // `starts_over` means the server ignores the action's (empty) effects and puts
+    // every bar back to its catalogue `start` — so the answer is 65/60/0 rather
+    // than the numbers he died holding plus anything. The counters are exempt,
+    // which is what makes them lifetime totals: a Ваня who comes back having drunk
+    // nothing would be a lie about the past rather than a fresh beginning.
     let revived = false;
     const calls = await stubBackend(page, {
       config: CATALOGUE,
@@ -1635,19 +1793,24 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     });
     const socket = await stubSocket(page);
     await enterYard(page);
-    await expect(petLine(page)).toHaveText(DEATH_LINE);
+    // The screen says what happened, in a sentence this SCREEN writes rather
+    // than the catalogue, and the totals he died with are the score on it.
+    await expect(death(page)).toBeVisible();
+    await expect(death(page)).toContainText(DEATH_LINE);
+    await expect(tallyValue(page, 'beers_drunk')).toHaveText('41');
+    await expect(tallyValue(page, 'shits_taken')).toHaveText('9');
     await expect(statValue(page, 'hp')).toHaveText('0');
 
-    await actionBtn(page, 'revive').click();
+    await actionBtn(page, REVIVE.key).click();
 
     await expect(statValue(page, 'hp')).toHaveText('65');
     await expect(statValue(page, 'beer')).toHaveText('60');
     await expect(statValue(page, 'bladder')).toHaveText('0');
-    // Forty-one beers ago is still forty-one beers ago.
-    await expect(tallyValue(page, 'beers_drunk')).toHaveText('41');
-    await expect(tallyValue(page, 'shits_taken')).toHaveText('9');
-    // And the death notice is gone, because he is not dead any more.
-    await expect(petLine(page)).toHaveText('');
+    // And the whole screen is gone with the death, taking the score with it —
+    // which is the other half of "a total is a score": forty-one beers ago is
+    // still forty-one beers ago, and there is nowhere on a living yard to say so.
+    await expect(death(page)).toHaveCount(0);
+    await expect(page.locator('[data-test="pet-tallies"]')).toHaveCount(0);
     expect(socket.asked()).toEqual([['revive']]);
     expect(calls.posts).toEqual([]);
   });
@@ -1657,24 +1820,28 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     // open any more — the verb is a socket send and returns immediately — so the
     // guard is a short cooldown rather than an in-flight flag, and what is worth
     // asserting is the only thing that matters: the server heard one verb.
+    //
+    // Driven on the button over the yard, which is where the cooldown now lives:
+    // the crate and the hiding places send their verb from a frame rather than
+    // from a press, so a second tap there re-arms one errand instead of firing a
+    // second verb — a different guard for a different control.
     const calls = await stubBackend(page, {
       config: CATALOGUE,
-      state: () => stateOf({ hp: 40, beer: 30, bladder: 20 }),
-      acted: () => stateOf({ hp: 55, beer: 70, bladder: 45 }),
+      state: () => stateOf({ hp: 40, beer: 30, bladder: 90 }),
+      acted: () => stateOf({ hp: 55, beer: 70, bladder: 0 }),
     });
     const socket = await stubSocket(page);
     await enterYard(page);
     await expect(statValue(page, 'hp')).toHaveText('40');
 
-    await standAtTheCrate(page, socket);
-    const drink = actionBtn(page, 'drink');
-    await drink.click();
-    await drink.click({ force: true });
-    await drink.click({ force: true });
+    const relieve = actionBtn(page, 'relieve');
+    await relieve.click();
+    await relieve.click({ force: true });
+    await relieve.click({ force: true });
 
     // The state still arrives, from the one verb that got through.
     await expect(statValue(page, 'hp')).toHaveText('55');
-    expect(socket.asked(), 'a double-tap became more than one verb').toEqual([['drink']]);
+    expect(socket.asked(), 'a double-tap became more than one verb').toEqual([['relieve']]);
     // And nothing went over HTTP at all — the action endpoint is gone.
     expect(calls.posts).toEqual([]);
   });
@@ -1716,9 +1883,13 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(page.locator('[data-test="stat-hp"][data-trouble="1"]')).toHaveCount(0);
   });
 
-  test('a dead Ваня is legible from the dot as well as from the line', async ({ page }) => {
-    // Death has to read without anybody parsing a number: the line says what to
-    // do about it, and the face on the dot says it at a glance.
+  test('a dead Ваня is legible from the dot as well as from the screen over it', async ({
+    page,
+  }) => {
+    // Death has to read without anybody parsing a number: the screen says what
+    // happened and what to do about it, and the face on the dot says it at a
+    // glance — including on somebody ELSE's dot, where no screen of ours will
+    // ever appear.
     //
     // The pose comes off the WIRE and not out of this screen's own pet state,
     // which is why the socket has to speak before there is anything to look at.
@@ -1737,7 +1908,12 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     const socket = await stubSocket(page);
     await enterYard(page);
 
-    await expect(petLine(page)).toHaveText(DEATH_LINE);
+    // The screen, not the line. The transient line under the plane used to carry
+    // the death sentence, competing with the balloons for the same glance; it is
+    // back to being the flavour line and is absent entirely when there is nothing
+    // to say, which is exactly the case here.
+    await expect(death(page)).toContainText(DEATH_LINE);
+    await expect(petLine(page)).toHaveCount(0);
 
     await socket.push(JSON.stringify({ t: TYPE_YOU, id: 'me' }));
     await socket.push(
@@ -1847,7 +2023,12 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
 
     await expect(page.locator('[data-test="stat-mood"]')).toBeVisible();
     await expect(statValue(page, 'mood')).toHaveText('7');
-    await expect(actionBtn(page, 'feed')).toContainText('накормить');
+    // The button is a picture, so the invented verb's LABEL is what a screen
+    // reader and a long-press are given — which is where a word the SPA has
+    // never heard of has to survive if the row is really iterating the
+    // catalogue.
+    await expect(actionBtn(page, 'feed')).toContainText(FEED.emoji);
+    await expect(actionBtn(page, 'feed')).toHaveAttribute('aria-label', 'накормить');
     // The shipped keys are gone, because the catalogue no longer mentions them.
     await expect(page.locator('[data-test="stat-hp"]')).toHaveCount(0);
     await expect(page.locator('[data-test="stat-bladder"]')).toHaveCount(0);
@@ -1891,17 +2072,58 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     // catalogue can still draw them.
     await expect(page.locator('[data-peer="peer-a"]')).toBeVisible();
 
-    // No bars, no buttons — and no modal.
+    // No bars, no verbs — and no modal.
     await expect(page.locator('[data-test="pet-stats"]')).toHaveCount(0);
     await expect(page.locator('[data-test="pet-tallies"]')).toHaveCount(0);
-    await expect(actionBtn(page, 'drink')).toHaveCount(0);
+    await expect(page.locator('.verbs .verb')).toHaveCount(0);
+    await expect(actionBtn(page, 'relieve')).toHaveCount(0);
     await expect(page.getByText('Ой, ошибка')).toHaveCount(0);
-    // The line is still there, and empty: it is a fixed-height row so the plane
-    // above does not resize when text comes and goes.
-    await expect(petLine(page)).toHaveText('');
+    // ABSENT RATHER THAN EMPTY, which it did not used to be: the line sat in a
+    // panel and held a fixed-height row open so the plane above it would not
+    // resize when text came and went. There is no panel and no row — it is drawn
+    // over the yard now — so an element that exists to say nothing is an element
+    // with no job.
+    await expect(petLine(page)).toHaveCount(0);
+    // And nothing claims he is dead, which is a claim only a pet that arrived
+    // could support: `alive` defaults to true precisely so that a failed read is
+    // never mistaken for a death.
+    await expect(death(page)).toHaveCount(0);
 
     await expectNoOverflow(page, 'vanyagotchi yard with no pet');
     await expectNoVerticalScroll(page, 'vanyagotchi yard with no pet');
+  });
+
+  test('a catalogue that arrives without a pet still offers the yard its controls', async ({
+    page,
+  }) => {
+    // THE OTHER HALF of a quiet failure, and the more common one: the catalogue
+    // is a cacheable GET that describes the game and the state read is the one
+    // that touches the database, so the state is what actually falls over. When
+    // it does, the bars are the only thing that should go — the catalogue is what
+    // the controls are drawn from, so the verb button, the crate and the place
+    // caption are all still there and all still work.
+    const calls = await stubBackend(page, { config: CATALOGUE, state: 'fail' });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await standAcrossFromTheCrate(page, socket);
+
+    // No pet, so no numbers to draw and nothing to say about him.
+    await expect(page.locator('[data-test="pet-stats"]')).toHaveCount(0);
+    await expect(death(page)).toHaveCount(0);
+    await expect(page.getByText('Ой, ошибка')).toHaveCount(0);
+
+    // But the yard is fully playable. The verb is not greyed — an unreadable stat
+    // fails OPEN, because greying a control while a fetch is in flight would make
+    // the yard flicker on every load — and the crate is still the way to a beer.
+    await expect(actionBtn(page, 'relieve')).toBeEnabled();
+    await expect(shop(page)).toBeEnabled();
+    await expect(page.locator('[data-test="here"]')).toBeVisible();
+
+    // And tapping the crate still starts the errand, which is the whole claim:
+    // where he is standing comes off the roster, not off the pet.
+    await shop(page).click();
+    await expect.poll(() => movesSent(socket).length).toBe(1);
+    expect(calls.posts).toEqual([]);
   });
 
 
@@ -2109,50 +2331,104 @@ test.describe('«Ванягоччи» — the beer store', () => {
   /** The one line the status row says about the crate. */
   const storeLine = (page: Page) => page.locator('[data-test="store"]');
 
-  test('the drink is out of reach from across the yard, and the row says to walk', async ({
-    page,
-  }) => {
-    // The whole of I9 in one assertion pair: beer comes out of a crate, so
-    // distance stops being decorative. The button is greyed as a COURTESY — the
-    // server refuses it regardless — and the row is what stops a greyed control
-    // being a mystery, because "wait" and "walk over" are different instructions.
+  test('tapping the crate from across the yard walks him, and sends no verb', async ({ page }) => {
+    // WHAT A TAP ON THE BOX MEANS, and the half of it that happens immediately.
+    // Drinking used to be a button under the plane that stayed greyed until he
+    // had walked over — so the control telling you what to do was the one you
+    // could not use, and the walking was a separate errand you had to know to run
+    // first. One tap is the whole thing now: it asks him to walk to the crate's
+    // OWN point, and it asks for nothing else, because he is not there yet.
+    //
+    // The line beside it is what keeps the wait from being a mystery: it says how
+    // much is in the box, which is what he is deciding on, and «дойди», which is
+    // the instruction — the sentence for a crate he cannot reach is deliberately
+    // not the sentence for one that is empty.
     await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
     const socket = await stubSocket(page);
     await enterYard(page);
+    await standAcrossFromTheCrate(page, socket);
 
-    await socket.push(youAre('me'));
-    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
-
-    await expect(actionBtn(page, 'drink')).toBeDisabled();
     await expect(storeLine(page)).toContainText('дойди');
     await expect(storeLine(page)).toContainText('6');
-    // The verb never left the browser, which is the point of greying it.
-    expect(socket.asked()).toEqual([]);
+
+    await shop(page).click();
+
+    await expect.poll(() => movesSent(socket).length).toBe(1);
+    // The crate's own coordinates EXACTLY, rather than wherever the finger
+    // landed: arrival is measured against them, so a tap forty pixels off centre
+    // would otherwise leave him a hair outside `arrive_within` for a reason
+    // nothing on screen explains.
+    expect(movesSent(socket)[0].x).toBe(STORE.x);
+    expect(movesSent(socket)[0].y).toBe(STORE.y);
+    // And not a verb in sight. He has asked to walk; he has not had a beer.
+    expect(socket.asked(), 'the drink was sent before he got there').toEqual([]);
     await expectNoOverflow(page, 'vanyagotchi yard with the store out of reach');
   });
 
-  test('walking to the crate is what makes the button work', async ({ page }) => {
-    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+  test('arriving at the crate is what drinks, and it drinks exactly once', async ({ page }) => {
+    // THE OTHER HALF: the verb is sent by the frame that says he got there, not
+    // by the tap that started him walking. And it is sent ONCE — the roster
+    // repeats five times a second, so "he is at the crate" stays true until he
+    // walks away, and a client that re-sent on every frame would empty the box
+    // by standing still.
+    const calls = await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ beer: 30 }),
+    });
     const socket = await stubSocket(page);
     await enterYard(page);
+    await standAcrossFromTheCrate(page, socket);
 
-    await socket.push(youAre('me'));
-    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
-    await expect(actionBtn(page, 'drink')).toBeDisabled();
+    await shop(page).click();
+    await expect.poll(() => movesSent(socket).length).toBe(1);
 
-    // He walks. Nothing else about the world changed — same crate, same stock —
-    // so his position is the only thing that can have enabled it.
-    await socket.push(rosterWithStore(STORE, { id: 'me', ...AT_THE_CRATE }));
+    // Still walking: a frame that puts him nearer but not there must not fire it.
+    // The neighbour is there so the frame is provably DELIVERED rather than
+    // merely sent — an assertion about what has not happened yet, made against a
+    // frame still sitting in the socket, would pass for the wrong reason.
+    await socket.push(
+      rosterWithStore(
+        STORE,
+        { id: 'me', x: STORE.x - 0.3, y: STORE.y },
+        { id: 'сосед', x: 0.1, y: 0.9 },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(2);
+    expect(socket.asked()).toEqual([]);
 
-    await expect(actionBtn(page, 'drink')).toBeEnabled();
+    // He arrives, and keeps standing there. The yard grows by one each time, for
+    // the same reason.
+    for (let i = 2; i < 6; i += 1) {
+      await socket.push(
+        rosterWithStore(
+          STORE,
+          { id: 'me', ...AT_THE_CRATE },
+          ...Array.from({ length: i }, (_, n) => ({ id: `peer-${n}`, x: 0.1 + n * 0.1, y: 0.9 })),
+        ),
+      );
+      await expect(dots(page)).toHaveCount(i + 1);
+    }
+
+    expect(socket.asked(), 'standing at the crate drank more than once').toEqual([[DRINK.key]]);
+    // Over the socket, and nowhere else — the action endpoint is gone.
+    expect(calls.posts).toEqual([]);
+    // And the line has stopped telling him to walk, because he has arrived.
     await expect(storeLine(page)).not.toContainText('дойди');
     await expect(storeLine(page)).toContainText('6');
   });
 
-  test('an empty crate greys the button even standing on it, and says so', async ({ page }) => {
-    // The other refusal, and deliberately NOT the same line: «пиво кончилось»
-    // means wait, «далековато» means walk. One sentence covering both would tell
-    // him to do neither.
+  test('an empty crate says so, and never says to walk', async ({ page }) => {
+    // The other refusal, and deliberately NOT the same sentence: «ящик пуст»
+    // means wait, «дойди» means walk over. One line covering both would tell him
+    // to do neither.
+    //
+    // NOTHING IS GREYED FOR IT, which is the honest shape now that the errand
+    // rather than a button is the control: what he is allowed to do is decided by
+    // the server at the instant the verb is folded, and an empty box answers «тут
+    // пусто» in a balloon over his head like every other refusal. So the line is
+    // the whole of what this screen says about an empty crate, and it has to say
+    // it — a box that looked identical full and empty would send him across the
+    // yard for nothing.
     await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -2160,17 +2436,16 @@ test.describe('«Ванягоччи» — the beer store', () => {
     await socket.push(youAre('me'));
     await socket.push(rosterWithStore({ ...STORE, left: 0 }, { id: 'me', ...AT_THE_CRATE }));
 
-    await expect(actionBtn(page, 'drink')).toBeDisabled();
     await expect(storeLine(page)).toContainText('пуст');
     await expect(storeLine(page)).not.toContainText('дойди');
   });
 
-  test('a yard with no crate says nothing about one, and still refuses the drink', async ({
-    page,
-  }) => {
+  test('a yard with no crate draws none, and offers no way to drink at all', async ({ page }) => {
     // A real state rather than a defensive one: the frame omits the block
     // outright when the world holds no crate, and a server that predates the
-    // field sends none either. The row must fall back to its usual two items.
+    // field sends none either. With no box there is nothing to tap, and there is
+    // no button standing in for it anywhere — which is the point of the move: the
+    // control for drinking IS the crate, so a world without one has no control.
     await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -2179,16 +2454,17 @@ test.describe('«Ванягоччи» — the beer store', () => {
     await socket.push(rosterWithStore(undefined, { id: 'me', ...AT_THE_CRATE }));
 
     await expect(storeLine(page)).toHaveCount(0);
-    await expect(actionBtn(page, 'drink')).toBeDisabled();
+    await expect(shop(page)).toHaveCount(0);
+    await expect(actionBtn(page, DRINK.key)).toHaveCount(0);
     await expectNoOverflow(page, 'vanyagotchi yard with no crate in it');
   });
 
-  test('a verb that needs no place is never greyed by one', async ({ page }) => {
-    // «покакать» is gated on a STAT and not on a place, so the store being
-    // absent, empty, or across the yard must not reach it — a version that
-    // greyed every button when the crate was out of reach would pass every test
-    // above. The bladder is seeded well past its own threshold so that the ONLY
-    // thing under test here is the place gate.
+  test('a verb that needs no place is never touched by one', async ({ page }) => {
+    // «покакать» is gated on a STAT and not on a place, so the crate being absent
+    // — or empty, or across the yard — must not reach it. A version that greyed
+    // the yard's own button whenever the crate was out of reach would pass every
+    // test above. The bladder is seeded well past its own threshold so that the
+    // ONLY thing that could be greying it is the place.
     await stubBackend(page, {
       config: CATALOGUE,
       state: () => stateOf({ beer: 30, bladder: 90 }),
@@ -2199,9 +2475,10 @@ test.describe('«Ванягоччи» — the beer store', () => {
     await socket.push(youAre('me'));
     await socket.push(rosterWithStore(undefined, { id: 'me', ...ACROSS_THE_YARD }));
 
-    await expect(actionBtn(page, 'drink')).toBeDisabled();
     await expect(actionBtn(page, 'relieve')).toBeEnabled();
-    await expect(actionBtn(page, 'revive')).toBeEnabled();
+    // And there is no button for the verb that DOES need a place, anywhere, in
+    // any state — greyed or otherwise. It is the crate or it is nothing.
+    await expect(actionBtn(page, DRINK.key)).toHaveCount(0);
   });
 
   test('an empty bladder greys «покакать», and filling it un-greys it', async ({ page }) => {
@@ -2214,13 +2491,16 @@ test.describe('«Ванягоччи» — the beer store', () => {
       config: CATALOGUE,
       state: () => stateOf({ bladder: RELIEVE.needs_at_least! - 1 }),
     });
-    await stubSocket(page);
+    const socket = await stubSocket(page);
     await enterYard(page);
+    await standAcrossFromTheCrate(page, socket);
 
     await expect(actionBtn(page, 'relieve')).toBeDisabled();
-    // And the other verbs are untouched: this gate is about one stat on one
-    // verb, not a general "something is wrong" grey.
-    await expect(actionBtn(page, 'revive')).toBeEnabled();
+    // And nothing else on the yard is touched by it: this gate is about one stat
+    // on one verb, not a general "something is wrong" grey. The crate is the
+    // control it could plausibly have caught, since it is the other thing on the
+    // plane that can be disabled at all.
+    await expect(shop(page)).toBeEnabled();
   });
 
   test('exactly on the threshold it is pressable, as the server would accept it', async ({
@@ -2258,24 +2538,36 @@ test.describe('«Ванягоччи» — the beer store', () => {
     await expect(actionBtn(page, 'relieve')).toBeEnabled();
   });
 
-  test('the gate turns on the served threshold rather than a number in the SPA', async ({
+  test('arriving turns on the served threshold rather than a number in the SPA', async ({
     page,
   }) => {
-    // `arrive_within` is catalogue content, so retuning it in content.go must
-    // move the client's idea of «beside it» with no client edit. Served as a
-    // whole plane width here, which makes a Ваня standing across the yard near
-    // enough — a client holding a hardcoded 0.12 would still grey the button.
+    // `arrive_within` is catalogue content, so retuning it in content.go must move
+    // the client's idea of «beside it» with no client edit. Served as a whole
+    // plane width here, which makes a Ваня standing across the yard already
+    // there — so both halves of "near" follow it at once: the line stops telling
+    // him to walk, and the errand fires on a frame that has not moved him an inch.
+    // A client holding a hardcoded 0.12 would say «дойди» and send nothing.
     await stubBackend(page, {
       config: { ...CATALOGUE, arrive_within: 1.5 },
       state: () => stateOf({ beer: 30 }),
     });
     const socket = await stubSocket(page);
     await enterYard(page);
+    await standAcrossFromTheCrate(page, socket);
 
-    await socket.push(youAre('me'));
+    await expect(storeLine(page)).not.toContainText('дойди');
+
+    await shop(page).click();
+    await expect.poll(() => movesSent(socket).length).toBe(1);
+    // The same position he was already standing in, which under the shipped
+    // threshold is nowhere near the crate.
     await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
 
-    await expect(actionBtn(page, 'drink')).toBeEnabled();
+    await expect
+      .poll(() => socket.asked(), {
+        message: 'the client did not use the served arrival distance',
+      })
+      .toEqual([[DRINK.key]]);
   });
 
   test('the splash says where to stand and how many are in it, from the catalogue', async ({
@@ -2574,9 +2866,16 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     await hotspot(page, BUSH.key).click();
     await expect.poll(() => moves(socket).length).toBe(1);
 
-    // He changes his mind and taps the ground.
+    // He changes his mind and taps the ground. Left of centre and short of the
+    // bottom, which is bare yard: the corners are not — the verb button sits in
+    // the bottom right and the place caption in the bottom left, and both stop a
+    // press rather than letting it reach the plane, which is the whole reason
+    // they were put in the two corners a player is least likely to walk to.
     const box = await plane(page).boundingBox();
-    await page.mouse.click((box?.x ?? 0) + (box?.width ?? 0) * 0.85, (box?.y ?? 0) + (box?.height ?? 0) * 0.9);
+    await page.mouse.click(
+      (box?.x ?? 0) + (box?.width ?? 0) * 0.15,
+      (box?.y ?? 0) + (box?.height ?? 0) * 0.55,
+    );
     await expect.poll(() => moves(socket).length).toBe(2);
 
     // And then wanders past the bush anyway, which must now mean nothing at all.
@@ -2647,8 +2946,12 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     await standInTheYard(page, socket);
 
     await expect(hotspots(page)).toHaveCount(0);
-    // And the row is unfiltered, because there was nothing to leave out of it.
-    await expect(page.locator('.actions .v-btn')).toHaveCount(3);
+    // And the button over the yard is exactly what it always is — one verb, the
+    // one with nowhere better to be. A catalogue with no search in it changes
+    // nothing there, because the two other verbs are drawn on the crate and on
+    // the death screen whether or not anybody can look for keys.
+    await expect(page.locator('.verbs .verb')).toHaveCount(1);
+    await expect(actionBtn(page, RELIEVE.key)).toBeVisible();
   });
 
   test('the yard offers the search, so the action row does not', async ({ page }) => {
@@ -2852,3 +3155,4 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     expect(claims(socket)).toEqual([]);
   });
 });
+

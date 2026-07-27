@@ -354,7 +354,12 @@ async function settleNear(
  * which would be the same as not testing it.
  */
 async function walkTo(page: Page, x: number, y: number): Promise<void> {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  // EIGHT RATHER THAN FIVE. Each attempt starts from where he sat down, so the
+  // distance left shrinks every time and is soon under the threshold at which he
+  // never gives up at all — but the convergence is a tail, and five attempts left
+  // enough of it to fail about once in a full run. Nothing about the walk changed;
+  // this is a budget for a roll the game makes on purpose.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     await tapAt(page, x, y);
     if (await settleNear(page, x, y)) return;
   }
@@ -524,10 +529,7 @@ test('two players share one plane, and a move crosses between them', async ({
     // is also what says the count above is the server's own rather than a tally
     // of everything drawn. How many there are comes from the server; casting a
     // new one must not be an edit to this file.
-    const cast = await npcCount(pageA);
-    expect(cast, 'the server serves no cast at all').toBeGreaterThan(0);
-    await expect(npcDots(pageA)).toHaveCount(cast);
-    await expect(npcDots(pageB)).toHaveCount(cast);
+    await assertSameCast(pageA, pageB, 'the two screens draw different regulars');
 
     // A walks a quarter across. Nothing local happens; the position is only real
     // once the server has clamped it and sent it back to everybody.
@@ -658,7 +660,7 @@ test('two open pages survive a restart of the binary', async ({ browser, baseURL
     // catalogue holds today. They are evaluated closed-form from a FIXED world
     // epoch rather than from process start, so a deploy does not teleport the
     // cast — which is only observable across a restart.
-    await expect(npcDots(pageA)).toHaveCount(await npcCount(pageA), { timeout: 30_000 });
+    await assertSameCast(pageA, pageB, 'the restart left the two screens with different regulars');
 
     // Still in the yard, never bounced back to the intro.
     await expect(pageA.getByRole('button', { name: 'Во двор' })).toHaveCount(0);
@@ -896,16 +898,68 @@ async function catalogue(page: Page): Promise<{ skins: WireSkin[]; npcs?: WireNP
 }
 
 /**
- * How many regulars the server actually has, asked of the server.
+ * Which regulars are drawn on this screen, by catalogue key.
  *
- * No test writes the number down. Casting a new character is a content change —
- * a catalogue entry and an art key, no client, no migration, no route — and the
- * whole point of that is that it costs nothing to do. A suite that hardcodes the
- * size of the cast turns it into a suite-wide edit, and the edit is invisible
- * until CI goes red for a reason that has nothing to do with the change.
+ * IT USED TO BE A COUNT OFF THE CATALOGUE, and that stopped being the right
+ * question when the cast spread out. Every regular used to live in the yard, so
+ * "how many the server has" and "how many are drawn here" were the same number;
+ * they live in all five places now, and the wire deliberately does not say which
+ * — `NPC.Location` is `json:"-"`, because the browser draws whatever entities a
+ * frame carries and has no business knowing where a character is *meant* to be.
+ * So there is nothing to count against, and a test that counted the whole cast
+ * was asserting that every regular in the world stands in the yard.
+ *
+ * What survives is the claim those tests are actually named for: two players
+ * looking at one place see the SAME regulars. That is compared as a set of keys
+ * rather than a tally, which is strictly stronger — two screens drawing two
+ * different characters would have tallied equal — and it is anchored against the
+ * served catalogue by `assertSameCast` below, so a screen inventing a regular
+ * still fails.
+ *
+ * No test writes the cast down. Casting a new character is a content change — a
+ * catalogue entry and an art key, no client, no migration, no route — and a
+ * suite that hardcoded the size of it would turn that into a suite-wide edit,
+ * invisible until CI went red for an unrelated reason.
  */
-async function npcCount(page: Page): Promise<number> {
-  return ((await catalogue(page)).npcs ?? []).length;
+async function npcKeysOnScreen(page: Page): Promise<string[]> {
+  const ids = await npcDots(page).evaluateAll((els) =>
+    els.map((el) => el.getAttribute('data-peer') ?? ''),
+  );
+  return ids.map((id) => id.replace(/^npc-/, '')).sort();
+}
+
+/**
+ * Fails unless both screens are drawing the same regulars, and unless those are
+ * regulars the server actually has.
+ *
+ * Three claims in one, because they are only worth anything together: the two
+ * screens agree, they agree about something rather than about an empty yard, and
+ * what they agree about came from the catalogue rather than from the client.
+ */
+async function assertSameCast(a: Page, b: Page | undefined, why: string): Promise<void> {
+  const known = new Set(((await catalogue(a)).npcs ?? []).map((npc) => npc.key));
+  expect(known.size, 'the server serves no cast at all').toBeGreaterThan(0);
+  // POLLED RATHER THAN READ, on both screens and in this order. The regulars
+  // arrive on the first roster, which is a moment after the yard opens — so a
+  // straight read compares a screen that has one against a screen that does not
+  // and reports a disagreement that is really a race. A's set is stable once it
+  // is non-empty (a location's cast is closed-form and nobody walks into or out
+  // of it), which is what lets it be the expectation B is polled against.
+  await expect
+    .poll(async () => (await npcKeysOnScreen(a)).length, {
+      timeout: 15_000,
+      message: `${why}: no regular is ever drawn in this place at all`,
+    })
+    .toBeGreaterThan(0);
+  const drawn = await npcKeysOnScreen(a);
+  for (const key of drawn) {
+    expect(known.has(key), `${why}: «${key}» is drawn but is in no catalogue`).toBe(true);
+  }
+  if (b) {
+    await expect
+      .poll(async () => (await npcKeysOnScreen(b)).join(','), { timeout: 15_000, message: why })
+      .toBe(drawn.join(','));
+  }
 }
 
 /**
@@ -939,6 +993,15 @@ test('the yard has regulars, and both players see the same ones', async ({ brows
   // The claim that matters is that they are SHARED: two independent browsers,
   // two accounts, two sockets, and the same characters on both. An NPC faked
   // client-side would satisfy every single-page assertion here.
+  //
+  // IT IS ABOUT THE ONES STANDING IN THIS PLACE, which used to be all of them.
+  // The cast lived entirely in the yard; it is spread across all five locations
+  // now, so "every regular the catalogue has" and "every regular drawn here" are
+  // different sets, and the wire deliberately does not say which place a
+  // character belongs to. So the set drawn is read off the screen and each
+  // member of it is then checked against the catalogue — which is the same
+  // anchor as before (nothing is drawn that the server did not serve) without
+  // asserting that the whole world stands in one yard.
   const base = baseURL ?? 'http://127.0.0.1:8081';
   const ctxA = await browser.newContext(PHONE);
   const ctxB = await browser.newContext(PHONE);
@@ -949,18 +1012,18 @@ test('the yard has regulars, and both players see the same ones', async ({ brows
     const pageB = await enterYard(ctxB, base);
 
     const cfg = await catalogue(pageA);
-    const npcs = cfg.npcs ?? [];
-    expect(npcs.length, 'the server serves no cast at all').toBeGreaterThanOrEqual(2);
+    const cast = cfg.npcs ?? [];
+    expect(cast.length, 'the server serves no cast at all').toBeGreaterThanOrEqual(2);
+    // Waits for the first roster on both screens, which is what stops every loop
+    // below being vacuous against a yard that has not arrived yet.
+    await assertSameCast(pageA, pageB, 'the two screens draw different regulars');
+    const drawnHere = new Set(await npcKeysOnScreen(pageA));
+    const npcs = cast.filter((npc) => drawnHere.has(npc.key));
 
     for (const [page, who] of [
       [pageA, 'A'],
       [pageB, 'B'],
     ] as const) {
-      await expect(npcDots(page), `${who} sees the wrong number of regulars`).toHaveCount(
-        npcs.length,
-        { timeout: 15_000 },
-      );
-
       for (const npc of npcs) {
         // The id the server mints is `npc-` plus the catalogue key — the only
         // handle a character without an account can have.
@@ -1040,15 +1103,18 @@ test('a regular is in the same place on both screens at the same moment', async 
     const pageA = await enterYard(ctxA, base);
     const pageB = await enterYard(ctxB, base);
 
-    const npcs = (await catalogue(pageA)).npcs ?? [];
-    expect(npcs.length, 'the server serves no cast at all').toBeGreaterThanOrEqual(1);
-    await expect(npcDots(pageA)).toHaveCount(npcs.length, { timeout: 15_000 });
-    await expect(npcDots(pageB)).toHaveCount(npcs.length, { timeout: 15_000 });
+    // The regulars standing in THIS place, which is no longer all of them: the
+    // cast is spread across the five locations and the wire does not say which
+    // one a character belongs to, so the set is read off the screen. Both pages
+    // are checked to agree about it first, which is also what waits for the
+    // first roster to arrive on each.
+    await assertSameCast(pageA, pageB, 'the two screens draw different regulars');
+    const here = await npcKeysOnScreen(pageA);
 
     // One that MOVES. A character standing still would agree with itself on two
     // screens for entirely uninteresting reasons, so the assertion that the
     // agreement is non-trivial is made against the same samples below.
-    const wanderer = `npc-${npcs[0].key}`;
+    const wanderer = `npc-${here[0]}`;
 
     // A frame is published to everybody at once, so at worst the two pages are
     // one tick apart. The wanderer covers well under 0.01 of the plane in a 200
@@ -1467,7 +1533,7 @@ test('a Ваня whose owner has gone is asleep in the yard where he stood', asy
       .poll(() => pageA.locator('[data-test="here"]').textContent())
       .toMatch(/\b1\b/);
     // And the regulars are still there alongside him.
-    await expect(npcDots(pageA)).toHaveCount(await npcCount(pageA));
+    await assertSameCast(pageA, undefined, 'the sleeper took the regulars with him');
   } finally {
     await ctxA.close();
     await ctxB.close().catch(() => undefined);

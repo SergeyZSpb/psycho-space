@@ -187,12 +187,19 @@ type Store struct {
 	// convention Peer.Loc follows, and for the same reason.
 	//
 	// It exists because the frame is one payload for five places: without it a
-	// Ваня standing in лес would be shown a shop that is in двор and invited to
-	// walk to a crate he cannot see. The client compares it against its own
-	// location and draws nothing when they differ; the server refuses the drink
-	// regardless, because a greyed button is a suggestion. Free today — the crate
-	// is pinned to the yard, so this is omitted on every frame — and the field is
-	// what keeps it free to move the shop.
+	// Ваня standing in лес would be shown a shop that is somewhere else entirely
+	// and invited to walk to a crate he cannot see. The client compares it against
+	// its own location and draws nothing when they differ; the server refuses the
+	// drink regardless, because a greyed button is a suggestion.
+	//
+	// AND IT IS NOW THE ONLY PLACE THE SHOP'S LOCATION IS PUBLISHED. The crate
+	// used to be pinned to двор, so this was omitted on every frame and the
+	// catalogue could carry a constant `store_location` beside it; a crate that
+	// moves to a fresh location every time it is emptied makes that constant a
+	// lie, so it is gone and this field carries the fact alone. It is four bytes
+	// of `"loc":"les",` on four frames in five, which is the cheapest honest
+	// answer available: the alternative is a second GET per move to learn
+	// something the frame is already sending.
 	Loc string `json:"loc,omitempty"`
 	// Left is how many drinks the crate still holds. Never nought on a published
 	// frame — the draw that empties a crate exhausts it and stands a fresh one up
