@@ -28,22 +28,47 @@ import (
 // background timer this design does not have. At a handful of deposits a day
 // that is thousands of dead rows a year, which is nothing.
 
-// worldLimit is how many objects the plane will draw at once.
+// worldLimitPerLocation is how many objects each location will draw at once.
 //
-// A HARD BOUND ON THE WIRE, and the reason it exists rather than trusting the
-// TTL to keep the number small. Every live object is an entity in a frame sent
-// five times a second to every viewer, so the cost is bytes x rate x objects x
-// viewers: at roughly 60 bytes each this cap is about 1.4 KB a frame, 7 KB/s to
-// each phone, and it cannot grow however enthusiastically the yard behaves. The
-// alternative — an unbounded list — turns a busy evening into a bandwidth
-// incident on somebody's mobile data.
-const worldLimit = 24
+// PER LOCATION RATHER THAN WORLD-WIDE, and that is the change the four locations
+// forced. A single world-wide cap is a budget five places compete for, so one
+// busy evening in the yard would fill it and лес would quietly hold nothing at
+// all — including, on a bad day, the key, which would end the hunt with nothing
+// failing anywhere. A cap per location cannot starve a neighbour.
+//
+// AND IT IS STILL A HARD BOUND ON THE WIRE, which is why it fell from 24 as it
+// became per-location rather than staying put. Every live object is an entity in
+// a frame sent five times a second to every viewer — the frame carries all five
+// locations, because they are not rooms — so the cost is bytes × rate × objects
+// × viewers. At roughly 60 bytes each, six per location across five locations is
+// about 1.8 KB a frame and 9 KB/s to each phone, against 1.4 KB and 7 KB/s
+// before; keeping 24 would have been 7.2 KB a frame and 36 KB/s, which is a
+// bandwidth incident on somebody's mobile data rather than a cap.
+//
+// Six is also enough to play against: the only kind that accumulates is the
+// relief deposit, it lasts ten minutes, and it needs a bladder at fifteen, so
+// six live at once in ONE place is already a busy evening for a group of five.
+// What is over the cap is the OLDEST, and the world's own fixtures are never
+// evictable — see LiveWorldObjects, which orders singletons first precisely so a
+// pile of deposits cannot push the beer crate out of the cache and leave a yard
+// where nobody can drink.
+const worldLimitPerLocation = 6
 
 // WorldObject is one durable thing on the plane, as the game reads it back.
 type WorldObject struct {
 	ID   string
 	Kind string
-	At   Point
+	// LocationKey is which of the five places it is standing in.
+	//
+	// READ BACK RATHER THAN ASSUMED, which it did not have to be while the cache
+	// held one location: every caller knew the answer because it had asked for
+	// that location. Now the cache holds all five, so an object has to carry its
+	// own, and two rules turn on it — the store block tells a client where the
+	// shop is, and a search is refused unless the key is hidden in the searcher's
+	// OWN location. Without it a key hidden in лес at coordinates that happened to
+	// be nearest двор's bench would have been claimable from the bench.
+	LocationKey string
+	At          Point
 	// ExpiresAt is nil for a kind that lasts forever.
 	ExpiresAt *time.Time
 	// Remaining is how many draws are left in it, and nil for a kind nobody
@@ -83,6 +108,14 @@ func (s *Service) worldNow() []WorldObject {
 // version: for a kind the world holds many of — a deposit — "the one of this
 // kind" is not a question with an answer, and every caller here is asking about
 // the key or the crate.
+//
+// IT TAKES NO LOCATION, deliberately, and that is the "one key world-wide"
+// ruling written down as a function signature. A singleton is unique across the
+// whole world — the partial unique index is on `kind` alone — so "the key" is a
+// question with one answer wherever it happens to be hidden, and the caller that
+// cares WHERE compares the LocationKey it gets back. Taking a location here
+// would have quietly turned a world-wide invariant into a per-location one and
+// made "is there a hunt running" answerable five different ways.
 func (s *Service) objectOf(kind string, now time.Time) (WorldObject, bool) {
 	for _, o := range s.worldNow() {
 		if o.Kind == kind && o.live(now) {
@@ -92,7 +125,16 @@ func (s *Service) objectOf(kind string, now time.Time) (WorldObject, bool) {
 	return WorldObject{}, false
 }
 
-// loadWorld refreshes the cache of what is standing in the yard.
+// loadWorld refreshes the cache of what is standing in the world.
+//
+// EVERY LOCATION, IN ONE READ, and both halves matter. Every location, because
+// the frame carries all five and a cache holding only the reader's own would
+// draw an empty лес for anybody standing in it. In one read, because the
+// alternative — a query per location, driven by a loop over the catalogue — is
+// five round trips whose failure modes are partial: a cache half refreshed
+// against a database that went away mid-loop is a world nobody was ever in. The
+// per-location cap therefore lives in the statement rather than in this loop; see
+// LiveWorldObjects.
 //
 // Called from the same human-paced moments as the display cache — a hello, and
 // a verb that changed the world — never from the tick. A failure is not fatal:
@@ -101,10 +143,20 @@ func (s *Service) loadWorld(ctx context.Context) {
 	if s.repo == nil || s.q == nil {
 		return
 	}
-	objects, err := s.repo.LiveWorldObjects(ctx, s.q, LocationYard, worldLimit)
+	objects, err := s.repo.LiveWorldObjects(ctx, s.q, worldLimitPerLocation)
 	if err != nil {
 		slog.WarnContext(ctx, "gamevanyagotchi: world load failed", "err", err)
 		return
+	}
+	// NORMALISED ONCE, HERE, which is the same thing `display.location` does for a
+	// pet and for the same reason: "empty means the yard" is a rule about stored
+	// data, so it is applied where stored data enters the process rather than at
+	// each of the four places that go on to compare a location. The column is NOT
+	// NULL, so this is a belt on a pair of braces — but the comparison it feeds
+	// decides whether a search is refused, and a rule stated in four places is a
+	// rule that will one day be stated three times.
+	for i := range objects {
+		objects[i].LocationKey = locationOr(objects[i].LocationKey)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,9 +221,12 @@ func (s *Service) props(now time.Time) []Peer {
 			// travels in every frame; twelve is the same length a player's
 			// pseudonym uses, is unique enough among a capped two dozen objects,
 			// and saves most of a kilobyte a second per viewer at the cap.
-			ID:      propPrefix + shortID(o.ID),
-			X:       o.At.X,
-			Y:       o.At.Y,
+			ID: propPrefix + shortID(o.ID),
+			X:  o.At.X,
+			Y:  o.At.Y,
+			// Where it is lying, so a deposit left in кусты is drawn in кусты and
+			// nowhere else. Omitted for the yard, which is where most of them are.
+			Loc:     onWire(o.LocationKey),
 			Art:     kind.Art,
 			Label:   kind.Label,
 			Pose:    PoseFine,
@@ -279,14 +334,62 @@ func (s *Service) ensureWorld(ctx context.Context) {
 // The ASK is what makes this cheap enough to run on every hello: without it,
 // every visitor would write a row the partial index refuses, which is a table
 // full of nothing and a wasted write per arrival rather than a wasted read.
+//
+// AND THE ASK IS WORLD-WIDE, which is the whole of "one key, not one per
+// location". It names no location, so it answers "is there an active key
+// ANYWHERE" — which is exactly what the partial unique index on `kind` alone
+// enforces, and exactly what the insert below would be refused by. Asking per
+// location would have been a question the index does not answer: four locations
+// would each have reported no key, each would have tried to spawn one, three
+// would have been silently refused by the index, and the yard would have looked
+// as though it worked.
 func (s *Service) ensureSingleton(ctx context.Context, def ObjectKind) {
-	if _, ok, err := s.repo.ActiveSingleton(ctx, s.q, def.Key, LocationYard); err != nil || ok {
+	if _, ok, err := s.repo.ActiveSingleton(ctx, s.q, def.Key); err != nil || ok {
 		return
 	}
-	if err := s.repo.InsertWorldObject(ctx, s.q, def.Key, LocationYard,
-		s.placeFor(def, LocationYard), "", def.Singleton, def.stock(), nil); err != nil {
+	where := locationFor(def)
+	if err := s.repo.InsertWorldObject(ctx, s.q, def.Key, where,
+		s.placeFor(def, where), "", def.Singleton, def.stock(), nil); err != nil {
 		slog.WarnContext(ctx, "gamevanyagotchi: could not spawn a world object", "kind", def.Key, "err", err)
 	}
+}
+
+// locationFor decides which of the five places a freshly spawned object goes in.
+//
+// The catalogue's own pitch for a kind that names one, and a location drawn at
+// random for a kind that does not — the same shape `placeFor` has one level
+// down, and read in the same two places: the hello that stands a missing
+// singleton up, and the write that replaces one that has just been used up.
+//
+// THE RANDOM ONE IS THE KEY, and it is what makes the four locations a game
+// rather than four backdrops. Nobody is told which place holds it, so the only
+// way to find out is to go and look — and because the choice is made afresh
+// every time a key is claimed, watching where the last one was tells you nothing
+// about the next.
+//
+// crypto/rand rather than math/rand, for the reason `hideIn` gives about the
+// hotspot one level down: this is half of the answer to the game, so a
+// predictable sequence would let somebody who watched a few rounds know where
+// the next key is before it is hidden.
+func locationFor(def ObjectKind) string {
+	if def.Location != "" {
+		return def.Location
+	}
+	locations := catalogue.Locations
+	if len(locations) == 0 {
+		// A catalogue with no locations at all cannot spawn anything anywhere. The
+		// default is the honest answer and an invariant test forbids the state.
+		return catalogue.DefaultLocation
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(locations))))
+	if err != nil {
+		// Unreachable, exactly as it is in hideIn: crypto/rand's reader does not
+		// fail on any platform this runs on. Falling back to the first location
+		// keeps a spawn from being skipped, which is the failure that would end
+		// the hunt for ever.
+		return locations[0].Key
+	}
+	return locations[n.Int64()].Key
 }
 
 // placeFor decides where a freshly spawned object of a kind stands.
@@ -392,10 +495,18 @@ func (s *Service) searched(accountID, locationKey, spotKey string, def ObjectKin
 		return fmt.Errorf("%w: %q is not standing at %q", ErrTooFar, accountID, spot.Key)
 	}
 	object, ok := s.objectOf(def.Key, now)
-	if !ok {
-		// No hunt is running at all. Answered as an empty place rather than as
-		// anything more specific: there is genuinely nothing here, and a distinct
-		// sentence would tell a player about the world's bookkeeping.
+	if !ok || object.LocationKey != locationKey {
+		// No hunt is running at all, or it is running somewhere else. ONE ANSWER
+		// FOR BOTH, and the same answer a wrong hotspot gets: there is genuinely
+		// nothing in the place he looked in, and any sentence that distinguished
+		// the cases would be an oracle. «пусто здесь, но не там» narrows five
+		// locations to four for the price of one tap, which is the entire game
+		// given away by a refusal.
+		//
+		// THE COMPARISON IS WHY WorldObject CARRIES ITS LOCATION. Without it the
+		// check below would measure the key's coordinates against THIS location's
+		// hotspots — and coordinates are normalised, so a key hidden at (0.14,0.30)
+		// in лес would have been nearest двор's куст and claimable from it.
 		return fmt.Errorf("%w: no %q is hidden in %q", ErrNothingHere, def.Key, locationKey)
 	}
 	where, ok := nearestHotspot(locationKey, object.At)
@@ -418,25 +529,41 @@ func (s *Service) searched(accountID, locationKey, spotKey string, def ObjectKin
 // anybody can be beside, which is the honest answer rather than a fail-open one:
 // no crate means the frame carries no store either, so both ends say the same
 // thing.
-func (s *Service) beside(accountID, kind string, now time.Time) bool {
+//
+// AND A THING IN ANOTHER LOCATION IS NOT SOMETHING YOU ARE BESIDE, however close
+// the two coordinates happen to be. Coordinates are normalised per location, so
+// without this a Ваня standing at (0.82, 0.22) in лес would be at the crate's
+// exact pitch and could drink from a shop four places away. The client is told
+// the same thing by Store.Loc — it draws no store at all when it is looking at
+// somewhere else — so the greyed button and the refusal agree.
+func (s *Service) beside(accountID, kind, locationKey string, now time.Time) bool {
 	object, ok := s.objectOf(kind, now)
-	if !ok {
+	if !ok || object.LocationKey != locationKey {
 		return false
 	}
 	return distance(s.standing(accountID, now), object.At) <= arriveWithin
 }
 
-// store is the beer store as the frame publishes it, or nil when the yard has
+// store is the beer store as the frame publishes it, or nil when the world has
 // none.
 //
 // Read from the cache like everything else the tick touches, so naming it costs
 // no query.
+//
+// It carries WHERE the shop is as well as its place within that location, and
+// the two are not the same question now that there are five: a client looking at
+// заброшка is told the store is in двор and draws nothing. One field rather than
+// a store block per location, because there is one crate in the world.
 func (s *Service) store(now time.Time) *Store {
 	crate, ok := s.objectOf(KindCrate, now)
 	if !ok || crate.Remaining == nil {
 		return nil
 	}
-	return &Store{X: crate.At.X, Y: crate.At.Y, Left: *crate.Remaining}
+	return &Store{
+		X: crate.At.X, Y: crate.At.Y,
+		Loc:  onWire(crate.LocationKey),
+		Left: *crate.Remaining,
+	}
 }
 
 // setMood puts a cosmetic face on somebody for a moment.
@@ -455,14 +582,26 @@ func (s *Service) setMood(accountID, pose string, until time.Time) {
 	s.pos[accountID] = held
 }
 
-// settleHunt paints the yard's reaction to a claim: one happy face, everybody
-// else's sad.
+// settleHunt paints the reaction to a claim in the place it happened: one happy
+// face, and everybody else standing there sad.
 //
-// Everyone present, not merely the people who were looking for it. Losing costs
-// nothing but the face, and that is the whole of the loser effect — there is no
-// hook here and there never will be, because the cosmetic ruling removed its
-// only use.
-func (s *Service) settleHunt(ctx context.Context, winner string, now time.Time) {
+// Everyone PRESENT IN THAT LOCATION, not merely the people who were looking for
+// it — and not the whole world, which is what it used to be and what the four
+// locations turned into a bug. The room is the world, deliberately, because
+// locations are not rooms; so an unfiltered loop drained the face of somebody
+// standing in лифт because of something that happened in заброшка, which he
+// could not see, had no part in, and would be given no explanation of. A
+// cosmetic effect with no local cause is worse than none: it reads as the game
+// being broken rather than as somebody having lost a race.
+//
+// The WINNER is unconditional. There is one of him, and the search gate proved
+// he is standing in `where` before any of this ran, so no filter could tell him
+// anything the caller does not already know.
+//
+// Losing still costs nothing but the face, and that is the whole of the loser
+// effect — there is no hook here and there never will be, because the cosmetic
+// ruling removed its only use.
+func (s *Service) settleHunt(ctx context.Context, winner, where string, now time.Time) {
 	until := now.Add(moodFor)
 	// THE PET PATH STAYS TRANSPORT-FREE, which is a property the durable half
 	// documents about itself and which a won claim nearly took away: this is the
@@ -480,13 +619,45 @@ func (s *Service) settleHunt(ctx context.Context, winner string, now time.Time) 
 		s.setMood(winner, PoseHappy, until)
 		return
 	}
+	standing := s.locations()
 	for _, m := range members {
 		if m.AccountID == winner {
 			s.setMood(m.AccountID, PoseHappy, until)
 			continue
 		}
+		// Somebody the display cache has never heard of is treated as being in the
+		// default location, exactly as the frame draws him there — one rule for
+		// "empty means the yard", applied here as well.
+		// Somebody the display cache has never heard of is treated as being in the
+		// default location, exactly as the frame draws him there — one rule for
+		// "empty means the yard", applied here as well.
+		if locationOr(standing[m.AccountID]) != where {
+			continue
+		}
 		s.setMood(m.AccountID, PoseSad, until)
 	}
+}
+
+// locations is a copy of where every account the plane knows about is standing,
+// taken under the lock and read outside it.
+//
+// The same shape `worldNow` uses, and for the same reason its comment gives: the
+// alternative is holding the lock across a loop that calls back into `setMood`,
+// which takes it again. A map of a few dozen short strings is nothing; a
+// re-entrant lock is a deadlock.
+//
+// A MISSING ENTRY IS NOT THE SAME AS AN EMPTY ONE. An account with nothing cached
+// is absent from this map rather than present with "", and every caller resolves
+// that through `locationOr` — the same rule `display.location` applies, so the
+// place somebody is judged to be in and the place he is drawn in cannot differ.
+func (s *Service) locations() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]string, len(s.display))
+	for id, d := range s.display {
+		out[id] = d.location()
+	}
+	return out
 }
 
 // hunt is the id of the key currently lost, read from the cache.

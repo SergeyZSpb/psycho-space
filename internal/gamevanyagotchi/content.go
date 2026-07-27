@@ -152,13 +152,54 @@ const (
 const (
 	// SkinVanya is the only pet skin: he is дядя Ваня, which is the joke.
 	SkinVanya = "vanya"
-	// LocationYard is двор — the shared plane, and for now the only place there
-	// is. A location is deliberately NOT a realtime room: rooms are a closed set
-	// owned by the platform, so making locations rooms would mean a game teaching
-	// a platform file a new name, and it would split a yard of five people across
-	// six empty places.
+	// LocationYard is двор — where a pet is created and where the beer store
+	// stands, which is what makes it the DEFAULT rather than merely the first.
+	//
+	// A location is deliberately NOT a realtime room. Rooms are a closed set owned
+	// by the platform (`internal/httpapi/realtime.go`), so making locations rooms
+	// would mean a game teaching a platform file five new names — exactly the
+	// boundary ADR-028 exists to catch — and it would split a yard of five friends
+	// across five empty places. Everybody rides one frame and the client draws only
+	// the entities whose `loc` matches its own.
 	LocationYard = "yard"
+	// The four places behind the yard. Their keys are transliterated rather than
+	// translated — `les`, not `forest` — because the key is what the wire carries
+	// and the label is what a player reads, and a Go constant whose name has to be
+	// mentally translated back into its own value is a lookup nobody should have
+	// to do. LocationYard sets the precedent: the name IS the value.
+	LocationLes       = "les"
+	LocationLift      = "lift"
+	LocationKusty     = "kusty"
+	LocationZabroshka = "zabroshka"
 )
+
+// locationOr resolves an empty location key to the catalogue's default.
+//
+// EMPTY MEANS THE YARD, and it means it in three places that must not drift: a
+// catalogue entry naming no location (an NPC, an object kind), a pet whose row
+// has not been read into the display cache yet, and an entity on the wire whose
+// `loc` was omitted. One function so all three answer the same thing.
+func locationOr(key string) string {
+	if key == "" {
+		return catalogue.DefaultLocation
+	}
+	return key
+}
+
+// onWire is a location key as a frame carries it: EMPTY FOR THE DEFAULT ONE.
+//
+// The saving is the whole reason it exists. The roster is idempotent full state
+// at 5 Hz, so every byte in it is re-sent per entity, per tick, per viewer
+// (ADR-037) — and the overwhelming majority of entities are in the yard, because
+// that is where a pet is created, where the store is and where the sleepers are
+// lying. Omitting the common case costs nothing to compute and keeps the frame
+// the size it was before locations existed.
+func onWire(key string) string {
+	if locationOr(key) == catalogue.DefaultLocation {
+		return ""
+	}
+	return key
+}
 
 // Stat is one thing about a pet that changes with time on its own.
 //
@@ -373,6 +414,27 @@ type ObjectKind struct {
 	Key string `json:"key"`
 	// Art is a catalogue art key, resolved client-side like any other.
 	Art string `json:"art"`
+	// Location pins this kind to one place, or is empty for a kind the world may
+	// put ANYWHERE.
+	//
+	// The two answers are the difference between a shop and a lost key, one level
+	// up from what `At` already says. The crate names the yard, so the beer is
+	// always somewhere a player can be told to walk to; the key names nothing, so
+	// each fresh hunt picks a location with crypto/rand and nobody is told which
+	// one — searching everywhere IS the game. There is still exactly ONE key in
+	// the world, because the partial unique index is on `kind` alone (migration
+	// 008): locations multiplied the places to look, not the number of hunts.
+	//
+	// READ ONLY WHEN THE WORLD SPAWNS ONE, which is why the relief deposit can
+	// leave it empty without meaning "anywhere". A kind a PLAYER leaves behind
+	// lands where he is standing and never consults this; see `locationFor`, whose
+	// only callers are the singleton spawn and the write that replaces something
+	// exhausted.
+	//
+	// Server-side, like `At` and `Hidden` beside it: an object arrives in the
+	// roster carrying its own `loc` exactly as every other entity does, so nothing
+	// on the client needs the catalogue to work out where one is standing.
+	Location string `json:"-"`
 	// Label is what it is called. Empty for a thing nobody needs named — a
 	// deposit on the ground is self-explanatory and a caption would only be one
 	// more thing to draw.
@@ -515,8 +577,13 @@ func (k ObjectKind) stock() *int {
 	return &n
 }
 
-// Location is a place a pet can be. Only двор exists today; лес, лифт, кусты and
-// заброшка arrive with the search minigame, as catalogue entries.
+// Location is a place a pet can be: двор, лес, лифт, кусты and заброшка.
+//
+// FIVE PLACES AND ONE ROOM. A location is not a realtime room and must not
+// become one — see LocationYard for why — so the plane broadcasts every location
+// on one frame and each client draws the entities whose `loc` matches its own.
+// The whole of what a location IS lives here: a label, somewhere to arrive, and
+// the places worth looking in. Adding a sixth is an entry in this slice.
 type Location struct {
 	Key   string `json:"key"`
 	Label string `json:"label"`
@@ -559,9 +626,21 @@ type NPC struct {
 	// Art is a catalogue key the client resolves exactly as it resolves a pet's
 	// skin — which is why an NPC needs no client work at all: to the browser it
 	// is one more entity in the roster.
-	Art     string       `json:"art"`
-	Pattern PatternKey   `json:"-"`
-	Params  MotionParams `json:"-"`
+	Art string `json:"art"`
+	// Location is where he hangs about, empty for the yard.
+	//
+	// It is what `cast` reads to stamp `loc` on his entity, which is the field's
+	// live use rather than a seam kept open for later: without it the broadcast
+	// would have to name the yard in Go for every character, which is exactly the
+	// hardcoding the four locations removed everywhere else. Its second use is the
+	// obvious one — a regular somewhere other than двор becomes a one-word edit,
+	// no code, no migration, no client deploy, which is the property NPCs have
+	// about every other axis of themselves.
+	//
+	// Server-side like Pattern and Params: where he is arrives in the roster.
+	Location string       `json:"-"`
+	Pattern  PatternKey   `json:"-"`
+	Params   MotionParams `json:"-"`
 }
 
 // Config is the whole catalogue as the SPA receives it.
@@ -621,6 +700,24 @@ type Config struct {
 	// is, and derived from the kind's own `Label` so there is one name for the
 	// thing rather than two that drift.
 	StoreLabel string `json:"store_label,omitempty"`
+	// StoreLocation is which of the five places the beer store is in, resolved
+	// against `Locations` for its label exactly as StoreArt is against `Skins`.
+	//
+	// IT IS A RULE OF THE GAME AND THEREFORE IT IS SERVED. The splash screen's
+	// cheatsheet has to be able to say «пиво только во дворе», because a player who
+	// walks into лес and finds the drink button dead needs to know why — and
+	// «пиво из ящика» without saying where the ящик is answers a different
+	// question. That sentence must be DERIVED rather than typed, or it becomes a
+	// lie the first time the shop moves.
+	//
+	// It publishes a location key and never the kind's, which is the same
+	// capability-not-reason split StoreArt and NeedsSpot already make: the client
+	// is told where the shop is without being told which object kind a shop is.
+	// Nothing is given away — the frame's `store` block already carries the same
+	// place, and the crate is `OffFrame` rather than `Hidden`, so there was never a
+	// secret here. Empty if the crate ever leaves the catalogue, which the client
+	// reads as «draw no store» exactly as an absent `store` block is read.
+	StoreLocation string `json:"store_location,omitempty"`
 	// DefaultSkin and DefaultLocation are what a new pet is created with.
 	DefaultSkin     string `json:"default_skin"`
 	DefaultLocation string `json:"default_location"`
@@ -687,7 +784,7 @@ const (
 	// yard is not a sewer by evening. It also BOUNDS THE WIRE: every live
 	// deposit is an entity in a frame sent five times a second to everybody, so
 	// the lifetime is what stops the roster growing without limit — see
-	// worldLimit for the hard cap behind it.
+	// worldLimitPerLocation for the hard cap behind it.
 	reliefLifetime = 10 * time.Minute
 
 	// How full he has to be before going to the toilet is worth a button press.
@@ -1185,6 +1282,15 @@ var catalogue = Config{
 			Singleton: true,
 			// All or nothing. One player gets it and everybody else gets a face.
 			Contest: ContestSingleWinner,
+			// NO LOCATION EITHER, and that is the second half of the same thought:
+			// `At` unset means it has no pitch within a location, and this unset
+			// means it has no location either. A fresh hunt picks one of the five
+			// with crypto/rand and then a hotspot within it, and the player is told
+			// neither. There is still exactly ONE key in the world — the partial
+			// unique index is on `kind` alone — so the four locations behind the yard
+			// multiplied the places to look rather than the number of hunts, which is
+			// the settled ruling and the reason this needed no migration.
+			Location: "",
 			// No At: the whole point of a key is that it is somewhere, and
 			// `placeFor` draws a hiding place for a kind that names no pitch.
 			//
@@ -1214,10 +1320,15 @@ var catalogue = Config{
 			// all.
 			Contest: ContestStock,
 			Stock:   crateStock,
-			// And unlike the key it STANDS SOMEWHERE, which is what makes the
-			// arrival gate mean anything: a shop you had to hunt for would be a
-			// second key hunt wearing an apron.
-			At: &cratePlace,
+			// PINNED TO THE YARD, and unlike the key it also STANDS SOMEWHERE in it
+			// — the two together are what make the arrival gate mean anything. A
+			// shop you had to hunt for would be a second key hunt wearing an apron,
+			// and one that moved between five locations would be a shop nobody could
+			// be told to walk to. The frame publishes where it is (Roster.Store), so
+			// a Ваня in лес is shown no store at all rather than being invited to
+			// walk to a crate he cannot see.
+			Location: LocationYard,
+			At:       &cratePlace,
 			// NOT AN ENTITY, because the frame already carries it as the `store`
 			// block — its place and its count in one object, which is what lets the
 			// client draw a shop with a number on it instead of a dot with a face.
@@ -1264,11 +1375,83 @@ var catalogue = Config{
 				{Key: "porch", Label: "подъезд", Emoji: "🚪", At: Point{X: 0.86, Y: 0.86}},
 			},
 		},
+		// THE FOUR PLACES BEHIND THE YARD, and every one of them is a catalogue
+		// entry and nothing else: no migration, no route, no platform file, no
+		// client deploy. That is the seam I8d was built against — hotspots hang off
+		// a location, `hideIn` takes a location, `placeFor` takes a location — and
+		// these four are what collects on it.
+		//
+		// EACH ENTRY IS WHERE HE ARRIVES, and it is near the bottom of the plane
+		// for all four because that is where a person walks in from on a phone held
+		// upright. The yard's entry is the middle, which is a different thing: it is
+		// also `spawn`, the place a Ваня nobody has ever placed is drawn.
+		//
+		// THE HOTSPOTS OBEY THE THREE RULES THE YARD'S DO, restated because they are
+		// invisible until somebody plays. They are off the edges, where a tap target
+		// is half clipped by the plane. They are clear of anything with a pitch in
+		// the SAME location, so that "search here" and "use that" are never the same
+		// square of a 360 px screen — which in these four is vacuous today, because
+		// the only pitched thing in the game is the crate and the crate is in the
+		// yard. And they are DELIBERATELY SPREAD, with at least one in every
+		// location further from the entry than tiredFrom (0.45), so a walk there can
+		// end in «устал» and the search can fail by never arriving. The near ones
+		// are a safe guess and the far one is a gamble; that is what distance is
+		// for.
+		{
+			Key: LocationLes, Label: "лес", Entry: Point{X: 0.50, Y: 0.85},
+			Hotspots: []Hotspot{
+				{Key: "pen", Label: "пень", Emoji: "🪵", At: Point{X: 0.18, Y: 0.30}},
+				{Key: "elka", Label: "ёлка", Emoji: "🌲", At: Point{X: 0.80, Y: 0.24}},
+				{Key: "yama", Label: "яма", Emoji: "🕳️", At: Point{X: 0.30, Y: 0.62}},
+				{Key: "griby", Label: "грибы", Emoji: "🍄", At: Point{X: 0.66, Y: 0.70}},
+				{Key: "kostyor", Label: "костёр", Emoji: "🔥", At: Point{X: 0.50, Y: 0.14}},
+			},
+		},
+		{
+			Key: LocationLift, Label: "лифт", Entry: Point{X: 0.50, Y: 0.88},
+			Hotspots: []Hotspot{
+				{Key: "knopki", Label: "кнопки", Emoji: "🔢", At: Point{X: 0.84, Y: 0.50}},
+				{Key: "zerkalo", Label: "зеркало", Emoji: "🪞", At: Point{X: 0.16, Y: 0.34}},
+				{Key: "potolok", Label: "потолок", Emoji: "💡", At: Point{X: 0.50, Y: 0.14}},
+				{Key: "ugol", Label: "угол", Emoji: "🧹", At: Point{X: 0.18, Y: 0.80}},
+				{Key: "dveri", Label: "двери", Emoji: "🚪", At: Point{X: 0.50, Y: 0.60}},
+			},
+		},
+		{
+			Key: LocationKusty, Label: "кусты", Entry: Point{X: 0.50, Y: 0.90},
+			Hotspots: []Hotspot{
+				{Key: "krapiva", Label: "крапива", Emoji: "🌱", At: Point{X: 0.20, Y: 0.26}},
+				{Key: "paket", Label: "пакет", Emoji: "🛍️", At: Point{X: 0.78, Y: 0.30}},
+				{Key: "butylki", Label: "бутылки", Emoji: "🍾", At: Point{X: 0.30, Y: 0.66}},
+				// The one that is the joke rather than the scenery: the yard's idle
+				// pool already mutters «кладмен мудак», and this is where he works.
+				{Key: "zakladka", Label: "закладка", Emoji: "📦", At: Point{X: 0.72, Y: 0.68}},
+				{Key: "vetki", Label: "ветки", Emoji: "🌿", At: Point{X: 0.50, Y: 0.16}},
+			},
+		},
+		{
+			Key: LocationZabroshka, Label: "заброшка", Entry: Point{X: 0.50, Y: 0.86},
+			Hotspots: []Hotspot{
+				{Key: "podval", Label: "подвал", Emoji: "🕳️", At: Point{X: 0.22, Y: 0.72}},
+				{Key: "lestnitsa", Label: "лестница", Emoji: "🪜", At: Point{X: 0.80, Y: 0.60}},
+				{Key: "matras", Label: "матрас", Emoji: "🛏️", At: Point{X: 0.34, Y: 0.34}},
+				{Key: "graffiti", Label: "граффити", Emoji: "🎨", At: Point{X: 0.72, Y: 0.20}},
+				{Key: "bochka", Label: "бочка", Emoji: "🛢️", At: Point{X: 0.50, Y: 0.48}},
+			},
+		},
 	},
-	// The yard's regulars. Four of them across three ways of moving, which is
+	// The yard's regulars. Three of them across two ways of moving, which is
 	// exactly what the pattern table exists for: the last two arrived as
 	// catalogue entries and nothing else — no code, no migration, no client
 	// change — because each reuses a pattern that was already written.
+	//
+	// ALL THREE ARE IN THE YARD, and none of them names a location, because empty
+	// means двор. That is a decision rather than an omission: the four locations
+	// behind the yard are a MECHANIC, and populating them by copying the same
+	// three characters into each would make лес a room full of Сахур and say
+	// nothing about any of the five places. A regular of their own is content the
+	// four places should get deliberately, and when they do it is one word per
+	// character here.
 	NPCs: []NPC{
 		{
 			Key:     "sahur",
@@ -1348,6 +1531,10 @@ func Content() Config {
 	if crate, ok := ObjectKindByKey(KindCrate); ok {
 		c.StoreArt = crate.Art
 		c.StoreLabel = crate.Label
+		// Resolved through locationOr, so a kind that names no location publishes
+		// the default rather than an empty string the client would have to know how
+		// to read. The crate names the yard, so this is the yard.
+		c.StoreLocation = locationOr(crate.Location)
 	}
 	c.Skins = append([]Skin(nil), catalogue.Skins...)
 	c.Locations = append([]Location(nil), catalogue.Locations...)

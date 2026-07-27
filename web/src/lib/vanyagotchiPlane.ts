@@ -537,6 +537,71 @@ export function propScale(expires: number | undefined, now: number): number {
   return Math.min(1, remaining / PROP_LIFE_MS);
 }
 
+// ---------------------------------------------------------------------------
+// ONE ROOM, SEVERAL PLACES.
+//
+// The socket has exactly one room and is meant to keep having one: locations are
+// not realtime rooms. The server broadcasts the whole world on every frame and
+// each browser draws only the place its own Ваня is standing in. That trade is
+// worth stating in the direction it actually runs. It COSTS bytes — a frame
+// carries the лес while you are standing in the двор — and it BUYS the absence of
+// a membership protocol: nobody joins or leaves anything, a reconnect needs no
+// re-subscription, and travelling is one field changing on a frame that was going
+// to arrive regardless. At the two dozen entities the world cap allows, that is a
+// few hundred bytes a second against a whole class of state to keep in step.
+//
+// The filter below is the whole of what the browser does about it, and it runs
+// FIRST — before appearance, before positions — so that every downstream notion
+// of "who is here" is one list: the keyed list, `lastPos`, the arrival test that
+// fires a search, and the gate on the beer crate. Two of them disagreeing would
+// be a Ваня drawn in a place he is not standing in, or a search announced from
+// another location.
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an entity is standing, as the frame states it — or the default location
+ * when it states nothing.
+ *
+ * ABSENCE MEANS THE DEFAULT, and that is a bytes decision rather than a
+ * shorthand: most of the world is in the first place most of the time, so the
+ * common case sends no field at all instead of repeating one key per entity,
+ * five times a second, for as long as anybody is watching (CLAUDE.md → *Prefer
+ * omitting to sending empty*).
+ */
+function locationOf(peer: unknown, fallback: string): string {
+  if (typeof peer !== 'object' || peer === null) return fallback;
+  const loc = (peer as Record<string, unknown>).loc;
+  return typeof loc === 'string' && loc ? loc : fallback;
+}
+
+/**
+ * The entities standing in one place, out of the whole world the frame carries.
+ *
+ * `here` is where the viewer's own Ваня is; `fallback` is the catalogue's default
+ * location, which is what an entity carrying no `loc` is standing in. They are
+ * two arguments rather than one because they are two different facts and
+ * collapsing them would be a bug with no symptom: read as "absent means wherever
+ * the viewer is", every unlabelled entity in the world would follow the player
+ * from place to place.
+ *
+ * BEFORE THE CATALOGUE ARRIVES both are the empty string, so the yard draws
+ * exactly the entities that named no location — which is the default place, which
+ * is where a fresh Ваня stands. The alternative degradation, drawing everybody,
+ * would put four locations' worth of people on top of each other in the one
+ * second before the config lands.
+ */
+export function peersIn(
+  peers: readonly unknown[],
+  here: string,
+  fallback: string,
+): readonly unknown[] {
+  const out: unknown[] = [];
+  for (const peer of peers) {
+    if (locationOf(peer, fallback) === here) out.push(peer);
+  }
+  return out;
+}
+
 /**
  * Reads the appearance of every entity in a frame.
  *
@@ -624,24 +689,64 @@ export function sameAppearance(
   return true;
 }
 
+/** One shared empty tally, so a yard nobody has counted never allocates. */
+export const NO_HEADS: ReadonlyMap<string, number> = new Map();
+
 /**
- * How many PEOPLE are in the yard, as the server counted them.
+ * How many PEOPLE are standing in each place, as the server counted them.
  *
- * Not `peers.length`, which stopped being the answer the moment the roster
- * started carrying NPCs and sleeping Vanyas as well. The count is published
- * precisely so this client does not have to tell a person from a character:
- * doing that here would mean the browser holding a copy of who is real, and a
- * cast added on the server would silently start inflating the head count on
- * every client that had not been redeployed.
+ * A TALLY PER LOCATION rather than one number, because there is one room and
+ * several places in it: the frame describes the whole world, so the count the
+ * status row wants is the one for the place its own Ваня is in, and the count the
+ * travel sheet wants is all of them at once. One field answers both, and it is
+ * the same field either way — «где сейчас люди» is exactly the question somebody
+ * deciding where to walk is asking.
  *
- * Falls back to the number of entities when the field is missing, which is
- * exactly right for the server that omits it: one that does not send `here` is
- * one that has no NPCs and no sleepers either, so every entity in its frame IS
- * a person.
+ * Counted by the server and not here, for the reason it always was: the roster
+ * carries the NPCs, everybody asleep in it and everything lying on the ground,
+ * and telling those from a person would mean the browser holding a copy of who is
+ * real — so a cast added on the server would silently start inflating the head
+ * count on every client that had not been redeployed.
+ *
+ * ZEROES ARE OMITTED ON THE WIRE, so an absent key means an empty place rather
+ * than an unknown one, and the map is usually one or two entries. Anything
+ * unreadable — a malformed frame, an array, a fractional or negative count —
+ * yields no tally rather than a guess: there is deliberately no fallback to the
+ * number of entities on the frame any more, because that number is now the
+ * entities in ONE place including its NPCs and its litter, which is not a head
+ * count of anything.
  */
-export function readHere(raw: unknown, entities: number): number {
-  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return entities;
-  return raw;
+export function readHere(raw: unknown): ReadonlyMap<string, number> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return NO_HEADS;
+  const out = new Map<string, number>();
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!key) continue;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) continue;
+    out.set(key, value);
+  }
+  return out.size ? out : NO_HEADS;
+}
+
+/**
+ * Do these two frames count the world the same way?
+ *
+ * The guard that keeps the head counts out of the five-times-a-second re-render,
+ * and the same discipline `sameStore` and `sameAppearance` follow. It has more to
+ * do than the old single number did, and that is the honest cost of the tally:
+ * somebody arriving in the лес now re-renders the status row of everybody
+ * standing in the двор. It is a few times an hour against a live count beside
+ * every place in the travel sheet, which is the thing the sheet is for.
+ */
+export function sameHere(
+  a: ReadonlyMap<string, number>,
+  b: ReadonlyMap<string, number>,
+): boolean {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  for (const [key, count] of a) {
+    if (b.get(key) !== count) return false;
+  }
+  return true;
 }
 
 /**
@@ -734,11 +839,24 @@ function isPlace(value: unknown): value is Place {
  */
 export function readStore(raw: unknown): VanyagotchiStore | undefined {
   if (!isPlace(raw)) return undefined;
-  const left = (raw as unknown as Record<string, unknown>).left;
+  const fields = raw as unknown as Record<string, unknown>;
+  const left = fields.left;
+  const loc = fields.loc;
   return {
     x: raw.x,
     y: raw.y,
     left: typeof left === 'number' && Number.isFinite(left) ? Math.max(0, Math.trunc(left)) : 0,
+    // WHICH PLACE THE SHOP IS IN, absent for the default one — the same
+    // convention every entity's `loc` follows.
+    //
+    // READ RATHER THAN IGNORED, because a coordinate means nothing without a
+    // place: (0.82, 0.22) is the crate in двор and an empty patch of лес, so a
+    // store block drawn without checking its location would put a shop in front
+    // of somebody four places away from it. It was harmless while the yard was
+    // the only place there was; it stopped being harmless the moment there were
+    // five, and it would stop being cosmetic the moment the box becomes the
+    // control you press to drink.
+    loc: typeof loc === 'string' && loc ? loc : undefined,
   };
 }
 
@@ -761,7 +879,7 @@ export function sameStore(
 ): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
-  return a.x === b.x && a.y === b.y && a.left === b.left;
+  return a.x === b.x && a.y === b.y && a.left === b.left && a.loc === b.loc;
 }
 
 /**
@@ -957,12 +1075,17 @@ const EMPTY_HOTSPOTS: readonly VanyagotchiHotspot[] = Object.freeze([]);
 /**
  * The hiding places of one location, ready to draw.
  *
- * FILTERED BY LOCATION RATHER THAN FLATTENED, and that is the half of this
- * function that is not about today. There is one location in the game as it
- * stands, so a flat list would behave identically and would have to be undone
- * the moment the лес and the лифт arrive — at which point every yard would be
- * showing every other yard's bushes. The catalogue already carries the hotspots
- * per location, so honouring that costs one `find` and nothing else.
+ * FILTERED BY LOCATION RATHER THAN FLATTENED, which was built a location early
+ * and is now load-bearing: there are several places, each with its own hiding
+ * places, and a flat list would show every one of them every other one's bushes —
+ * so a tap would walk him across the yard to search something that is in the лес.
+ * The catalogue already carries the hotspots per location, so honouring that
+ * costs one `find` and nothing else.
+ *
+ * IT IS GIVEN THE PET'S OWN LOCATION, never the default: see `locationKey` in
+ * GameVanyagotchiView.vue, which is the one place this screen decides where he
+ * is standing. The splash is the single exception and says why — it is read
+ * before the pet exists.
  *
  * TOLERANT AT EVERY STEP, like everything else that reads the catalogue: no
  * config yet (it is fetched over HTTP while the plane runs on the socket), a
@@ -1072,6 +1195,133 @@ export function searchVerb(
 export function spotAriaLabel(spot: { label?: string }): string {
   const label = typeof spot.label === 'string' ? spot.label.trim() : '';
   return label ? `искать: ${label}` : 'искать здесь';
+}
+
+// ---------------------------------------------------------------------------
+// The places themselves: which one you are in, which ones you can go to, and
+// what each of them looks like.
+//
+// THE BROWSER HOLDS NO LOCATION KEY, exactly as it holds no stat key, no skin
+// key and no object kind (ADR-028). It never asks whether it is drawing the лес;
+// it is handed a key it has never seen, and everything it does with that key is
+// arithmetic — count the heads under it, look up the hotspots under it, hash it
+// into a colour. Adding a fifth place stays a `content.go` edit, and this file
+// does not move.
+// ---------------------------------------------------------------------------
+
+/**
+ * A stable hue for a string, 0..359 — the whole of how this client tells one
+ * thing apart from another without being told what either of them is.
+ *
+ * TWO CALLERS AND THEY WANT THE SAME PROPERTY. A peer's identity colour is
+ * hashed from its id so that everybody's dot is the same colour on every screen
+ * at once with nothing to synchronise; a location's background is hashed from its
+ * key for precisely the same reason, one step up — the SERVER never says what
+ * colour a place is, and every browser still agrees about it.
+ *
+ * IT IS WHY THE PLANE CAN LOOK DIFFERENT PER LOCATION WITHOUT A CONTENT KEY IN
+ * THE SPA. The alternative was a map from location key to gradient sitting in
+ * this repository, which is the exact thing ADR-028 is bought to prevent: a fifth
+ * place would then need a client deploy to be anything but the default colour.
+ * Hashing costs nothing, needs no wire field, and gives a place a colour the
+ * moment `content.go` names it. What it costs is stated rather than discovered —
+ * the colour is arbitrary, so nobody can CHOOSE that the лес be green, and
+ * renaming a location's key repaints it. Both are acceptable at this stage
+ * precisely because the pictures are placeholders: the backdrops that will
+ * eventually say what a place looks like are art, they arrive through the asset
+ * store, and this hue is what distinguishes four places until they do.
+ *
+ * The hash is `*31 + charCode`, i.e. the plainest string hash there is. It is not
+ * a security boundary and must not become one: nothing about a location is secret
+ * (the whole catalogue is served), and the one thing in this game that IS hidden
+ * — where the key is — is deliberately never derivable in a browser at all.
+ */
+export function hueFor(text: string): number {
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return hash % 360;
+}
+
+/** What a place the catalogue named nothing is called on the travel sheet. */
+export const UNNAMED_PLACE = 'место';
+
+/** One place you can walk to, ready to draw as a row on the travel sheet. */
+export interface TravelPlace {
+  /** What a `vanyagotchi_goto` names. Never shown to the player. */
+  key: string;
+  /** What it is called. Never empty — see UNNAMED_PLACE. */
+  label: string;
+  /** How many people are standing there, as the frame counted them. */
+  count: number;
+  /** Is this the one he is standing in already? */
+  here: boolean;
+}
+
+/** One shared empty list, so a catalogue with no places never allocates. */
+const EMPTY_PLACES: readonly TravelPlace[] = Object.freeze([]);
+
+/**
+ * Everywhere he can go, with the head count the frame gave each one.
+ *
+ * EVERY LOCATION THE CATALOGUE SERVES, in catalogue order, including the one he
+ * is standing in — which is marked rather than dropped. Leaving it out would make
+ * the sheet a list of elsewheres with no way of saying "stay", and it is also the
+ * row that says where he is now, which is the first thing somebody opening a
+ * travel menu wants to know.
+ *
+ * A PLACE WITH NO NAME KEEPS ITS ROW, under a generic noun, which is the opposite
+ * of what `spotAriaLabel` does with a nameless hiding place and the opposite for
+ * a reason. A hotspot that cannot be named is still tappable and its aria label
+ * can simply say less; a place that cannot be named would be a row with nothing
+ * written on it, i.e. an untravellable location. Falling back to the wire KEY is
+ * the one thing that is not allowed — it would show a player the word `les` where
+ * the game says «лес».
+ *
+ * A count of nought is the honest reading of an absent key: the server omits the
+ * zeroes, so «никого» is what an unlisted place means.
+ */
+export function travelPlaces(
+  config: VanyagotchiConfig | null | undefined,
+  heads: ReadonlyMap<string, number>,
+  here: string,
+): readonly TravelPlace[] {
+  const locations = config?.locations;
+  if (!Array.isArray(locations)) return EMPTY_PLACES;
+  const out: TravelPlace[] = [];
+  for (const location of locations) {
+    if (!location || typeof location.key !== 'string' || !location.key) continue;
+    const label = typeof location.label === 'string' ? location.label.trim() : '';
+    out.push({
+      key: location.key,
+      label: label || UNNAMED_PLACE,
+      count: heads.get(location.key) ?? 0,
+      here: location.key === here,
+    });
+  }
+  return Object.freeze(out);
+}
+
+/**
+ * The one line that says where he is and how many are there with him.
+ *
+ * NOMINATIVE AND A COLON, «двор: 3», rather than the «во дворе: 3» this replaced,
+ * and the grammar is the whole argument. The name of a place is now CONTENT — it
+ * comes off the catalogue — and Russian prepositional case cannot be derived from
+ * a nominative label: «во дворе», «в лесу», «в кустах», «на заброшке» are four
+ * different inflections and one of them is not even the same preposition. A
+ * client that tried would be wrong three times out of four, and a client that
+ * kept the old sentence would be naming the yard in the лес. So the label is
+ * printed as the catalogue spells it and the colon does the work.
+ *
+ * The count alone when there is no name, rather than a placeholder noun: this is
+ * the pre-catalogue second, and «3» beside a crowd glyph reads perfectly well
+ * while «место: 3» would be inventing a name for somewhere that has one.
+ */
+export function hereLabel(label: string, count: number): string {
+  const named = label.trim();
+  return named ? `${named}: ${count}` : String(count);
 }
 
 /**

@@ -28,6 +28,15 @@ const TYPE_YOU = 'vanyagotchi_you';
 const TYPE_MOVE = 'vanyagotchi_move';
 /** A verb frame on its way to the server. Mirrored from message.go. */
 const TYPE_DO = 'vanyagotchi_do';
+/**
+ * A request to stand in another PLACE. Mirrored from message.go.
+ *
+ * Its own frame rather than a verb, and mirrored as one here for the same reason
+ * every other constant in this block is: going somewhere moves no stat and is not
+ * refused on a corpse, so folding it into `vanyagotchi_do` would have been a verb
+ * that none of the verb rules applied to.
+ */
+const TYPE_GOTO = 'vanyagotchi_goto';
 /** The owner's own pet, pushed after it changes. */
 const TYPE_STATE = 'vanyagotchi_state';
 
@@ -533,6 +542,50 @@ const DOOR: HotspotDef = { key: 'door', label: 'подъезд', emoji: '🚪', 
 const HOTSPOTS = [BUSH, BIN, DOOR];
 
 /**
+ * The лес's own hiding places, which exist to be NOT the yard's.
+ *
+ * The whole point of a per-location hotspot list is that no place lends another
+ * its bushes: a flat list would behave identically while there was one location
+ * and would send a player walking across the двор to search something that is in
+ * the лес. Deliberately overlapping the yard's coordinates — the stump sits
+ * exactly where the bush does — so a test that filtered by POSITION rather than
+ * by place would still pass and a test that reads the keys cannot.
+ */
+const STUMP: HotspotDef = { key: 'stump', label: 'пень', emoji: '🪵', at: { x: 0.28, y: 0.3 } };
+const FIR: HotspotDef = { key: 'fir', label: 'ёлка', emoji: '🌲', at: { x: 0.75, y: 0.62 } };
+const LES_HOTSPOTS = [STUMP, FIR];
+
+/**
+ * The world, as the catalogue serves it: four places, and not all of them with
+ * something to search in.
+ *
+ * `lift` carries no hotspots ON PURPOSE. A location with no hunt in it is a
+ * perfectly good location — you can still walk there and still meet people — and
+ * it is what the splash's «мест, где искать» line has to leave out, so a fixture
+ * without one could not tell the two counts apart.
+ */
+const YARD: LocationDef = {
+  key: 'yard',
+  label: 'двор',
+  entry: { x: 0.5, y: 0.5 },
+  hotspots: HOTSPOTS,
+};
+const LES: LocationDef = {
+  key: 'les',
+  label: 'лес',
+  entry: { x: 0.5, y: 0.9 },
+  hotspots: LES_HOTSPOTS,
+};
+const LIFT: LocationDef = { key: 'lift', label: 'лифт', entry: { x: 0.5, y: 0.5 } };
+const ZABROSHKA: LocationDef = {
+  key: 'zabroshka',
+  label: 'заброшка',
+  entry: { x: 0.2, y: 0.4 },
+  hotspots: [{ key: 'hole', label: 'дыра', emoji: '🕳️', at: { x: 0.6, y: 0.4 } }],
+};
+const LOCATIONS = [YARD, LES, LIFT, ZABROSHKA];
+
+/**
  * The ONLY way back from a death, and the only action with no effects at all.
  *
  * `starts_over` ignores the effects list outright and puts every bar back to its
@@ -598,7 +651,7 @@ const CATALOGUE: ConfigFixture = {
     },
   ],
   object_kinds: [RELIEF_KIND, KEY_KIND, CRATE_KIND],
-  locations: [{ key: 'yard', label: 'двор', entry: { x: 0.5, y: 0.5 }, hotspots: HOTSPOTS }],
+  locations: LOCATIONS,
   arrive_within: 0.12,
   // The store's picture, named ONCE in the catalogue rather than on the frame —
   // a constant has no business on a payload sent five times a second.
@@ -619,6 +672,12 @@ interface StateOptions {
   alive?: boolean;
   diedAt?: string | null;
   petId?: string;
+  /**
+   * Which place he is standing in. The yard unless a test says otherwise, which
+   * is what a fresh Ваня gets — and what every assertion written before there
+   * were four places assumed without having to say so.
+   */
+  locationKey?: string;
   /**
    * The drain each stat is under at the moment of the read, penalties folded in.
    *
@@ -648,7 +707,7 @@ function stateOf(values: Record<string, number>, opts: StateOptions = {}): State
       id: opts.petId ?? 'pet-1',
       name: null,
       skin_key: 'vanya',
-      location_key: 'yard',
+      location_key: opts.locationKey ?? YARD.key,
       died_at: opts.diedAt ?? null,
       created_at: now,
     },
@@ -899,6 +958,15 @@ interface Peer {
   label?: string;
   pose?: string;
   say?: string;
+  /**
+   * Which PLACE this entity is standing in, or absent for the default one.
+   *
+   * Absent is the common case on the wire — most of the world is in the first
+   * place most of the time, so the server omits the field rather than repeating
+   * one key per entity five times a second — which is why every peer in this file
+   * that says nothing is in the двор, exactly as it was before there were places.
+   */
+  loc?: string;
 }
 
 /**
@@ -912,7 +980,12 @@ interface Peer {
  * path a live server actually uses untested here.
  */
 function roster(...peers: Peer[]): string {
-  return JSON.stringify({ t: TYPE_ROSTER, peers, here: peers.length });
+  return JSON.stringify({ t: TYPE_ROSTER, peers, here: { [YARD.key]: peers.length } });
+}
+
+/** A roster frame that counts several places at once, as a real one does. */
+function rosterWorld(heads: Record<string, number>, ...peers: Peer[]): string {
+  return JSON.stringify({ t: TYPE_ROSTER, peers, here: heads });
 }
 
 /**
@@ -928,7 +1001,7 @@ function rosterWithStore(
   store: { x: number; y: number; left: number } | undefined,
   ...peers: Peer[]
 ): string {
-  return JSON.stringify({ t: TYPE_ROSTER, peers, here: peers.length, store });
+  return JSON.stringify({ t: TYPE_ROSTER, peers, here: { [YARD.key]: peers.length }, store });
 }
 
 /**
@@ -1211,7 +1284,7 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
       await expectOnScreen(page, actionBtn(page, key), `the ${key} button`);
     }
     await expectOnScreen(page, page.locator('[data-test="pet-tallies"]'), 'the tally row');
-    await expectOnScreen(page, page.getByText(/во дворе:/), 'the status row');
+    await expectOnScreen(page, page.locator('[data-test="status"]'), 'the status row');
   });
 
   test('the pet panel still fits the smallest screen we support', async ({ page }) => {
@@ -1252,7 +1325,7 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
       await expectOnScreen(page, actionBtn(page, key), `the ${key} button`);
     }
     await expectOnScreen(page, page.locator('[data-test="pet-tallies"]'), 'the tally row');
-    await expectOnScreen(page, page.getByText(/во дворе:/), 'the status row');
+    await expectOnScreen(page, page.locator('[data-test="status"]'), 'the status row');
     // And the plane it is sharing the screen with has not been squeezed to
     // nothing to make room.
     const box = await plane(page).boundingBox();
@@ -1716,7 +1789,7 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(face(page, 'npc')).toHaveText(UNKNOWN_ART);
     await expect(face(page, 'npc')).toHaveAttribute('data-condition', 'poorly');
     await expect(page.locator('[data-peer="npc"]')).toBeVisible();
-    await expect(page.getByText('во дворе: 3')).toBeVisible();
+    await expect(page.getByText('двор: 3')).toBeVisible();
   });
 
   test('a catalogue key the SPA has never heard of renders anyway', async ({ page }) => {
@@ -1791,8 +1864,18 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
 
     await socket.push(roster({ id: 'peer-a', x: 0.3, y: 0.3 }, { id: 'peer-b', x: 0.7, y: 0.7 }));
     await expect(dots(page)).toHaveCount(2);
-    await expect(page.getByText('во дворе: 2')).toBeVisible();
     await expect(page.getByText('на связи')).toBeVisible();
+
+    // AND THE PLACE CAPTION IS ABSENT RATHER THAN WRONG. Both halves of it come
+    // off the catalogue — the name of the place, and through the place which of
+    // the frame's head counts is ours — so with no catalogue there is nothing
+    // true to write in it and nowhere for the sheet it opens to send him. «0»
+    // over a yard with two people in it would be the worse answer.
+    await expect(page.locator('[data-test="here"]')).toHaveCount(0);
+    // The entities are drawn anyway, which is the whole claim of this test: the
+    // frame says where everybody is standing and a client that has never seen the
+    // catalogue can still draw them.
+    await expect(page.locator('[data-peer="peer-a"]')).toBeVisible();
 
     // No bars, no buttons — and no modal.
     await expect(page.locator('[data-test="pet-stats"]')).toHaveCount(0);
@@ -2167,6 +2250,8 @@ test.describe('«Ванягоччи» — the key hunt', () => {
   const moves = (socket: SocketHarness) => socket.sent().filter((frame) => frame.t === TYPE_MOVE);
   /** Every verb frame, whole — so the hiding place it named can be read. */
   const claims = (socket: SocketHarness) => socket.sent().filter((frame) => frame.t === TYPE_DO);
+  /** Every journey between places, whole — so the place it named can be read. */
+  const journeys = (socket: SocketHarness) => socket.sent().filter((frame) => frame.t === TYPE_GOTO);
 
   /**
    * Opens the yard with a Ваня of our own standing a long way from anything.
@@ -2176,9 +2261,20 @@ test.describe('«Ванягоччи» — the key hunt', () => {
    * than `arrive_within` from every hiding place in the fixture, so nothing has
    * been searched by accident before a test starts.
    */
-  async function standInTheYard(page: Page, socket: SocketHarness, id = 'me'): Promise<void> {
+  async function standInTheYard(
+    page: Page,
+    socket: SocketHarness,
+    id = 'me',
+    loc = YARD.key,
+  ): Promise<void> {
     await socket.push(youAre(id));
-    await socket.push(roster({ id, ...ACROSS_THE_YARD }));
+    // The place is stated rather than left to the default, because the frame
+    // carries the whole world and the browser draws one place of it: a Ваня put
+    // in the двор while his pet is in the лес is simply not on the plane, which
+    // is correct and would make every wait below time out for the wrong reason.
+    await socket.push(
+      rosterWorld({ [loc]: 1 }, { id, ...ACROSS_THE_YARD, ...(loc === YARD.key ? {} : { loc }) }),
+    );
     await expect(dots(page)).toHaveCount(1);
   }
 
@@ -2276,7 +2372,7 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     await expect(hotspots(page)).toHaveCount(HOTSPOTS.length);
     // Two dots for two people, with three hiding places drawn among them.
     await expect(dots(page)).toHaveCount(2);
-    await expect(page.getByText('во дворе: 2')).toBeVisible();
+    await expect(page.getByText('двор: 2')).toBeVisible();
     // And a hiding place is not one of the things the yard counts as an entity.
     await expect(page.locator('[data-test="peer"][data-spot]')).toHaveCount(0);
   });
@@ -2508,34 +2604,47 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     expect(claims(socket)).toEqual([]);
   });
 
-  test('the splash says the search moved onto the plane, and counts the places', async ({
+  test('the splash says the search moved onto the plane, and counts the world', async ({
     page,
   }) => {
     // A rules change that did not reach the cheatsheet is a rules change nobody
-    // playing knows about. Both halves matter and only one is derived: that the
-    // verb has no button is a fact about this screen, and how many hiding places
-    // there are and what they are called comes straight off the catalogue, so
-    // adding a bush in content.go moves this sentence on its own.
+    // playing knows about. Three facts, and only one of them hardcoded: that the
+    // verb has no button is a property of this screen, while how many PLACES have
+    // something to search in, what they are called, and how many hiding places
+    // there are between them all come straight off the catalogue — so adding a
+    // bush, or a whole location, in content.go moves these sentences on its own.
     await stubBackend(page, { config: CATALOGUE });
     await page.goto('/app/game-vanyagotchi');
 
     const row = page.locator('[data-test="rule-action-claim"]');
     await expect(row).toContainText('не кнопка');
     await expect(row).toContainText('тапни укрытие');
-    await expect(row).toContainText('искать можно в 3 местах: куст · мусорка · подъезд');
+    // Three of the four places, because the лифт has nothing in it to search —
+    // and the count of hiding places is the sum across all three, not the yard's.
+    await expect(row).toContainText('искать можно в 3 местах: двор · лес · заброшка');
+    await expect(row).toContainText('всего 6 укрытий');
+    await expect(row).not.toContainText('лифт');
     // And the hand-written half, which is where everything the wire cannot say
-    // lives: that the key is hidden, and what happens when you look in the wrong
-    // place.
-    await expect(page.locator('[data-test="rules-prose"]')).toContainText('не видно никому');
-    await expect(page.locator('[data-test="rules-prose"]')).toContainText('тут пусто');
-    await expect(page.locator('[data-test="rules-prose"]')).not.toContainText('кто первым нажал');
+    // lives: that the key is hidden, that there is ONE of it for the whole world
+    // rather than one per place, and what happens when you look in the wrong one.
+    const prose = page.locator('[data-test="rules-prose"]');
+    await expect(prose).toContainText('не видно никому');
+    await expect(prose).toContainText('тут пусто');
+    await expect(prose).toContainText('на все места сразу');
+    await expect(prose).not.toContainText('кто первым нажал');
+    // The travel rule, which is the other thing no catalogue field could say:
+    // that places exist, that you see only the people in your own, and where the
+    // control that moves you between them is.
+    await expect(prose).toContainText('ходить между ними можно как угодно');
+    await expect(prose).toContainText('только тех, кто стоит там же');
     await expectNoOverflow(page, 'vanyagotchi splash with the key hunt');
   });
 
-  test('a retuned yard retunes the cheatsheet with it', async ({ page }) => {
-    // THE assertion the derivation exists for: the count is a number the player
-    // plays against, and it is exactly the sort somebody changes by feel one
-    // evening.
+  test('a retuned world retunes the cheatsheet with it', async ({ page }) => {
+    // THE assertion the derivation exists for: both counts are numbers the player
+    // plays against, and they are exactly the sort somebody changes by feel one
+    // evening. A world of one place with one bush in it must not still be
+    // described as four places with six.
     await stubBackend(page, {
       config: {
         ...CATALOGUE,
@@ -2552,106 +2661,125 @@ test.describe('«Ванягоччи» — the key hunt', () => {
     await page.goto('/app/game-vanyagotchi');
 
     const row = page.locator('[data-test="rule-action-claim"]');
-    await expect(row).toContainText('искать можно в 1 месте: лифт');
-    await expect(row).not.toContainText('куст');
+    await expect(row).toContainText('искать можно в 1 месте: двор');
+    await expect(row).toContainText('всего 1 укрытие');
+    await expect(row).not.toContainText('лес');
   });
-});
 
-test.describe('«Ванягоччи» — the store is a shop, not a dot', () => {
-  const shop = (page: Page) => page.locator('[data-test="shop"]');
-  const shopLeft = (page: Page) => page.locator('[data-test="shop-left"]');
+  // -------------------------------------------------------------------------
+  // The hunt across four places. Everything above this line is the yard's own
+  // hiding places; what follows is that they are the YARD's — a per-location list
+  // that no other place may borrow, which is the half of `hotspotsFor` that was
+  // built a location early and is now load-bearing.
+  // -------------------------------------------------------------------------
 
-  test('the crate is drawn from the block, with the count on it, and never as an entity', async ({
+  test('the hiding places are the ones where he is standing, not the default ones', async ({
     page,
   }) => {
-    // THE DELETION THIS ITERATION IS ABOUT. The crate used to arrive BOTH as an
-    // `obj-` entity and as the store block, which is why it drew as a
-    // person-shaped circle — this screen tells a thing from a person by the
-    // presence of `expires`, and a crate never expires. Now there is one
-    // representation, and the shop can look like a shop.
-    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    // THE assertion the per-location filter exists for. The лес's stump sits at
+    // exactly the coordinates the yard's bush does, deliberately: a client that
+    // filtered by position, or flattened every location's list into one, would
+    // draw something plausible at the right place and send a claim naming the
+    // wrong one — which the server answers «тут пусто» for a reason nothing on
+    // screen explains.
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ hp: 65 }, { locationKey: LES.key }),
+    });
     const socket = await stubSocket(page);
     await enterYard(page);
+    await standInTheYard(page, socket, 'me', LES.key);
 
-    await socket.push(youAre('me'));
-    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
-
-    await expect(shop(page)).toBeVisible();
-    await expect(shopLeft(page)).toHaveText(String(STORE.left));
-    // And it SAYS what it is, permanently — there is no vendor standing beside it
-    // any more, so the box has to carry its own sign.
-    await expect(page.locator('[data-test="shop-sign"]')).toHaveText(CRATE_KIND.label!);
-    // Exactly one person in the yard, and no object entity at all — the server
-    // no longer sends one for the crate.
-    await expect(dots(page)).toHaveCount(1);
-    await expectNoOverflow(page, 'vanyagotchi yard with the shop drawn');
+    await expect(hotspots(page)).toHaveCount(LES_HOTSPOTS.length);
+    for (const spot of LES_HOTSPOTS) {
+      await expect(hotspot(page, spot.key)).toBeVisible();
+    }
+    for (const spot of HOTSPOTS) {
+      await expect(hotspot(page, spot.key), `${spot.key} belongs to the двор`).toHaveCount(0);
+    }
   });
 
-  test('the shop is bigger than a Ваня and is not a circle', async ({ page }) => {
-    // The owner's complaint, as an assertion: it read as one more dot. Pinned as
-    // a RELATIONSHIP rather than as pixels, so the world scale can be retuned
-    // without touching this.
-    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+  test('a place with nothing to search in offers nothing to tap', async ({ page }) => {
+    // A location need not have a hunt in it, and the honest answer is a plane
+    // with no tap targets rather than the default location's borrowed ones.
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ hp: 65 }, { locationKey: LIFT.key }),
+    });
     const socket = await stubSocket(page);
     await enterYard(page);
+    await standInTheYard(page, socket, 'me', LIFT.key);
 
-    await socket.push(youAre('me'));
-    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
-    await expect(shop(page)).toBeVisible();
-
-    const shopBox = await shop(page).boundingBox();
-    const dotBox = await page.locator('[data-peer="me"]').boundingBox();
-    expect(shopBox, 'the shop has no box').not.toBeNull();
-    expect(dotBox, 'the Ваня has no box').not.toBeNull();
-    expect(shopBox?.width ?? 0).toBeGreaterThan(dotBox?.width ?? 0);
-
-    // Square-ish rather than round. A circle is a 50% radius; anything under a
-    // quarter of the box reads as a crate.
-    const radius = await shop(page).evaluate((el) => getComputedStyle(el).borderRadius);
-    const px = Number.parseFloat(radius);
-    expect(Number.isFinite(px), `unreadable border-radius ${radius}`).toBe(true);
-    expect(px).toBeLessThan((shopBox?.height ?? 0) / 4);
+    await expect(hotspots(page)).toHaveCount(0);
+    // The verb is still served and still absent from the action row: the row's
+    // rule is about the CATALOGUE having a searching verb, not about this place
+    // having somewhere to use it.
+    await expect(actionBtn(page, CLAIM.key)).toHaveCount(0);
   });
 
-  test('the count on the shop follows the frame', async ({ page }) => {
-    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+  test('travelling changes which places can be searched', async ({ page }) => {
+    // The two halves of I10 meeting: a journey is asked for over the socket, the
+    // server answers with the pet, and the hunt on the plane follows it. Without
+    // this the yard would keep the бушes of the place he left and every claim
+    // from the new one would name a hiding place that is not there.
+    let where = YARD.key;
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ hp: 65 }, { locationKey: where }),
+    });
     const socket = await stubSocket(page);
     await enterYard(page);
+    await standInTheYard(page, socket);
+    await expect(hotspot(page, BUSH.key)).toBeVisible();
 
-    await socket.push(youAre('me'));
-    await socket.push(rosterWithStore(STORE, { id: 'me', ...AT_THE_CRATE }));
-    await expect(shopLeft(page)).toHaveText(String(STORE.left));
+    await page.locator('[data-test="here"]').click();
+    await page.locator(`[data-place="${LES.key}"]`).click();
 
-    await socket.push(rosterWithStore({ ...STORE, left: 2 }, { id: 'me', ...AT_THE_CRATE }));
-    await expect(shopLeft(page)).toHaveText('2');
+    // ONE `vanyagotchi_goto`, naming the place — and no verb, because going
+    // somewhere is neither something a corpse can be refused nor something that
+    // moves a stat, which is why it is a frame of its own rather than an action.
+    await expect.poll(() => journeys(socket).length).toBe(1);
+    expect(journeys(socket)[0].location).toBe(LES.key);
+    expect(socket.asked(), 'a journey is not a verb').toEqual([]);
+
+    // The server folds it and pushes the pet back, which is the only thing that
+    // moves him: nothing is written optimistically here, exactly as no tap moves
+    // a dot before the roster says it did.
+    where = LES.key;
+    await socket.push(
+      JSON.stringify({ t: TYPE_STATE, state: stateOf({ hp: 65 }, { locationKey: LES.key }) }),
+    );
+
+    await expect(hotspot(page, STUMP.key)).toBeVisible();
+    await expect(hotspot(page, BUSH.key)).toHaveCount(0);
+    await expect(hotspots(page)).toHaveCount(LES_HOTSPOTS.length);
   });
 
-  test('a yard with no crate draws no shop', async ({ page }) => {
-    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+  test('travelling calls off a search he was walking to', async ({ page }) => {
+    // The claim is armed against a hiding place in the place he is LEAVING, and
+    // the coordinates it is waiting for exist in every location. Left armed it
+    // would fire the moment he happened to stand near the same point somewhere
+    // else — a search of a bush in another world entirely, answered «тут пусто»
+    // at a moment that explains nothing.
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ hp: 65 }) });
     const socket = await stubSocket(page);
     await enterYard(page);
+    await standInTheYard(page, socket);
 
-    await socket.push(youAre('me'));
-    await socket.push(rosterWithStore(undefined, { id: 'me', ...AT_THE_CRATE }));
+    await hotspot(page, BUSH.key).click();
+    await expect.poll(() => moves(socket).length).toBe(1);
+    await expect(hotspot(page, BUSH.key)).toHaveAttribute('data-seeking', '1');
 
-    await expect(shop(page)).toHaveCount(0);
-  });
+    await page.locator('[data-test="here"]').click();
+    await page.locator(`[data-place="${LES.key}"]`).click();
+    await expect.poll(() => socket.sent().filter((f) => f.t === 'vanyagotchi_goto').length).toBe(1);
 
-  test('a tap on the shop still walks him over rather than being swallowed', async ({ page }) => {
-    // `pointer-events: none`, like every dot. Reaching the store IS walking to
-    // it, so the shop must not eat the tap that gets you there.
-    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
-    const socket = await stubSocket(page);
-    await enterYard(page);
+    // He then stands exactly where the bush was — the stump is at those very
+    // coordinates — and nothing is claimed.
+    await socket.push(roster(standingAt(BUSH)));
+    await socket.push(roster(standingAt(BUSH), { id: 'сосед', x: 0.9, y: 0.9 }));
+    await expect(dots(page)).toHaveCount(2);
 
-    await socket.push(youAre('me'));
-    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
-    await expect(shop(page)).toBeVisible();
-
-    const box = await shop(page).boundingBox();
-    await page.mouse.click((box?.x ?? 0) + (box?.width ?? 0) / 2, (box?.y ?? 0) + (box?.height ?? 0) / 2);
-
-    const moves = socket.sent().filter((f) => f.t === TYPE_MOVE);
-    expect(moves.length, 'the shop swallowed the tap instead of letting it walk him over').toBe(1);
+    expect(claims(socket)).toEqual([]);
   });
 });

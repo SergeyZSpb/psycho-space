@@ -39,6 +39,24 @@ const (
 	// time would be forgeable and everything in this game is integrated against
 	// timestamps — a drink backdated six hours would rewrite the decay after it.
 	TypeDo = "vanyagotchi_do"
+	// TypeGoto is the client asking to be somewhere else entirely: `{"t":
+	// "vanyagotchi_goto","location":"les"}`.
+	//
+	// A MOVEMENT MESSAGE, NOT A VERB, and the distinction is what decides where it
+	// lives rather than being a matter of taste. A verb moves a stat, appends an
+	// event and is folded by `apply`; leaving the yard moves nothing, writes no
+	// history and has nothing for the fold to interpret. It could not be a verb
+	// even if one wanted it to be: the event log carries a verb key and no payload
+	// at all (ADR-044, and the schema in migration 009), on purpose, so a
+	// destination could only be recorded in it by adding a column the record
+	// forbids or by inventing one verb per location.
+	//
+	// So it is the sibling of TypeMove one scale up — a tap crosses a location,
+	// this leaves one — and it is answered exactly as a tap is, which is to say
+	// not at all. The next roster carries the sender's own entity with its new
+	// `loc`, and that is how he learns it worked. An unknown location key is
+	// dropped in silence like every other frame this server does not believe.
+	TypeGoto = "vanyagotchi_goto"
 	// TypeStateFrame is the owner's own pet, pushed after it changes.
 	//
 	// NOT an acknowledgement, and the distinction is the whole design: it carries
@@ -89,14 +107,27 @@ func NeverHasAFace(id string) bool {
 type Roster struct {
 	T     string `json:"t"`
 	Peers []Peer `json:"peers"`
-	// Here is how many PEOPLE are in the yard — not how many entities the frame
-	// carries, which also includes the NPCs and the sleepers.
+	// Here is how many PEOPLE are in each location — not how many entities the
+	// frame carries, which also includes the NPCs, the sleepers and everything
+	// lying on the ground.
 	//
 	// Counted by the server and published, so the client can say «во дворе: 3»
 	// without having to learn what an NPC is. Deriving it client-side would mean
 	// teaching the browser to tell a person from a character, which is exactly
 	// the content knowledge the entity frame exists to keep out of it.
-	Here int `json:"here"`
+	//
+	// A MAP RATHER THAN A NUMBER, and it had to become one for precisely that
+	// reason. The frame carries every location at once, so a single count would be
+	// the whole world's — and the client cannot narrow it to its own place by
+	// filtering the peers, because filtering would mean telling a person from a
+	// character, which is the one thing it must not know how to do. So the count
+	// is taken per location on this side and the client reads the entry for the
+	// location it is looking at.
+	//
+	// ZEROES ARE OMITTED, because an absent key already means nought: the map
+	// carries only the locations somebody is actually standing in, so four empty
+	// places cost nothing rather than four entries saying nobody is there.
+	Here map[string]int `json:"here"`
 	// Hunt is the id of the key hunt currently running, or empty.
 	//
 	// STATE, NEVER AN ANNOUNCEMENT, and that distinction has teeth: a one-shot
@@ -152,6 +183,17 @@ type Roster struct {
 type Store struct {
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
+	// Loc is which location the store is in, absent for the default one — the same
+	// convention Peer.Loc follows, and for the same reason.
+	//
+	// It exists because the frame is one payload for five places: without it a
+	// Ваня standing in лес would be shown a shop that is in двор and invited to
+	// walk to a crate he cannot see. The client compares it against its own
+	// location and draws nothing when they differ; the server refuses the drink
+	// regardless, because a greyed button is a suggestion. Free today — the crate
+	// is pinned to the yard, so this is omitted on every frame — and the field is
+	// what keeps it free to move the shop.
+	Loc string `json:"loc,omitempty"`
 	// Left is how many drinks the crate still holds. Never nought on a published
 	// frame — the draw that empties a crate exhausts it and stands a fresh one up
 	// in the same transaction, so an empty store is absent rather than zero.
@@ -198,6 +240,27 @@ type Peer struct {
 	Label string `json:"label,omitempty"`
 	// Pose is how he is doing: see PoseFine and friends.
 	Pose string `json:"pose"`
+	// Loc is which location this entity is in, ABSENT for the default one.
+	//
+	// THE FRAME IS ONE PAYLOAD FOR THE WHOLE ROOM. Locations are deliberately not
+	// realtime rooms (see LocationYard), so every location's people, sleepers,
+	// characters and props ride one roster and each client draws only the ones
+	// whose `loc` matches its own. That filtering is the client's whole knowledge
+	// of locations: it compares two opaque strings and never learns what either
+	// means, exactly as it already does for an art key.
+	//
+	// WHAT IT COSTS, because a field on a repeating frame is the one kind of field
+	// this game measures before adding (ADR-037). `"loc":"zabroshka",` is 18
+	// bytes. A busy frame is a handful of people, up to sleeperLimit (30)
+	// sleepers, the cast and the props — call it 65 entities — so if every one of
+	// them were somewhere other than двор it would be 18 × 65 × 5 Hz ≈ 5.8 KB/s to
+	// each phone. OMITTING THE DEFAULT is what keeps that a hypothetical rather
+	// than a bill: a pet is created in the yard, the store is in the yard and the
+	// sleepers are mostly lying in it, so the field is absent from nearly every
+	// entity on nearly every frame and the roster is the size it was before
+	// locations existed. The alternative — a per-location frame — would have meant
+	// a room per location, which is the thing ADR-028 forbids.
+	Loc string `json:"loc,omitempty"`
 	// Say is a line over his head, absent almost always.
 	//
 	// Its first use is «устал» — the walk he did not finish. The cringe-phrase
@@ -255,6 +318,20 @@ type move struct {
 	Y *float64 `json:"y"`
 }
 
+// gotoLocation is the inbound location-change frame. Named for what it does
+// rather than for its wire type, because `goto` is a Go keyword.
+type gotoLocation struct {
+	T string `json:"t"`
+	// Location is the key of the place he wants to be in.
+	//
+	// A plain string rather than a pointer, unlike a move's coordinates: there is
+	// no value of it that a missing field could be confused with, because "" names
+	// no location and is refused by the same lookup an invented key is. The
+	// distinction that made move's coordinates pointers — a missing field and a
+	// deliberate 0 must not look the same — has no analogue here.
+	Location string `json:"location"`
+}
+
 // envelope reads just the discriminator, so an unknown type costs one small
 // decode and never has to satisfy any other type's shape.
 type envelope struct {
@@ -290,6 +367,37 @@ func parseInbound(payload []byte) (Point, error) {
 		return Point{}, fmt.Errorf("%w: coordinates must be finite", ErrInvalidPosition)
 	}
 	return Point{X: x, Y: y}, nil
+}
+
+// parseGoto turns a raw frame into the location key it asks for.
+//
+// Pure, like parseInbound and parseVerbs, so every rejection case — malformed
+// JSON, the wrong type, no location at all — is a table row in a unit test
+// rather than something that needs a socket to reach.
+//
+// It validates SHAPE ONLY, and the key is passed through untouched. Whether the
+// location exists is the catalogue's business and is decided in the service, for
+// the same reason a spot is: a length or character check here would be a second,
+// weaker copy of a lookup that has to happen anyway, and an arbitrary string
+// fails `LocationByKey` on its first byte. The frame is already bounded at 4 KiB
+// by the read pump.
+func parseGoto(payload []byte) (string, error) {
+	var env envelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrMalformedMessage, err)
+	}
+	if env.T != TypeGoto {
+		return "", fmt.Errorf("%w: %q", ErrUnknownMessage, env.T)
+	}
+
+	var g gotoLocation
+	if err := json.Unmarshal(payload, &g); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrMalformedMessage, err)
+	}
+	if g.Location == "" {
+		return "", fmt.Errorf("%w: location is required", ErrNoLocation)
+	}
+	return g.Location, nil
 }
 
 // do is the inbound verb frame: a list, applied in order, and optionally the

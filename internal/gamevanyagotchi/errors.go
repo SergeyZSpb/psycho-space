@@ -16,6 +16,15 @@ var (
 	// ErrInvalidPosition means the coordinates were missing or were not finite
 	// numbers. Out-of-range is not in this class — that is clamped.
 	ErrInvalidPosition = errors.New("gamevanyagotchi: invalid position")
+	// ErrNoLocation means a goto frame named no place to go to.
+	//
+	// A SHAPE failure and therefore in this class rather than beside the verb
+	// sentinels: the parser can say a frame carried no location at all without
+	// consulting the catalogue, and whether a location that WAS named exists is
+	// decided one layer along, where every other catalogue lookup happens. Both
+	// end the same way — a goto is a movement message and a movement message has
+	// no reply, so a frame this server does not believe is dropped in silence.
+	ErrNoLocation = errors.New("gamevanyagotchi: no location named")
 )
 
 // Sentinels for a verb — what Do decided about one, rather than what the parser

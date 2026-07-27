@@ -45,6 +45,21 @@ type Repository interface {
 	// come back.
 	SavePosition(ctx context.Context, q db.DBTX, accountID string, at Point, seen time.Time) error
 
+	// SetLocation records which of the five places an account's pet is in.
+	//
+	// Written EAGERLY, unlike the position beside it, and the difference is not an
+	// inconsistency. A position changes five times a second while somebody is
+	// walking and matters only when he comes back, so it is written once on
+	// departure. A location changes when a person deliberately goes somewhere,
+	// which is rare, human-paced and bounded by its own rate limit — and it has to
+	// survive a crash rather than a graceful shutdown, because coming back to the
+	// place you left is the whole of what it is for.
+	//
+	// The key is a catalogue value the caller has already resolved; the column is
+	// plain text and would accept anything, which is exactly why the check is not
+	// left to it.
+	SetLocation(ctx context.Context, q db.DBTX, accountID, locationKey string) error
+
 	// Stats returns the stored (value, as_of) pairs for a pet, undecayed. The
 	// decay is applied by the caller, because it is a pure function of the pair
 	// and the clock and has no business inside a query.
@@ -110,13 +125,24 @@ type Repository interface {
 	// down and is empty" are different values rather than the same nought.
 	InsertWorldObject(ctx context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, remaining *int, expires *time.Time) error
 
-	// LiveWorldObjects reads what is standing in a location right now, newest
-	// first and capped.
+	// LiveWorldObjects reads what is standing in the WHOLE WORLD right now, newest
+	// first within each location and capped per location.
+	//
+	// Every location in one read, because the frame carries all five — locations
+	// are not rooms — and a cache holding only one of them would draw an empty лес
+	// for anybody standing in it. One statement rather than a query per location,
+	// because five round trips fail in halves: a cache refreshed for two locations
+	// and not the other three is a world nobody was ever in.
+	//
+	// `perLocation` caps each place SEPARATELY, which is the property a single
+	// world-wide cap cannot have: a busy evening in the yard would otherwise spend
+	// the whole budget and starve every other location, up to and including the
+	// location holding the key.
 	//
 	// Expired rows are filtered HERE rather than deleted anywhere: nothing
 	// sweeps, because a sweeper would be the background timer this design does
-	// not have. The cap is what bounds the frame the caller is about to build.
-	LiveWorldObjects(ctx context.Context, q db.DBTX, locationKey string, limit int) ([]WorldObject, error)
+	// not have.
+	LiveWorldObjects(ctx context.Context, q db.DBTX, perLocation int) ([]WorldObject, error)
 
 	// ClaimSingleton hands the one active object of a kind to one account, and
 	// reports whether this caller is the one who got it. False means somebody
@@ -145,6 +171,15 @@ type Repository interface {
 	// no mechanism that would ever replace it.
 	DrawFromStock(ctx context.Context, q db.DBTX, kind, locationKey string, at time.Time) (int, bool, error)
 
-	// ActiveSingleton returns the id of the active object of a kind.
-	ActiveSingleton(ctx context.Context, q db.DBTX, kind, locationKey string) (string, bool, error)
+	// ActiveSingleton returns the id of the active object of a kind, ANYWHERE IN
+	// THE WORLD.
+	//
+	// It names no location on purpose, and that is the "one key, not one per
+	// location" ruling expressed where it is enforced: the partial unique index is
+	// on `kind` alone, so "is there an active one of these" has exactly one answer
+	// however many places there are to hide it. Asking per location would be a
+	// question the index does not answer — four locations would each report no
+	// key, each would try to spawn one, and three of the four inserts would be
+	// silently refused.
+	ActiveSingleton(ctx context.Context, q db.DBTX, kind string) (string, bool, error)
 }

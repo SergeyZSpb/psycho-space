@@ -251,6 +251,17 @@ type placement struct {
 	// because a tap writes nothing. A verb writes — a transaction each — so it
 	// needs its own bound, and this is it.
 	lastVerb time.Time
+	// lastGoto is when this account last changed location.
+	//
+	// ITS OWN CLOCK RATHER THAN A SHARE OF lastVerb, which is the whole reason it
+	// is a second field instead of a reuse. A goto writes — one UPDATE, so at the
+	// socket's ten frames a second an alternating pair of locations would be ten
+	// writes a second — and therefore needs the same one-a-second bound a verb
+	// gets. But sharing the verb's budget would mean that walking into лес ate the
+	// allowance for the drink you walked there to have, and a verb refused by the
+	// rate limit is refused in silence, so the player would meet it as a button
+	// that did nothing.
+	lastGoto time.Time
 }
 
 // NewService builds the game. room is the transport room it publishes to and
@@ -371,6 +382,8 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 		s.load(ctx, m.AccountID)
 	case TypeDo:
 		s.handleVerbs(ctx, m, payload)
+	case TypeGoto:
+		s.handleGoto(ctx, m, payload)
 	case TypeMove:
 		p, err := parseInbound(payload)
 		if err != nil {
@@ -510,10 +523,12 @@ func (s *Service) broadcast(ctx context.Context, now time.Time) error {
 	// wholesale here, which is exactly what teleported the last player in the
 	// yard back to the middle when they reloaded the page.
 	peers, here := s.place(members, now)
-	if here == 0 {
-		// Nobody to tell. Publishing into an empty room five times a second
-		// would be pure waste, and would hide a genuine "why is this room empty"
-		// question behind traffic.
+	if len(here) == 0 {
+		// Nobody to tell, in any location. The map carries only the places
+		// somebody is actually standing in, so an empty one is nobody anywhere —
+		// and publishing into an empty room five times a second would be pure
+		// waste, and would hide a genuine "why is this room empty" question behind
+		// traffic.
 		return nil
 	}
 
@@ -550,13 +565,19 @@ func (s *Service) broadcast(ctx context.Context, now time.Time) error {
 // should not be — an absent account is not in the frame either way, so nobody
 // sees a ghost, and coming back inside the window puts you where you left off
 // instead of in the middle of the yard.
-func (s *Service) place(members []realtime.Member, now time.Time) ([]Peer, int) {
+func (s *Service) place(members []realtime.Member, now time.Time) ([]Peer, map[string]int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.lastTick = now
 
 	peers := make([]Peer, 0, len(members))
+	// The head count, per location. Filled inside the loop below rather than taken
+	// as a length afterwards, which is what it was while there was one number to
+	// take: a map has to be accumulated as each person is placed. It still counts
+	// PEOPLE only — the sleepers, the cast and the props are appended after this
+	// function has returned, so none of them can reach it.
+	here := make(map[string]int, 1)
 	present := make(map[string]bool, len(members))
 	var sleepers []sleeper
 	for _, m := range members {
@@ -619,20 +640,23 @@ func (s *Service) place(members []realtime.Member, now time.Time) ([]Peer, int) 
 			// somebody who has been in a yard too long.
 			say = s.idleSay(m.AccountID, now)
 		}
+		// Where he is drawn, and where he is counted. Both come from the display
+		// cache rather than from a query, which is the rule this whole file exists
+		// to keep — and it is why `goto` refreshes that cache in the same operation
+		// as it writes the row.
+		where := d.location()
+		here[where]++
 		peers = append(peers, Peer{
 			ID:    s.pseudonym(m.AccountID),
 			X:     at.X,
 			Y:     at.Y,
+			Loc:   onWire(where),
 			Art:   d.skin(),
 			Label: d.name,
 			Pose:  pose,
 			Say:   say,
 		})
 	}
-	// Everybody present is a person; the sleepers and the NPCs below are not.
-	// The count is computed here and published, so the client can say how many
-	// are in the yard without having to learn what an NPC is.
-	here := len(peers)
 
 	// Whoever has just gone gets written down, once. `saved` is what makes it
 	// once: absence is observed on every tick until the grace expires, and
@@ -684,9 +708,14 @@ func (s *Service) place(members []realtime.Member, now time.Time) ([]Peer, int) 
 			pose = PoseDead
 		}
 		peers = append(peers, Peer{
-			ID:    s.pseudonym(sl.id),
-			X:     sl.at.X,
-			Y:     sl.at.Y,
+			ID: s.pseudonym(sl.id),
+			X:  sl.at.X,
+			Y:  sl.at.Y,
+			// He is asleep where he stood, which includes WHICH PLACE he stood in:
+			// somebody who went home from заброшка is lying in заброшка, and drawing
+			// him in the yard would put a body in a place he was not. He is still not
+			// counted — the map above is people with a socket open.
+			Loc:   onWire(d.location()),
 			Art:   d.skin(),
 			Label: d.name,
 			Pose:  pose,
@@ -715,9 +744,12 @@ func (s *Service) cast(now time.Time) []Peer {
 	for _, npc := range catalogue.NPCs {
 		at := evaluate(npc.Pattern, npc.Params, elapsed)
 		out = append(out, Peer{
-			ID:    npcPrefix + npc.Key,
-			X:     at.X,
-			Y:     at.Y,
+			ID: npcPrefix + npc.Key,
+			X:  at.X,
+			Y:  at.Y,
+			// Where the catalogue says he hangs about, so a character stays in his
+			// own place instead of appearing in all five at once.
+			Loc:   onWire(npc.Location),
 			Art:   npc.Art,
 			Label: npc.Label,
 			Pose:  PoseFine,
@@ -1026,8 +1058,11 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, spot
 		// Looked up ONCE for the whole body. Both gates below read it, and an
 		// unknown verb cannot reach here anyway — the catalogue check above the
 		// read path rejected it before a single row was touched.
+		// It is judged in the pet's OWN LOCATION as well as at its own distance:
+		// coordinates are normalised per location, so a Ваня standing at the
+		// crate's exact pitch in лес is not at the crate.
 		action, known := ActionByKey(verb)
-		if known && action.NeedsNear != "" && !s.beside(accountID, action.NeedsNear, at) {
+		if known && action.NeedsNear != "" && !s.beside(accountID, action.NeedsNear, before.Pet.LocationKey, at) {
 			return State{}, fmt.Errorf("%w: %q needs to be at %q", ErrTooFar, verb, action.NeedsNear)
 		}
 		// THE SEARCH GATE, and it is the same rule one layer along: a verb that
@@ -1145,8 +1180,17 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, spot
 			// The replacement, in the SAME transaction as the thing it replaces,
 			// so the very next frame already carries a fresh key or a fresh crate
 			// rather than an empty yard somebody has to be told about.
-			if err := s.repo.InsertWorldObject(ctx, q, def.Key, before.Pet.LocationKey,
-				s.placeFor(def, before.Pet.LocationKey), "", def.Singleton, def.stock(), nil); err != nil {
+			//
+			// IT GOES WHERE THE CATALOGUE SAYS, NOT WHERE THE LAST ONE WAS. A fresh
+			// crate is put out in the yard because the crate is pinned there; a
+			// fresh key is hidden in a location drawn at random, which is what makes
+			// finding one tell you nothing about where the next is. Using the
+			// finder's own location here would have been the quiet bug: every key
+			// after the first would appear wherever the previous one was found, so
+			// the hunt would settle into one place and stay there.
+			where := locationFor(def)
+			if err := s.repo.InsertWorldObject(ctx, q, def.Key, where,
+				s.placeFor(def, where), "", def.Singleton, def.stock(), nil); err != nil {
 				return err
 			}
 		}
@@ -1179,7 +1223,12 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, spot
 		// and everybody else's sad, for a few seconds. Only the all-or-nothing
 		// discipline does this — a drink takes nothing from anybody, so there is
 		// nobody to look sad about it.
-		s.settleHunt(ctx, accountID, at)
+		//
+		// IN THE PLACE IT HAPPENED. The room is the whole world, so an unfiltered
+		// reaction would drain the face of somebody standing in лифт because of
+		// something that happened in заброшка — a cosmetic effect with no local
+		// cause, which reads as a broken game rather than as a lost race.
+		s.settleHunt(ctx, accountID, before.Pet.LocationKey, at)
 	}
 	if len(leavings) > 0 || touched {
 		// The world changed, so the cache the tick renders from is refreshed —
@@ -1434,6 +1483,114 @@ func (s *Service) handleVerbs(ctx context.Context, m realtime.Member, payload []
 		s.Say(m.AccountID, line, sayFor)
 	}
 	s.pushState(ctx, m.AccountID, state)
+}
+
+// gotoInterval is the shortest gap between two accepted location changes from
+// one account.
+//
+// The same one-a-second bound a batch of verbs gets, for the same reason and on
+// its own clock. A tap writes nothing, so the socket's ten frames a second is
+// the right limit for one; a goto writes a row, so at that rate a client
+// alternating between two places would be ten UPDATEs a second for as long as it
+// cared to. Changing where you are standing once a second is far past what a
+// person does deliberately.
+const gotoInterval = time.Second
+
+// handleGoto moves a pet to another location.
+//
+// IT IS NOT A VERB AND DOES NOT GO THROUGH Do, which is the decision this
+// function is: nothing here moves a stat, nothing is appended to the event log
+// and there is nothing for `apply` to fold. Routing it through the verb funnel
+// would have meant either a payload column on the log — which ADR-044 forbids,
+// because a frozen copy of a verb's effects is what makes retro-tuning
+// impossible — or one verb key per location, which is a content key per
+// destination. It is a movement message, and it sits beside `vanyagotchi_move`
+// rather than beside `vanyagotchi_do`.
+//
+// THREE THINGS ARE WRITTEN AND THEY MUST BE WRITTEN TOGETHER: the row, so he is
+// still there after a restart; the display cache, so the tick draws him in the
+// right place without asking Postgres (ADR-041); and the placement, so he is
+// standing at the new location's entry rather than at whatever coordinates he
+// happened to hold in the old one. Skipping the second is the interesting bug —
+// the row would be right, every read would agree, and the plane would go on
+// drawing him in the place he left with nothing anywhere reporting a problem.
+//
+// It is answered by nothing at all, exactly as a tap is. The next roster carries
+// his own entity with its new `loc`, which is how he learns it worked, and a
+// frame this server does not believe — bad JSON, no location, a location that is
+// not in the catalogue — is dropped in silence like every other one.
+func (s *Service) handleGoto(ctx context.Context, m realtime.Member, payload []byte) {
+	key, err := parseGoto(payload)
+	if err != nil {
+		return
+	}
+	// Resolved against the CATALOGUE, which is what makes an arbitrary string from
+	// the wire harmless: an invented location does not resolve, so the worst a
+	// hostile payload buys is a frame that did nothing. It is also what stops a
+	// client writing a `location_key` the rest of the game cannot render — the
+	// column is plain text, so nothing in the database would have objected.
+	loc, ok := LocationByKey(key)
+	if !ok {
+		return
+	}
+	if s.repo == nil || s.q == nil {
+		return
+	}
+
+	now := s.tickClock()
+	if !s.allowGoto(m.AccountID, now) {
+		return
+	}
+	// The row FIRST, and the caches only if it succeeded. The other order would
+	// leave the plane drawing him somewhere the database has never heard of, and
+	// the next hello would silently put him back.
+	if err := s.repo.SetLocation(ctx, s.q, m.AccountID, loc.Key); err != nil {
+		slog.WarnContext(ctx, "gamevanyagotchi: could not move a pet to another location", "err", err)
+		return
+	}
+	s.arrive(m.AccountID, loc)
+}
+
+// allowGoto reports whether this account may change location now, and records it
+// if so.
+func (s *Service) allowGoto(accountID string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	held := s.pos[accountID]
+	if !held.lastGoto.IsZero() && now.Sub(held.lastGoto) < gotoInterval {
+		return false
+	}
+	held.lastGoto = now
+	s.pos[accountID] = held
+	return true
+}
+
+// arrive puts a Ваня down at a location's entry point and records that he is in
+// it, in memory.
+//
+// STANDING, NOT WALKING, for the reason `load` gives about a stored position: he
+// did not cross anything to get here, he left one place and turned up in
+// another, and inventing a journey across the new location would draw him
+// sliding in from wherever he happened to be standing in the old one.
+//
+// The display entry is READ, MODIFIED AND WRITTEN BACK rather than replaced,
+// exactly as `remember` treats the avatar and for the identical reason: this
+// knows one thing about a pet, and building a fresh entry from it would blank
+// the skin, the name, the stats and the face of anybody whose cache was already
+// loaded.
+func (s *Service) arrive(accountID string, loc Location) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	held := s.pos[accountID]
+	held.walk = standing(loc.Entry)
+	// Chosen by a person, so no longer the spawn default a stored position is
+	// allowed to replace — the same flag a tap clears, for the same reason.
+	held.provisional = false
+	s.pos[accountID] = held
+
+	entry := s.display[accountID]
+	entry.locationKey = loc.Key
+	s.display[accountID] = entry
 }
 
 // tickClock is the instant this game measures everything against.

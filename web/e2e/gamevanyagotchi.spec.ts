@@ -16,6 +16,10 @@ import { expect, test, type Locator, type Page, type Route } from '@playwright/t
  *  wire-format change should fail this test rather than silently follow along. */
 const TYPE_ROSTER = 'vanyagotchi_roster';
 const TYPE_MOVE = 'vanyagotchi_move';
+/** A request to stand in another PLACE, as opposed to another point in this one. */
+const TYPE_GOTO = 'vanyagotchi_goto';
+/** The owner's own pet, pushed after it changes — including after a journey. */
+const TYPE_STATE = 'vanyagotchi_state';
 const TYPE_HELLO = 'vanyagotchi_hello';
 const TYPE_YOU = 'vanyagotchi_you';
 
@@ -289,6 +293,16 @@ interface Peer {
    * here can give itself one.)
    */
   expires?: number;
+  /**
+   * Which PLACE this entity is standing in, or absent for the default one.
+   *
+   * ABSENT IS THE COMMON CASE and the fixtures below lean on it: most of the
+   * world is in the first place most of the time, so the server omits the field
+   * rather than repeating one key per entity five times a second. Every peer in
+   * this file that says nothing is therefore in the yard, which is what keeps
+   * every assertion written before there were places honest.
+   */
+  loc?: string;
   // THERE IS NO AVATAR FIELD, and a test that gave a peer one would be
   // describing a server that no longer exists. A face is fetched by id from
   // AVATAR_PATH rather than broadcast, so the way this suite gives somebody a
@@ -299,12 +313,13 @@ interface Peer {
 /**
  * A roster frame, with the head count the server would have put on it.
  *
- * `here` is how many PEOPLE are in the yard, which stopped being `peers.length`
+ * `here` is how many PEOPLE are in each PLACE, which stopped being `peers.length`
  * the moment the roster started carrying the NPCs and everybody asleep in it as
- * well. Every peer built through this helper is a person, so the two agree —
- * which is exactly what a real server with no cast and no sleepers sends, and
- * what keeps every assertion written before the count existed honest.
- * `rosterHere` is for the frames where they deliberately differ.
+ * well — and stopped being one number the moment there was more than one place to
+ * stand in. Every peer built through this helper is a person standing in the
+ * default location, so the two agree, which is what keeps every assertion written
+ * before the count existed honest. `rosterHere` is for the frames where they
+ * deliberately differ.
  *
  * `JSON.stringify` drops an undefined property rather than writing `null`, which
  * is exactly what the Go `omitempty` on `Label` and `Say` does — so a peer built
@@ -315,19 +330,33 @@ function roster(...peers: Peer[]): string {
   return rosterHere(peers.length, ...peers);
 }
 
-/** A roster frame whose head count is NOT the number of things in it. */
+/**
+ * A roster frame whose head count is NOT the number of things in it.
+ *
+ * The count is a TALLY PER PLACE on the wire, with the zeroes omitted — a server
+ * sends `{"yard":3}` and never `{"yard":3,"les":0}` — so this mirrors that rather
+ * than writing a nought the real thing never writes.
+ */
 function rosterHere(here: number, ...peers: Peer[]): string {
-  return JSON.stringify({ t: TYPE_ROSTER, peers, here });
+  return JSON.stringify({
+    t: TYPE_ROSTER,
+    peers,
+    here: here ? { [YARD.key]: here } : {},
+  });
 }
 
 /**
- * A roster frame from a server that predates the head count.
+ * A roster frame that counts nobody at all.
  *
- * Not a hypothetical: a deploy is a window in which one is live, and the client
- * has a documented fallback for it. Exercised rather than assumed, because a
- * fallback nothing runs is a fallback nobody knows is broken.
+ * NOT a server halfway through a deploy — this client and its server ship as one
+ * binary (the SPA is `go:embed`ed into it), so there is no such thing as a new
+ * client talking to an old server, and the fallback to counting entities that
+ * used to cover it is gone. What is left is a MALFORMED frame, and what the
+ * client does with one is claim no count rather than invent one out of the
+ * entities it can see — which since those include this place's NPCs, its sleepers
+ * and its litter would be a head count of nothing.
  */
-function rosterWithoutHere(...peers: Peer[]): string {
+function rosterUncounted(...peers: Peer[]): string {
   return JSON.stringify({ t: TYPE_ROSTER, peers });
 }
 
@@ -349,6 +378,69 @@ function rosterWithoutHere(...peers: Peer[]): string {
  */
 function rosterHunt(hunt: string, ...peers: Peer[]): string {
   return JSON.stringify({ t: TYPE_ROSTER, peers, here: peers.length, ...(hunt ? { hunt } : {}) });
+}
+
+/**
+ * The two places this file's world has, and the whole of what it serves about
+ * them.
+ *
+ * THE CATALOGUE HERE IS DELIBERATELY ALMOST EMPTY. This suite is about the plane
+ * — where dots are, how big they are drawn, what happens when the socket goes
+ * away — and it asserts throughout that an art key nothing describes still draws
+ * SOMEBODY. Serving skins would quietly change what most of those tests are
+ * looking at. So the catalogue carries only what a place needs: the locations
+ * themselves, so the head count has somewhere to be counted and the plane has a
+ * name to print, and `default_location`, so an entity that names no place is
+ * standing somewhere.
+ *
+ * No actions either, which means no verb fits the search shape and the yard draws
+ * no hiding places — exactly as it did when the config was `{}`. The hunt has its
+ * own fixtures in the sibling spec.
+ */
+const YARD = { key: 'yard', label: 'двор', entry: { x: 0.5, y: 0.5 } };
+const LES = { key: 'les', label: 'лес', entry: { x: 0.5, y: 0.9 } };
+const CONFIG_PATH = '/api/game-vanyagotchi/config';
+const STATE_PATH = '/api/game-vanyagotchi/state';
+const CATALOGUE = {
+  game_key: 'vanyagotchi',
+  title: 'Ванягоччи',
+  stats: [],
+  actions: [],
+  skins: [],
+  locations: [YARD, LES],
+  default_skin: 'vanya',
+  default_location: YARD.key,
+};
+
+/**
+ * The pet, which this suite needs for exactly one thing: which place its owner is
+ * standing in.
+ *
+ * Everything else on it is empty. The bars, the tallies and the action row are
+ * the sibling spec's subject; what the plane needs from the pet is `location_key`,
+ * because that is what decides which of the world's entities are drawn at all.
+ */
+function petIn(locationKey: string) {
+  return {
+    pet: {
+      id: 'pet-1',
+      name: null,
+      skin_key: 'vanya',
+      location_key: locationKey,
+      died_at: null,
+      created_at: '2026-07-26T12:00:00Z',
+    },
+    stats: [],
+    alive: true,
+    // NO `server_now`, DELIBERATELY, and it is not an oversight worth tidying.
+    // The client measures its clock skew against this field, and this file's
+    // stubs answer from Node while several tests here run the BROWSER on a fake
+    // clock (`page.clock.install`) — so a real timestamp here would tell the page
+    // it is a day behind the server and age every deposit in the yard out of
+    // existence before it was drawn. Absent, the skew is nought, which is what
+    // this suite has always assumed and what the pet suite tests properly.
+    server_now: '',
+  };
 }
 
 /** Everything the socket handler hands back to the test. */
@@ -438,7 +530,18 @@ async function stubSocket(page: Page): Promise<SocketHarness> {
 }
 
 /** Stubs the HTTP the app shell needs to let an approved user through. */
+/**
+ * Where the player's own Ваня is standing, for the tests that move him.
+ *
+ * A module-level `let` read by the route handler rather than an argument,
+ * because the state endpoint is polled again after a journey and has to answer
+ * with the NEW place — the same trick the sibling spec's `stubbedPet` plays, and
+ * the only way a stub can model a location that changes.
+ */
+let stubbedLocation = YARD.key;
+
 async function stubBackend(page: Page): Promise<void> {
+  stubbedLocation = YARD.key;
   await page.addInitScript(() => {
     try {
       localStorage.setItem('ps-theme', 'dark');
@@ -475,6 +578,8 @@ async function stubBackend(page: Page): Promise<void> {
     // route to the same fallback than the answer the real server gives, which
     // for an entity nobody has a picture of is exactly this 404.
     if (path.startsWith(AVATAR_PATH)) return noFace(route);
+    if (path === CONFIG_PATH) return json(CATALOGUE);
+    if (path === STATE_PATH) return json(petIn(stubbedLocation));
     return json({});
   });
 }
@@ -1030,7 +1135,7 @@ test.describe('«Ванягоччи» — the shared plane', () => {
     // actually reached the DOM.
     expect(await peerPosition(page, 'peer-a')).toEqual({ x: '0.25', y: '0.75' });
     expect(await peerPosition(page, 'peer-b')).toEqual({ x: '0.5', y: '0.5' });
-    await expect(page.getByText('во дворе: 2')).toBeVisible();
+    await expect(page.getByText('двор: 2')).toBeVisible();
   });
 
   test('a later frame moves a peer without re-creating it', async ({ page }) => {
@@ -1063,7 +1168,7 @@ test.describe('«Ванягоччи» — the shared plane', () => {
 
     await socket.push(roster({ id: 'peer-a', x: 0.2, y: 0.2 }));
     await expect(dots(page)).toHaveCount(1);
-    await expect(page.getByText('во дворе: 1')).toBeVisible();
+    await expect(page.getByText('двор: 1')).toBeVisible();
   });
 
   test('tapping the plane sends one normalised move, and nothing moves locally', async ({
@@ -1115,7 +1220,7 @@ test.describe('«Ванягоччи» — the shared plane', () => {
     expect(scrolls, 'the play screen must never scroll vertically either').toBeLessThanOrEqual(1);
 
     // The status row is the fixed-size child; a crowded plane must not push it off.
-    const hud = page.getByText(/во дворе:/);
+    const hud = page.locator('[data-test="status"]');
     await expect(hud).toBeVisible();
     const hudBox = await hud.boundingBox();
     const viewportHeight = page.viewportSize()?.height ?? 0;
@@ -1528,7 +1633,7 @@ test.describe('«Ванягоччи» — a yard of people rather than a field o
     await expectNoVerticalScroll(page, 'vanyagotchi yard full of long names');
     // The status row is the fixed child; a plane stretched by a name would be
     // the thing that pushed it off.
-    const hud = page.getByText(/во дворе:/);
+    const hud = page.locator('[data-test="status"]');
     await expect(hud).toBeVisible();
     const hudBox = await hud.boundingBox();
     const viewportHeight = page.viewportSize()?.height ?? 0;
@@ -1642,12 +1747,12 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     await expect(dots(page)).toHaveCount(5);
 
     // And exactly two of them are counted as people.
-    await expect(page.getByText('во дворе: 2')).toBeVisible();
-    await expect(page.getByText('во дворе: 5')).toHaveCount(0);
+    await expect(page.getByText('двор: 2')).toBeVisible();
+    await expect(page.getByText('двор: 5')).toHaveCount(0);
     // The same number reaches a screen reader, from the same source. These used
     // to be two independent reads of `peerIds.length` and could not disagree;
     // now they are two reads of one ref, and this is what says so.
-    await expect(plane(page)).toHaveAttribute('aria-label', 'Двор, во дворе 2');
+    await expect(plane(page)).toHaveAttribute('aria-label', 'двор: 2');
   });
 
   test('the count follows the server down as well as up', async ({ page }) => {
@@ -1675,7 +1780,7 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
         ...cast,
       ),
     );
-    await expect(page.getByText('во дворе: 3')).toBeVisible();
+    await expect(page.getByText('двор: 3')).toBeVisible();
 
     // Two of the three go home. They are past the grace, so they are still on
     // the plane — asleep — and the yard is emphatically NOT emptier to look at.
@@ -1688,30 +1793,38 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
         ...cast,
       ),
     );
-    await expect(page.getByText('во дворе: 1')).toBeVisible();
+    await expect(page.getByText('двор: 1')).toBeVisible();
     await expect(dots(page), 'the sleepers left the plane instead of lying down').toHaveCount(5);
   });
 
-  test('a server that does not count falls back to counting entities', async ({ page }) => {
-    // A deploy is a window in which the old server is still live, and it sends
-    // no `here`. Falling back to the number of entities is exactly right for it:
-    // a server with no cast and no sleepers puts nothing in a frame that is not
-    // a person. Exercised rather than assumed — an untried fallback is one
-    // nobody knows is broken.
+  test('a frame that counts nobody claims nobody, rather than counting the dots', async ({
+    page,
+  }) => {
+    // THE FALLBACK IS GONE, and its absence is the assertion. It used to count
+    // the entities on the frame, which was right for a server too old to send
+    // `here` — one with no cast and no sleepers puts nothing in a frame that is
+    // not a person. There is no such server any more (the SPA is embedded in the
+    // binary that serves it, so client and server ship together), and the number
+    // it would fall back to now counts this place's regulars, its sleepers and
+    // everything lying on its ground. So a malformed count is answered with no
+    // claim at all rather than with a plausible wrong one.
     await stubBackend(page);
     const socket = await stubSocket(page);
     await enterYard(page);
 
     await socket.push(
-      rosterWithoutHere(
+      rosterUncounted(
         { id: 'a', x: 0.2, y: 0.2, art: 'vanya', pose: 'fine' },
         { id: 'b', x: 0.8, y: 0.8, art: 'vanya', pose: 'fine' },
       ),
     );
-    await expect(page.getByText('во дворе: 2')).toBeVisible();
+    // The people are drawn, because who is on the plane and how many of them are
+    // PEOPLE are two different questions and only the second one was unanswered.
+    await expect(dots(page)).toHaveCount(2);
+    await expect(page.getByText('двор: 0')).toBeVisible();
 
-    // And the field wins over the fallback the moment it appears, rather than
-    // the first frame's answer sticking.
+    // And a real count wins the moment one arrives, rather than the first frame's
+    // answer sticking.
     await socket.push(
       rosterHere(
         1,
@@ -1719,7 +1832,7 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
         { id: 'b', x: 0.8, y: 0.8, art: 'vanya', pose: 'asleep' },
       ),
     );
-    await expect(page.getByText('во дворе: 1')).toBeVisible();
+    await expect(page.getByText('двор: 1')).toBeVisible();
   });
 
   test('a thing somebody left behind is placed and counted by the machinery that handles people', async ({
@@ -1776,9 +1889,9 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     // Drawn, like everything else in the frame.
     await expect(dots(page)).toHaveCount(3);
     // And NOT counted: three things on the plane, two people in the yard.
-    await expect(page.getByText('во дворе: 2')).toBeVisible();
-    await expect(page.getByText('во дворе: 3')).toHaveCount(0);
-    await expect(plane(page)).toHaveAttribute('aria-label', 'Двор, во дворе 2');
+    await expect(page.getByText('двор: 2')).toBeVisible();
+    await expect(page.getByText('двор: 3')).toHaveCount(0);
+    await expect(plane(page)).toHaveAttribute('aria-label', 'двор: 2');
 
     // Its art went through the ordinary catalogue resolution and landed on the
     // placeholder, because this suite's stub answers the catalogue with an empty
@@ -1818,7 +1931,7 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     await socket.push(rosterHere(2, ...PEOPLE));
     await expect(dots(page)).toHaveCount(2);
     await expect(page.locator(`[data-peer="${DEPOSIT.id}"]`)).toHaveCount(0);
-    await expect(page.getByText('во дворе: 2')).toBeVisible();
+    await expect(page.getByText('двор: 2')).toBeVisible();
   });
 
   test('a thing on the ground is half a Ваня and has no circle round it', async ({ page }) => {
@@ -3149,5 +3262,298 @@ test.describe('«Ванягоччи» — what a Ваня says hangs outside his
       (box?.width ?? 0) * (box?.height ?? 0),
       'a winner says nothing anybody can see',
     ).toBeGreaterThan(0);
+  });
+});
+
+test.describe('«Ванягоччи» — one room, several places', () => {
+  // THE WORLD IS BROADCAST WHOLE AND ONE PLACE OF IT IS DRAWN. Locations are
+  // deliberately not realtime rooms: there is a single socket room and always
+  // will be, so a frame carries everybody everywhere and each browser filters it
+  // down to the place its own Ваня is standing in. That trade costs a few hundred
+  // bytes a second and buys the absence of a membership protocol — nobody joins
+  // or leaves anything, a reconnect needs no re-subscription, and travelling is
+  // one field changing on a frame that was going to arrive regardless.
+  //
+  // Which means the filter is a CLIENT rule with a server-shaped failure: get it
+  // wrong and four locations' worth of people stand on top of each other, or a
+  // player disappears from a yard he is standing in. Both are pinned below.
+
+  /** A frame whose peers are spread across places, with the tally to match. */
+  function rosterWorld(heads: Record<string, number>, ...peers: Peer[]): string {
+    return JSON.stringify({ t: TYPE_ROSTER, peers, here: heads });
+  }
+
+  /** The server saying where the player's own Ваня now is. */
+  function standsIn(locationKey: string): string {
+    return JSON.stringify({ t: TYPE_STATE, state: petIn(locationKey) });
+  }
+
+  /** The head count / travel opener, in the corner of the plane. */
+  const hereChip = (page: Page) => page.locator('[data-test="here"]');
+  /** The travel sheet, and one place on it. */
+  const sheet = (page: Page) => page.locator('[data-test="places"]');
+  const placeRow = (page: Page, key: string) => page.locator(`[data-place="${key}"]`);
+  /** Every journey the page asked for, in order. */
+  const journeys = (socket: SocketHarness) => socket.sent.filter((f) => f.t === TYPE_GOTO);
+  /** What the plane is actually painted with, resolved to colours. */
+  const backdrop = (page: Page) =>
+    plane(page).evaluate((el) => getComputedStyle(el).backgroundImage);
+
+  test('a Ваня in another place is not drawn in this one', async ({ page }) => {
+    // The whole filter in one frame: five entities in the world, three of them
+    // standing where the player is. Drawing the other two would put the лес in
+    // the двор, on top of the people who are actually in it.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      rosterWorld(
+        { yard: 2, les: 1 },
+        { id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine' },
+        { id: 'neighbour', x: 0.3, y: 0.4, art: 'vanya', pose: 'fine', loc: 'yard' },
+        { id: 'dozing', x: 0.2, y: 0.8, art: 'vanya', pose: 'asleep' },
+        { id: 'in-the-woods', x: 0.7, y: 0.2, art: 'vanya', pose: 'fine', loc: 'les' },
+        { id: 'also-woods', x: 0.9, y: 0.9, art: 'vanya', pose: 'fine', loc: 'les' },
+      ),
+    );
+
+    await expect(dots(page)).toHaveCount(3);
+    // Named individually, because a count of three could be the wrong three.
+    for (const id of ['me', 'neighbour', 'dozing']) {
+      await expect(page.locator(`[data-peer="${id}"]`), `${id} should be here`).toHaveCount(1);
+    }
+    for (const id of ['in-the-woods', 'also-woods']) {
+      await expect(page.locator(`[data-peer="${id}"]`), `${id} is in the лес`).toHaveCount(0);
+    }
+  });
+
+  test('the count is the one for the place you are actually in', async ({ page }) => {
+    // The frame counts every place at once, so the wrong read is not an obviously
+    // broken one — it is a plausible number belonging to somewhere else. Which is
+    // why he is standing OUTSIDE the default location for this: a client that
+    // read the default's count, or the first entry of the tally, would look
+    // perfectly correct to anybody testing it from the двор.
+    await stubBackend(page);
+    stubbedLocation = LES.key;
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      rosterWorld(
+        { yard: 3, les: 1 },
+        { id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine', loc: LES.key },
+        { id: 'back-home', x: 0.7, y: 0.2, art: 'vanya', pose: 'fine' },
+      ),
+    );
+
+    await expect(hereChip(page)).toContainText('лес: 1');
+    await expect(hereChip(page)).not.toContainText('3');
+    // And the same line reaches a screen reader, from the same source. These used
+    // to be two independent reads of a single number and could not disagree; now
+    // both name a place as well, and this is what says they still cannot.
+    await expect(plane(page)).toHaveAttribute('aria-label', 'лес: 1');
+  });
+
+  test('the sheet lists every place with its count, and marks the one you are in', async ({
+    page,
+  }) => {
+    // WHY THE COUNT IS A TALLY RATHER THAN A NUMBER: «где сейчас люди» is exactly
+    // the question somebody choosing where to walk is asking, and one field
+    // answers it for every place at once.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(
+      rosterWorld({ yard: 3, les: 1 }, { id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine' }),
+    );
+
+    await expect(sheet(page)).toHaveCount(0);
+    await hereChip(page).click();
+    await expect(sheet(page)).toBeVisible();
+
+    await expect(page.locator('[data-test="place"]')).toHaveCount(2);
+    await expect(placeRow(page, YARD.key)).toContainText(YARD.label);
+    await expect(placeRow(page, YARD.key)).toContainText('3');
+    await expect(placeRow(page, LES.key)).toContainText(LES.label);
+    await expect(placeRow(page, LES.key)).toContainText('1');
+    // The place he is in is marked rather than dropped: it is the row that says
+    // where he is now, and pressing it is the way out of the sheet.
+    await expect(placeRow(page, YARD.key)).toHaveAttribute('data-here', '1');
+    await expect(placeRow(page, LES.key)).not.toHaveAttribute('data-here', '1');
+  });
+
+  test('choosing a place sends one journey and redraws the world it lands in', async ({ page }) => {
+    // The whole of I10's control in one test: a journey is a REQUEST — nothing
+    // moves until the server pushes the pet back — and once it has, the yard he
+    // was in is gone and the one he asked for is drawn.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(
+      rosterWorld(
+        { yard: 2, les: 1 },
+        { id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine' },
+        { id: 'neighbour', x: 0.3, y: 0.4, art: 'vanya', pose: 'fine' },
+        { id: 'in-the-woods', x: 0.7, y: 0.2, art: 'vanya', pose: 'fine', loc: 'les' },
+      ),
+    );
+    await expect(dots(page)).toHaveCount(2);
+
+    await hereChip(page).click();
+    await placeRow(page, LES.key).click();
+
+    await expect.poll(() => journeys(socket).length).toBe(1);
+    expect(journeys(socket)[0].location).toBe(LES.key);
+    // The sheet closes on the press, so the world is visible when it changes.
+    await expect(sheet(page)).toHaveCount(0);
+    // AND NOTHING HAS MOVED YET. The place changes when the server says it
+    // changed, exactly as a dot moves when the server says it moved — until then
+    // he really is still standing where he was.
+    await expect(dots(page)).toHaveCount(2);
+    await expect(hereChip(page)).toContainText('двор: 2');
+
+    // The server folds the request and pushes the pet back. The caption follows
+    // it immediately, because where he is standing is a fact about the PET.
+    stubbedLocation = LES.key;
+    await socket.push(standsIn(LES.key));
+    await expect(hereChip(page)).toContainText('лес: 1');
+
+    // The DOTS follow on the next frame, and that ordering is worth pinning
+    // rather than papering over: the filter runs where a frame is read, so the
+    // yard he left stays drawn until the next one arrives — which at five a
+    // second is 200ms and is a better picture than blanking the plane and
+    // flashing an empty world at him.
+    await socket.push(
+      rosterWorld(
+        { yard: 1, les: 2 },
+        { id: 'me', x: 0.5, y: 0.9, art: 'vanya', pose: 'fine', loc: 'les' },
+        { id: 'neighbour', x: 0.3, y: 0.4, art: 'vanya', pose: 'fine' },
+        { id: 'in-the-woods', x: 0.7, y: 0.2, art: 'vanya', pose: 'fine', loc: 'les' },
+      ),
+    );
+
+    await expect(dots(page)).toHaveCount(2);
+    await expect(page.locator('[data-peer="in-the-woods"]')).toHaveCount(1);
+    await expect(page.locator('[data-peer="neighbour"]')).toHaveCount(0);
+    await expect(hereChip(page)).toContainText('лес: 2');
+  });
+
+  test('the place he is standing in is a row that stays, and sends nothing', async ({ page }) => {
+    // It is the only way out of the sheet that is a control rather than a
+    // gesture, so it has to be pressable — and pressing it must not ask the
+    // server to move him to where he already is.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine' }));
+
+    await hereChip(page).click();
+    await placeRow(page, YARD.key).click();
+
+    await expect(sheet(page)).toHaveCount(0);
+    expect(journeys(socket)).toEqual([]);
+  });
+
+  test('the plane is painted differently in a different place', async ({ page }) => {
+    // The ONLY thing distinguishing four locations until there are backdrops, and
+    // the reason it is a hash rather than a lookup: nothing in this repository
+    // knows there is a лес, so a fifth place arrives with a fifth colour and no
+    // client deploy (ADR-028). Asserted on what is actually painted rather than
+    // on the custom property, because a `--tint` that reached the element and was
+    // read by nothing would pass the cheaper assertion.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine' }));
+
+    const inTheYard = await backdrop(page);
+    expect(inTheYard, 'the plane is not painted with a gradient at all').toContain('gradient');
+
+    stubbedLocation = LES.key;
+    await socket.push(standsIn(LES.key));
+    await expect(hereChip(page)).toContainText('лес');
+
+    expect(await backdrop(page), 'both places are painted the same').not.toBe(inTheYard);
+  });
+
+  test('the sheet is drawn over the world without walking him into it', async ({ page }) => {
+    // The plane owns every tap, so a panel over it that let one through would
+    // walk him to a point he cannot see — and the sheet covers the whole plane
+    // precisely so the world is suspended rather than half-usable.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine' }));
+
+    await hereChip(page).click();
+    await expect(sheet(page)).toBeVisible();
+
+    const box = await plane(page).boundingBox();
+    // A corner of the plane, well clear of the sheet's own rows.
+    await page.mouse.click((box?.x ?? 0) + (box?.width ?? 0) * 0.06, (box?.y ?? 0) + (box?.height ?? 0) * 0.94);
+
+    // It dismissed the sheet and asked for no walk.
+    await expect(sheet(page)).toHaveCount(0);
+    expect(socket.sent.filter((f) => f.t === TYPE_MOVE)).toEqual([]);
+  });
+
+  test('opening the sheet does not walk him either, and neither does the caption', async ({
+    page,
+  }) => {
+    // The caption sits ON the plane, so without stopping the press it would both
+    // open the sheet and send him walking to the corner it occupies.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine' }));
+
+    await hereChip(page).click();
+    await expect(sheet(page)).toBeVisible();
+    expect(socket.sent.filter((f) => f.t === TYPE_MOVE)).toEqual([]);
+  });
+
+  test('the caption and every place are thumb-sized, and nothing overflows', async ({ page }) => {
+    // The caption moved onto the plane partly FOR this: a control in the panel
+    // would have cost the yard about thirty pixels of height on the phone that
+    // has the least of it, and here a 44px box is free. The sheet lives inside
+    // the plane's own `overflow: hidden`, so however many places the catalogue
+    // grows to it cannot make the document scroll.
+    if (!isMobile(page)) test.skip();
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(
+      rosterWorld({ yard: 1, les: 12 }, { id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine' }),
+    );
+
+    await expectTapTarget(hereChip(page), 'the place caption');
+    await expectNoOverflow(page, 'vanyagotchi yard with the place caption');
+
+    await hereChip(page).click();
+    await expect(sheet(page)).toBeVisible();
+    for (const key of [YARD.key, LES.key]) {
+      await expectTapTarget(placeRow(page, key), `the ${key} row`);
+    }
+    await expectNoOverflow(page, 'vanyagotchi travel sheet');
+    await expectNoVerticalScroll(page, 'vanyagotchi travel sheet');
+  });
+
+  test('a socket that goes away takes the travel sheet with it', async ({ page }) => {
+    // The sheet lists live head counts that have just stopped being live, and its
+    // one action needs a socket that has just gone. Leaving it up would offer a
+    // journey that silently does nothing.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+    await socket.push(roster({ id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose: 'fine' }));
+
+    await hereChip(page).click();
+    await expect(sheet(page)).toBeVisible();
+
+    socket.holdDown(true);
+    await socket.drop({ code: 4001, reason: 'revoked' });
+
+    await expect(sheet(page)).toHaveCount(0);
   });
 });

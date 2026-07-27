@@ -71,12 +71,23 @@ func propsOf(r Roster) []Peer {
 // anObject is one row as the database would hand it back: a uuid-shaped id whose
 // first twelve characters are unique to it, a kind, a place and an expiry.
 func anObject(n int, kind string, at Point, expires time.Time) WorldObject {
+	return anObjectIn(n, kind, LocationYard, at, expires)
+}
+
+// anObjectIn is the same row standing somewhere other than the yard.
+//
+// The location is a field on the row rather than a parameter of the read now
+// that the cache holds all five places at once — so a fixture has to say which
+// one it means, and «the yard» is only the common answer rather than the only
+// one.
+func anObjectIn(n int, kind, locationKey string, at Point, expires time.Time) WorldObject {
 	when := expires
 	return WorldObject{
-		ID:        fmt.Sprintf("%012d-4a1e-b0c2-%012d", n, n),
-		Kind:      kind,
-		At:        at,
-		ExpiresAt: &when,
+		ID:          fmt.Sprintf("%012d-4a1e-b0c2-%012d", n, n),
+		Kind:        kind,
+		LocationKey: locationKey,
+		At:          at,
+		ExpiresAt:   &when,
 	}
 }
 
@@ -656,11 +667,11 @@ func TestTheHeadCountCountsPeopleAndNotTheThingsLyingAboutInTheYard(t *testing.T
 	if n := len(propsOf(strewn)); n != 3 {
 		t.Fatalf("%d objects were drawn; want the 3 in the yard, or this test is not comparing anything", n)
 	}
-	if strewn.Here != 1 {
-		t.Errorf("the frame says %d are in the yard while one person stands among three deposits; want 1", strewn.Here)
+	if inTheYard(strewn) != 1 {
+		t.Errorf("the frame says %d are in the yard while one person stands among three deposits; want 1", inTheYard(strewn))
 	}
-	if strewn.Here != bare.Here {
-		t.Errorf("the head count went from %d to %d because three things were left on the ground", bare.Here, strewn.Here)
+	if inTheYard(strewn) != inTheYard(bare) {
+		t.Errorf("the head count went from %d to %d because three things were left on the ground", inTheYard(bare), inTheYard(strewn))
 	}
 }
 
@@ -711,22 +722,37 @@ func TestTheTickNeverReadsTheWorld(t *testing.T) {
 }
 
 // TestWorldLimitBoundsWhatTheFrameCarries is a bandwidth bound rather than a
-// tidiness one.
+// tidiness one, AND — since the four locations arrived — a starvation bound as
+// well.
 //
 // Every live object is an entity in a frame sent five times a second to every
 // viewer, so the cost is bytes × rate × objects × viewers and the only term this
 // game controls is the third. The cap is applied where the rows are fetched — so
 // the bound holds however enthusiastically the yard behaves, and holds without
 // the render path having to remember to enforce it.
+//
+// THE SECOND HALF IS WHY IT IS PER LOCATION. A single world-wide budget is one
+// five places compete for, so a busy evening in the yard would spend it and
+// every other location would come back empty — including whichever one is
+// holding the key, which would end the hunt with nothing failing anywhere. The
+// case below fills двор past its allowance and then asserts that кусты still has
+// everything standing in it.
 func TestWorldLimitBoundsWhatTheFrameCarries(t *testing.T) {
 	kind := leavingKind(t, ActionRelieve)
 	repo := playedFor()
-	for i := 0; i < worldLimit+8; i++ {
+	for i := 0; i < worldLimitPerLocation+8; i++ {
 		// Spread across the plane, and each with an id of its own: two objects
 		// sharing the first twelve characters would collapse into one entity on
 		// the wire and make this count wrong for the wrong reason.
 		at := Point{X: float64(i%8) / 8, Y: float64(i%5) / 5}
 		repo.objects = append(repo.objects, anObject(i, kind.Key, at, epoch.Add(time.Hour)))
+	}
+	// And two in another location, which is well inside its own allowance.
+	const elsewhere = 2
+	for i := 0; i < elsewhere; i++ {
+		at := Point{X: 0.3 + float64(i)/10, Y: 0.4}
+		repo.objects = append(repo.objects,
+			anObjectIn(1000+i, kind.Key, LocationKusty, at, epoch.Add(time.Hour)))
 	}
 	tr := &fakeTransport{}
 	tr.setMembers(member("1"))
@@ -737,12 +763,21 @@ func TestWorldLimitBoundsWhatTheFrameCarries(t *testing.T) {
 		t.Fatalf("broadcast: %v", err)
 	}
 
-	if got := repo.worldObjectLimits(); len(got) != 1 || got[0] != worldLimit {
-		t.Errorf("the world was read with limits %v; want exactly one read capped at worldLimit (%d)", got, worldLimit)
+	if got := repo.worldObjectLimits(); len(got) != 1 || got[0] != worldLimitPerLocation {
+		t.Errorf("the world was read with limits %v; want exactly one read capped at worldLimitPerLocation (%d)",
+			got, worldLimitPerLocation)
 	}
-	if n := len(propsOf(tr.frames()[0])); n != worldLimit {
-		t.Errorf("%d objects were drawn out of the %d standing in the yard; want no more than worldLimit (%d)",
-			n, len(repo.objects), worldLimit)
+	drawn := map[string]int{}
+	for _, p := range propsOf(tr.frames()[0]) {
+		drawn[locationOr(p.Loc)]++
+	}
+	if drawn[LocationYard] != worldLimitPerLocation {
+		t.Errorf("%d objects were drawn in the yard out of the %d standing in it; want no more than worldLimitPerLocation (%d)",
+			drawn[LocationYard], worldLimitPerLocation+8, worldLimitPerLocation)
+	}
+	if drawn[LocationKusty] != elsewhere {
+		t.Errorf("%d objects were drawn in %q; want all %d of them — a busy yard must not spend another location's allowance",
+			drawn[LocationKusty], LocationKusty, elsewhere)
 	}
 }
 
@@ -926,8 +961,16 @@ func TestOnlyTheWinnerOfTheKeyHasAnythingWrittenDownAtAll(t *testing.T) {
 			if next.kind != kind.Key {
 				t.Errorf("the replacement is of kind %q; want the catalogue's %q", next.kind, kind.Key)
 			}
-			if next.locationKey != repo.pet.LocationKey {
-				t.Errorf("the replacement was hidden in %q; want the location his pet is in, %q", next.locationKey, repo.pet.LocationKey)
+			// SOMEWHERE THE CATALOGUE KNOWS, and deliberately not «where he was
+			// standing». A key names no location, so each fresh one is hidden in a
+			// place drawn at random — which is what makes finding one tell you
+			// nothing about where the next is. Reusing the finder's own location
+			// would be the quiet bug: every key after the first would appear
+			// wherever the last was found, so the hunt would settle into one place
+			// and the other four would never hold anything again.
+			if _, known := LocationByKey(next.locationKey); !known {
+				t.Errorf("the replacement was hidden in %q, which is not a location in the catalogue; no search anywhere could ever find it",
+					next.locationKey)
 			}
 			if next.singleton != kind.Singleton {
 				t.Errorf("the replacement was written with singleton=%v; want the catalogue's %v — that column is what the database's "+
@@ -1215,8 +1258,21 @@ func insertedOf(got []insertedObject, kind string) (insertedObject, bool) {
 // regression — what is pinned is that the row AGREES with the content.
 func assertSpawned(t *testing.T, got insertedObject, def ObjectKind) {
 	t.Helper()
-	if got.locationKey != LocationYard {
-		t.Errorf("%q was stood up in %q; want the yard, which is the only place there is", def.Key, got.locationKey)
+	// WHERE IT WENT IS THE CATALOGUE'S ANSWER, and there are two of them. A kind
+	// that names a location is pinned to it — the crate is always in the yard, so
+	// a player can be told to walk to the beer. A kind that names none may be in
+	// any of the five, which is the key: the location is drawn with crypto/rand
+	// every time one is hidden, so the only assertion that can be made is that it
+	// is somewhere the catalogue knows about. A spawn into a location that is not
+	// in the catalogue would be a key nobody could ever reach, because a search is
+	// judged against the hotspots of the searcher's own location.
+	if def.Location != "" && got.locationKey != def.Location {
+		t.Errorf("%q was stood up in %q; the catalogue pins it to %q, and a shop that wandered would make the walk to it a matter of luck",
+			def.Key, got.locationKey, def.Location)
+	}
+	if _, known := LocationByKey(got.locationKey); !known {
+		t.Errorf("%q was stood up in %q, which is not a location in the catalogue; nothing could ever be searched there",
+			def.Key, got.locationKey)
 	}
 	if got.singleton != def.Singleton {
 		t.Errorf("%q was stood up with singleton=%v; want the catalogue's %v, which is what the at-most-one-active index is predicated on",
@@ -2327,11 +2383,13 @@ func TestOneCorrectSearchWinsOneKeyHoweverManyClaimsAreInTheFrame(t *testing.T) 
 // origin, the spawn — the NEXT search could never be judged: no spot key would
 // resolve to it, so every player would be told «тут пусто» everywhere, for ever,
 // with a hunt id riding the frame the whole time saying one was running.
+//
+// IT IS CHECKED AGAINST THE LOCATION IT ACTUALLY WENT TO, which is the half the
+// four locations added. A key names no location, so the replacement is hidden in
+// one drawn at random — and the rule is that it is at a hotspot of THAT place,
+// not of the one the finder was standing in. Checking it against двор would have
+// been a test that passed one time in five for the wrong reason.
 func TestTheKeyThatReplacesAFoundOneIsHiddenAtAHotspotToo(t *testing.T) {
-	yard, ok := LocationByKey(LocationYard)
-	if !ok {
-		t.Fatalf("the catalogue has no location %q", LocationYard)
-	}
 	spot := aHotspot(t, LocationYard, 0)
 
 	repo := playedFor()
@@ -2354,9 +2412,13 @@ func TestTheKeyThatReplacesAFoundOneIsHiddenAtAHotspotToo(t *testing.T) {
 	if next.kind != KindKey {
 		t.Fatalf("the replacement is of kind %q; want %q", next.kind, KindKey)
 	}
-	if _, ok := hotspotAtPoint(yard, next.at); !ok {
+	where, ok := LocationByKey(next.locationKey)
+	if !ok {
+		t.Fatalf("the replacement was hidden in %q, which is not a location in the catalogue; nothing could ever be searched there", next.locationKey)
+	}
+	if _, ok := hotspotAtPoint(where, next.at); !ok {
 		t.Fatalf("the replacement was hidden at (%v,%v), which is not any of %q's hotspots; no spot key would ever resolve to it and every later search would answer «тут пусто» for ever",
-			next.at.X, next.at.Y, LocationYard)
+			next.at.X, next.at.Y, where.Key)
 	}
 }
 
@@ -2405,5 +2467,317 @@ func TestTheBeerStoreIsCarriedAsAStructureAndNotAsAnEntity(t *testing.T) {
 	// so any object entity at all is the duplicate this test exists to forbid.
 	if drawn := propsOf(frame); len(drawn) != 0 {
 		t.Errorf("the crate is still drawn as an entity as well as published as a store: %+v", drawn)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The four locations. One key in the world, five places to look for it.
+// ---------------------------------------------------------------------------
+
+// TestTheKeyIsHiddenSomewhereAndTheOtherPlacesAreEmpty is the whole of what the
+// four locations changed about the hunt.
+//
+// One key exists in the world — the partial unique index is on `kind` alone — so
+// four of the five places are holding nothing at all, and a player standing in
+// one of those four gets «тут пусто» however correctly he searches. That is the
+// game rather than a failure: there is no way to be told where the key is, so
+// walking somewhere else and looking again is the only move.
+//
+// THE REFUSAL IS THE SAME ONE A WRONG HOTSPOT GETS, and that is the security
+// property rather than a tidiness one. Anything that distinguished «wrong spot»
+// from «wrong location» would narrow five places to one for the price of a tap,
+// which is the entire answer given away by a refusal.
+func TestTheKeyIsHiddenSomewhereAndTheOtherPlacesAreEmpty(t *testing.T) {
+	here := aHotspot(t, LocationYard, 0)
+	there := aHotspot(t, LocationKusty, 0)
+
+	repo := playedFor()
+	svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+	if _, err := svc.State(context.Background(), testAccount); err != nil {
+		t.Fatalf("State: %v", err)
+	}
+
+	// The key is in кусты, and he is standing at the matching spot — in the yard,
+	// where his pet still is. Same spot index, same coordinates, different place.
+	lost := aLostKey(7, there.At)
+	lost.LocationKey = LocationKusty
+	repo.objects = append(repo.objects, lost)
+	svc.mu.Lock()
+	svc.world = append(svc.world, lost)
+	svc.mu.Unlock()
+	standAt(svc, testAccount, here.At)
+
+	_, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, here.Key, at(0))
+	if !errors.Is(err, ErrNothingHere) {
+		t.Fatalf("searching %q in the yard while the key is in %q = %v; want %v — a key in another location must not be findable from this one, and the refusal must be the ordinary empty-place one",
+			here.Key, LocationKusty, err, ErrNothingHere)
+	}
+	if got := repo.attempts(); len(got) != 0 {
+		t.Errorf("a search in the wrong location reached the database %d times: %+v; the gate is decided in memory and a refused batch writes nothing at all",
+			len(got), got)
+	}
+
+	// And the same search, once he is actually in кусты, finds them. Nothing else
+	// about the fixture changes — same spot key, same coordinates, same hotspot
+	// index — so the location is the only thing under test.
+	repo.pet.LocationKey = LocationKusty
+	repo.claimWon = true
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, there.Key, at(1)); err != nil {
+		t.Fatalf("searching %q from inside %q: %v; the identical search must succeed once his pet is in the location holding the key",
+			there.Key, LocationKusty, err)
+	}
+}
+
+// TestAFreshKeyGoesAnywhereAndTheCrateNeverLeavesTheYard is the two answers
+// `locationFor` gives, and the reason the field has two of them.
+//
+// A kind naming no location is scattered: hidden in a place drawn with
+// crypto/rand each time, so finding one tells you nothing about where the next
+// will be. A kind naming one is pinned: the beer store is in двор every time it
+// is stood up, because a shop that wandered between five places would be a
+// second key hunt wearing an apron and no player could ever be told to walk to
+// it.
+//
+// The spread is asserted rather than the distribution. A hundred draws over five
+// locations lands in every one of them with overwhelming probability, and a
+// tighter claim would be a statistical test in a suite that has to be green every
+// time.
+func TestAFreshKeyGoesAnywhereAndTheCrateNeverLeavesTheYard(t *testing.T) {
+	key := mustObjectKind(t, KindKey)
+	if key.Location != "" {
+		t.Fatalf("the catalogue now pins %q to %q; this test is about a kind that may be anywhere", key.Key, key.Location)
+	}
+	crate := mustObjectKind(t, KindCrate)
+	if crate.Location == "" {
+		t.Fatalf("the catalogue no longer pins %q anywhere; the store would move and the walk to it would be a matter of luck", crate.Key)
+	}
+
+	seen := map[string]int{}
+	const draws = 100
+	for i := 0; i < draws; i++ {
+		where := locationFor(key)
+		if _, ok := LocationByKey(where); !ok {
+			t.Fatalf("a fresh %q was sent to %q, which is not a location in the catalogue; nothing could ever be searched there", key.Key, where)
+		}
+		seen[where]++
+		if got := locationFor(crate); got != crate.Location {
+			t.Fatalf("a fresh %q was sent to %q; want the catalogue's %q every single time", crate.Key, got, crate.Location)
+		}
+	}
+	if len(seen) != len(Content().Locations) {
+		t.Errorf("%d draws reached %d of the %d locations (%v); a place the key can never be hidden in is a place nobody would ever have a reason to visit",
+			draws, len(seen), len(Content().Locations), seen)
+	}
+}
+
+// TestThingsInOtherLocationsStillRideTheFrameCarryingTheirOwnPlace.
+//
+// Locations are NOT realtime rooms, so there is one frame for the whole world and
+// the client draws the entities whose `loc` matches its own. Everything therefore
+// has to be on it, and everything has to say where it is — a prop that arrived
+// without a location would be drawn in every location at once, which for a relief
+// deposit means the same куча in five places.
+//
+// THE DEFAULT IS OMITTED AND THAT IS THE POINT OF THE FIELD'S COST. `loc` is
+// eighteen bytes on an entity, on a frame sent five times a second forever, so
+// paying it for the yard — where a pet is created, the store stands and the
+// sleepers lie — would be paying it for nearly every entity of nearly every
+// frame. This asserts both halves at once: absent in двор, present anywhere else.
+func TestThingsInOtherLocationsStillRideTheFrameCarryingTheirOwnPlace(t *testing.T) {
+	kind := leavingKind(t, ActionRelieve)
+	repo := playedFor()
+	repo.objects = []WorldObject{
+		anObject(1, kind.Key, Point{X: 0.2, Y: 0.3}, epoch.Add(time.Hour)),
+		anObjectIn(2, kind.Key, LocationLes, Point{X: 0.4, Y: 0.5}, epoch.Add(time.Hour)),
+		anObjectIn(3, kind.Key, LocationZabroshka, Point{X: 0.6, Y: 0.7}, epoch.Add(time.Hour)),
+	}
+	tr := &fakeTransport{}
+	tr.setMembers(member("1"))
+	svc := planeService(tr, repo)
+
+	svc.load(context.Background(), testAccount)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	props := propsOf(tr.frames()[0])
+	if len(props) != len(repo.objects) {
+		t.Fatalf("%d objects were drawn out of the %d standing in three locations; want all of them — one frame carries the whole world",
+			len(props), len(repo.objects))
+	}
+	got := map[string]bool{}
+	for _, p := range props {
+		got[p.Loc] = true
+	}
+	for _, want := range []string{"", LocationLes, LocationZabroshka} {
+		if !got[want] {
+			t.Errorf("no entity on the frame carries loc=%q; the frame carries %v — a prop with the wrong location is drawn in the wrong place, and one with none is drawn in all five",
+				want, got)
+		}
+	}
+	// The yard's own is ABSENT rather than spelled out, which is the eighteen
+	// bytes per entity per tick per viewer this field is allowed to cost.
+	for _, p := range props {
+		if p.Loc == LocationYard {
+			t.Errorf("an entity in the yard published loc=%q; the default is omitted, and it is on nearly every entity of nearly every frame", p.Loc)
+		}
+	}
+}
+
+// TestTheStoreIsCarriedWithTheLocationItStandsIn.
+//
+// One frame goes to the whole world, so «where the shop is» stopped being a pair
+// of coordinates and became a place plus a pair of coordinates. Without the
+// place, a Ваня in лес would be shown a store at (0.82, 0.22) of лес — a shop
+// that is not there, inviting him to walk to a crate he cannot see and be refused
+// when he presses. The client compares it against its own location and draws
+// nothing when they differ; the server refuses regardless, because a greyed
+// button is a suggestion.
+func TestTheStoreIsCarriedWithTheLocationItStandsIn(t *testing.T) {
+	repo := playedFor()
+	tr := &fakeTransport{}
+	tr.setMembers(member("1"))
+	svc := planeService(tr, repo)
+	crateInTheYard(t, svc, repo, crateStock)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	store := tr.frames()[0].Store
+	if store == nil {
+		t.Fatal("the frame carries no store at all while a crate is standing in the yard")
+	}
+	// Omitted, because the crate is pinned to the default location — so the field
+	// costs nothing today and is what keeps it free to move the shop.
+	if store.Loc != "" {
+		t.Errorf("the store publishes loc=%q while it stands in the default location; the whole convention is that the common case is absent", store.Loc)
+	}
+
+	// And a crate somewhere else says so, which is the case the field exists for.
+	elsewhere := aCrate(t, 43, crateStock)
+	elsewhere.LocationKey = LocationZabroshka
+	svc.mu.Lock()
+	svc.world = []WorldObject{elsewhere}
+	svc.mu.Unlock()
+	if err := svc.broadcast(context.Background(), at(1)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	moved := tr.frames()[1].Store
+	if moved == nil {
+		t.Fatal("the frame carries no store while a crate is standing in заброшка")
+	}
+	if moved.Loc != LocationZabroshka {
+		t.Errorf("the store publishes loc=%q while its crate stands in %q; a client looking at the yard would draw a shop that is not there",
+			moved.Loc, LocationZabroshka)
+	}
+}
+
+// TestBeerCannotBeDrunkFromAnotherLocation is the arrival gate's second
+// dimension, and it is a rule that would have been broken in SILENCE.
+//
+// Coordinates are normalised per location, so a Ваня standing at (0.82, 0.22) of
+// лес is at the crate's exact pitch without being anywhere near the crate.
+// Measuring distance alone would let him drink from a shop four places away —
+// and the frame would agree, because it publishes one store for everybody.
+func TestBeerCannotBeDrunkFromAnotherLocation(t *testing.T) {
+	drink := mustAction(t, ActionDrink)
+	if drink.NeedsNear == "" {
+		t.Fatalf("the catalogue no longer gates %q on standing beside anything; this test is about a rule the game does not have", drink.Key)
+	}
+	repo := playedFor()
+	svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+	if _, err := svc.State(context.Background(), testAccount); err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	atTheStore(t, svc, repo, testAccount, crateStock)
+
+	// From the yard, standing on the crate, it works — the fixture is honest.
+	if _, err := svc.Do(context.Background(), testAccount, []string{drink.Key}, "", at(0)); err != nil {
+		t.Fatalf("Do(%q) beside the crate in the yard: %v", drink.Key, err)
+	}
+
+	// He goes to лес and stands at the identical coordinates. Nothing about his
+	// position changes; only the place he is in does.
+	repo.pet.LocationKey = LocationLes
+	_, err := svc.Do(context.Background(), testAccount, []string{drink.Key}, "", at(1))
+	if !errors.Is(err, ErrTooFar) {
+		t.Fatalf("Do(%q) from %q while standing on the yard's crate = %v; want %v — a crate in another location is not something you are beside, however close the two coordinates are",
+			drink.Key, LocationLes, err, ErrTooFar)
+	}
+	if got := repo.drawn(); len(got) != 1 {
+		t.Errorf("the crate was drawn from %d times; want exactly the one honest drink — a refused batch takes no beer at all", len(got))
+	}
+}
+
+// TestTheSadFacesStayInTheLocationTheKeyWasFoundIn is the second half of the
+// loser effect, and it is a rule the four locations created rather than one they
+// merely extended.
+//
+// The room is the WHOLE WORLD — locations are deliberately not rooms — so the
+// members list a claim reacts to spans every place at once. Unfiltered, a Ваня
+// standing in лифт would go grey for four seconds because of something that
+// happened in заброшка: he could not see the hotspot, could not see the winner,
+// may not have looked for a key all evening, and would be given no explanation at
+// all. A cosmetic effect with no local cause does not read as losing a race, it
+// reads as the game being broken.
+//
+// The winner is unconditional, because there is one of him and the search gate
+// proved where he was standing before any of this ran.
+func TestTheSadFacesStayInTheLocationTheKeyWasFoundIn(t *testing.T) {
+	winner, neighbour, faraway := member("1"), member("2"), member("3")
+	if winner.AccountID != testAccount {
+		t.Fatalf("the winner's connection belongs to %q and the fake repository holds the pet of %q; the verb below would act for somebody else",
+			winner.AccountID, testAccount)
+	}
+	lift, ok := LocationByKey(LocationLift)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", LocationLift)
+	}
+
+	repo := playedFor()
+	tr := &fakeTransport{}
+	tr.setMembers(winner, neighbour, faraway)
+	svc := planeService(tr, repo)
+
+	// One tick, so all three have a placement — a mood is hung on one, and
+	// somebody the yard has never placed has nowhere to wear a face.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	// And the third one leaves for лифт, through the production path so the
+	// fixture cannot disagree with what a real goto does.
+	svc.arrive(faraway.AccountID, lift)
+
+	repo.claimWon = true
+	spot := searchingIn(t, svc, repo, testAccount, aHotspot(t, LocationYard, 0))
+	if _, err := svc.Do(context.Background(), testAccount, []string{ActionClaim}, spot, at(0)); err != nil {
+		t.Fatalf("Do(%q): %v", ActionClaim, err)
+	}
+
+	if err := svc.broadcast(context.Background(), at(0).Add(moodFor/2)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	frames := tr.frames()
+	f := frames[len(frames)-1]
+	for _, tc := range []struct {
+		who  realtime.Member
+		want string
+		why  string
+	}{
+		{who: winner, want: PoseHappy, why: "he found them, and he is in that location by construction"},
+		{who: neighbour, want: PoseSad, why: "he was standing in the yard when somebody there won the race"},
+		{
+			who: faraway, want: PoseFine,
+			why: "he is in another location entirely: he could not see the hotspot, could not see the winner, " +
+				"and a face with no local cause reads as a broken game rather than as a lost race",
+		},
+	} {
+		p, ok := peerOf(svc, f, tc.who.AccountID)
+		if !ok {
+			t.Fatalf("%s is not in the frame at all: %+v", tc.who.ConnID, f)
+		}
+		if p.Pose != tc.want {
+			t.Errorf("%s is drawn %q after the claim; want %q — %s", tc.who.ConnID, p.Pose, tc.want, tc.why)
+		}
 	}
 }

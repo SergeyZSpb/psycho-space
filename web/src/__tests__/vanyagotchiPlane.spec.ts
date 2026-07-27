@@ -4,6 +4,7 @@ import {
   DEPTH_PROPERTY,
   DEPTH_SCALES,
   LABEL_MAX,
+  NO_HEADS,
   PEER_BASE_PX,
   PROP_LIFE_MS,
   SAY_BELOW_PROPERTY,
@@ -12,6 +13,7 @@ import {
   SEARCH_WALK_MS,
   UNKNOWN_ART,
   UNKNOWN_SPOT,
+  UNNAMED_PLACE,
   X_PROPERTY,
   Y_PROPERTY,
   applyFrame,
@@ -21,14 +23,18 @@ import {
   beside,
   capLabel,
   capSay,
+  hereLabel,
   hotspotsFor,
+  hueFor,
   huntRestarted,
   isRenderablePosition,
   outOfReach,
+  peersIn,
   propScale,
   readAppearances,
   readHere,
   readStore,
+  sameHere,
   sameStore,
   searchVerb,
   spotAriaLabel,
@@ -38,6 +44,7 @@ import {
   sameAppearance,
   sayBelow,
   tapToPosition,
+  travelPlaces,
   type PeerAppearance,
 } from '../lib/vanyagotchiPlane';
 import type { VanyagotchiAction, VanyagotchiConfig, VanyagotchiSkin } from '../api/types';
@@ -578,38 +585,172 @@ describe('capSay', () => {
   });
 });
 
-// The head count. It is on the wire rather than derived here for one reason:
-// `peers` carries the NPCs and the sleepers too, so counting the list would mean
-// this client learning to tell a person from a character — content knowledge the
-// entity frame exists to keep out of the browser.
+// The head counts. They are on the wire rather than derived here for one reason:
+// `peers` carries the NPCs, the sleepers and the litter too, so counting the list
+// would mean this client learning to tell a person from a character — content
+// knowledge the entity frame exists to keep out of the browser.
 
 describe('readHere', () => {
-  it('says how many people the server counted, not how many entities it sent', () => {
-    // The whole point: eight things on the plane, two of them people.
-    expect(readHere(2, 8)).toBe(2);
+  it('reads how many people the server counted in each place', () => {
+    const heads = readHere({ yard: 3, les: 1 });
+    expect(heads.get('yard')).toBe(3);
+    expect(heads.get('les')).toBe(1);
   });
 
-  it('counts a yard the server says is empty of people as empty', () => {
-    // Zero is a real answer — a yard of nothing but NPCs and sleepers — and must
-    // not be mistaken for a missing field.
-    expect(readHere(0, 5)).toBe(0);
+  it('reads a place nobody is in as nobody, because the zeroes are omitted', () => {
+    // The server sends only the places that have somebody in them, so an absent
+    // key is an empty place rather than an unknown one — which is what lets the
+    // travel sheet print a count for every location off a two-entry object.
+    const heads = readHere({ yard: 3 });
+    expect(heads.get('kusty')).toBeUndefined();
+    expect(heads.size).toBe(1);
   });
 
-  it('falls back to the entity count when the server does not say', () => {
-    // A server that has not started sending `here` has no NPCs and no sleepers
-    // either, so every entity in its frame really is a person.
-    expect(readHere(undefined, 3)).toBe(3);
-    expect(readHere(null, 3)).toBe(3);
+  it('is empty for a frame that counts nothing, rather than guessing', () => {
+    // THERE IS NO FALLBACK TO THE ENTITY COUNT ANY MORE, and its removal is the
+    // point rather than an omission. That fallback used to be right because a
+    // server old enough to omit `here` had no NPCs either; the number it would
+    // fall back to now is the entities in ONE place including its characters, its
+    // sleepers and everything lying on its ground, which is a head count of
+    // nothing at all.
+    expect(readHere(undefined)).toBe(NO_HEADS);
+    expect(readHere(null)).toBe(NO_HEADS);
+    expect(readHere({})).toBe(NO_HEADS);
   });
 
   it.each([
-    ['not a number', '2'],
-    ['a fraction', 1.5],
-    ['negative', -1],
-    ['NaN', Number.NaN],
-    ['Infinity', Number.POSITIVE_INFINITY],
-  ])('falls back rather than showing %s in the status row', (_name, raw) => {
-    expect(readHere(raw, 4)).toBe(4);
+    ['a bare number, which is what the previous wire carried', 3],
+    ['an array', [1, 2]],
+  ])('reads %s as no counts at all', (_name, raw) => {
+    // The first of these is the shape this field USED to have, and it is here as
+    // a guard rather than as tidiness: the obvious way to "fix" a count that has
+    // gone missing is to put the old fallback back, and a client that did would
+    // report the лес's crowd in the двор. The second is what a `[]` on the wire
+    // would silently become — an object with numeric keys — if the guard only
+    // tested `typeof`.
+    expect(readHere(raw).size).toBe(0);
+  });
+
+  it.each([
+    ['not a number', { yard: '3' }],
+    ['a fraction', { yard: 1.5 }],
+    ['negative', { yard: -1 }],
+    ['NaN', { yard: Number.NaN }],
+    ['Infinity', { yard: Number.POSITIVE_INFINITY }],
+  ])('drops a count that is %s rather than showing it', (_name, raw) => {
+    expect(readHere(raw).has('yard')).toBe(false);
+  });
+
+  it('keeps the readable counts beside an unreadable one', () => {
+    // Losing the whole tally to one broken entry would empty the travel sheet's
+    // counts for a fault in a place nobody is looking at.
+    const heads = readHere({ yard: 2, les: 'many' });
+    expect(heads.get('yard')).toBe(2);
+    expect(heads.has('les')).toBe(false);
+  });
+});
+
+describe('sameHere', () => {
+  it('is true for two frames counting the world the same way', () => {
+    // What every frame carries: five times a second, the same two numbers.
+    expect(sameHere(new Map([['yard', 3]]), new Map([['yard', 3]]))).toBe(true);
+  });
+
+  it('is true for two uncounted worlds, so an empty tally never re-renders', () => {
+    expect(sameHere(NO_HEADS, NO_HEADS)).toBe(true);
+    expect(sameHere(new Map(), NO_HEADS)).toBe(true);
+  });
+
+  it('notices somebody arriving where you are standing', () => {
+    expect(sameHere(new Map([['yard', 3]]), new Map([['yard', 4]]))).toBe(false);
+  });
+
+  it('notices somebody arriving somewhere else entirely', () => {
+    // The cost of a tally rather than a number, and it is deliberate: the travel
+    // sheet is only worth opening because the counts beside its places are live.
+    expect(sameHere(new Map([['yard', 3]]), new Map([['yard', 3], ['les', 1]]))).toBe(false);
+  });
+
+  it('notices the last person leaving a place', () => {
+    expect(sameHere(new Map([['yard', 3], ['les', 1]]), new Map([['yard', 3]]))).toBe(false);
+  });
+
+  it('ignores the order the server happened to serialise its map in', () => {
+    const a = new Map([['yard', 3], ['les', 1]]);
+    const b = new Map([['les', 1], ['yard', 3]]);
+    expect(sameHere(a, b)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One room, several places. The frame carries the whole world and the browser
+// draws one place of it — see the section header in the source for why that is
+// the trade rather than a room per location.
+// ---------------------------------------------------------------------------
+
+describe('peersIn', () => {
+  const yard = { id: 'a', x: 0.1, y: 0.1 };
+  const les = { id: 'b', x: 0.2, y: 0.2, loc: 'les' };
+  const said = { id: 'c', x: 0.3, y: 0.3, loc: 'yard' };
+
+  it('draws the place he is standing in and nothing else', () => {
+    expect(peersIn([yard, les, said], 'yard', 'yard')).toEqual([yard, said]);
+  });
+
+  it('reads an entity that named no place as being in the default one', () => {
+    // The common case on the wire: most of the world is in the first place most
+    // of the time, so it sends no field at all rather than repeating one key per
+    // entity five times a second.
+    expect(peersIn([yard], 'yard', 'yard')).toEqual([yard]);
+    expect(peersIn([yard], 'les', 'yard')).toEqual([]);
+  });
+
+  it('does not let the unlabelled follow the player around', () => {
+    // THE bug the two arguments exist to prevent. Read as "absent means wherever
+    // the viewer is", every entity that named no place would be drawn in all four
+    // of them at once — and the лес would be full of people standing in the yard.
+    expect(peersIn([yard, les], 'les', 'yard')).toEqual([les]);
+  });
+
+  it('leaves an empty place empty rather than falling back to the whole world', () => {
+    expect(peersIn([yard, les], 'kusty', 'yard')).toEqual([]);
+  });
+
+  it('draws what named no place at all before the catalogue has arrived', () => {
+    // The first second of every visit: the plane runs on the socket and the
+    // config comes over HTTP, so neither the viewer's place nor the default is
+    // known. Drawing the entities that named none is the default place, which is
+    // where a fresh Ваня stands; drawing everybody would put four locations on
+    // top of each other.
+    expect(peersIn([yard, les], '', '')).toEqual([yard]);
+  });
+
+  it('passes a malformed entry through rather than throwing on it', () => {
+    // NOT this function's job to reject it. There is exactly one renderability
+    // guard in this module and it runs downstream (`isRenderablePosition`), so a
+    // second one here would be a second place to disagree about who is on the
+    // plane. What it must not do is throw while reading a field off `null` — and
+    // an entry that says nothing about where it is reads as the default place,
+    // like every other entry that says nothing.
+    expect(peersIn([null, 7, yard], 'yard', 'yard')).toEqual([null, 7, yard]);
+    expect(readAppearances(peersIn([null, 7, yard], 'yard', 'yard'))).toHaveLength(1);
+    // And it is not smuggled into another place either.
+    expect(peersIn([null, 7], 'les', 'yard')).toEqual([]);
+  });
+
+  it('ignores a location that is not a usable string', () => {
+    // Each of these means «this entity did not say», which is the default place.
+    const odd = [
+      { id: 'a', loc: '' },
+      { id: 'b', loc: 7 },
+      { id: 'c', loc: null },
+    ];
+    expect(peersIn(odd, 'yard', 'yard')).toEqual(odd);
+    expect(peersIn(odd, 'les', 'yard')).toEqual([]);
+  });
+
+  it('handles a world with nobody in it', () => {
+    expect(peersIn([], 'yard', 'yard')).toEqual([]);
   });
 });
 
@@ -1259,5 +1400,195 @@ describe('SEARCH_WALK_MS', () => {
     // that armed it, so a value long enough to feel like "forever" would be no
     // guard at all.
     expect(SEARCH_WALK_MS).toBeLessThanOrEqual(60_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The places: which one you are in, which ones you can go to, and what each of
+// them is painted with. Nothing below ever names a location — every one of these
+// functions is handed a key it has never seen and does arithmetic on it, which
+// is the property that keeps a fifth place a backend-only change (ADR-028).
+// ---------------------------------------------------------------------------
+
+describe('hueFor', () => {
+  it('gives the same string the same hue every time', () => {
+    // The whole basis of it: nobody sends a colour, and every browser agrees.
+    expect(hueFor('yard')).toBe(hueFor('yard'));
+    expect(hueFor('les')).toBe(hueFor('les'));
+  });
+
+  it('gives different places different hues', () => {
+    // The four the game actually ships. Asserted as a SET rather than as five
+    // magic numbers, because what matters is that no two places are painted the
+    // same, not which colour any of them happens to get.
+    const keys = ['yard', 'les', 'lift', 'kusty', 'zabroshka'];
+    expect(new Set(keys.map(hueFor)).size).toBe(keys.length);
+  });
+
+  it('is always a hue CSS can use', () => {
+    for (const key of ['yard', 'les', '', 'x', 'очень-длинный-ключ-места', '🌳']) {
+      const hue = hueFor(key);
+      expect(Number.isInteger(hue)).toBe(true);
+      expect(hue).toBeGreaterThanOrEqual(0);
+      expect(hue).toBeLessThan(360);
+    }
+  });
+
+  it('does not overflow into nonsense on a long key', () => {
+    // The hash is `*31 + charCode` on a 32-bit unsigned, so a long string wraps
+    // rather than reaching Infinity and modulo-ing to NaN — which would paint the
+    // plane with `hsl(NaN ...)`, i.e. nothing at all.
+    expect(Number.isFinite(hueFor('x'.repeat(4096)))).toBe(true);
+  });
+});
+
+describe('travelPlaces', () => {
+  const heads = new Map([
+    ['yard', 3],
+    ['les', 1],
+  ]);
+  const location = (key: string, label: string) => ({
+    key,
+    label,
+    entry: { x: 0.5, y: 0.5 },
+  });
+  const world = (...locations: ReturnType<typeof location>[]) =>
+    catalogue({ locations }) as VanyagotchiConfig;
+
+  it('lists every place the catalogue serves, in its order', () => {
+    const places = travelPlaces(world(location('yard', 'двор'), location('les', 'лес')), heads, 'yard');
+    expect(places.map((p) => p.key)).toEqual(['yard', 'les']);
+    expect(places.map((p) => p.label)).toEqual(['двор', 'лес']);
+  });
+
+  it('carries the head count the frame gave each place', () => {
+    const places = travelPlaces(world(location('yard', 'двор'), location('les', 'лес')), heads, 'yard');
+    expect(places.map((p) => p.count)).toEqual([3, 1]);
+  });
+
+  it('reads a place the tally does not mention as empty', () => {
+    // The zeroes are omitted on the wire, so this is the ordinary case in a world
+    // of four places and two players — not a fault.
+    const places = travelPlaces(world(location('kusty', 'кусты')), heads, 'yard');
+    expect(places[0]?.count).toBe(0);
+  });
+
+  it('marks the one he is standing in rather than dropping it', () => {
+    // It is the row that says where he is now, and pressing it is the way out of
+    // the sheet that is a control rather than a gesture.
+    const places = travelPlaces(world(location('yard', 'двор'), location('les', 'лес')), heads, 'les');
+    expect(places.map((p) => p.here)).toEqual([false, true]);
+  });
+
+  it('marks nothing when he is somewhere the catalogue does not describe', () => {
+    const places = travelPlaces(world(location('yard', 'двор')), heads, 'atlantis');
+    expect(places.some((p) => p.here)).toBe(false);
+  });
+
+  it('keeps a nameless place travellable, under a generic noun', () => {
+    // The opposite of what a nameless hiding place gets, and deliberately: an
+    // aria label can say less, but a row with nothing written on it is a place
+    // nobody can go to.
+    const places = travelPlaces(world(location('les', '   ')), heads, 'yard');
+    expect(places[0]?.label).toBe(UNNAMED_PLACE);
+  });
+
+  it('never shows the player a wire key', () => {
+    // The one fallback that is not allowed: «les» is what the claim carries, not
+    // what the game calls the place.
+    const places = travelPlaces(world(location('les', '')), heads, 'yard');
+    expect(places[0]?.label).not.toBe('les');
+  });
+
+  it('trims, because a padded name is a wider row', () => {
+    expect(travelPlaces(world(location('les', ' лес ')), heads, 'yard')[0]?.label).toBe('лес');
+  });
+
+  it('drops a place with nothing to name in a journey', () => {
+    // The key is what `vanyagotchi_goto` carries, so a location without one could
+    // only ever produce a frame the server refuses.
+    const places = travelPlaces(
+      catalogue({
+        locations: [
+          { key: '', label: 'нигде', entry: { x: 0, y: 0 } },
+          { label: 'тоже нигде', entry: { x: 0, y: 0 } },
+          null,
+          location('yard', 'двор'),
+        ],
+      }),
+      heads,
+      'yard',
+    );
+    expect(places.map((p) => p.key)).toEqual(['yard']);
+  });
+
+  it('is empty before the catalogue has arrived, or when it carries no places', () => {
+    expect(travelPlaces(null, heads, 'yard')).toEqual([]);
+    expect(travelPlaces(undefined, heads, 'yard')).toEqual([]);
+    expect(travelPlaces(catalogue({ locations: undefined }), heads, 'yard')).toEqual([]);
+    expect(travelPlaces(catalogue({ locations: 'yard' }), heads, 'yard')).toEqual([]);
+  });
+
+  it('freezes what it returns', () => {
+    // The sheet and the plane's own caption both read it in one render; neither
+    // may sort it.
+    expect(Object.isFrozen(travelPlaces(world(location('yard', 'двор')), heads, 'yard'))).toBe(true);
+  });
+});
+
+describe('hereLabel', () => {
+  it('names the place and counts the people in it', () => {
+    expect(hereLabel('двор', 3)).toBe('двор: 3');
+  });
+
+  it('leaves the name exactly as the catalogue spells it', () => {
+    // NOT INFLECTED, and that is the decision rather than laziness: «во дворе»,
+    // «в лесу», «в кустах» and «на заброшке» are four different inflections of
+    // the sentence this replaced, and a client cannot derive any of them from a
+    // nominative label — so it prints the label and lets the colon do the work.
+    expect(hereLabel('лес', 1)).toBe('лес: 1');
+    expect(hereLabel('заброшка', 0)).toBe('заброшка: 0');
+  });
+
+  it('says the count alone before anybody has named the place', () => {
+    // The pre-catalogue second. A placeholder noun would be inventing a name for
+    // somewhere that has one.
+    expect(hereLabel('', 2)).toBe('2');
+    expect(hereLabel('   ', 0)).toBe('0');
+  });
+
+  it('stays short enough to be a caption on a phone-sized plane', () => {
+    // It is drawn over the world rather than beside it, so a long one would reach
+    // across the yard. Pinned as a bound rather than as a string so the copy can
+    // be reworded without a test edit.
+    expect([...hereLabel('заброшка', 24)].length).toBeLessThanOrEqual(16);
+  });
+});
+
+describe('readStore / sameStore — the shop belongs to a place', () => {
+  // A COORDINATE MEANS NOTHING WITHOUT A PLACE. (0.82, 0.22) is the crate in двор
+  // and an empty patch of лес, so a store block read without its location would
+  // put a shop in front of somebody four places away from it, at a spot where
+  // there is nothing. It was harmless while the yard was the only place there
+  // was; five places made it a bug.
+  it('reads which place the shop is in', () => {
+    expect(readStore({ x: 0.82, y: 0.22, left: 6, loc: 'les' })?.loc).toBe('les');
+  });
+
+  it('reads an absent place as absent, which the caller reads as the default', () => {
+    expect(readStore({ x: 0.82, y: 0.22, left: 6 })?.loc).toBeUndefined();
+    expect(readStore({ x: 0.82, y: 0.22, left: 6, loc: '' })?.loc).toBeUndefined();
+    expect(readStore({ x: 0.82, y: 0.22, left: 6, loc: 7 })?.loc).toBeUndefined();
+  });
+
+  it('notices the shop standing somewhere else', () => {
+    // Without this the guard never re-evaluates: the crate is at one fixed pitch,
+    // so a move between locations changes nothing else about the block.
+    expect(
+      sameStore({ x: 0.82, y: 0.22, left: 6 }, { x: 0.82, y: 0.22, left: 6, loc: 'les' }),
+    ).toBe(false);
+    expect(
+      sameStore({ x: 0.82, y: 0.22, left: 6, loc: 'les' }, { x: 0.82, y: 0.22, left: 6, loc: 'les' }),
+    ).toBe(true);
   });
 });

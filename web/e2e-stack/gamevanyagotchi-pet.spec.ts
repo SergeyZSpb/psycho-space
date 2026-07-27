@@ -1281,7 +1281,9 @@ test('a Ваня who has never stood anywhere arrives in the middle of the yard'
     // One PERSON in the yard, whatever else is drawn in it. The count is the
     // server's own — published precisely so this screen never has to work out
     // which entity is somebody you could talk to.
-    await expect(page.getByText('во дворе: 1')).toBeVisible();
+    await expect
+      .poll(() => page.locator('[data-test="here"]').textContent())
+      .toMatch(/\b1\b/);
   } finally {
     await context.close();
   }

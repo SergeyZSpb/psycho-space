@@ -167,6 +167,16 @@ func peerOf(svc *Service, r Roster, accountID string) (Peer, bool) {
 	return peerByID(r, svc.pseudonym(accountID))
 }
 
+// inTheYard is how many people the frame says are standing in двор.
+//
+// `Here` became a map when the four locations arrived, and nearly every test in
+// this package is about the yard because that is where a pet is created — so
+// this reads the one entry those tests mean and leaves `r.Here` itself for the
+// handful that are about several places at once. A location nobody is standing
+// in has no entry at all, and a map answers nought for one, which is exactly
+// what "nobody is in the yard" should read as.
+func inTheYard(r Roster) int { return r.Here[LocationYard] }
+
 const testRoom = "yard"
 
 // ---------------------------------------------------------------------------
@@ -395,8 +405,8 @@ func TestMoveShowsUpInTheNextFrame(t *testing.T) {
 	}
 
 	f := tr.frames()[1]
-	if f.Here != 2 {
-		t.Fatalf("the frame says %d people are in the yard; want both players: %+v", f.Here, f)
+	if inTheYard(f) != 2 {
+		t.Fatalf("the frame says %d people are in the yard; want both players: %+v", inTheYard(f), f)
 	}
 	moved, ok := peerOf(svc, f, accountOf("a"))
 	if !ok {
@@ -642,8 +652,8 @@ func TestEveryFrameIsFullState(t *testing.T) {
 		if n := len(withoutNPCs(f)); n != 2 {
 			t.Fatalf("frame %d carries %d people; every frame must carry all of them", i, n)
 		}
-		if f.Here != 2 {
-			t.Fatalf("frame %d says %d are in the yard; want 2", i, f.Here)
+		if inTheYard(f) != 2 {
+			t.Fatalf("frame %d says %d are in the yard; want 2", i, inTheYard(f))
 		}
 		for _, who := range []string{"a", "b"} {
 			if _, ok := peerOf(svc, f, accountOf(who)); !ok {
@@ -685,8 +695,8 @@ func TestLeavingRemovesAPeerFromTheFrameAtOnce(t *testing.T) {
 	if _, ok := peerOf(svc, f, accountOf("a")); ok {
 		t.Fatalf("a disconnected peer is still in the frame: %+v", f)
 	}
-	if f.Here != 1 {
-		t.Fatalf("the frame says %d are in the yard; only one socket is still open", f.Here)
+	if inTheYard(f) != 1 {
+		t.Fatalf("the frame says %d are in the yard; only one socket is still open", inTheYard(f))
 	}
 }
 
@@ -850,8 +860,8 @@ func TestComingBackAfterTheGraceWakesHimWhereHeWasLyingDown(t *testing.T) {
 	if p.Pose == PoseAsleep {
 		t.Fatal("he is drawn asleep while his socket is open; waking up is what connecting means")
 	}
-	if back.Here != 2 {
-		t.Fatalf("the frame says %d are in the yard; both sockets are open", back.Here)
+	if inTheYard(back) != 2 {
+		t.Fatalf("the frame says %d are in the yard; both sockets are open", inTheYard(back))
 	}
 	// And there is exactly one of him: an account that is both present and past
 	// the grace must not be drawn twice, once awake and once asleep.
@@ -1039,8 +1049,8 @@ func TestTwoConnectionsOfOneAccountAreOneEntity(t *testing.T) {
 	if n := len(withoutNPCs(f)); n != 1 {
 		t.Fatalf("two devices of one account produced %d entities; want 1: %+v", n, f)
 	}
-	if f.Here != 1 {
-		t.Fatalf("the frame says %d people are in the yard; two devices are one person: %+v", f.Here, f)
+	if inTheYard(f) != 1 {
+		t.Fatalf("the frame says %d people are in the yard; two devices are one person: %+v", inTheYard(f), f)
 	}
 	if _, ok := peerOf(svc, f, "acct-1"); !ok {
 		t.Fatalf("the one entity is not the account's: %+v", f)
@@ -1129,8 +1139,8 @@ func TestAnEntityOutlivesOneOfItsConnections(t *testing.T) {
 	if _, ok := peerOf(svc, last, "acct-1"); ok {
 		t.Fatalf("an account with no connections is still on the plane: %+v", last)
 	}
-	if last.Here != 1 {
-		t.Fatalf("the frame says %d are in the yard; only the stranger's socket is open", last.Here)
+	if inTheYard(last) != 1 {
+		t.Fatalf("the frame says %d are in the yard; only the stranger's socket is open", inTheYard(last))
 	}
 	// Off the plane as a PERSON at once. The placement itself outlives the grace
 	// on purpose — he is asleep in the yard from then on, which is
@@ -1158,8 +1168,8 @@ func TestTwoAccountsAreStillTwoEntities(t *testing.T) {
 	if n := len(withoutNPCs(f)); n != 2 {
 		t.Fatalf("three connections across two accounts produced %d entities; want 2: %+v", n, f)
 	}
-	if f.Here != 2 {
-		t.Fatalf("the frame says %d people are in the yard; three sockets across two accounts is two people: %+v", f.Here, f)
+	if inTheYard(f) != 2 {
+		t.Fatalf("the frame says %d people are in the yard; three sockets across two accounts is two people: %+v", inTheYard(f), f)
 	}
 	for _, acct := range []string{"acct-1", "acct-2"} {
 		if _, ok := peerOf(svc, f, acct); !ok {
@@ -1967,8 +1977,8 @@ func TestTheRegularsAreNotPeople(t *testing.T) {
 		t.Fatalf("broadcast: %v", err)
 	}
 	f := tr.frames()[0]
-	if f.Here != 1 {
-		t.Fatalf("the frame says %d people are in the yard; one socket is open and the rest of the cast is furniture: %+v", f.Here, f)
+	if inTheYard(f) != 1 {
+		t.Fatalf("the frame says %d people are in the yard; one socket is open and the rest of the cast is furniture: %+v", inTheYard(f), f)
 	}
 	if len(f.Peers) != 1+len(catalogue.NPCs) {
 		t.Fatalf("the frame carries %d entities; want the one player plus the %d regulars: %+v",
@@ -2064,8 +2074,8 @@ func TestAnAbsentPlayerLiesDownInTheYardWhereHeStood(t *testing.T) {
 	if asleep.Say != "" {
 		t.Errorf("a sleeper says %q; nobody talks in their sleep", asleep.Say)
 	}
-	if past.Here != 1 {
-		t.Fatalf("the frame says %d are in the yard; the count is PEOPLE, and he went home: %+v", past.Here, past)
+	if inTheYard(past) != 1 {
+		t.Fatalf("the frame says %d are in the yard; the count is PEOPLE, and he went home: %+v", inTheYard(past), past)
 	}
 	if n := len(withoutNPCs(past)); n != 2 {
 		t.Fatalf("%d entities that are not regulars; want the one player and the one sleeper: %+v", n, past)
@@ -3060,5 +3070,341 @@ func TestAFaceThatCannotBeFetchedCostsOnlyTheFace(t *testing.T) {
 	}
 	if url, ok := svc.AvatarFor(svc.pseudonym(testAccount)); ok {
 		t.Fatalf("a failed fetch left %q behind; the lookup must miss so the client falls back", url)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The four locations, as the plane publishes and accepts them.
+//
+// One room, five places. Everything rides one frame carrying its own `loc`, and
+// leaving one place for another is `vanyagotchi_goto` — a MOVEMENT message,
+// answered by nothing, exactly as a tap is.
+// ---------------------------------------------------------------------------
+
+// goTo sends one `vanyagotchi_goto` frame down the inbound path, exactly as a
+// client would. Through HandleInbound rather than by calling the handler, because
+// the switch that routes an unknown type to nothing is part of what is under
+// test.
+func goTo(svc *Service, m realtime.Member, locationKey string) {
+	payload := []byte(`{"t":"` + TypeGoto + `","location":"` + locationKey + `"}`)
+	svc.HandleInbound(context.Background(), m, testRoom, payload)
+}
+
+// TestAGotoMovesHimToAnotherPlaceAndWritesItDown is the whole of the new verb —
+// which is not a verb.
+//
+// FOUR THINGS HAPPEN AND THEY MUST HAPPEN TOGETHER. The row is written, so he is
+// still in лес after a restart. The display cache is refreshed, so the tick draws
+// him there without asking Postgres — the interesting one to get wrong, because
+// the row would be right, every read would agree, and the plane would go on
+// drawing him in the place he left with nothing anywhere reporting a problem.
+// His placement is moved to the new location's entry point, because he did not
+// walk here. And the head count follows him, because it is per location now.
+//
+// NOTHING IS SENT BACK. He learns it worked from the next roster, which is the
+// same "state, never a reply" rule a tap already follows.
+func TestAGotoMovesHimToAnotherPlaceAndWritesItDown(t *testing.T) {
+	les, ok := LocationByKey(LocationLes)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", LocationLes)
+	}
+	repo := playedFor()
+	tr := &fakeTransport{}
+	m := member("1")
+	tr.setMembers(m)
+	svc := planeService(tr, repo)
+	svc.load(context.Background(), m.AccountID)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	before := tr.frames()[0]
+	if p, ok := peerOf(svc, before, m.AccountID); !ok || p.Loc != "" {
+		t.Fatalf("before the goto he is drawn as %+v; want the default location, which is omitted on the wire", p)
+	}
+	if got := inTheYard(before); got != 1 {
+		t.Fatalf("the frame says %d people are in the yard before the goto; want 1", got)
+	}
+
+	goTo(svc, m, LocationLes)
+
+	// The row.
+	moved := repo.moved()
+	if len(moved) != 1 || moved[0].accountID != m.AccountID || moved[0].locationKey != LocationLes {
+		t.Fatalf("the goto wrote %+v; want exactly one move of %s into %q — a location that is not written down is one he loses on the next deploy",
+			moved, m.AccountID, LocationLes)
+	}
+	// And nothing else was written: a goto moves no stat and appends no event,
+	// which is why it is not a verb.
+	if n := len(repo.appended); n != 0 {
+		t.Errorf("%d events were appended by a goto; it is a movement message, and the log carries a verb key and no payload at all", n)
+	}
+	if repo.writes != 0 {
+		t.Errorf("%d stat snapshots were written by a goto; going somewhere moves nothing about the pet", repo.writes)
+	}
+
+	// The cache, the placement and the head count, all read off the next frame.
+	if err := svc.broadcast(context.Background(), at(1)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	after := tr.frames()[1]
+	p, ok := peerOf(svc, after, m.AccountID)
+	if !ok {
+		t.Fatalf("he is not in the frame at all after a goto: %+v", after)
+	}
+	if p.Loc != LocationLes {
+		t.Errorf("he is drawn with loc=%q after moving to %q; the display cache was not refreshed, so the plane is still drawing him in the place he left",
+			p.Loc, LocationLes)
+	}
+	standingAt(t, p, les.Entry, "a Ваня who has just arrived in "+LocationLes)
+	if got := inTheYard(after); got != 0 {
+		t.Errorf("the frame still says %d people are in the yard after the only one left it; want 0", got)
+	}
+	if got := after.Here[LocationLes]; got != 1 {
+		t.Errorf("the frame says %d people are in %q; want 1 — the count is per location now, and the client reads the entry for the place it is looking at",
+			got, LocationLes)
+	}
+}
+
+// TestAGotoNamingSomewhereThatDoesNotExistIsIgnored.
+//
+// The location key is the third inbound field a client controls completely, and
+// the only defence it needs is the catalogue: an invented one does not resolve,
+// so the worst an arbitrary payload buys is a frame that did nothing. It matters
+// that the check is here rather than at the column, because `location_key` is
+// plain text and the database would have accepted «пивная» without complaint —
+// after which he would have been drawn with a loc no client matches, in a place
+// with no hotspots, unable to search anywhere and invisible to everybody.
+//
+// Dropped in SILENCE, like every other frame this server does not believe. There
+// is no reply channel, and logging one would hand any client a flood lever at its
+// full ten messages a second.
+func TestAGotoNamingSomewhereThatDoesNotExistIsIgnored(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+	}{
+		{name: "a location nobody has heard of", payload: `{"t":"` + TypeGoto + `","location":"пивная"}`},
+		{name: "no location at all", payload: `{"t":"` + TypeGoto + `"}`},
+		{name: "an empty location", payload: `{"t":"` + TypeGoto + `","location":""}`},
+		{name: "not json", payload: `{"t":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := playedFor()
+			tr := &fakeTransport{}
+			m := member("1")
+			tr.setMembers(m)
+			svc := planeService(tr, repo)
+			svc.load(context.Background(), m.AccountID)
+			if err := svc.broadcast(context.Background(), at(0)); err != nil {
+				t.Fatalf("broadcast: %v", err)
+			}
+
+			svc.HandleInbound(context.Background(), m, testRoom, []byte(tc.payload))
+
+			if got := repo.moved(); len(got) != 0 {
+				t.Fatalf("a goto naming %s wrote %+v; the catalogue is what stands between an arbitrary string and a location_key nothing can render", tc.name, got)
+			}
+			if err := svc.broadcast(context.Background(), at(1)); err != nil {
+				t.Fatalf("broadcast: %v", err)
+			}
+			f := tr.frames()[1]
+			if p, ok := peerOf(svc, f, m.AccountID); !ok || p.Loc != "" {
+				t.Errorf("after a goto naming %s he is drawn as %+v; want him exactly where he was", tc.name, p)
+			}
+			if got := inTheYard(f); got != 1 {
+				t.Errorf("the frame says %d people are in the yard after a refused goto; want the 1 who never left", got)
+			}
+			// And no unicast at all, because a movement message is never answered —
+			// neither when it is accepted nor when it is dropped.
+			if n := len(tr.unicasts()); n != 0 {
+				t.Errorf("%d unicasts were sent for a goto; it is answered by the next roster and by nothing else, so a refused one owes the sender nothing", n)
+			}
+		})
+	}
+}
+
+// TestAGotoThatCannotBeWrittenDownDoesNotMoveHimOnThePlaneEither.
+//
+// The row is written first and the caches only if it succeeded. The other order
+// would leave the plane drawing him in a place the database has never heard of,
+// and the next hello would silently put him back — a teleport with no cause the
+// player could see and nothing in a log to explain it.
+func TestAGotoThatCannotBeWrittenDownDoesNotMoveHimOnThePlaneEither(t *testing.T) {
+	repo := playedFor()
+	repo.setLocationErr = errors.New("the database is having a moment")
+	tr := &fakeTransport{}
+	m := member("1")
+	tr.setMembers(m)
+	svc := planeService(tr, repo)
+	svc.load(context.Background(), m.AccountID)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	goTo(svc, m, LocationZabroshka)
+
+	if err := svc.broadcast(context.Background(), at(1)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	f := tr.frames()[1]
+	p, ok := peerOf(svc, f, m.AccountID)
+	if !ok {
+		t.Fatalf("he is not in the frame at all: %+v", f)
+	}
+	if p.Loc != "" {
+		t.Errorf("the write failed and he is drawn in %q anyway; the plane would be showing a place the database has never heard of, and the next hello would put him back with no cause anybody could see",
+			p.Loc)
+	}
+	if got := inTheYard(f); got != 1 {
+		t.Errorf("the frame says %d people are in the yard after a goto that could not be written; want the 1 who never moved", got)
+	}
+}
+
+// TestGoingSomewhereIsBoundedSeparatelyFromPressingAButton.
+//
+// A goto writes a row, so at the socket's ten frames a second a client
+// alternating between two places would be ten UPDATEs a second — which is the
+// same reason a batch of verbs has a bound of its own, and it earns the same
+// one-a-second limit.
+//
+// ON ITS OWN CLOCK, which is the half worth a test. Sharing the verb budget
+// would mean that walking into лес ate the allowance for the drink you walked
+// there to have — and a verb refused by the rate limit is refused in SILENCE, so
+// the player would meet it as a button that did nothing.
+func TestGoingSomewhereIsBoundedSeparatelyFromPressingAButton(t *testing.T) {
+	repo := playedFor()
+	tr := &fakeTransport{}
+	m := member("1")
+	tr.setMembers(m)
+	svc := planeService(tr, repo)
+	svc.load(context.Background(), m.AccountID)
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	goTo(svc, m, LocationLes)
+	// Same instant, so inside the interval however it is tuned.
+	goTo(svc, m, LocationKusty)
+	if got := repo.moved(); len(got) != 1 || got[0].locationKey != LocationLes {
+		t.Fatalf("two gotos in the same instant wrote %+v; want only the first — a write on the socket needs a bound the socket's own rate limit cannot give it", got)
+	}
+
+	// And a verb in the same instant is NOT charged for it. The two budgets are
+	// separate, so arriving somewhere and immediately acting is a thing a person
+	// can do.
+	svc.mu.Lock()
+	held := svc.pos[m.AccountID]
+	svc.mu.Unlock()
+	if !held.lastVerb.IsZero() {
+		t.Errorf("a goto stamped the verb clock as well as its own; walking into a location would eat the allowance for the drink you walked there to have")
+	}
+	if held.lastGoto.IsZero() {
+		t.Error("the goto stamped no clock of its own; nothing would bound the write at all")
+	}
+
+	// A minute later he may move again, which is what says the bound is a gap
+	// rather than a one-shot.
+	if err := svc.broadcast(context.Background(), at(1)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	goTo(svc, m, LocationKusty)
+	if got := repo.moved(); len(got) != 2 || got[1].locationKey != LocationKusty {
+		t.Fatalf("a goto a minute later wrote %+v; want a second move into %q", got, LocationKusty)
+	}
+}
+
+// TestTheHeadCountIsPerLocationAndCountsOnlyPeople.
+//
+// `Here` had to become a map, and the reason is the one that made it exist at
+// all: the client deliberately cannot tell a person from a character or from a
+// thing on the ground, so it cannot count its own location by filtering the
+// peers. One number would be the whole world's, which is not a thing any screen
+// can say.
+//
+// What it counts is unchanged — distinct connected ACCOUNTS, snapped before the
+// sleepers, the cast and the props are appended — and this pins both halves at
+// once: two devices of one person are one head, and the лес that holds him holds
+// nothing else.
+func TestTheHeadCountIsPerLocationAndCountsOnlyPeople(t *testing.T) {
+	les, ok := LocationByKey(LocationLes)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", LocationLes)
+	}
+	kind := leavingKind(t, ActionRelieve)
+	repo := playedFor()
+	// Something lying about in лес, so a count that included props would be wrong
+	// in the one location under test.
+	repo.objects = []WorldObject{anObjectIn(9, kind.Key, LocationLes, Point{X: 0.3, Y: 0.4}, epoch.Add(time.Hour))}
+	tr := &fakeTransport{}
+	// Three sockets across two accounts: one person on two devices, plus one more.
+	both := []realtime.Member{
+		{ConnID: "a1", AccountID: accountOf("a")},
+		{ConnID: "a2", AccountID: accountOf("a")},
+		member("b"),
+	}
+	tr.setMembers(both...)
+	svc := planeService(tr, repo)
+	svc.load(context.Background(), accountOf("a"))
+
+	// The one with two devices goes to лес. Through the production path, so the
+	// fixture cannot disagree with what a real goto does.
+	svc.arrive(accountOf("a"), les)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	f := tr.frames()[0]
+	if got := f.Here[LocationLes]; got != 1 {
+		t.Errorf("the frame says %d people are in %q; want 1 — two devices of one person are one Ваня standing in one place, and the куча lying beside him is not somebody",
+			got, LocationLes)
+	}
+	if got := inTheYard(f); got != 1 {
+		t.Errorf("the frame says %d people are in the yard; want the one who stayed", got)
+	}
+	// Zeroes are absent rather than published: four empty places cost nothing.
+	for _, loc := range Content().Locations {
+		if loc.Key == LocationLes || loc.Key == LocationYard {
+			continue
+		}
+		if _, present := f.Here[loc.Key]; present {
+			t.Errorf("the frame publishes an entry for %q, where nobody is standing; an absent key already means nought", loc.Key)
+		}
+	}
+}
+
+// TestEveryCharacterStaysInTheLocationTheCatalogueGivesHim.
+//
+// An NPC is catalogue plus arithmetic and has no row, so where he is is a
+// content property like his art and his pattern — and getting it wrong is
+// invisible twice over: a character with a location nothing matches appears
+// nowhere at all, and one with no location appears in every place at once. The
+// three regulars are in двор and none of them names it, which is the "empty means
+// the yard" rule doing its job.
+func TestEveryCharacterStaysInTheLocationTheCatalogueGivesHim(t *testing.T) {
+	tr := &fakeTransport{}
+	tr.setMembers(member("1"))
+	svc := planeService(tr, &fakeRepo{})
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	f := tr.frames()[0]
+
+	if len(Content().NPCs) == 0 {
+		t.Fatal("the catalogue has no characters at all; this test is vacuous")
+	}
+	for _, npc := range Content().NPCs {
+		p, ok := peerByID(f, npcPrefix+npc.Key)
+		if !ok {
+			t.Fatalf("%q is in the catalogue and not in the frame: %+v", npc.Key, f)
+		}
+		if want := onWire(npc.Location); p.Loc != want {
+			t.Errorf("%q is drawn with loc=%q; the catalogue puts him in %q, which goes on the wire as %q",
+				npc.Key, p.Loc, locationOr(npc.Location), want)
+		}
+	}
+	// And none of them is counted, wherever he is: the head count is people.
+	if got := inTheYard(f); got != 1 {
+		t.Errorf("the frame says %d people are in the yard while one socket is open and the rest of the cast is furniture: %+v", got, f)
 	}
 }

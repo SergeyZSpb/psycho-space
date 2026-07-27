@@ -833,22 +833,37 @@ func TestEveryLocationsHotspotsAreDistinctAndReachable(t *testing.T) {
 	// always somewhere a Ваня can actually stand within reach of.
 	margin := arriveWithin / 2
 
-	// Everything with a fixed pitch of its own. A hotspot must not be within
-	// arriving distance of one, or the two gates overlap on screen and in the
-	// hand.
-	pitched := map[string]Point{}
+	// Everything with a fixed pitch of its own, KEPT PER LOCATION. A hotspot must
+	// not be within arriving distance of one, or the two gates overlap on screen
+	// and in the hand — but "on screen" is the whole of the reason, and two things
+	// in different locations are never on one screen. Scoping it is what stops the
+	// yard's beer crate silently constraining where a bush may go in лес, which is
+	// a rule about a picture nobody looking at лес can see. A kind that names no
+	// location may be anywhere, so it constrains everywhere.
+	pitched := map[string]map[string]Point{}
+	pin := func(where, what string, at Point) {
+		for _, loc := range Content().Locations {
+			if where != "" && loc.Key != where {
+				continue
+			}
+			if pitched[loc.Key] == nil {
+				pitched[loc.Key] = map[string]Point{}
+			}
+			pitched[loc.Key][what] = at
+		}
+	}
 	for _, kind := range Content().ObjectKinds {
 		if kind.At != nil {
-			pitched[kind.Key] = *kind.At
+			pin(kind.Location, kind.Key, *kind.At)
 		}
 	}
 	for _, npc := range Content().NPCs {
 		if npc.Pattern == PatternIdle {
-			pitched["npc:"+npc.Key] = npc.Params.Home
+			pin(npc.Location, "npc:"+npc.Key, npc.Params.Home)
 		}
 	}
 	if len(pitched) == 0 {
-		t.Fatal("nothing in the yard stands anywhere in particular; this test is checking a clearance the game does not have")
+		t.Fatal("nothing anywhere stands in a place of its own; this test is checking a clearance the game does not have")
 	}
 
 	for _, loc := range Content().Locations {
@@ -875,9 +890,9 @@ func TestEveryLocationsHotspotsAreDistinctAndReachable(t *testing.T) {
 					t.Errorf("%q is at (%v,%v), which is inside %v of the edge; the world-object table CHECKs 0..1 outright and a tap target on the rim is half clipped",
 						h.Key, h.At.X, h.At.Y, margin)
 				}
-				for what, p := range pitched {
+				for what, p := range pitched[loc.Key] {
 					if d := distance(h.At, p); d <= arriveWithin {
-						t.Errorf("%q is %v from %q, which is inside the %v arrival radius; searching there and using that would be the same square of a phone screen",
+						t.Errorf("%q is %v from %q, which is inside the %v arrival radius and in the same location; searching there and using that would be the same square of a phone screen",
 							h.Key, d, what, arriveWithin)
 					}
 				}
@@ -1066,6 +1081,142 @@ func TestBeingOffTheFrameIsNotTheSameAsBeingASecret(t *testing.T) {
 	for _, a := range Content().Actions {
 		if a.NeedsSpot && a.NeedsNear != "" {
 			t.Errorf("action %q is both a search and gated on a place (%q)", a.Key, a.NeedsNear)
+		}
+	}
+}
+
+// TestEveryPinnedThingNamesALocationThatExists is the same class of check as
+// "every contested verb names a kind with a discipline", one axis along.
+//
+// A kind or a character pinned to a location the catalogue does not have is a
+// content bug that fails in SILENCE, and differently for each. A pinned OBJECT
+// would be spawned into a place no player can ever be standing in — the crate
+// would be a shop nobody could reach, and every drink in the game would answer
+// «далековато» for ever. A pinned NPC would be drawn with a `loc` no client ever
+// matches, so he would simply never appear anywhere. Both look exactly like a
+// working game right up to the moment somebody tries to play it.
+//
+// Empty is the ordinary answer and means the default, so it is not checked here
+// — it is checked by the rule immediately below, which is that the default
+// itself resolves.
+func TestEveryPinnedThingNamesALocationThatExists(t *testing.T) {
+	for _, kind := range Content().ObjectKinds {
+		if kind.Location == "" {
+			continue
+		}
+		if _, ok := LocationByKey(kind.Location); !ok {
+			t.Errorf("object kind %q is pinned to %q, which is not a location in the catalogue; every one of these would be spawned somewhere no player can stand",
+				kind.Key, kind.Location)
+		}
+	}
+	for _, npc := range Content().NPCs {
+		if npc.Location == "" {
+			continue
+		}
+		if _, ok := LocationByKey(npc.Location); !ok {
+			t.Errorf("%q hangs about in %q, which is not a location in the catalogue; he would be drawn with a loc no client ever matches and would appear nowhere at all",
+				npc.Key, npc.Location)
+		}
+	}
+	// And a kind with a PITCH but no location would stand at the same coordinates
+	// in all five places at once, which is a shop in five locations or none
+	// depending on which frame you read. The two fields are answers to the same
+	// question at two scales and a kind that answers only the finer one is
+	// underspecified.
+	for _, kind := range Content().ObjectKinds {
+		if kind.At != nil && kind.Location == "" {
+			t.Errorf("object kind %q stands at (%v,%v) but names no location; a pitch without a place is a shop that is either everywhere or nowhere",
+				kind.Key, kind.At.X, kind.At.Y)
+		}
+	}
+}
+
+// TestTheStoresLocationIsServedSoTheRulesCanSayIt.
+//
+// The splash screen's cheatsheet has to be able to tell a player «пиво только во
+// дворе», because somebody who walks into лес and finds the drink button dead
+// needs to know why — and «пиво из ящика» without saying where the ящик is
+// answers a different question. That sentence is DERIVED from here rather than
+// typed into the SPA, which is the whole rule about a game stating its own rules:
+// a hand-typed place is a place that goes stale the first time the shop moves.
+//
+// It resolves against `Locations` exactly as StoreArt resolves against `Skins`,
+// and it publishes a LOCATION key and never a kind key — the same
+// capability-not-reason split `needs_spot` makes, so the client still holds no
+// content key of this game's own.
+func TestTheStoresLocationIsServedSoTheRulesCanSayIt(t *testing.T) {
+	served := Content()
+	if served.StoreLocation == "" {
+		t.Fatal("the catalogue publishes no store location; the rules cheatsheet cannot say where the beer is without hardcoding it, which is a number that goes stale the first time the shop moves")
+	}
+	loc, ok := LocationByKey(served.StoreLocation)
+	if !ok {
+		t.Fatalf("the store is published as being in %q, which is not a location in the catalogue; the client would have nothing to label it with", served.StoreLocation)
+	}
+	if loc.Label == "" {
+		t.Errorf("the store's location %q has no label; the cheatsheet would have to print a wire key at the player", loc.Key)
+	}
+	crate := mustObjectKind(t, KindCrate)
+	if served.StoreLocation != locationOr(crate.Location) {
+		t.Errorf("the store is published as being in %q while the crate is pinned to %q; two answers to one question is the drift the derivation exists to prevent",
+			served.StoreLocation, locationOr(crate.Location))
+	}
+}
+
+// TestEveryLocationIsAddressableAndArrivable.
+//
+// The four places behind the yard are pure catalogue, so everything that can be
+// wrong with one is wrong HERE rather than at runtime — and each failure below is
+// silent in a different way. A duplicate key makes `LocationByKey` answer with
+// whichever comes first, so a goto to the second one lands in the first. An
+// unlabelled place is a wire key printed at a player. An entry point off the
+// plane is a coordinate `clampPoint` would quietly move, so arriving would put
+// him somewhere he was not sent. And a key that is not the default's must still
+// be reachable by a `goto`, which is what the round trip at the end checks.
+func TestEveryLocationIsAddressableAndArrivable(t *testing.T) {
+	served := Content()
+	if len(served.Locations) < 2 {
+		t.Fatalf("the catalogue publishes %d locations; the four places behind the yard are the whole of this iteration", len(served.Locations))
+	}
+	seen := map[string]bool{}
+	for _, loc := range served.Locations {
+		if loc.Key == "" {
+			t.Errorf("a location labelled %q has no key; a goto names a place by key and an empty one can never be sent", loc.Label)
+		}
+		if seen[loc.Key] {
+			t.Errorf("%q appears twice; the lookup answers with whichever comes first, so a goto to the second would land in the first", loc.Key)
+		}
+		seen[loc.Key] = true
+		if loc.Label == "" {
+			t.Errorf("%q has no label; the client would have to print a wire key at the player", loc.Key)
+		}
+		if got := clampPoint(loc.Entry); !samePoint(got, loc.Entry) {
+			t.Errorf("%q's entry point (%v,%v) is off the plane and would be clamped to (%v,%v); arriving would put him somewhere he was not sent",
+				loc.Key, loc.Entry.X, loc.Entry.Y, got.X, got.Y)
+		}
+		if _, ok := LocationByKey(loc.Key); !ok {
+			t.Errorf("%q is published and does not resolve; a goto naming it would be dropped in silence", loc.Key)
+		}
+	}
+	if !seen[served.DefaultLocation] {
+		t.Errorf("the default location %q is not among the published ones", served.DefaultLocation)
+	}
+	// AND THE WIRE OMITS EXACTLY ONE OF THEM. `onWire` is what keeps a per-entity
+	// location field close to free on a frame sent five times a second forever, and
+	// it can only do that if it stays a one-to-one map: every non-default location
+	// must survive it, or two places would be indistinguishable on the wire and a
+	// client would draw somebody in the wrong one.
+	if onWire(served.DefaultLocation) != "" {
+		t.Errorf("the default location %q is not omitted on the wire; it is on nearly every entity of nearly every frame, which is the whole saving",
+			served.DefaultLocation)
+	}
+	for _, loc := range served.Locations {
+		if loc.Key == served.DefaultLocation {
+			continue
+		}
+		if onWire(loc.Key) != loc.Key {
+			t.Errorf("%q is published on the wire as %q; anything but itself would make two places indistinguishable to a client",
+				loc.Key, onWire(loc.Key))
 		}
 	}
 }

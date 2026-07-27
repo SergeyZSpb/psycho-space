@@ -29,6 +29,19 @@ import (
 type display struct {
 	skinKey string
 	name    string
+	// locationKey is which of the five places this pet is in.
+	//
+	// Cached here for exactly the reason the skin is: the tick has to stamp `loc`
+	// on every entity it draws, and it may not ask Postgres which location
+	// anybody is in five times a second. It is refreshed by the same human-paced
+	// moments — a hello, any HTTP read, any verb — plus one more that is peculiar
+	// to it: `goto` writes `pets.location_key` and must update this in the same
+	// operation, or the plane goes on drawing him in the place he just left with
+	// nothing anywhere reporting a problem.
+	//
+	// Empty means the default, which is what an account with nothing cached yet
+	// gets — see `location`.
+	locationKey string
 	// diedAt is the RECORDED death. A pet can be at its floor without this being
 	// set — recording it is a write, and writes belong to the read path — so the
 	// pose below checks both.
@@ -85,6 +98,11 @@ func (d display) skin() string {
 	return d.skinKey
 }
 
+// location is where to draw this pet, falling back to the catalogue default for
+// the same reason `skin` does: an account whose pet has not been read yet has to
+// be somewhere, and the yard is where a pet is created.
+func (d display) location() string { return locationOr(d.locationKey) }
+
 // remember caches what the plane draws for an account.
 func (s *Service) remember(accountID string, pet Pet, rows []StatRow) {
 	stats := make(map[string]StatRow, len(rows))
@@ -95,7 +113,13 @@ func (s *Service) remember(accountID string, pet Pet, rows []StatRow) {
 	if pet.Name != nil {
 		name = *pet.Name
 	}
-	entry := display{skinKey: pet.SkinKey, name: name, diedAt: pet.DiedAt, stats: stats}
+	entry := display{
+		skinKey:     pet.SkinKey,
+		name:        name,
+		locationKey: pet.LocationKey,
+		diedAt:      pet.DiedAt,
+		stats:       stats,
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

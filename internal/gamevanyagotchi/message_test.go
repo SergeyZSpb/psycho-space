@@ -171,6 +171,56 @@ func TestParsingAVerbFrameRejectsEveryBadShape(t *testing.T) {
 	}
 }
 
+// TestParsingAGotoFrameRejectsEveryBadShape is the same total-over-any-frame
+// property the two parsers above have, for the third inbound message.
+//
+// It validates SHAPE ONLY, which is the half worth pinning: an invented location
+// key parses perfectly and is refused one layer along, against the catalogue,
+// exactly as an invented hotspot key is. A parser that pre-filtered would be a
+// second, weaker copy of a lookup that has to happen anyway — and the case below
+// that names «пивная» is what says so.
+func TestParsingAGotoFrameRejectsEveryBadShape(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    string
+		wantErr error
+		why     string
+	}{
+		{name: "a plain goto", payload: `{"t":"vanyagotchi_goto","location":"les"}`, want: LocationLes},
+		{name: "not json", payload: `{`, wantErr: ErrMalformedMessage},
+		{
+			name: "another type", payload: `{"t":"vanyagotchi_move","x":0.5,"y":0.5}`, wantErr: ErrUnknownMessage,
+			why: "the parser is total over any frame, not only the ones the switch routes here",
+		},
+		{name: "no location field", payload: `{"t":"vanyagotchi_goto"}`, wantErr: ErrNoLocation},
+		{name: "an empty location", payload: `{"t":"vanyagotchi_goto","location":""}`, wantErr: ErrNoLocation},
+		{name: "location is not a string", payload: `{"t":"vanyagotchi_goto","location":3}`, wantErr: ErrMalformedMessage},
+		{
+			name: "a location nobody has ever heard of", payload: `{"t":"vanyagotchi_goto","location":"пивная"}`,
+			want: "пивная",
+			why: "an arbitrary string is a shape the parser accepts and the catalogue refuses; pre-filtering here " +
+				"would be a second, weaker copy of the lookup that has to happen anyway",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseGoto([]byte(tc.payload))
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("parseGoto(%s) = %v; want %v — %s", tc.payload, err, tc.wantErr, tc.why)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseGoto(%s): %v", tc.payload, err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseGoto(%s) = %q; want %q — %s", tc.payload, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
 // TestParsingAVerbFrameKeepsTheOrder. Order inside a batch is meaningful — the
 // fold applies them in sequence — so a parser that returned a set would silently
 // change what the player asked for.

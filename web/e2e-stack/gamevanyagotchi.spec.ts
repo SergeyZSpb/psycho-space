@@ -123,7 +123,11 @@ const CONFIG_URL = '/api/game-vanyagotchi/config';
  * which entity is a real person.
  */
 async function here(page: Page): Promise<number> {
-  const text = (await page.locator('.hud-count').textContent()) ?? '';
+  // The head count moved onto the plane and became the travel opener when the
+  // yard stopped being the only place there was — it now NAMES the place as well
+  // as counting it («двор: 2»), because with five locations «во дворе» was the
+  // last hardcoded content word left in the yard.
+  const text = (await page.locator('[data-test="here"]').textContent()) ?? '';
   const found = text.match(/(\d+)/);
   return found ? Number(found[1]) : Number.NaN;
 }
@@ -513,7 +517,9 @@ test('two players share one plane, and a move crosses between them', async ({
     // list every tick, so it is proof the two sockets really are in one room.
     await expect(playerDots(pageA)).toHaveCount(2);
     await expect(playerDots(pageB)).toHaveCount(2);
-    await expect(pageA.getByText('во дворе: 2')).toBeVisible();
+    await expect
+      .poll(() => pageA.locator('[data-test="here"]').textContent())
+      .toMatch(/\b2\b/);
     // And the yard's regulars are there alongside them, on both screens — which
     // is also what says the count above is the server's own rather than a tally
     // of everything drawn. How many there are comes from the server; casting a
@@ -553,7 +559,9 @@ test('two players share one plane, and a move crosses between them', async ({
     // that B went — the roster is rebuilt from the hub on every tick.
     await ctxB.close();
     await expect(playerDots(pageA)).toHaveCount(1, { timeout: 10_000 });
-    await expect(pageA.getByText('во дворе: 1')).toBeVisible();
+    await expect
+      .poll(() => pageA.locator('[data-test="here"]').textContent())
+      .toMatch(/\b1\b/);
     // B is inside the reconnect grace, so he is not drawn at all — a grace is
     // about REMEMBERING where somebody was, not about showing him. He becomes a
     // sleeper only once it runs out.
@@ -685,7 +693,9 @@ test('the same account on two devices is ONE Ваня', async ({ browser, baseUR
 
     await expect(playerDots(pagePhone)).toHaveCount(1);
     await expect(playerDots(pageLaptop)).toHaveCount(1);
-    await expect(pagePhone.getByText('во дворе: 1')).toBeVisible();
+    await expect
+      .poll(() => pagePhone.locator('[data-test="here"]').textContent())
+      .toMatch(/\b1\b/);
 
     // A move from the laptop moves the Ваня the phone is watching.
     await walkTo(pageLaptop, 0.2, 0.5);
@@ -981,8 +991,12 @@ test('the yard has regulars, and both players see the same ones', async ({ brows
     // number on screen is two — on both screens. Counting the plane would say
     // two plus the whole cast, which is the bug the field exists to foreclose.
     await expect(playerDots(pageA)).toHaveCount(2);
-    await expect(pageA.getByText('во дворе: 2')).toBeVisible();
-    await expect(pageB.getByText('во дворе: 2')).toBeVisible();
+    await expect
+      .poll(() => pageA.locator('[data-test="here"]').textContent())
+      .toMatch(/\b2\b/);
+    await expect
+      .poll(() => pageB.locator('[data-test="here"]').textContent())
+      .toMatch(/\b2\b/);
     expect(await here(pageA), 'the regulars were counted as people').toBe(2);
     // Everything drawn: the two people, the whole cast, and whatever is lying
     // about. The last term is the one that keeps changing — a key hunt is always
@@ -1449,7 +1463,9 @@ test('a Ваня whose owner has gone is asleep in the yard where he stood', asy
     // reason the head count stopped being the length of the roster: A is alone
     // in a yard with the sleeper and the whole cast drawn in it.
     expect(await here(pageA), 'a sleeper was counted as somebody who is here').toBe(1);
-    await expect(pageA.getByText('во дворе: 1')).toBeVisible();
+    await expect
+      .poll(() => pageA.locator('[data-test="here"]').textContent())
+      .toMatch(/\b1\b/);
     // And the regulars are still there alongside him.
     await expect(npcDots(pageA)).toHaveCount(await npcCount(pageA));
   } finally {

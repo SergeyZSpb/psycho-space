@@ -32,6 +32,18 @@ func expectRoster(t *testing.T, tick chan<- time.Time, frames <-chan []byte) gam
 	return expectRosterAt(t, tick, frames, time.Time{})
 }
 
+// vanyagotchiInTheYard is how many people a roster says are standing in двор.
+//
+// `vanyagotchiInTheYard(Roster)` became a map per location when the four locations arrived, and
+// nearly every test in this file is about the yard because that is where a pet
+// is created — so this reads the entry those tests mean and leaves the map
+// itself for the ones that are about several places at once. A location nobody
+// is in has no entry, and a map answers nought for one, which is exactly what
+// "nobody is there" should read as.
+func vanyagotchiInTheYard(r gamevanyagotchi.Roster) int {
+	return r.Here[gamevanyagotchi.LocationYard]
+}
+
 // expectRosterAt is expectRoster with the clock the tick carries spelled out.
 //
 // That clock is the test's, not the wall's: the broadcast measures how long
@@ -165,7 +177,7 @@ func peopleIn(r gamevanyagotchi.Roster) []gamevanyagotchi.Peer {
 // bodies asleep in the yard.
 //
 // The sleepers are why a count of entities is no longer a count of people, and
-// why the assertions below mostly use Roster.Here instead. This exists for the
+// why the assertions below mostly use vanyagotchiInTheYard(Roster) instead. This exists for the
 // few that need the entities themselves — and it has to be filtered rather than
 // counted, because the database is shared by the whole package and a pet another
 // test left a position on is asleep in this test's yard too.
@@ -365,8 +377,8 @@ func TestVanyagotchiTwoPlayersSeeEachOther(t *testing.T) {
 	waitRegistered(t, hub, framesB)
 
 	// Both are on the plane before anybody has moved.
-	if got := expectRoster(t, tick, framesB); got.Here != 2 {
-		t.Fatalf("the roster says %d people are in the yard; want both players: %+v", got.Here, got)
+	if got := expectRoster(t, tick, framesB); vanyagotchiInTheYard(got) != 2 {
+		t.Fatalf("the roster says %d people are in the yard; want both players: %+v", vanyagotchiInTheYard(got), got)
 	}
 
 	// A moves, and B is told about it. Identity never travels in the payload —
@@ -488,8 +500,8 @@ func TestVanyagotchiDropsAPlayerWhoLeaves(t *testing.T) {
 	framesA, framesB := readFrames(t, connA), readFrames(t, connB)
 	waitRegistered(t, hub, framesA)
 	waitRegistered(t, hub, framesB)
-	if got := expectRoster(t, tick, framesB); got.Here != 2 {
-		t.Fatalf("the roster says %d people are in the yard before the disconnect; want 2", got.Here)
+	if got := expectRoster(t, tick, framesB); vanyagotchiInTheYard(got) != 2 {
+		t.Fatalf("the roster says %d people are in the yard before the disconnect; want 2", vanyagotchiInTheYard(got))
 	}
 
 	_ = connA.CloseNow()
@@ -497,7 +509,7 @@ func TestVanyagotchiDropsAPlayerWhoLeaves(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		r := expectRoster(t, tick, framesB)
-		if r.Here == 1 {
+		if vanyagotchiInTheYard(r) == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -548,8 +560,8 @@ func TestVanyagotchiOneAccountOnTwoSocketsIsOnePeer(t *testing.T) {
 	// Three sockets, two people, two entities — and two distinct ids, so they
 	// were not merged into one either.
 	first := expectRoster(t, tick, framesOther)
-	if first.Here != 2 {
-		t.Fatalf("three sockets across two accounts produced a head count of %d; want 2: %+v", first.Here, first)
+	if vanyagotchiInTheYard(first) != 2 {
+		t.Fatalf("three sockets across two accounts produced a head count of %d; want 2: %+v", vanyagotchiInTheYard(first), first)
 	}
 	awake := awakeIn(first)
 	if len(awake) != 2 {
@@ -572,8 +584,8 @@ func TestVanyagotchiOneAccountOnTwoSocketsIsOnePeer(t *testing.T) {
 		for {
 			r := expectRoster(t, tick, framesOther)
 			if peerAt(r, x, y) {
-				if r.Here != 2 {
-					t.Fatalf("a move from the %s left %d people in the yard; want 2: %+v", what, r.Here, r)
+				if vanyagotchiInTheYard(r) != 2 {
+					t.Fatalf("a move from the %s left %d people in the yard; want 2: %+v", what, vanyagotchiInTheYard(r), r)
 				}
 				return
 			}
@@ -593,7 +605,7 @@ func TestVanyagotchiOneAccountOnTwoSocketsIsOnePeer(t *testing.T) {
 	waitFor := time.Now().Add(5 * time.Second)
 	for {
 		r := expectRoster(t, tick, framesOther)
-		if r.Here == 2 && peerAt(r, 0.75, 0.25) {
+		if vanyagotchiInTheYard(r) == 2 && peerAt(r, 0.75, 0.25) {
 			break
 		}
 		if time.Now().After(waitFor) {
@@ -605,7 +617,7 @@ func TestVanyagotchiOneAccountOnTwoSocketsIsOnePeer(t *testing.T) {
 	waitFor = time.Now().Add(5 * time.Second)
 	for {
 		r := expectRoster(t, tick, framesOther)
-		if r.Here == 1 {
+		if vanyagotchiInTheYard(r) == 1 {
 			break
 		}
 		if time.Now().After(waitFor) {
@@ -810,8 +822,8 @@ func TestVanyagotchiTheRosterCarriesEveryPeersAppearance(t *testing.T) {
 	// does not care about the clock sends) would decay nothing and draw a Ваня
 	// who has been dying since yesterday as perfectly well.
 	r := expectRosterAt(t, tick, framesB, time.Now())
-	if r.Here != 2 {
-		t.Fatalf("the roster says %d people are in the yard; want both players: %+v", r.Here, r)
+	if vanyagotchiInTheYard(r) != 2 {
+		t.Fatalf("the roster says %d people are in the yard; want both players: %+v", vanyagotchiInTheYard(r), r)
 	}
 	got, ok := peerByID(r, handleA)
 	if !ok {
@@ -922,7 +934,7 @@ func TestVanyagotchiAPositionSurvivesADisconnect(t *testing.T) {
 	// next tick from the hub's membership.
 	_ = connA.CloseNow()
 	deadline := time.Now().Add(5 * time.Second)
-	for expectRosterAt(t, tick, framesB, arrived).Here != 1 {
+	for vanyagotchiInTheYard(expectRosterAt(t, tick, framesB, arrived)) != 1 {
 		if time.Now().After(deadline) {
 			t.Fatal("the disconnected player is still on the plane")
 		}
@@ -945,8 +957,8 @@ func TestVanyagotchiAPositionSurvivesADisconnect(t *testing.T) {
 	expired := arrived.Add(3 * gamevanyagotchi.PositionGrace)
 	for i := range 2 {
 		r := expectRosterAt(t, tick, framesB, expired)
-		if r.Here != 1 {
-			t.Fatalf("tick %d past the grace says %d people are in the yard; only B has a socket open", i, r.Here)
+		if vanyagotchiInTheYard(r) != 1 {
+			t.Fatalf("tick %d past the grace says %d people are in the yard; only B has a socket open", i, vanyagotchiInTheYard(r))
 		}
 		// He is not gone, though: past the grace he is asleep in the yard, which
 		// is TestVanyagotchiASleeperIsStillInTheYard's subject.
@@ -1083,8 +1095,8 @@ func TestVanyagotchiTheBroadcastTickWritesNothing(t *testing.T) {
 		// Each tick carries a later instant than the last, so the run also
 		// covers a broadcast whose clock has moved on: time passing must not
 		// become a reason to write anything either.
-		if r := expectRosterAt(t, tick, frames, base.Add(time.Duration(i)*time.Second)); r.Here != 1 {
-			t.Fatalf("tick %d says %d people are in the yard; want just this one", i, r.Here)
+		if r := expectRosterAt(t, tick, frames, base.Add(time.Duration(i)*time.Second)); vanyagotchiInTheYard(r) != 1 {
+			t.Fatalf("tick %d says %d people are in the yard; want just this one", i, vanyagotchiInTheYard(r))
 		}
 	}
 
@@ -1135,9 +1147,9 @@ func TestVanyagotchiTheYardHasItsRegularsInIt(t *testing.T) {
 	base := time.Now().UTC()
 	first := expectRosterAt(t, tick, frames, base)
 
-	if first.Here != 1 {
+	if vanyagotchiInTheYard(first) != 1 {
 		t.Fatalf("the roster says %d people are in the yard; one socket is open and the rest of the cast is furniture: %+v",
-			first.Here, first)
+			vanyagotchiInTheYard(first), first)
 	}
 	if n := len(peopleIn(first)); n != 1 {
 		t.Fatalf("%d entities that are not regulars; want the one player: %+v", n, first)
@@ -1273,8 +1285,8 @@ func TestVanyagotchiASleeperIsStillInTheYard(t *testing.T) {
 	for {
 		r := expectRosterAt(t, tick, framesB, arrived.Add(gamevanyagotchi.PositionGrace/2))
 		if _, still := peerByID(r, handleA); !still {
-			if r.Here != 1 {
-				t.Fatalf("B's roster says %d people are in the yard after A's socket closed; want 1: %+v", r.Here, r)
+			if vanyagotchiInTheYard(r) != 1 {
+				t.Fatalf("B's roster says %d people are in the yard after A's socket closed; want 1: %+v", vanyagotchiInTheYard(r), r)
 			}
 			break
 		}
@@ -1313,8 +1325,8 @@ func TestVanyagotchiASleeperIsStillInTheYard(t *testing.T) {
 	if asleep.Label != nameA {
 		t.Errorf("the sleeper is labelled %q; want %q — the yard is furnished with people you know, which is the whole point of it", asleep.Label, nameA)
 	}
-	if r.Here != 1 {
-		t.Fatalf("B's roster says %d people are in the yard; B is the only one with a socket open: %+v", r.Here, r)
+	if vanyagotchiInTheYard(r) != 1 {
+		t.Fatalf("B's roster says %d people are in the yard; B is the only one with a socket open: %+v", vanyagotchiInTheYard(r), r)
 	}
 	if n := len(awakeIn(r)); n != 1 {
 		t.Fatalf("%d players are awake in B's yard; want just B: %+v", n, r)
@@ -1670,7 +1682,7 @@ func TestVanyagotchiTheHiddenKeyNeverReachesTheWire(t *testing.T) {
 
 	// Where it actually is, straight out of the table — the one place in the
 	// system that knows.
-	rows := petContestedRowsOf(t, kind.Key, gamevanyagotchi.LocationYard)
+	rows := petContestedRowsOf(t, kind.Key)
 	var live []petContestedRow
 	for _, r := range rows {
 		if r.exhaustedAt == nil {
@@ -1767,5 +1779,139 @@ func TestVanyagotchiAMissIsCachedOnlyWhenItIsPermanent(t *testing.T) {
 	}
 	if cache != "no-store" {
 		t.Errorf("Cache-Control=%q, want no-store", cache)
+	}
+}
+
+// TestVanyagotchiGoingToAnotherLocationSurvivesTheRoundTrip is the location
+// mechanic end to end over a real socket, against a real database.
+//
+// FOUR THINGS ARE PROVED HERE THAT NO UNIT TEST CAN. The frame really is one
+// payload for the whole world — B is standing in двор and still receives A's
+// entity, carrying the лес A walked into — which is what "locations are not
+// realtime rooms" means on the wire. `pets.location_key` really is written, so
+// A is still in лес after a restart. The per-location head count really reaches
+// both clients. And the SPA's own filtering has something to filter on, because
+// the yard's entity carries no `loc` at all while A's carries one.
+func TestVanyagotchiGoingToAnotherLocationSurvivesTheRoundTrip(t *testing.T) {
+	les, ok := gamevanyagotchi.LocationByKey(gamevanyagotchi.LocationLes)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", gamevanyagotchi.LocationLes)
+	}
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, _, tick := buildAppRealtimeGame(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	cliA := loginAs(t, app.URL, "7301", "user")
+	cliB := loginAs(t, app.URL, "7302", "user")
+	// The pets have to exist before their location can be written down, and the
+	// first state read is what creates one.
+	for _, cli := range []*http.Client{cliA, cliB} {
+		if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+			t.Fatalf("create a pet: status=%d body=%v", s, body)
+		}
+	}
+	accountA := accountIDByUID(t, "7301")
+
+	connA, _, err := dialRealtime(t, app.URL, cookieHeader(t, cliA, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialRealtime(t, app.URL, cookieHeader(t, cliB, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	defer connB.CloseNow()
+
+	framesA, framesB := readFrames(t, connA), readFrames(t, connB)
+	waitRegistered(t, hub, framesA)
+	waitRegistered(t, hub, framesB)
+
+	// Both are in the yard, and nobody carries a location: the default is omitted,
+	// which is the whole reason the field is affordable on a 5 Hz frame.
+	before := expectRoster(t, tick, framesB)
+	if got := vanyagotchiInTheYard(before); got != 2 {
+		t.Fatalf("the roster says %d people are in the yard before anybody moves; want 2: %+v", got, before)
+	}
+	for _, p := range peopleIn(before) {
+		if p.Loc != "" {
+			t.Errorf("somebody in the yard is published with loc=%q; the default is omitted on the wire: %+v", p.Loc, p)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := connA.Write(ctx, websocket.MessageText,
+		[]byte(`{"t":"vanyagotchi_goto","location":"`+gamevanyagotchi.LocationLes+`"}`)); err != nil {
+		t.Fatalf("A goto: %v", err)
+	}
+
+	// B — who never left двор — watches A appear in лес. One frame carries the
+	// whole world, so a location is something the client filters rather than
+	// something the transport separates.
+	deadline := time.Now().Add(5 * time.Second)
+	var after gamevanyagotchi.Roster
+	for {
+		after = expectRoster(t, tick, framesB)
+		if after.Here[gamevanyagotchi.LocationLes] == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("B never saw anybody arrive in %q; last roster %+v", gamevanyagotchi.LocationLes, after)
+		}
+	}
+	if got := vanyagotchiInTheYard(after); got != 1 {
+		t.Errorf("the roster says %d people are in the yard after one of the two left it; want 1: %+v", got, after)
+	}
+	var moved, stayed int
+	for _, p := range peopleIn(after) {
+		switch p.Loc {
+		case gamevanyagotchi.LocationLes:
+			moved++
+			if p.X != les.Entry.X || p.Y != les.Entry.Y {
+				t.Errorf("the one who moved is at (%v,%v); want %q's entry point (%v,%v) — he did not walk here, he left somewhere else",
+					p.X, p.Y, les.Key, les.Entry.X, les.Entry.Y)
+			}
+		case "":
+			stayed++
+		default:
+			t.Errorf("somebody is published in %q, which nobody was sent to: %+v", p.Loc, p)
+		}
+	}
+	if moved != 1 || stayed != 1 {
+		t.Errorf("%d entities carry loc=%q and %d carry none; want one of each: %+v", moved, les.Key, stayed, after)
+	}
+
+	// AND IT IS WRITTEN DOWN, which is the half a frame cannot show: the row is
+	// what makes him still be in лес after a deploy.
+	var stored string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT location_key FROM game_vanyagotchi_pets WHERE account_id = $1::uuid AND deleted_at IS NULL`,
+		accountA).Scan(&stored); err != nil {
+		t.Fatalf("read the mover's stored location: %v", err)
+	}
+	if stored != gamevanyagotchi.LocationLes {
+		t.Errorf("his row says he is in %q; want %q — a location nobody wrote down is one he loses on the next restart", stored, gamevanyagotchi.LocationLes)
+	}
+
+	// A goto naming a place the catalogue does not have is dropped in silence, and
+	// `location_key` is plain text — so the database would have taken it without a
+	// word. The catalogue is the only thing standing in the way.
+	if err := connA.Write(ctx, websocket.MessageText,
+		[]byte(`{"t":"vanyagotchi_goto","location":"пивная"}`)); err != nil {
+		t.Fatalf("A goto to nowhere: %v", err)
+	}
+	// Two ticks, so the write would have had every chance to land.
+	expectRoster(t, tick, framesB)
+	expectRoster(t, tick, framesB)
+	if err := pool.QueryRow(context.Background(),
+		`SELECT location_key FROM game_vanyagotchi_pets WHERE account_id = $1::uuid AND deleted_at IS NULL`,
+		accountA).Scan(&stored); err != nil {
+		t.Fatalf("re-read the mover's stored location: %v", err)
+	}
+	if stored != gamevanyagotchi.LocationLes {
+		t.Errorf("a goto naming a location nobody has heard of moved him to %q; the column is plain text and would have accepted anything", stored)
 	}
 }

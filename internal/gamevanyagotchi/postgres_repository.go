@@ -117,6 +117,22 @@ func (PostgresRepository) SavePosition(ctx context.Context, q db.DBTX, accountID
 	return err
 }
 
+// SetLocation records which of the five places a pet is in.
+//
+// One column and nothing else: the pet's x/y are deliberately left alone, so
+// coming back after a restart puts him where he was standing IN THE LOCATION HE
+// IS IN rather than at its entrance. Coordinates are normalised per location, so
+// the pair means the same thing wherever he is.
+func (PostgresRepository) SetLocation(ctx context.Context, q db.DBTX, accountID, locationKey string) error {
+	_, err := q.Exec(ctx,
+		`UPDATE game_vanyagotchi_pets
+		    SET location_key = $2, updated_at = now()
+		  WHERE account_id = $1::uuid AND deleted_at IS NULL`,
+		accountID, locationKey,
+	)
+	return err
+}
+
 func (PostgresRepository) Stats(ctx context.Context, q db.DBTX, petID string) ([]StatRow, error) {
 	rows, err := q.Query(ctx,
 		`SELECT stat_key, value, as_of
@@ -331,28 +347,49 @@ func (PostgresRepository) InsertWorldObject(ctx context.Context, q db.DBTX, kind
 	return err
 }
 
-// LiveWorldObjects reads what is standing in a location right now.
+// LiveWorldObjects reads what is standing in the whole world right now, capped
+// per location.
 //
 // `now()` is the database's, and that is the honest clock for a row whose
 // expiry the database wrote — but the caller filters again against the tick's
 // instant when it renders, because a cached object has to disappear from every
 // screen at the same moment without anybody asking here.
 //
-// Newest first so the cap keeps what somebody just did rather than what has
-// been lying around longest, which is the ordering a player would expect if the
-// yard ever filled up.
-func (PostgresRepository) LiveWorldObjects(ctx context.Context, q db.DBTX, locationKey string, limit int) ([]WorldObject, error) {
+// THE CAP IS PER LOCATION AND IT IS A WINDOW FUNCTION RATHER THAN A LIMIT, which
+// is the whole reason this statement is not the two lines it used to be. A plain
+// `LIMIT` is one budget five places compete for, so a busy evening in the yard
+// would fill it and every other location would come back empty — including,
+// eventually, whichever one is holding the key, which would end a hunt with
+// nothing failing anywhere. Partitioning by location gives each place its own
+// allowance and no way to spend a neighbour's.
+//
+// THE ORDER INSIDE A PARTITION IS SINGLETONS FIRST, THEN NEWEST, and the first
+// half of that is load-bearing rather than tidy. The world's own fixtures — the
+// crate, the key — are the OLDEST rows in their location, because they are stood
+// up once and the deposits pile on afterwards; ordered by age alone, a location
+// at its cap would evict the crate, and the yard would quietly become a place
+// where the store has vanished and nobody can drink. Singletons are exactly the
+// rows that must never be evictable, and the column that says so is already
+// there. Newest-first among the rest is what a player would expect: the cap
+// keeps what somebody just did rather than what has been lying around longest.
+func (PostgresRepository) LiveWorldObjects(ctx context.Context, q db.DBTX, perLocation int) ([]WorldObject, error) {
 	rows, err := q.Query(ctx,
-		`SELECT id::text, kind, x, y, expires_at, remaining
-		   FROM game_vanyagotchi_world_objects
-		  WHERE location_key = $1
-		    AND deleted_at IS NULL
-		    AND exhausted_at IS NULL
-		    AND spawns_at <= now()
-		    AND (expires_at IS NULL OR expires_at > now())
-		  ORDER BY created_at DESC
-		  LIMIT $2`,
-		locationKey, limit,
+		`SELECT id::text, kind, location_key, x, y, expires_at, remaining
+		   FROM (
+		     SELECT id, kind, location_key, x, y, expires_at, remaining,
+		            row_number() OVER (
+		              PARTITION BY location_key
+		              ORDER BY singleton DESC, created_at DESC
+		            ) AS place
+		       FROM game_vanyagotchi_world_objects
+		      WHERE deleted_at IS NULL
+		        AND exhausted_at IS NULL
+		        AND spawns_at <= now()
+		        AND (expires_at IS NULL OR expires_at > now())
+		   ) ranked
+		  WHERE place <= $1
+		  ORDER BY location_key, place`,
+		perLocation,
 	)
 	if err != nil {
 		return nil, err
@@ -366,7 +403,7 @@ func (PostgresRepository) LiveWorldObjects(ctx context.Context, q db.DBTX, locat
 		// nil means something: a kind nobody draws down, as against a stocked one
 		// that has run out. Collapsing the two into a nought would make an empty
 		// crate indistinguishable from a lost key.
-		if err := rows.Scan(&o.ID, &o.Kind, &o.At.X, &o.At.Y, &o.ExpiresAt, &o.Remaining); err != nil {
+		if err := rows.Scan(&o.ID, &o.Kind, &o.LocationKey, &o.At.X, &o.At.Y, &o.ExpiresAt, &o.Remaining); err != nil {
 			return nil, err
 		}
 		out = append(out, o)
@@ -461,21 +498,26 @@ func (PostgresRepository) DrawFromStock(ctx context.Context, q db.DBTX, kind, lo
 	return left, true, nil
 }
 
-// ActiveSingleton returns the id of the active object of a kind, if there is
-// one.
+// ActiveSingleton returns the id of the active object of a kind, if the world
+// holds one anywhere.
 //
-// Used to decide whether a hunt needs starting, and to tell the client WHICH
-// hunt is running — the id is what a client watches for a change, so the flavour
-// line is a transition rather than a message somebody who arrived late missed.
-func (PostgresRepository) ActiveSingleton(ctx context.Context, q db.DBTX, kind, locationKey string) (string, bool, error) {
+// Used to decide whether a hunt needs starting. IT NAMES NO LOCATION, and the
+// predicate here is deliberately the same one the partial unique index carries
+// (`WHERE singleton AND exhausted_at IS NULL AND deleted_at IS NULL`, on `kind`
+// alone) minus the flag itself — so the question this asks and the invariant the
+// insert is judged against are the same question. Scoping it to a location would
+// have made them different: five places would each report no key, each would try
+// to spawn one, and four of the five inserts would be refused by an index the
+// caller had just been told nothing about.
+func (PostgresRepository) ActiveSingleton(ctx context.Context, q db.DBTX, kind string) (string, bool, error) {
 	var id string
 	err := q.QueryRow(ctx,
 		`SELECT id::text
 		   FROM game_vanyagotchi_world_objects
-		  WHERE kind = $1 AND location_key = $2
+		  WHERE kind = $1
 		    AND exhausted_at IS NULL AND deleted_at IS NULL
 		  LIMIT 1`,
-		kind, locationKey,
+		kind,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil

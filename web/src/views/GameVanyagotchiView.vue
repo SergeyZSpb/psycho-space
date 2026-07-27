@@ -89,8 +89,11 @@
         <!-- The hardcoded half: what the server does not put on the wire. The
              comment on YARD_PROSE names it as the part a rules change has to
              come back and edit by hand. -->
+        <!-- «Двор» until there were four places, and a heading that named one of
+             them over prose that describes all of them was the smallest possible
+             version of the same bug the copy underneath it had. -->
         <section class="rules" data-test="rules-prose">
-          <h2 class="rules-head">Двор</h2>
+          <h2 class="rules-head">Как тут всё устроено</h2>
           <p v-for="line in YARD_PROSE" :key="line" class="rule-prose">{{ line }}</p>
         </section>
       </div>
@@ -115,8 +118,10 @@
         :class="{ 'plane--stale': isStale }"
         data-test="plane"
         :data-stale="isStale ? '1' : undefined"
+        :data-location="locationKey || undefined"
         role="application"
-        :aria-label="`Двор, во дворе ${here}`"
+        :aria-label="places.length ? hereText : 'Площадка'"
+        :style="planeStyle"
         @pointerdown="onPlaneTap"
       >
         <!-- THE HIDING PLACES, and the only tappable things this plane has ever
@@ -175,14 +180,14 @@
              also resolves to 0 — so it would look right today and start drawing
              through people the day the shop moved down the yard. -->
         <div
-          v-if="beerStore"
+          v-if="shopHere"
           class="shop"
           data-test="shop"
           :style="{
-            '--x': String(beerStore.x),
-            '--y': String(beerStore.y),
-            '--band': String(bandFor(beerStore.y)),
-            '--depth': String(DEPTH_SCALES[bandFor(beerStore.y)] ?? 1),
+            '--x': String(shopHere.x),
+            '--y': String(shopHere.y),
+            '--band': String(bandFor(shopHere.y)),
+            '--depth': String(DEPTH_SCALES[bandFor(shopHere.y)] ?? 1),
           }"
         >
           <span class="shop-face" aria-hidden="true">
@@ -195,7 +200,7 @@
                and is why it must not be "fixed" later by lifting it out of the
                depth transform to keep it a constant size. It has a hard 9px floor
                regardless, because a count is text. -->
-          <span class="shop-badge" data-test="shop-left">{{ beerStore.left }}</span>
+          <span class="shop-badge" data-test="shop-left">{{ shopHere.left }}</span>
           <!-- The sign. CONSTANT, unlike the badge beside it: it says what the
                box is rather than how much is in it, which is what lets the shop
                read as a shop from across the yard with nobody standing next to
@@ -289,6 +294,86 @@
         <p v-if="store.peerIds.length === 0" class="plane-empty">
           {{ emptyMessage }}
         </p>
+
+        <!-- WHERE YOU ARE, AND THE DOOR OUT OF IT.
+             The head count used to be a third item in the status row below,
+             saying «во дворе: N» about a game that had one place in it. It is
+             here instead, and the move is worth more than it looks: the caption
+             now NAMES the place from the catalogue, which is the last piece of
+             content this screen was spelling out; the status row drops back to
+             two items, which is the row that has broken this layout before at
+             320px; and travel gets a 44px tap target for free, where a button in
+             the panel would have cost the plane about thirty pixels of height on
+             the phone that has the least of it.
+             It swallows taps in the corner it occupies, exactly as a hiding
+             place does, and the corner is the cheapest part of the yard to lose:
+             a Ваня standing in it is drawn behind the caption rather than under
+             an unwalkable hole in the middle of the world.
+             Dimmed and taken out of hit-testing when the world is stale, for the
+             same reason the hiding places are — the journey would not be sent,
+             and a control that silently does nothing is worse than one that
+             visibly cannot. -->
+        <!-- ABSENT, RATHER THAN SAYING NOTHING, when the catalogue has not
+             arrived or describes no places at all. Both halves of the caption
+             come from it — the name of the place and, through the place, which
+             head count is ours — so without it there is nothing true to write
+             here, and the sheet it opens would list nowhere to go. «0» beside a
+             yard with three people in it is a worse answer than no caption. -->
+        <button
+          v-if="places.length"
+          type="button"
+          class="place-pill"
+          data-test="here"
+          :aria-label="`${hereText} — сменить место`"
+          @pointerdown.stop
+          @click="travelling = !travelling"
+        >
+          <span class="place-pill-chip" aria-hidden="true">
+            <span class="place-pill-glyph">🧍</span>{{ hereText }}
+          </span>
+        </button>
+
+        <!-- The travel sheet, drawn over the world it is about.
+             Inside the plane rather than over the page, which is the whole of why
+             it is safe: `.plane` is `overflow: hidden`, so nothing here can make
+             the document scroll in either axis however many places the catalogue
+             grows, and the layout underneath does not move by a pixel when it
+             opens.
+             Each row is an ORDINARY BUTTON with an ordinary `click`, unlike
+             everything else on this plane, and that is deliberate — a thumb, a
+             mouse and a keyboard all produce one, where the `pointerdown` a
+             hiding place listens for is produced by none of the last. What the
+             rows do carry is `pointerdown.stop`, so the press that opens a
+             journey is not also the press that dismisses the sheet. -->
+        <div
+          v-if="travelling"
+          class="places"
+          data-test="places"
+          role="dialog"
+          aria-label="Куда идём"
+          @pointerdown.stop="onPlacesTap"
+        >
+          <div class="places-sheet">
+            <p class="places-head">куда идём</p>
+            <button
+              v-for="place in places"
+              :key="place.key"
+              type="button"
+              class="place"
+              data-test="place"
+              :data-place="place.key"
+              :data-here="place.here ? '1' : undefined"
+              @click="travelTo(place)"
+            >
+              <span class="place-name">{{ place.label }}</span>
+              <!-- How many are already there, which is most of what anybody
+                   choosing a place wants to know. Absent rather than «0» when
+                   nowhere: an empty place is the ordinary case in a world of
+                   four, and a column of noughts would be noise. -->
+              <span v-if="place.count" class="place-count">🧍{{ place.count }}</span>
+            </button>
+          </div>
+        </div>
       </div>
       </div>
 
@@ -366,16 +451,18 @@
       </div>
 
       <!-- Fixed-size status row.
-           The store line sits between the head count and the connection state
-           because it belongs with them: all three are facts about the yard
-           rather than about your Ваня. It is absent entirely when the frame
-           carries no crate, which keeps the row at its usual two items on a
-           server that predates the block — the row wraps rather than overflowing
+           TWO ITEMS RATHER THAN THREE now, and the head count is the one that
+           left: it says which PLACE you are in as well as how many are in it, so
+           it belongs on the place rather than under it, and it took a 320px row
+           that had broken this screen before back down to a width nobody has to
+           worry about. What is left is the crate and the connection, which are
+           both facts about the world rather than about where you are standing.
+           The store line is absent entirely when the frame carries no crate,
+           which keeps the row at one item; it wraps rather than overflowing
            either way, which is what the 320px case in the mobile suite holds. -->
       <div class="hud">
-        <span class="hud-count">во дворе: {{ here }}</span>
         <span v-if="storeLine" class="hud-store" data-test="store">{{ storeLine }}</span>
-        <span class="hud-status" :class="`hud-status--${store.status}`">
+        <span class="hud-status" data-test="status" :class="`hud-status--${store.status}`">
           {{ statusLabel }}
         </span>
       </div>
@@ -390,16 +477,20 @@ import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../re
 import { useGameVanyagotchiStore } from '../stores/gameVanyagotchi';
 import {
   DEPTH_SCALES,
+  NO_HEADS,
   SEARCH_WALK_MS,
   applyFrame,
   applyPosition,
   avatarEndpoint,
   bandFor,
   beside,
+  hereLabel,
   hotspotsFor,
+  hueFor,
   huntRestarted,
   isRenderablePosition,
   outOfReach,
+  peersIn,
   propScale,
   readAppearances,
   readHere,
@@ -407,12 +498,15 @@ import {
   readStore,
   resolveArt,
   sameAppearance,
+  sameHere,
   sameStore,
   searchVerb,
   spotAriaLabel,
   storeLabel,
   tapToPosition,
+  travelPlaces,
   type PeerAppearance,
+  type TravelPlace,
 } from '../lib/vanyagotchiPlane';
 import { decayedValue, inTrouble, skewMs, statFraction } from '../lib/vanyagotchiPet';
 import { YARD_PROSE, buildRules } from '../lib/vanyagotchiRules';
@@ -451,6 +545,15 @@ const TYPE_HELLO = 'vanyagotchi_hello';
 const TYPE_YOU = 'vanyagotchi_you';
 /** A verb, or a batch of them, on their way to the server. */
 const TYPE_DO = 'vanyagotchi_do';
+/**
+ * A request to stand in another place. Mirrored from message.go.
+ *
+ * ITS OWN FRAME RATHER THAN A VERB, and the difference is the one the catalogue
+ * already draws: a verb moves stats and is refused on a corpse, and going
+ * somewhere is neither. It is also not a move — `vanyagotchi_move` names a point
+ * inside the place he is already in, and this changes which place that is.
+ */
+const TYPE_GOTO = 'vanyagotchi_goto';
 /** Our own pet, pushed after it changes. Not a reply — see onFrame. */
 const TYPE_STATE = 'vanyagotchi_state';
 
@@ -570,13 +673,72 @@ const actions = computed(() => {
 });
 
 /**
- * The hiding places this yard has, ready to draw.
+ * WHERE ДЯДЯ ВАНЯ IS STANDING — the one notion of it this screen has.
  *
- * Off the pet's OWN location, falling back to the catalogue's default for the
- * moment before the pet has been fetched — the plane runs on the socket and the
- * pet comes over HTTP, so the yard is routinely on screen before anybody knows
- * which location дядя Ваня is standing in, and the default is what a fresh one
- * gets.
+ * Everything about a place reads this and nothing derives it a second time: the
+ * hiding places drawn on the plane, the background the plane is painted with, the
+ * head count in its corner, which entities on a frame are drawn at all, and which
+ * row of the travel sheet is marked as the one you are in. A second opinion about
+ * where he is would be a yard drawn from one place and searched in another.
+ *
+ * OFF THE PET, because the pet is where a location durably lives — it is a column
+ * on the row in Postgres, and it is what survives a restart. It falls back to the
+ * catalogue's default for the second before the pet has been fetched: the plane
+ * runs on the socket and the pet comes over HTTP, so the yard is routinely on
+ * screen before anybody knows which place he is in, and the default is what a
+ * fresh Ваня gets.
+ *
+ * NOT WRITTEN OPTIMISTICALLY when the player asks to travel, which is the same
+ * rule a tap on the ground already plays by: the dot moves when the server says
+ * it moved, and the place changes when the server says it changed. The gap is one
+ * push of `vanyagotchi_state`, during which the yard he is leaving is still drawn
+ * — which is the honest picture, because until the server has folded the request
+ * he really is still standing in it.
+ */
+const locationKey = computed(
+  () => petState.value?.pet?.location_key || config.value?.default_location || '',
+);
+
+/**
+ * The beer store, but only when it is in the place we are standing in.
+ *
+ * A COORDINATE MEANS NOTHING WITHOUT A PLACE. The block carries `{x, y}`
+ * normalised inside its own location, so (0.82, 0.22) is the crate in двор and
+ * an empty patch of лес — and a shop drawn without this check appears in front
+ * of somebody four places away from it, at a spot where there is nothing.
+ *
+ * Absent `loc` means the default location, the same convention every entity's
+ * follows, so the common case compares two equal strings and the frame carries
+ * nothing extra.
+ */
+const shopHere = computed(() => {
+  const store = beerStore.value;
+  if (!store) return undefined;
+  const where = store.loc || config.value?.default_location || '';
+  return where === locationKey.value ? store : undefined;
+});
+
+/**
+ * What paints the plane, and the whole of how one place is told from another
+ * until there are backdrops.
+ *
+ * A HUE HASHED FROM THE LOCATION KEY, written as a custom property and turned
+ * into the gradient by the stylesheet — see `hueFor` for why hashing is what
+ * keeps the SPA free of content, and `.plane` for the gradient it feeds. Absent
+ * entirely before the catalogue has arrived, so the stylesheet's own fallback
+ * (which is the colour the yard has always been) is what is drawn rather than
+ * whatever the empty string happens to hash to.
+ *
+ * One write per journey. It is bound reactively, which the rule at the head of
+ * this file allows for exactly this shape: the property changes when the player
+ * walks into another place and never on a frame.
+ */
+const planeStyle = computed(() =>
+  locationKey.value ? { '--tint': String(hueFor(locationKey.value)) } : undefined,
+);
+
+/**
+ * The hiding places THIS place has, ready to draw.
  *
  * EMPTY WHEN THERE IS NO VERB TO SEARCH WITH, which is not the same as empty
  * because the location has none. A tappable bush that could only send a walk is
@@ -586,10 +748,7 @@ const actions = computed(() => {
  */
 const hotspots = computed<readonly VanyagotchiHotspot[]>(() => {
   if (!searchAction.value) return [];
-  return hotspotsFor(
-    config.value,
-    petState.value?.pet?.location_key || config.value?.default_location,
-  );
+  return hotspotsFor(config.value, locationKey.value);
 });
 
 /** The decayed value of every stat, keyed, as of `displayNow`. */
@@ -776,17 +935,93 @@ const lastPos = new Map<string, { x: number; y: number }>();
 const appearance = shallowRef<readonly PeerAppearance[]>([]);
 
 /**
- * How many PEOPLE are in the yard — the number the status row shows.
+ * How many PEOPLE are standing in each place, as the frame counted them.
  *
- * Its own ref rather than `drawn.length`, because the two stopped being the same
- * number: the roster carries the NPCs and everybody who is asleep in it as well,
- * and all of those are entities to draw and none of them is somebody you can
- * talk to. The server counts it and sends it, so this screen never has to hold
- * an opinion about which entity is a person. A ref of a primitive only notifies
- * on a real change, so the five frames a second that say "still two" cost
- * nothing.
+ * The whole tally rather than one number, because one field answers both
+ * questions this screen asks of it: how many are HERE, for the count in the
+ * corner of the plane, and how many are EVERYWHERE, for the travel sheet — which
+ * is what makes the sheet worth opening at all, since «где сейчас люди» is the
+ * question somebody choosing where to walk is actually asking.
+ *
+ * A shallowRef holding a Map, behind `sameHere`, exactly like the appearance list
+ * and the store: the whole map is replaced when a count really moves and the five
+ * frames a second describing an unchanged world cost one comparison and no
+ * render. The server counts it and sends it, so this screen never has to hold an
+ * opinion about which entity is a person.
  */
-const here = ref(0);
+const heads = shallowRef<ReadonlyMap<string, number>>(NO_HEADS);
+
+/** How many are here with him — the number the plane's own corner shows. */
+const here = computed(() => heads.value.get(locationKey.value) ?? 0);
+
+/**
+ * Everywhere he can go, with the head count on each.
+ *
+ * Derived rather than stored: both inputs are refs already, and the rows are a
+ * pure function of them — see `travelPlaces`, which is where the nameless-place
+ * fallback and the ordering live so a unit test can hold them.
+ */
+const places = computed<readonly TravelPlace[]>(() =>
+  travelPlaces(config.value, heads.value, locationKey.value),
+);
+
+/**
+ * Where he is and how many are there with him, in one line — the plane's own
+ * caption, and the thing you press to leave.
+ *
+ * The label comes off the catalogue rather than out of this file, which is what
+ * removed the last piece of content the yard was still spelling out: it used to
+ * say «во дворе», in a game that now has several places and only one of which is
+ * the yard. See `hereLabel` for why the sentence is nominative-and-a-colon rather
+ * than the grammatical Russian a single hardcoded place could afford.
+ */
+const hereText = computed(() =>
+  hereLabel(places.value.find((place) => place.here)?.label ?? '', here.value),
+);
+
+/** Is the travel sheet open over the plane? */
+const travelling = ref(false);
+
+/**
+ * Asks the server to stand him somewhere else.
+ *
+ * A REQUEST, LIKE EVERY OTHER THING THIS SCREEN SENDS, and nothing comes back to
+ * wait for: the roster is full state five times a second and the pet is pushed
+ * after it changes, so a journey that never happened is simply asked for again.
+ * Dropped rather than queued when the socket is down, the same rule a tap and a
+ * verb follow.
+ *
+ * The place he is already in closes the sheet and sends nothing — it is the row
+ * that means "stay", which is also the only way out of the sheet that is a
+ * control rather than a gesture.
+ *
+ * IT CANCELS A SEARCH IN FLIGHT, for the reason a tap on the ground does: the
+ * claim is armed against a hiding place in the place he is leaving, and left
+ * armed it would fire the moment he happened to stand near the same coordinates
+ * somewhere else — a search of a bush in another location entirely.
+ */
+function travelTo(place: TravelPlace): void {
+  travelling.value = false;
+  if (place.here) return;
+  if (!client.send({ t: TYPE_GOTO, location: place.key })) return;
+  forgetSearch();
+}
+
+/**
+ * A press anywhere on the plane while the travel sheet is open.
+ *
+ * It is stopped unconditionally — the plane must not walk him to a point under a
+ * panel he cannot see through — and it dismisses the sheet unless it landed on
+ * one of the places, whose own click handler is what actually travels. Testing
+ * the target rather than putting a second handler on the list is what keeps the
+ * places ordinary buttons: a `click` works for a thumb, a mouse and a keyboard,
+ * where the `pointerdown` this yard uses everywhere else silently does not.
+ */
+function onPlacesTap(event: PointerEvent): void {
+  const el = event.target as Element | null;
+  if (el?.closest?.('[data-test="place"]')) return;
+  travelling.value = false;
+}
 
 /**
  * The beer store, as the frame states it: where the crate is and how much is in
@@ -827,7 +1062,10 @@ const atStore = ref(false);
  * the sentence is a pure function of them — see `storeLabel` for why the three
  * states are spelled out rather than collapsed into a greyed button.
  */
-const storeLine = computed(() => storeLabel(beerStore.value, atStore.value));
+// THE FILTERED STORE, not the raw block: a player standing in лес must not be
+// told «🍺 ящик: 6 — дойди» about a shop four places away that he cannot see and
+// could not walk to.
+const storeLine = computed(() => storeLabel(shopHere.value, atStore.value));
 
 /**
  * What to draw the beer store with, resolved against the catalogue exactly as a
@@ -852,7 +1090,10 @@ const storeArt = computed(() => resolveArt(config.value?.skins, config.value?.st
  * precisely so it never has to (ADR-028).
  */
 function unreachable(action: VanyagotchiAction): boolean {
-  return outOfReach(action, beerStore.value, atStore.value);
+  // Filtered, for the same reason the line above is: a shop in another location
+  // cannot be reached from here, so the button greys — which is what the server's
+  // own `beside` already decides, and the two must agree.
+  return outOfReach(action, shopHere.value, atStore.value);
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,7 +1360,11 @@ function forgetWorld() {
   isStale.value = false;
   store.clearRoster();
   appearance.value = [];
-  here.value = 0;
+  if (heads.value !== NO_HEADS) heads.value = NO_HEADS;
+  // The sheet lists live head counts that have just stopped being live, and its
+  // one action needs a socket that has just gone away. Closing it is the same
+  // decision as emptying the plane behind it.
+  travelling.value = false;
   // Forgotten with the rest of the world, so that whatever the yard looks like
   // when it comes back is a FIRST sight again and passes in silence. We were away
   // long enough to have missed the hunt starting, and a line claiming it has just
@@ -1177,8 +1422,18 @@ function closedLabel(code: number | undefined): string {
   }
 }
 
+/**
+ * What a plane with nothing on it says.
+ *
+ * NEITHER HALF NAMES THE YARD ANY MORE, and that is not tidying: there are
+ * several places now, so «во дворе пусто» was a caption that would be wrong three
+ * times out of four, and the caption in the corner of the plane already says
+ * which place this is. «тут пусто» is deliberately avoided as well — that is the
+ * server's own answer to searching the wrong hiding place, and two different
+ * things saying it would read as one.
+ */
 const emptyMessage = computed(() =>
-  store.status === 'open' ? 'во дворе пусто' : 'ждём двор…',
+  store.status === 'open' ? 'здесь никого' : 'ждём…',
 );
 
 /**
@@ -1187,6 +1442,11 @@ const emptyMessage = computed(() =>
  * The id is a server-side UUID, so hashing it gives every dot the same colour on
  * every screen at once with nothing to synchronise — and a peer keeps its colour
  * across frames without any of it entering the reactive graph.
+ *
+ * The hash itself is `hueFor`, shared with the plane's own background, because
+ * the two want the identical property one level apart: agreeing on a colour for
+ * something nobody was told the colour of. Two copies of it would be two things
+ * to keep in step for no gain.
  *
  * KEPT now that the roster carries art, rather than replaced by the skin's own
  * gradient, and the reason is what the two answer. The hash answers *which one
@@ -1197,11 +1457,7 @@ const emptyMessage = computed(() =>
  * layer instead: hue underneath, face on top.
  */
 function peerColour(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i += 1) {
-    hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  }
-  return `hsl(${hash % 360} 70% 55%)`;
+  return `hsl(${hueFor(id)} 70% 55%)`;
 }
 
 /**
@@ -1254,13 +1510,29 @@ function onFrame(frame: RealtimeFrame) {
     return;
   }
   if (frame.t !== TYPE_ROSTER) return;
-  const peers = Array.isArray(frame.peers) ? frame.peers : [];
+  // THE WHOLE WORLD ARRIVES AND ONE PLACE IS DRAWN. There is a single room on
+  // the socket — locations are deliberately not rooms — so the frame carries
+  // everybody everywhere and this is where the rest of the world is put down.
+  // FIRST, before anything reads it, so that every notion of "who is here"
+  // downstream is the same list: the keyed dots, `lastPos`, whether we are
+  // standing at the crate, and whether the search we armed has arrived.
+  const peers = peersIn(
+    Array.isArray(frame.peers) ? frame.peers : [],
+    locationKey.value,
+    config.value?.default_location ?? '',
+  );
 
   // Who is here, and what they look like, from one pass through one guard — so
-  // the keyed list and the head count cannot end up disagreeing about the yard.
+  // the keyed list and the plane's own caption cannot end up disagreeing about
+  // who is standing in the place.
   const looks = readAppearances(peers);
   const ids = looks.map((look) => look.id);
-  here.value = readHere(frame.here, ids.length);
+  // How many PEOPLE are in each place, which is not the number of dots drawn: the
+  // list above holds this place's NPCs, its sleepers and everything lying on its
+  // ground as well. Guarded like every other reactive write here — a frame about
+  // an unchanged world assigns nothing.
+  const nextHeads = readHere(frame.here);
+  if (!sameHere(heads.value, nextHeads)) heads.value = nextHeads;
 
   // The one thing on a roster frame that is read as a DIFFERENCE rather than as
   // state. Everything else here is idempotent — a frame repeated is a frame that
@@ -1297,7 +1569,14 @@ function onFrame(frame: RealtimeFrame) {
   // answered, and `beside` reads that as "not beside anything", which is the
   // right answer for a client that does not yet know which Ваня is its own.
   const mine = store.youId ? lastPos.get(store.youId) : undefined;
-  const near = beside(mine, nextStore, config.value?.arrive_within);
+  // Nearness is a question about ONE place: a coordinate in лес is not a distance
+  // to a crate in двор, so a store standing somewhere else is not something
+  // anybody here can be beside. The server's `beside` refuses across locations
+  // for the identical reason; this is the two ends agreeing rather than a second
+  // rule.
+  const storeWhere = nextStore ? nextStore.loc || config.value?.default_location || '' : '';
+  const reachable = nextStore && storeWhere === locationKey.value ? nextStore : undefined;
+  const near = beside(mine, reachable, config.value?.arrive_within);
   if (atStore.value !== near) atStore.value = near;
 
   // And whether the search he is walking to has arrived.
@@ -1432,7 +1711,8 @@ onBeforeUnmount(() => {
   // next visit a world that stopped updating when we left.
   store.clearRoster();
   appearance.value = [];
-  here.value = 0;
+  if (heads.value !== NO_HEADS) heads.value = NO_HEADS;
+  travelling.value = false;
 });
 </script>
 
@@ -1637,7 +1917,37 @@ onBeforeUnmount(() => {
   position: relative;
   overflow: hidden;
   border-radius: 12px;
-  background: linear-gradient(180deg, #24384a 0%, #35506a 55%, #4a6b57 100%);
+  /* WHAT ONE PLACE LOOKS LIKE, AND THE ONLY THING THAT TELLS FOUR OF THEM APART
+     UNTIL THERE ARE BACKDROPS.
+
+     The three stops are the colours this plane has always been — a blue-grey sky
+     over green ground — rewritten in hsl so that ONE number rotates all of them
+     together. That number is `--tint`, written by the template from a hash of the
+     location key (see `hueFor`), which is what keeps a place's colour out of this
+     repository entirely: nothing here knows there is a лес, and a fifth location
+     added in content.go arrives with a fifth colour and no client deploy
+     (ADR-028). The fallback, 209, is the hue the yard was before any of this, so
+     a plane whose location nobody knows yet is drawn exactly as it always was
+     rather than flashing whatever the empty string hashes to.
+
+     The ground is 74 degrees off the sky, which is the angle the hand-picked
+     colours already had between them; keeping it here rather than sending a
+     second number is what makes the gradient's SHAPE a fact about the stylesheet
+     and the location's identity the only thing crossing from script. Hue wraps
+     modulo 360 in CSS, so a tint under 74 subtracting into the negatives is
+     defined behaviour rather than something to guard.
+
+     Saturation and lightness are deliberately NOT hashed. They are what keeps
+     every place equally muted and equally legible under the white rims, the names
+     and the balloons drawn on top of it — hash those too and one location in five
+     is a place nobody can read a Ваня against. */
+  --tint: 209;
+  background: linear-gradient(
+    180deg,
+    hsl(var(--tint) 35% 22%) 0%,
+    hsl(var(--tint) 33% 31%) 55%,
+    hsl(calc(var(--tint) - 74) 18% 35%) 100%
+  );
   touch-action: manipulation;
 
   /* HOW BIG A ВАНЯ IS, IN THIS YARD. Every fixed length inside the plane is a
@@ -1700,6 +2010,168 @@ onBeforeUnmount(() => {
      scale and respects the user's font size the way the panel below does. */
   font-size: 0.85rem;
   pointer-events: none;
+}
+
+/* WHERE YOU ARE — the caption in the corner of the world, and the door out of it.
+
+   THE HOTSPOT PATTERN, deliberately: a 44px BOX that takes the tap and a small
+   chip inside it that is what you see. The box is the WCAG number and it is a
+   real one here — unlike a dot, which cannot be pressed at all — and the chip
+   stays a world unit so the caption is a label on the yard rather than a slab
+   across the top of it. Collapsing the two would mean choosing between a control
+   nobody can hit and one that eats an eighth of the plane.
+
+   Top-left because it is the cheapest corner to make unwalkable: a tap here is
+   swallowed exactly as a tap on a bush is, and the top of the plane is the far
+   band, where the yard is smallest and least used. `z-index: 5` puts it over
+   every band (0..3) and under the travel sheet (10), so a Ваня standing behind
+   the caption is drawn behind it rather than through it.
+
+   `max-width` is what stops a long place name reaching across the world; the
+   chip ellipsises rather than wrapping, because two lines of caption over the
+   yard is a panel. */
+.place-pill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  min-width: 44px;
+  min-height: 44px;
+  max-width: 60%;
+  display: flex;
+  align-items: center;
+  /* A button, so tap and keyboard both work — and so everything a button brings
+     with it has to be undone, exactly as `.hotspot` does. */
+  padding: 0 calc(var(--unit) * 0.15);
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+.place-pill-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: calc(var(--unit) * 0.08);
+  min-width: 0;
+  padding: calc(var(--unit) * 0.05) calc(var(--unit) * 0.18);
+  border-radius: 999px;
+  background: rgba(12, 18, 26, 0.72);
+  color: rgba(255, 255, 255, 0.95);
+  /* A world unit with a hard pixel floor, like the shop's sign and for the same
+     reason: it is always on, so it is drawn as small as the world allows, and a
+     caption nobody can read is worse than none because the place then looks like
+     it has no name. */
+  font-size: max(10px, calc(var(--unit) * 0.26));
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.place-pill-glyph {
+  font-size: 0.85em;
+}
+.place-pill:focus-visible .place-pill-chip {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: 2px;
+}
+/* A world that is no longer being updated cannot be left: the socket is down, so
+   the journey would not be sent. Dimmed with everything else on the plane and
+   taken out of hit-testing, exactly as the hiding places are. */
+.plane--stale .place-pill {
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+/* THE TRAVEL SHEET, over the world rather than over the page.
+
+   Inside `.plane`, whose `overflow: hidden` is what makes it safe: however many
+   places the catalogue grows to, nothing here can make the document scroll in
+   either axis, and the layout underneath does not move by a pixel when it opens —
+   which is the property this screen guards above all others. A Vuetify overlay
+   would have been an element on `<body>`, outside every one of those guarantees.
+
+   The whole plane is covered, so the world is visibly suspended rather than
+   half-usable: a tap that fell through to the ground behind an open panel would
+   walk him to a point he cannot see. `.places` itself takes that tap and
+   dismisses (see `onPlacesTap`).
+
+   The list scrolls INSIDE ITSELF on a short plane, the same rule the splash's
+   cheatsheet follows, so a fifth and sixth place cannot push the sheet out of the
+   world it is drawn in. */
+.places {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--unit) * 0.25);
+  background: rgba(6, 10, 16, 0.72);
+  backdrop-filter: blur(2px);
+  pointer-events: auto;
+}
+.places-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: calc(var(--unit) * 7);
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.places-head {
+  /* Chrome rather than a thing in the world, like `.plane-empty` — so it stays
+     at the document's own scale and respects the reader's font size. */
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.6);
+}
+/* One place. A thumb-sized row rather than a chip, because the sheet is a list
+   you read down and the count on the right is half of what it is for. */
+.place {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.95);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.place:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: 2px;
+}
+/* The one he is standing in. Marked rather than removed — it is the row that
+   says where he is now, and pressing it is the way out of the sheet that is a
+   control rather than a gesture. */
+.place[data-here='1'] {
+  background: rgba(255, 255, 255, 0.28);
+  font-weight: 700;
+}
+.place-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.place-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
 }
 
 /* A HIDING PLACE: the only thing inside this plane that has ever been tappable.
@@ -2425,17 +2897,16 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-.hud-count,
 .hud-store,
 .hud-status {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The one item in the row allowed to lose characters when it is tight. The head
-   count and the connection state are short and effectively fixed width; the
-   store line is the longest of the three and the only one whose tail («— дойди»)
-   is a hint rather than a fact, so it is the right thing to truncate.
+/* The one item in the row allowed to lose characters when it is tight. The
+   connection state is short and effectively fixed width; the store line is the
+   longer of the two and the only one whose tail («— дойди») is a hint rather
+   than a fact, so it is the right thing to truncate.
    `min-width: 0` is what lets a flex child shrink below its own content at all —
    without it the `text-overflow` above never fires and the row overflows
    sideways instead, which is exactly what the 320px case in the mobile suite
@@ -2443,6 +2914,14 @@ onBeforeUnmount(() => {
 .hud-store {
   min-width: 0;
   flex: 0 1 auto;
+}
+/* Pushed to the end of the row itself rather than left to `space-between`, which
+   stopped doing the job when the head count moved onto the plane: with the store
+   line absent — a yard with no crate — the row has ONE item, and `space-between`
+   puts a lone child on the left. The connection state has always sat on the
+   right, and it should not move about depending on whether there is beer. */
+.hud-status {
+  margin-left: auto;
 }
 .hud-status--open {
   color: rgb(var(--v-theme-success));

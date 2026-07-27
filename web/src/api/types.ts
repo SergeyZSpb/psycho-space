@@ -532,6 +532,15 @@ export interface VanyagotchiStore {
    * reason the number can ride an idempotent frame at all.
    */
   left: number;
+  /**
+   * Which place the shop is in, absent for the default one — the same convention
+   * every entity's `loc` follows.
+   *
+   * A coordinate means nothing without a place: (0.82, 0.22) is the crate in двор
+   * and an empty patch of лес. Drawing the block without checking this would put
+   * a shop in front of somebody four places away from it.
+   */
+  loc?: string;
 }
 
 /**
@@ -649,6 +658,19 @@ export interface VanyagotchiConfig {
    * for the thing.
    */
   store_label?: string;
+  /**
+   * Which place the beer store stands in, as a location key.
+   *
+   * Served so the splash cheatsheet can say «пиво только во дворе» DERIVED from
+   * the catalogue rather than typed — which matters once there are five places
+   * and four of them have no beer in them, because a player who walked to лес
+   * and found no shop has otherwise been told nothing.
+   *
+   * A LOCATION key, never a kind key: the client resolves it against `locations`
+   * for the label exactly as it resolves an art key against `skins`, so it still
+   * holds no content of its own (ADR-039).
+   */
+  store_location?: string;
   locations: VanyagotchiLocation[];
   default_skin: string;
   default_location: string;

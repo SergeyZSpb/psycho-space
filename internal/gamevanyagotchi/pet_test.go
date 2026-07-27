@@ -84,6 +84,12 @@ type fakeRepo struct {
 	// other trace, so this is what "he was written down where he was standing"
 	// is asserted against.
 	positions []savedPosition
+	// moves records every SetLocation call, in order — the only trace a goto
+	// leaves on this side, and therefore the behaviour under test.
+	moves []savedLocation
+	// setLocationErr fails the write, so a test can prove that a goto which could
+	// not be written down does not move him on the plane either.
+	setLocationErr error
 	// sleepReads counts calls to SleepingPets. Guarded by the same lock as
 	// positions because the only paths that could ever call it are the plane's,
 	// which run on goroutines of their own.
@@ -262,6 +268,41 @@ func (f *fakeRepo) SavePosition(_ context.Context, _ db.DBTX, accountID string, 
 	defer f.mu.Unlock()
 	f.positions = append(f.positions, savedPosition{accountID: accountID, at: at, seen: seen})
 	return nil
+}
+
+// SetLocation records a move to another location, and — unlike SavePosition
+// beside it — the fake's own pet really moves.
+//
+// Both halves are the behaviour under test. The CALL is what proves the row is
+// written eagerly rather than on departure; the mutation is what proves the rest
+// of the game reads it back, because Do resolves every location rule against
+// `before.Pet.LocationKey` and a fake that recorded the call and answered with
+// the old location would let a test claim he had moved while nothing he did
+// afterwards agreed.
+func (f *fakeRepo) SetLocation(_ context.Context, _ db.DBTX, accountID, locationKey string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.moves = append(f.moves, savedLocation{accountID: accountID, locationKey: locationKey})
+	if f.setLocationErr != nil {
+		return f.setLocationErr
+	}
+	if f.pet != nil && f.pet.AccountID == accountID {
+		f.pet.LocationKey = locationKey
+	}
+	return nil
+}
+
+// savedLocation is one SetLocation call, exactly as it was made.
+type savedLocation struct {
+	accountID   string
+	locationKey string
+}
+
+// moved returns every location change written down so far, in order.
+func (f *fakeRepo) moved() []savedLocation {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]savedLocation(nil), f.moves...)
 }
 
 // saved returns every position written down so far, in the order it was written.
@@ -444,8 +485,10 @@ func (f *fakeRepo) heldBy(kind string) string {
 	return f.claimed[kind]
 }
 
-// ActiveSingleton answers whether a hunt is already running.
-func (f *fakeRepo) ActiveSingleton(_ context.Context, _ db.DBTX, kind, _ string) (string, bool, error) {
+// ActiveSingleton answers whether a hunt is already running ANYWHERE, which is
+// the whole of what the real query asks: the partial unique index is on `kind`
+// alone, so a singleton is unique across the world rather than per location.
+func (f *fakeRepo) ActiveSingleton(_ context.Context, _ db.DBTX, kind string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.activeReads++
@@ -471,19 +514,32 @@ type fakeClaim struct {
 	At       time.Time
 }
 
-func (f *fakeRepo) LiveWorldObjects(_ context.Context, _ db.DBTX, _ string, limit int) ([]WorldObject, error) {
+// LiveWorldObjects answers with the whole world, capped exactly as the query's
+// window function caps it: PER LOCATION rather than in total, so a busy yard
+// cannot starve лес of the objects standing in it.
+//
+// The `singleton DESC` half of the real ordering is deliberately not mirrored.
+// It is what stops a pile of deposits evicting the crate, it is a property of one
+// `ORDER BY` clause, and it is proved against a real PostgreSQL in
+// test/integration — a second implementation here could agree with itself while
+// the statement was wrong. What IS mirrored is the partitioning, because that is
+// the shape every caller depends on.
+func (f *fakeRepo) LiveWorldObjects(_ context.Context, _ db.DBTX, perLocation int) ([]WorldObject, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.worldReads++
-	f.worldLimits = append(f.worldLimits, limit)
+	f.worldLimits = append(f.worldLimits, perLocation)
 	if f.worldErr != nil {
 		return nil, f.worldErr
 	}
 	out := make([]WorldObject, 0, len(f.objects))
+	taken := make(map[string]int, 1)
 	for _, o := range f.objects {
-		if len(out) == limit {
-			break
+		where := locationOr(o.LocationKey)
+		if taken[where] == perLocation {
+			continue
 		}
+		taken[where]++
 		out = append(out, o)
 	}
 	return out, nil
@@ -1732,9 +1788,9 @@ func TestAnHTTPReadRefreshesWhatThePlaneDraws(t *testing.T) {
 	// connected account is one of each: the NPCs are appended by the broadcast
 	// rather than here, and there is nobody asleep in the yard.
 	before, here := svc.place(planeMember, asOf)
-	if len(before) != 1 || here != 1 {
+	if len(before) != 1 || here[LocationYard] != 1 {
 		t.Fatalf("an account with no pet read yet produced %d entities and a head count of %d; want 1 of each: %+v",
-			len(before), here, before)
+			len(before), here[LocationYard], before)
 	}
 	if before[0].Art != Content().DefaultSkin || before[0].Label != "" || before[0].Pose != PoseFine {
 		t.Fatalf("before any read the plane drew %+v; want the catalogue default skin, no label and no trouble", before[0])
@@ -1746,9 +1802,9 @@ func TestAnHTTPReadRefreshesWhatThePlaneDraws(t *testing.T) {
 
 	reads := repo.statReads
 	after, here := svc.place(planeMember, asOf)
-	if len(after) != 1 || here != 1 {
+	if len(after) != 1 || here[LocationYard] != 1 {
 		t.Fatalf("the roster carries %d entities and a head count of %d after a read; want 1 of each: %+v",
-			len(after), here, after)
+			len(after), here[LocationYard], after)
 	}
 	got := after[0]
 	if got.Art != repo.pet.SkinKey {
@@ -1809,8 +1865,8 @@ func TestAReadThatRecordsADeathLeavesThePlaneShowingHimDead(t *testing.T) {
 	}
 
 	peers, here := svc.place(planeMember, time.Now().UTC())
-	if len(peers) != 1 || here != 1 {
-		t.Fatalf("the roster carries %d entities and a head count of %d; want 1 of each: %+v", len(peers), here, peers)
+	if len(peers) != 1 || here[LocationYard] != 1 {
+		t.Fatalf("the roster carries %d entities and a head count of %d; want 1 of each: %+v", len(peers), here[LocationYard], peers)
 	}
 	if peers[0].Pose != PoseDead {
 		t.Fatalf("the plane draws a dead Ваня as %q; want %q", peers[0].Pose, PoseDead)

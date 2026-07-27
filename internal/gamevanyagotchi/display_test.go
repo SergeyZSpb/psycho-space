@@ -277,8 +277,8 @@ func TestTheYardIsFurnishedOnceAndThenLeftAlone(t *testing.T) {
 	if p.Label != "Спящий" || p.Art != SkinVanya {
 		t.Errorf("he is drawn as %+v; want the name and skin his row carries", p)
 	}
-	if f.Here != 1 {
-		t.Fatalf("the frame says %d people are in the yard; only the visitor has a socket open", f.Here)
+	if inTheYard(f) != 1 {
+		t.Fatalf("the frame says %d people are in the yard; only the visitor has a socket open", inTheYard(f))
 	}
 	if _, ok := peerOf(svc, f, "acct-never-stood"); ok {
 		t.Fatal("a pet that has never stood anywhere was laid down in the yard; NULL is not a position")
@@ -390,4 +390,51 @@ func TestFurnishingTheYardNeverDisplacesSomebodyWhoIsAlreadyInIt(t *testing.T) {
 		t.Fatalf("the player vanished when the yard was furnished: %+v", frames[len(frames)-1])
 	}
 	standingAt(t, p, walked, "the player who was already standing somewhere")
+}
+
+// TestASleeperLiesDownInTheLocationHeWentHomeFrom.
+//
+// A sleeper is drawn from the same display cache a live player is, so the
+// location has to come out of the pet row exactly as the skin and the name do —
+// and the failure if it does not is quiet and wrong in the wrong direction: every
+// body in the game would be laid out in двор, so the yard would fill up with
+// people who are not there and the other four places would look abandoned even
+// when everybody had gone to them.
+//
+// He is still not COUNTED anywhere, which is the other half: the head count is
+// people with a socket open, and the whole point of a sleeper is that he has not
+// got one.
+func TestASleeperLiesDownInTheLocationHeWentHomeFrom(t *testing.T) {
+	lay := Point{X: 0.3, Y: 0.7}
+	inLes := sleepingPet("acct-asleep", lay, "Спящий")
+	inLes.LocationKey = LocationLes
+	repo := &fakeRepo{sleeping: []Pet{inLes}}
+	tr := &fakeTransport{}
+	tr.setMembers(member("visitor"))
+	svc := planeService(tr, repo)
+
+	svc.load(context.Background(), accountOf("visitor"))
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	f := tr.frames()[0]
+	p, ok := peerOf(svc, f, "acct-asleep")
+	if !ok {
+		t.Fatalf("the pet the database says is asleep is not in the frame: %+v", f)
+	}
+	if p.Loc != LocationLes {
+		t.Errorf("he is drawn with loc=%q while his row says %q; every body in the game would be laid out in the yard, which would fill it with people who are not there",
+			p.Loc, LocationLes)
+	}
+	if p.Pose != PoseAsleep {
+		t.Errorf("he is drawn as %q; want %q", p.Pose, PoseAsleep)
+	}
+	standingAt(t, p, lay, "a sleeper in "+LocationLes)
+	if got := f.Here[LocationLes]; got != 0 {
+		t.Errorf("the frame counts %d people in %q; a sleeper has no socket open and is not one of them", got, LocationLes)
+	}
+	if got := inTheYard(f); got != 1 {
+		t.Errorf("the frame says %d people are in the yard; want the visitor alone", got)
+	}
 }
