@@ -739,6 +739,12 @@ test('relieving himself empties the bladder and leaves the rest alone', async ({
   browser,
   baseURL,
 }) => {
+  // A LONGER BUDGET THAN THE DEFAULT, because this verb can be refused for
+  // nerves and each retry waits for the balloon to expire before pressing again.
+  // The common case is one press; an unlucky run is four or five, and at four
+  // seconds a balloon that is half a minute before the assertion is even
+  // reached. Not a hang — a tail.
+  test.setTimeout(120_000);
   // The second verb, and the other half of the loop drinking creates. Its effect
   // is a delta larger than the whole scale, so "reset" is the clamp doing its
   // job rather than a mechanism of its own — which only the real server can be

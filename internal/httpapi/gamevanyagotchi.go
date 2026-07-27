@@ -55,6 +55,17 @@ func (s *Server) handleGameVanyagotchiConfig(w http.ResponseWriter, r *http.Requ
 			cfg.Skins[i].Image = GameAssetPath + cfg.GameKey + "/" + cfg.Skins[i].Key
 		}
 	}
+	// The same for a location's backdrop. Rewritten in place onto `Art`, so the
+	// client resolves one field rather than learning a second convention — a
+	// place with no uploaded picture keeps its catalogue key and the plane draws
+	// its own gradient, which is what every place looked like until now.
+	for i := range cfg.Locations {
+		if k := cfg.Locations[i].Art; k != "" && present[k] {
+			cfg.Locations[i].Art = GameAssetPath + cfg.GameKey + "/" + k
+		} else {
+			cfg.Locations[i].Art = ""
+		}
+	}
 	writeJSON(w, http.StatusOK, cfg)
 }
 

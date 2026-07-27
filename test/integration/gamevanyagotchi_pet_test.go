@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -3490,6 +3491,66 @@ func TestVanyagotchiAnUploadedSpriteReachesTheConfig(t *testing.T) {
 	if got := images[without]; got != "" {
 		t.Errorf("a skin with nothing uploaded advertises image=%q; want none, so the client draws its emoji", got)
 	}
+	// AND THE SAME FOR A LOCATION'S BACKDROP, which travels the identical path and
+	// is the half that makes a place look like a place. A location whose art has
+	// been uploaded advertises a URL; every other one advertises NOTHING rather
+	// than a bare catalogue key, because a key would be a URL the client would
+	// try to load and fail on.
+	locs, _ := body["locations"].([]any)
+	if len(locs) == 0 {
+		t.Fatalf("the config served no locations at all")
+	}
+	withBg, seenArt := "", 0
+	for _, raw := range locs {
+		loc, _ := raw.(map[string]any)
+		art, _ := loc["art"].(string)
+		key, _ := loc["key"].(string)
+		if art == "" {
+			continue
+		}
+		seenArt++
+		withBg = key
+		if !strings.HasPrefix(art, "/api/game-assets/"+gamevanyagotchi.GameKey+"/") {
+			t.Errorf("location %q advertises art=%q, which is not a URL this server serves — a raw catalogue key would 404 in the browser", key, art)
+		}
+	}
+	if seenArt != 0 {
+		t.Fatalf("%d locations advertise a backdrop before any was uploaded (first: %q); a place with no upload must advertise none", seenArt, withBg)
+	}
+
+	// Upload one, and exactly one location gains a backdrop.
+	target := gamevanyagotchi.Content().Locations[0]
+	if target.Art == "" {
+		t.Skip("no location in the catalogue names a backdrop; nothing to upload")
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO game_assets (game_key, art_key, content_type, bytes) VALUES ($1, $2, 'image/webp', $3)
+		 ON CONFLICT (game_key, art_key) DO UPDATE SET bytes = EXCLUDED.bytes`,
+		gamevanyagotchi.GameKey, target.Art, []byte("a backdrop, as far as this test is concerned")); err != nil {
+		t.Fatalf("upload a backdrop: %v", err)
+	}
+	status, body = doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/config", nil)
+	if status != http.StatusOK {
+		t.Fatalf("config after the backdrop upload: status=%d", status)
+	}
+	locs, _ = body["locations"].([]any)
+	got := map[string]string{}
+	for _, raw := range locs {
+		loc, _ := raw.(map[string]any)
+		k, _ := loc["key"].(string)
+		a, _ := loc["art"].(string)
+		got[k] = a
+	}
+	wantBg := "/api/game-assets/" + gamevanyagotchi.GameKey + "/" + target.Art
+	if got[target.Key] != wantBg {
+		t.Errorf("%q advertises art=%q; want %q", target.Key, got[target.Key], wantBg)
+	}
+	for k, a := range got {
+		if k != target.Key && a != "" {
+			t.Errorf("%q advertises a backdrop (%q) though nothing was uploaded for it", k, a)
+		}
+	}
+
 	// And the picture is actually reachable at the URL the config just published
 	// — a config advertising a 404 would be worse than advertising nothing.
 	res, err := cli.Get(app.URL + want)

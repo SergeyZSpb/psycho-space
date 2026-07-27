@@ -124,6 +124,13 @@
         :style="planeStyle"
         @pointerdown="onPlaneTap"
       >
+        <!-- THE BACKDROP, and it is the first thing in the plane so everything
+             else is painted over it. `cover` rather than `contain`, because the
+             plane's 3:4 is the world's shape and a letterboxed backdrop would
+             put bars where the floor should be. It is decorative — the alt is
+             empty and it takes no pointer events — so a screen reader is told
+             about the place by the plane's own aria-label instead. -->
+        <img v-if="backdrop" class="plane-bg" :src="backdrop" alt="" data-test="plane-bg" />
         <!-- THE HIDING PLACES, and the only tappable things this plane has ever
              had inside it.
              Drawn BEFORE the dots on purpose. They share the back band's
@@ -742,6 +749,18 @@ const shopHere = computed(() => {
  */
 const planeStyle = computed(() =>
   locationKey.value ? { '--tint': String(hueFor(locationKey.value)) } : undefined,
+);
+
+/**
+ * The backdrop for the place he is standing in, or nothing.
+ *
+ * A URL the server built, looked up by the location he is IN — so travelling
+ * repaints the world and a place with no uploaded picture falls back to the
+ * hashed gradient that stood in for backdrops until there were any. Nothing here
+ * knows a blob store exists; it renders whatever `art` it was handed.
+ */
+const backdrop = computed(
+  () => (config.value?.locations ?? []).find((l) => l.key === locationKey.value)?.art,
 );
 
 /**
@@ -2686,6 +2705,20 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+
+/* The backdrop image, behind every entity and behind the hiding places. It sits
+   under everything by document order plus a z-index of 0, and takes no pointer
+   events so the plane itself still receives every tap. */
+.plane-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  z-index: 0;
+  pointer-events: none;
 }
 
 /* Stat bars. Fixed height, and one row per stat that IS a bar — three today, the

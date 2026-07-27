@@ -619,6 +619,16 @@ export interface VanyagotchiLocation {
    * hunt in it today.
    */
   hotspots?: VanyagotchiHotspot[];
+  /**
+   * The backdrop for this place, as a URL — or absent when no picture has been
+   * uploaded for it, in which case the plane paints its own gradient.
+   *
+   * The server sends the catalogue's art KEY rewritten into a URL, exactly as it
+   * does for a skin, so the client resolves one field and never learns that a
+   * blob store exists. Absent rather than empty, so «no backdrop» is the same
+   * shape as every other optional field here.
+   */
+  art?: string;
 }
 
 export interface VanyagotchiConfig {

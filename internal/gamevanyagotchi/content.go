@@ -613,6 +613,16 @@ type Location struct {
 	// Entry is where a pet stands on arriving, in the same normalised 0..1
 	// coordinates the plane uses.
 	Entry Point `json:"entry"`
+	// Art is the catalogue art key for this place's backdrop, resolved against the
+	// blob store exactly as a skin's is — empty for a place with no picture, which
+	// draws the plane's own gradient instead.
+	//
+	// A KEY RATHER THAN A URL, for the same reason every other art reference is
+	// one: the catalogue says which picture a thing wants, and whether that
+	// picture EXISTS is a fact about the store that the config path fills in. So a
+	// backdrop is an upload, and a place with none is not broken — it is the yard
+	// as it looked before there were any.
+	Art string `json:"art,omitempty"`
 	// Hotspots are the places in here worth looking in.
 	//
 	// PER-LOCATION FROM THE START, which is the whole of what the four locations
@@ -1401,7 +1411,7 @@ var catalogue = Config{
 
 	Locations: []Location{
 		{
-			Key: LocationYard, Label: "двор", Entry: spawn,
+			Key: LocationYard, Label: "двор", Entry: spawn, Art: "bg_yard",
 			// The five places worth looking in, and they are what makes the key
 			// hunt a search rather than a button.
 			//
@@ -1459,7 +1469,7 @@ var catalogue = Config{
 		// are a safe guess and the far one is a gamble; that is what distance is
 		// for.
 		{
-			Key: LocationLes, Label: "лес", Entry: Point{X: 0.50, Y: 0.85},
+			Key: LocationLes, Label: "лес", Entry: Point{X: 0.50, Y: 0.85}, Art: "bg_forest",
 			Hotspots: []Hotspot{
 				{Key: "pen", Label: "пень", Emoji: "🪵", At: Point{X: 0.18, Y: 0.30}},
 				{Key: "elka", Label: "ёлка", Emoji: "🌲", At: Point{X: 0.80, Y: 0.24}},
@@ -1469,7 +1479,7 @@ var catalogue = Config{
 			},
 		},
 		{
-			Key: LocationLift, Label: "лифт", Entry: Point{X: 0.50, Y: 0.88},
+			Key: LocationLift, Label: "лифт", Entry: Point{X: 0.50, Y: 0.88}, Art: "bg_lift",
 			Hotspots: []Hotspot{
 				{Key: "knopki", Label: "кнопки", Emoji: "🔢", At: Point{X: 0.84, Y: 0.50}},
 				{Key: "zerkalo", Label: "зеркало", Emoji: "🪞", At: Point{X: 0.16, Y: 0.34}},
@@ -1479,7 +1489,7 @@ var catalogue = Config{
 			},
 		},
 		{
-			Key: LocationKusty, Label: "кусты", Entry: Point{X: 0.50, Y: 0.90},
+			Key: LocationKusty, Label: "кусты", Entry: Point{X: 0.50, Y: 0.90}, Art: "bg_bushes",
 			Hotspots: []Hotspot{
 				{Key: "krapiva", Label: "крапива", Emoji: "🌱", At: Point{X: 0.20, Y: 0.26}},
 				{Key: "paket", Label: "пакет", Emoji: "🛍️", At: Point{X: 0.78, Y: 0.30}},
@@ -1491,7 +1501,7 @@ var catalogue = Config{
 			},
 		},
 		{
-			Key: LocationZabroshka, Label: "заброшка", Entry: Point{X: 0.50, Y: 0.86},
+			Key: LocationZabroshka, Label: "заброшка", Entry: Point{X: 0.50, Y: 0.86}, Art: "bg_ruin",
 			Hotspots: []Hotspot{
 				{Key: "podval", Label: "подвал", Emoji: "🕳️", At: Point{X: 0.22, Y: 0.72}},
 				{Key: "lestnitsa", Label: "лестница", Emoji: "🪜", At: Point{X: 0.80, Y: 0.60}},
