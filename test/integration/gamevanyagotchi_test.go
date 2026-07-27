@@ -32,6 +32,33 @@ func expectRoster(t *testing.T, tick chan<- time.Time, frames <-chan []byte) gam
 	return expectRosterAt(t, tick, frames, time.Time{})
 }
 
+// expectPetPushed reads the `vanyagotchi_state` frame a client is sent after its
+// own pet has changed.
+//
+// SCANNED rather than taken off the head of the channel, because the same socket
+// is carrying rosters five times a second and the push arrives among them. It
+// drives no tick of its own: a push is not part of the broadcast, it is sent by
+// whichever read pump handled the frame that caused it.
+func expectPetPushed(t *testing.T, frames <-chan []byte) gamevanyagotchi.State {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case data, ok := <-frames:
+			if !ok {
+				t.Fatal("the socket closed while waiting for the pet to be pushed back")
+			}
+			var f gamevanyagotchi.StateFrame
+			if err := json.Unmarshal(data, &f); err != nil || f.T != gamevanyagotchi.TypeStateFrame {
+				continue // a roster, a probe or a bye
+			}
+			return f.State
+		case <-deadline:
+			t.Fatal("no vanyagotchi_state frame arrived; the browser reads which place it is looking at off the pet, so a change it is never told about strands it in the place it left")
+		}
+	}
+}
+
 // vanyagotchiInTheYard is how many people a roster says are standing in двор.
 //
 // `vanyagotchiInTheYard(Roster)` became a map per location when the four locations arrived, and
@@ -1894,6 +1921,17 @@ func TestVanyagotchiGoingToAnotherLocationSurvivesTheRoundTrip(t *testing.T) {
 	}
 	if stored != gamevanyagotchi.LocationLes {
 		t.Errorf("his row says he is in %q; want %q — a location nobody wrote down is one he loses on the next restart", stored, gamevanyagotchi.LocationLes)
+	}
+
+	// AND THE MOVER IS TOLD, over his own socket, which is the half the roster
+	// cannot do. The roster moves his DOT; the browser reads which place it is
+	// LOOKING at off the pet, so without this push it goes on drawing двор,
+	// filters his own Ваня out of it as somebody standing elsewhere, and marks
+	// двор as the place he is in — which is the row the travel sheet refuses to
+	// send him to, because it means "stay". He could not get back.
+	pushed := expectPetPushed(t, framesA)
+	if pushed.Pet.LocationKey != gamevanyagotchi.LocationLes {
+		t.Errorf("the pet pushed back to the mover says he is in %q; want %q", pushed.Pet.LocationKey, gamevanyagotchi.LocationLes)
 	}
 
 	// A goto naming a place the catalogue does not have is dropped in silence, and

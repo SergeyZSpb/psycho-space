@@ -1585,3 +1585,106 @@ test('a hello puts a beer store back into an empty yard', async ({ browser, base
     await context.close();
   }
 });
+
+/**
+ * Presses a place in the travel sheet until he has actually arrived in it.
+ *
+ * Re-pressed rather than pressed once, because a goto is bounded to one a second
+ * per account — on its own clock, since a rate-refused journey is silent and a
+ * shared bound would make the control read as dead. Two journeys in quick
+ * succession can therefore have the second dropped, and re-pressing is both what
+ * a player does and what keeps this test from being a race against that bound.
+ *
+ * Arrival is read off the plane's own caption, which names the place he is in.
+ * That caption is derived from the PET, which is exactly what makes it the right
+ * thing to assert here: it is the reading that was wrong in production.
+ */
+async function travelToPlace(page: Page, key: string, label: string): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        if (!(await page.locator('[data-test="places"]').isVisible())) {
+          await page.locator('[data-test="here"]').click();
+        }
+        await page.locator(`[data-place="${key}"]`).click();
+        return (await page.locator('[data-test="here"]').textContent()) ?? '';
+      },
+      { timeout: 20_000, intervals: [1100, 1100, 1100, 1100] },
+    )
+    .toContain(label);
+}
+
+test('travelling moves the place he is looking at, and he can walk back', async ({
+  browser,
+  baseURL,
+}) => {
+  // THE REGRESSION. A goto writes `pets.location_key`, and the browser reads
+  // which place it is LOOKING at off the pet — so a journey the server never
+  // pushed the pet back for left the yard drawing the place he had left. Three
+  // things went wrong at once and each is asserted below: his own Ваня was
+  // filtered out of the plane as somebody standing elsewhere, the caption went
+  // on naming the old place, and the sheet went on marking the old place as the
+  // one he was in — which is the row that means "stay", so there was no row left
+  // that would send him home. He was stuck.
+  //
+  // It is here rather than in the stubbed suite because the stubbed suite is
+  // where it hid: that harness pushes the state frame FROM THE STUB, so it
+  // asserts the client is right GIVEN a push and can never notice its absence.
+  test.setTimeout(90_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const seeded = await stack();
+  // A fresh pet, so he starts in the catalogue's default place rather than
+  // wherever an earlier test in this shared database happened to leave him.
+  forgetPet(seeded[PLAYER_A]);
+
+  const context = await browser.newContext(PHONE);
+  try {
+    await loginAs(context, PLAYER_A);
+    const page = await enterYard(context, base);
+    await expect(yourDot(page)).toHaveCount(1);
+
+    // Every place the catalogue serves, read off the sheet rather than named
+    // here — the client is told what the world contains and this test holds no
+    // content of its own either.
+    await page.locator('[data-test="here"]').click();
+    await expect(page.locator('[data-test="places"]')).toBeVisible();
+    const rows = page.locator('[data-test="place"]');
+    const count = await rows.count();
+    expect(count, 'the travel sheet offers nowhere to go').toBeGreaterThan(1);
+
+    const places: { key: string; label: string; here: boolean }[] = [];
+    for (let i = 0; i < count; i++) {
+      const row = rows.nth(i);
+      places.push({
+        key: (await row.getAttribute('data-place')) ?? '',
+        label: ((await row.locator('.place-name').textContent()) ?? '').trim(),
+        here: (await row.getAttribute('data-here')) === '1',
+      });
+    }
+    const from = places.find((place) => place.here);
+    const to = places.find((place) => !place.here);
+    expect(from, 'the sheet marks no place as the one he is standing in').toBeTruthy();
+    expect(to, 'every place is marked as the one he is standing in').toBeTruthy();
+
+    await travelToPlace(page, to!.key, to!.label);
+
+    // He is still drawn. Without the push the plane filters him out of a place
+    // he is no longer in and reports «здесь никого» — an empty yard containing
+    // nobody, not even yourself.
+    await expect(yourDot(page)).toHaveCount(1);
+
+    // And the sheet agrees about where he is, which is what makes the way back
+    // reachable at all.
+    await page.locator('[data-test="here"]').click();
+    await expect(page.locator(`[data-place="${to!.key}"]`)).toHaveAttribute('data-here', '1');
+    await expect(page.locator(`[data-place="${from!.key}"]`)).not.toHaveAttribute('data-here', '1');
+
+    // Back again — the leg that was unrecoverable in production.
+    await travelToPlace(page, from!.key, from!.label);
+    await expect(yourDot(page)).toHaveCount(1);
+    await page.locator('[data-test="here"]').click();
+    await expect(page.locator(`[data-place="${from!.key}"]`)).toHaveAttribute('data-here', '1');
+  } finally {
+    await context.close();
+  }
+});

@@ -109,6 +109,27 @@ func youFor(t *testing.T, tr *fakeTransport, connID string) (You, bool) {
 	return got, n == 1
 }
 
+// statesFor decodes every `vanyagotchi_state` frame sent to one connection.
+//
+// A list rather than youFor's exactly-one, because the two answers are counted
+// differently: a hello is answered once, and a pet is pushed every time it
+// changes.
+func statesFor(t *testing.T, tr *fakeTransport, connID string) []State {
+	t.Helper()
+	var out []State
+	for _, u := range tr.unicasts() {
+		if u.connID != connID {
+			continue
+		}
+		var f StateFrame
+		if err := json.Unmarshal(u.msg, &f); err != nil || f.T != TypeStateFrame {
+			continue
+		}
+		out = append(out, f.State)
+	}
+	return out
+}
+
 // rawFrames is every published frame as it went on the wire.
 //
 // Decoding loses the one thing a couple of assertions are about: how many TIMES
@@ -3101,8 +3122,13 @@ func goTo(svc *Service, m realtime.Member, locationKey string) {
 // His placement is moved to the new location's entry point, because he did not
 // walk here. And the head count follows him, because it is per location now.
 //
-// NOTHING IS SENT BACK. He learns it worked from the next roster, which is the
-// same "state, never a reply" rule a tap already follows.
+// AND THE PET IS PUSHED BACK, which is the fifth and is the one that shipped
+// missing. The roster moves his dot; it does not tell the BROWSER which place it
+// is looking at, because that is read off `pets.location_key`. So a goto that
+// pushed nothing left the yard drawing the place he had left, filtering his own
+// Ваня out of it, and — because the sheet marks the place you are in as the row
+// that means "stay" — refusing to send him back. Asserted here rather than only
+// in the browser, since this is where the frame either goes out or does not.
 func TestAGotoMovesHimToAnotherPlaceAndWritesItDown(t *testing.T) {
 	les, ok := LocationByKey(LocationLes)
 	if !ok {
@@ -3164,6 +3190,17 @@ func TestAGotoMovesHimToAnotherPlaceAndWritesItDown(t *testing.T) {
 		t.Errorf("the frame says %d people are in %q; want 1 — the count is per location now, and the client reads the entry for the place it is looking at",
 			got, LocationLes)
 	}
+
+	// And the pet went back to him, carrying the place he is now in.
+	pushed := statesFor(t, tr, m.ConnID)
+	if len(pushed) != 1 {
+		t.Fatalf("%d pet frames were pushed for one goto; want exactly 1 — without it the browser never learns it moved, and the travel sheet strands him in the place he left",
+			len(pushed))
+	}
+	if got := pushed[0].Pet.LocationKey; got != LocationLes {
+		t.Errorf("the pushed pet says he is in %q; want %q — the whole point of the push is to carry the new place",
+			got, LocationLes)
+	}
 }
 
 // TestAGotoNamingSomewhereThatDoesNotExistIsIgnored.
@@ -3215,10 +3252,12 @@ func TestAGotoNamingSomewhereThatDoesNotExistIsIgnored(t *testing.T) {
 			if got := inTheYard(f); got != 1 {
 				t.Errorf("the frame says %d people are in the yard after a refused goto; want the 1 who never left", got)
 			}
-			// And no unicast at all, because a movement message is never answered —
-			// neither when it is accepted nor when it is dropped.
+			// And no unicast at all. An ACCEPTED goto pushes the pet back, because
+			// it moved a pet column; a dropped one moved nothing, so there is no
+			// new state to carry and the sender — who invented the location — is
+			// owed no explanation either.
 			if n := len(tr.unicasts()); n != 0 {
-				t.Errorf("%d unicasts were sent for a goto; it is answered by the next roster and by nothing else, so a refused one owes the sender nothing", n)
+				t.Errorf("%d unicasts were sent for a goto this server refused; a frame that changed nothing has no state to push", n)
 			}
 		})
 	}

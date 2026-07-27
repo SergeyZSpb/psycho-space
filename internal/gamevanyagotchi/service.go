@@ -1515,10 +1515,23 @@ const gotoInterval = time.Second
 // the row would be right, every read would agree, and the plane would go on
 // drawing him in the place he left with nothing anywhere reporting a problem.
 //
-// It is answered by nothing at all, exactly as a tap is. The next roster carries
-// his own entity with its new `loc`, which is how he learns it worked, and a
-// frame this server does not believe — bad JSON, no location, a location that is
-// not in the catalogue — is dropped in silence like every other one.
+// AND THEN THE PET GOES BACK TO HIM, which is not a write but is the step this
+// function shipped without. A goto writes `pets.location_key`, and
+// `vanyagotchi_state` is precisely what this game sends when a pet changes — so
+// omitting it here was a breach of the wire contract rather than a missing
+// courtesy, and «answered by nothing at all, exactly as a tap is» was the wrong
+// analogy: a tap changes no row.
+//
+// The roster moves his DOT and that is all it does. The browser reads which
+// place it is LOOKING at off the pet, so a journey that pushed nothing left the
+// yard drawing the place he had left — filtering his own Ваня out of it as
+// somebody standing elsewhere, reporting «здесь никого», and marking the old
+// place as the one he was in. That last one is what made it unrecoverable rather
+// than merely wrong: the place you are in is the row the travel sheet refuses to
+// send you to, because it means "stay". He could not get back.
+//
+// A frame this server does not believe — bad JSON, no location, a location that
+// is not in the catalogue — is still dropped in silence like every other one.
 func (s *Service) handleGoto(ctx context.Context, m realtime.Member, payload []byte) {
 	key, err := parseGoto(payload)
 	if err != nil {
@@ -1549,6 +1562,22 @@ func (s *Service) handleGoto(ctx context.Context, m realtime.Member, payload []b
 		return
 	}
 	s.arrive(m.AccountID, loc)
+
+	// Read back rather than patched onto a struct we already hold: `state` is the
+	// one place a pet is assembled for a client, and building a second, thinner
+	// one here would be the second path to one outcome that costs a bug the day
+	// the shape grows a field. It is one indexed read per journey, on a path
+	// already bounded to one a second and already writing a row.
+	state, err := s.state(ctx, m.AccountID, now)
+	if err != nil {
+		// He has moved and been told nothing, which is exactly the failure this
+		// push exists to prevent — so it is worth a line, unlike a bad frame. The
+		// next HTTP read answers with the same thing, so it self-heals on a
+		// reload or a tab wake.
+		slog.WarnContext(ctx, "gamevanyagotchi: could not read a pet back after a move", "err", err)
+		return
+	}
+	s.pushState(ctx, m.AccountID, state)
 }
 
 // allowGoto reports whether this account may change location now, and records it
