@@ -316,17 +316,17 @@ func (PostgresRepository) Events(ctx context.Context, q db.DBTX, petID string) (
 // require repeating that predicate for inference to succeed. A non-singleton
 // kind does not participate in the index at all, so the same statement inserts
 // every deposit and refuses a second key.
-func (PostgresRepository) InsertWorldObject(ctx context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, expires *time.Time) error {
+func (PostgresRepository) InsertWorldObject(ctx context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, remaining *int, expires *time.Time) error {
 	var ownerArg any
 	if owner != "" {
 		ownerArg = owner
 	}
 	_, err := q.Exec(ctx,
 		`INSERT INTO game_vanyagotchi_world_objects
-		     (kind, location_key, x, y, singleton, owner_account_id, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6::uuid, $7)
+		     (kind, location_key, x, y, singleton, owner_account_id, remaining, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6::uuid, $7, $8)
 		 ON CONFLICT DO NOTHING`,
-		kind, locationKey, at.X, at.Y, singleton, ownerArg, expires,
+		kind, locationKey, at.X, at.Y, singleton, ownerArg, remaining, expires,
 	)
 	return err
 }
@@ -343,7 +343,7 @@ func (PostgresRepository) InsertWorldObject(ctx context.Context, q db.DBTX, kind
 // yard ever filled up.
 func (PostgresRepository) LiveWorldObjects(ctx context.Context, q db.DBTX, locationKey string, limit int) ([]WorldObject, error) {
 	rows, err := q.Query(ctx,
-		`SELECT id::text, kind, x, y, expires_at
+		`SELECT id::text, kind, x, y, expires_at, remaining
 		   FROM game_vanyagotchi_world_objects
 		  WHERE location_key = $1
 		    AND deleted_at IS NULL
@@ -362,7 +362,11 @@ func (PostgresRepository) LiveWorldObjects(ctx context.Context, q db.DBTX, locat
 	var out []WorldObject
 	for rows.Next() {
 		var o WorldObject
-		if err := rows.Scan(&o.ID, &o.Kind, &o.At.X, &o.At.Y, &o.ExpiresAt); err != nil {
+		// `remaining` scans into a *int because the column is nullable and the
+		// nil means something: a kind nobody draws down, as against a stocked one
+		// that has run out. Collapsing the two into a nought would make an empty
+		// crate indistinguishable from a lost key.
+		if err := rows.Scan(&o.ID, &o.Kind, &o.At.X, &o.At.Y, &o.ExpiresAt, &o.Remaining); err != nil {
 			return nil, err
 		}
 		out = append(out, o)
@@ -400,6 +404,61 @@ func (PostgresRepository) ClaimSingleton(ctx context.Context, q db.DBTX, kind, l
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// DrawFromStock takes one out of the crate, and it is the statement the whole
+// beer store is built on.
+//
+// IT CANNOT OVERSELL, AND NOT BY BEING CAREFUL. `remaining > 0` is inside the
+// UPDATE's own WHERE clause, so a second player's statement blocks on the row
+// lock the first is holding, and when that commits it re-evaluates the guard
+// against the value that was actually written rather than the one it read on the
+// way in. Six players pressing at the same instant on a crate of two get two
+// beers and four refusals, decided by PostgreSQL. Reading `remaining` first and
+// deciding in Go would be exactly the lost-update race this avoids, and it would
+// only ever go wrong under the load the mechanic is designed to produce.
+//
+// `exhausted_at` IS SET BY THE SAME STATEMENT, on the draw that reaches nought,
+// which is what takes the row out of the partial unique index and lets the
+// replacement crate be inserted inside the same transaction. In two statements
+// there would be a window where the index still held the empty crate, the insert
+// would silently do nothing, and the yard would be left with a crate nobody can
+// draw from and nothing that would ever replace it — the same permanent, silent
+// failure a claim without its replacement causes.
+//
+// `remaining - 1` in the SET reads the row as it was before the UPDATE, which is
+// what makes the CASE and the assignment agree about which value they are
+// talking about. Zero rows means there was nothing to take: a lost race rather
+// than an error, exactly as a lost claim is.
+func (PostgresRepository) DrawFromStock(ctx context.Context, q db.DBTX, kind, locationKey string, at time.Time) (int, bool, error) {
+	var left int
+	err := q.QueryRow(ctx,
+		`UPDATE game_vanyagotchi_world_objects
+		    SET remaining    = remaining - 1,
+		        -- CAST REQUIRED, and its absence is a runtime error rather than a
+		        -- rejected query at build time. A bare $3 inside a CASE whose other
+		        -- branch is an untyped NULL gives the planner nothing to infer
+		        -- from, so it defaults the parameter to text and the assignment
+		        -- fails with 42804 on the first draw.
+		        exhausted_at = CASE WHEN remaining - 1 <= 0 THEN $3::timestamptz ELSE NULL END,
+		        updated_at   = now()
+		  WHERE kind = $1
+		    AND location_key = $2
+		    AND remaining > 0
+		    AND exhausted_at IS NULL
+		    AND deleted_at IS NULL
+		    AND spawns_at <= now()
+		    AND (expires_at IS NULL OR expires_at > now())
+		 RETURNING remaining`,
+		kind, locationKey, at,
+	).Scan(&left)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return left, true, nil
 }
 
 // ActiveSingleton returns the id of the active object of a kind, if there is

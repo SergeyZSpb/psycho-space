@@ -349,6 +349,50 @@ export interface VanyagotchiAction {
    */
   needs_stat?: string;
   needs_at_least?: number;
+  /**
+   * A world-object kind this verb requires the pet to be STANDING AT, or absent
+   * for a verb he can press from anywhere. «Выпить пива» carries the beer
+   * crate's kind: the beer comes out of the crate, so you have to walk to it.
+   *
+   * THIS GATE THE CLIENT DOES ENFORCE, which is the opposite of what it does
+   * with `needs_stat` one field up, and the asymmetry is the whole reason both
+   * decisions are worth writing down. A bladder FILLS CONTINUOUSLY and the
+   * browser is drawing an interpolation of it, so the number it would compare
+   * and the number the server will read are two different numbers that drift
+   * apart between frames — greying a button on the browser's copy would grey it
+   * while the server would in fact accept. A position is not interpolated by
+   * this client at all: the roster tells it exactly where everybody is standing,
+   * five times a second, on the same frame that carries the store — so both ends
+   * are reading ONE number and cannot disagree about it. That is what makes a
+   * greyed drink button honest here and dishonest there.
+   *
+   * It is READ FOR ITS PRESENCE AND NEVER FOR ITS VALUE. Nothing in this client
+   * compares a kind key to anything, which is the property that keeps the
+   * browser kind-agnostic (see `VanyagotchiObjectKind` below): it is told WHERE
+   * the store is, as a structure on the roster, rather than being asked to find
+   * the entity whose kind is a crate. The one place the value is looked up is
+   * the splash cheatsheet, which resolves it against `object_kinds` for a name
+   * exactly as it already resolves `leaves`.
+   *
+   * Optional because it is `omitempty`: most verbs need no particular place, and
+   * a server that predates the field sends none at all.
+   */
+  needs_near?: string;
+  /**
+   * The world-object kind this verb races other players for, or absent for a
+   * verb nobody can take from you.
+   *
+   * Read in exactly one place, and it is not the yard: the splash cheatsheet
+   * looks the kind up in `object_kinds` to say how many draws one of them holds
+   * (`stock`), so «в ящике шесть» is derived from the catalogue rather than
+   * typed into the SPA. What happens when two people press at the same
+   * millisecond is decided by PostgreSQL and is not on the wire at all — the
+   * discipline that decides it is deliberately server-side, because publishing
+   * it would invite a second implementation here.
+   *
+   * Optional for the same reason `needs_near` is.
+   */
+  contests?: string;
 }
 
 /** One look for a pet. `image` (a URL) wins when set; otherwise emoji over gradient. */
@@ -404,6 +448,74 @@ export interface VanyagotchiObjectKind {
   label?: string;
   /** How long one of them lasts. Zero means forever. */
   lifetime_seconds: number;
+  /**
+   * How many draws a freshly-spawned one of these carries — six for the beer
+   * crate, and absent for everything that is used up all at once or not at all.
+   *
+   * Served, unlike the rest of what the server knows about a stocked thing,
+   * because it is a NUMBER THE PLAYER PLAYS AGAINST rather than a mechanism:
+   * «в ящике шесть» is a rule of the game, and the splash cheatsheet derives
+   * that sentence from here so that retuning the six in
+   * internal/gamevanyagotchi/content.go changes what the player is told with no
+   * edit in this repository's client half. How the six is decremented — the
+   * conditional UPDATE that cannot oversell it — is not on the wire and must
+   * not be: it is enforcement, and a second copy of it here would be a second
+   * copy to disagree with the first.
+   *
+   * Optional because it is `omitempty`: nothing else in the catalogue has a
+   * stock, and a server that predates the field sends none.
+   */
+  stock?: number;
+}
+
+/**
+ * The beer store as the ROSTER FRAME carries it: where the crate stands, and how
+ * much is left in it. Absent from a frame when the yard has no crate at all,
+ * which is a state the next hello ends.
+ *
+ * ONE SHARED FIELD, NOT A FIELD PER PEER, and the arithmetic is why. On the wire
+ * it is about 36 bytes, so it costs 36 × 5 = 180 B/s to each phone however busy
+ * the yard is. Hung off every entity instead — the shape that would have let the
+ * client find the crate by looking for the entity that is one — it would be
+ * 36 × entities × 5 per viewer: at the twenty-four the world cap allows, 4.3 KB/s
+ * to each phone to say the same number twenty-four times, to an audience holding
+ * phones on mobile data (CLAUDE.md → *Bytes on the wire are a design
+ * constraint*). It is one fact about the world, so it is carried once.
+ *
+ * AND WHY IT IS A STRUCTURE RATHER THAN A KIND KEY. This client is deliberately
+ * kind-agnostic: an object arrives as an ordinary entity with an art key, and
+ * the browser has no way to tell which of them is a crate — which is exactly
+ * what keeps "a new kind of thing on the ground" a backend-only change. So it is
+ * TOLD where the store is instead of being asked to find it, and can grey the
+ * drink button — too far, or nothing left — while still holding no content key
+ * at all.
+ *
+ * Not part of a typed roster frame, because there is no typed roster frame: a
+ * frame arrives as a loose record and every field on it is read through a guard
+ * (`readStore` in lib/vanyagotchiPlane). This shape is what that guard produces
+ * and what the wire promises.
+ */
+export interface VanyagotchiStore {
+  x: number;
+  y: number;
+  /**
+   * How many drinks the crate still holds.
+   *
+   * NEVER NOUGHT ON A PUBLISHED FRAME — the draw that empties a crate exhausts
+   * it and stands a fresh one up in the same transaction, so an empty store is
+   * ABSENT rather than zero. The client still treats a nought as "nothing left"
+   * rather than trusting that promise, because the two mean the same thing to
+   * everything downstream and a client that believed a count it was not given
+   * would offer a drink that cannot be poured.
+   *
+   * PUBLISHED BEFORE THE FACT, AND SAFE, because it decides nothing: the draw
+   * itself is a conditional UPDATE, so a player acting on a count that has just
+   * gone stale is refused rather than served, and no arrangement of stale frames
+   * can oversell the crate. What a stale count costs is one refusal — «пиво
+   * кончилось» over his head — which is the cheapest possible failure and the
+   * reason the number can ride an idempotent frame at all.
+   */
+  left: number;
 }
 
 export interface VanyagotchiLocation {
@@ -431,6 +543,29 @@ export interface VanyagotchiConfig {
    * it — must still draw a yard and still teach the rules it does know about.
    */
   object_kinds?: VanyagotchiObjectKind[];
+  /**
+   * How close "beside it" is, in plane widths — the one number an action's
+   * `needs_near` gate turns on.
+   *
+   * SERVED SO THAT THE BUTTON AND THE REFUSAL ARE ONE THRESHOLD rather than two
+   * that drift apart, the identical reason a stat's `warn_at` is catalogue data
+   * rather than a value in the stylesheet. The client has both ends of the
+   * measurement already — its own entity, from the hello, and the crate's place,
+   * from the frame — so all it was missing was where the line falls. Hardcoding
+   * the 0.12 here would mean a retune in
+   * internal/gamevanyagotchi/content.go greying a button at one distance while
+   * the server refused at another, and nothing would ever compare the two.
+   *
+   * Optional in the type even though a current server always sends it, because
+   * a client older or newer than its server is the ordinary case here and every
+   * other catalogue list is read the same way. What a MISSING one costs is
+   * stated where it is read (`beside` in lib/vanyagotchiPlane): a threshold this
+   * client cannot read is not one it may guess at, so the gated button greys.
+   * That failure is only reachable from a server that shipped `needs_near`
+   * without this — they are two fields of one struct — or from a fixture that
+   * stubs one and forgets the other.
+   */
+  arrive_within?: number;
   locations: VanyagotchiLocation[];
   default_skin: string;
   default_location: string;

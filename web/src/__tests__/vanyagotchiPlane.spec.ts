@@ -16,13 +16,18 @@ import {
   applyPosition,
   avatarEndpoint,
   bandFor,
+  beside,
   capLabel,
   capSay,
   huntRestarted,
   isRenderablePosition,
+  outOfReach,
   propScale,
   readAppearances,
   readHere,
+  readStore,
+  sameStore,
+  storeLabel,
   readHunt,
   resolveArt,
   sameAppearance,
@@ -842,5 +847,184 @@ describe('sameAppearance', () => {
 
   it('is true for two empty yards', () => {
     expect(sameAppearance([], [])).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The beer store: the one rule in this game about where somebody is standing.
+//
+// Every test below pins a DERIVATION or a guard rather than a number. The
+// threshold itself is catalogue content (`arrive_within`) and is passed in, so
+// retuning it in internal/gamevanyagotchi/content.go keeps all of this green —
+// which is the whole point of the client being told the number rather than
+// holding one.
+// ---------------------------------------------------------------------------
+
+describe('readStore', () => {
+  it('reads a well-formed block', () => {
+    expect(readStore({ x: 0.82, y: 0.22, left: 6 })).toEqual({ x: 0.82, y: 0.22, left: 6 });
+  });
+
+  it('is undefined for a yard with no crate', () => {
+    expect(readStore(undefined)).toBeUndefined();
+    expect(readStore(null)).toBeUndefined();
+  });
+
+  it('is undefined for anything that is not a place', () => {
+    // The place is what the whole block is FOR — a count with nowhere to walk
+    // to could grey a button and never explain it.
+    expect(readStore('yes')).toBeUndefined();
+    expect(readStore({ left: 6 })).toBeUndefined();
+    expect(readStore({ x: 0.5, left: 6 })).toBeUndefined();
+    expect(readStore({ x: Number.NaN, y: 0.2, left: 6 })).toBeUndefined();
+    expect(readStore({ x: 0.5, y: Number.POSITIVE_INFINITY, left: 6 })).toBeUndefined();
+  });
+
+  it('reads an unusable count as empty rather than as no crate at all', () => {
+    // Deliberately the other way round from the place. Both grey the button, so
+    // the difference is only what the player is told, and «ящик пуст» beside a
+    // crate he can see is truer than pretending the yard has none.
+    expect(readStore({ x: 0.8, y: 0.2 })?.left).toBe(0);
+    expect(readStore({ x: 0.8, y: 0.2, left: Number.NaN })?.left).toBe(0);
+    expect(readStore({ x: 0.8, y: 0.2, left: '6' })?.left).toBe(0);
+    expect(readStore({ x: 0.8, y: 0.2, left: -3 })?.left).toBe(0);
+  });
+
+  it('truncates a fractional count, because half a serving is not a thing', () => {
+    expect(readStore({ x: 0.8, y: 0.2, left: 2.9 })?.left).toBe(2);
+  });
+});
+
+describe('sameStore', () => {
+  it('is true for two yards with no crate, so an empty yard never re-renders', () => {
+    expect(sameStore(undefined, undefined)).toBe(true);
+  });
+
+  it('is false when one of them has a crate', () => {
+    expect(sameStore(undefined, { x: 0.8, y: 0.2, left: 6 })).toBe(false);
+    expect(sameStore({ x: 0.8, y: 0.2, left: 6 }, undefined)).toBe(false);
+  });
+
+  it('is true for the same crate, which is what every frame carries', () => {
+    expect(sameStore({ x: 0.8, y: 0.2, left: 6 }, { x: 0.8, y: 0.2, left: 6 })).toBe(true);
+  });
+
+  it('notices the count falling, which is the thing that actually changes', () => {
+    expect(sameStore({ x: 0.8, y: 0.2, left: 6 }, { x: 0.8, y: 0.2, left: 5 })).toBe(false);
+  });
+
+  it('notices the crate being stood up somewhere else', () => {
+    expect(sameStore({ x: 0.8, y: 0.2, left: 6 }, { x: 0.3, y: 0.2, left: 6 })).toBe(false);
+    expect(sameStore({ x: 0.8, y: 0.2, left: 6 }, { x: 0.8, y: 0.9, left: 6 })).toBe(false);
+  });
+});
+
+describe('beside', () => {
+  const crate = { x: 0.8, y: 0.2 };
+
+  it('is true standing on it', () => {
+    expect(beside({ x: 0.8, y: 0.2 }, crate, 0.12)).toBe(true);
+  });
+
+  it('is true just inside the threshold and false just outside it', () => {
+    expect(beside({ x: 0.8 - 0.11, y: 0.2 }, crate, 0.12)).toBe(true);
+    expect(beside({ x: 0.8 - 0.13, y: 0.2 }, crate, 0.12)).toBe(false);
+  });
+
+  it('is true exactly ON the threshold — the same `<=` the server compares with', () => {
+    // If this ever flips to `<`, the button and the server disagree for exactly
+    // one position, which is the hardest kind of bug to be told about.
+    expect(beside({ x: 0.8 - 0.12, y: 0.2 }, crate, 0.12)).toBe(true);
+  });
+
+  it('measures both axes rather than only the one that differs', () => {
+    // 0.09 on each axis is 0.127 apart, which is OUTSIDE 0.12 — a version that
+    // compared axes independently would call this near.
+    expect(beside({ x: 0.8 - 0.09, y: 0.2 - 0.09 }, crate, 0.12)).toBe(false);
+  });
+
+  it('is false when it cannot know where he is', () => {
+    // A client whose hello has not been answered yet does not know which entity
+    // it is, and cannot be beside anything.
+    expect(beside(undefined, crate, 0.12)).toBe(false);
+  });
+
+  it('is false when the yard has nothing to stand beside', () => {
+    expect(beside({ x: 0.8, y: 0.2 }, undefined, 0.12)).toBe(false);
+  });
+
+  it('is false rather than guessing when the threshold is unusable', () => {
+    // Guessing would grey at a distance nothing else in the system agrees with.
+    expect(beside({ x: 0.8, y: 0.2 }, crate, undefined)).toBe(false);
+    expect(beside({ x: 0.8, y: 0.2 }, crate, Number.NaN)).toBe(false);
+    expect(beside({ x: 0.8, y: 0.2 }, crate, -1)).toBe(false);
+  });
+});
+
+describe('outOfReach', () => {
+  const crate = { x: 0.8, y: 0.2, left: 6 };
+  const gated = { needs_near: 'beer_crate' };
+
+  it('never blocks a verb that is not gated on a place, wherever he is', () => {
+    expect(outOfReach({}, undefined, false)).toBe(false);
+    expect(outOfReach({}, crate, false)).toBe(false);
+    expect(outOfReach(undefined, undefined, false)).toBe(false);
+    expect(outOfReach(null, crate, true)).toBe(false);
+  });
+
+  it('blocks it when the yard has no crate to stand at', () => {
+    expect(outOfReach(gated, undefined, true)).toBe(true);
+  });
+
+  it('blocks it when there is nothing left in the crate, even standing on it', () => {
+    expect(outOfReach(gated, { ...crate, left: 0 }, true)).toBe(true);
+  });
+
+  it('blocks it from across the yard', () => {
+    expect(outOfReach(gated, crate, false)).toBe(true);
+  });
+
+  it('allows it standing at a crate with something in it', () => {
+    expect(outOfReach(gated, crate, true)).toBe(false);
+  });
+
+  it('looks only at WHETHER the verb names a place, never at which one', () => {
+    // The load-bearing property: the client holds no content keys, so a verb
+    // gated on a kind this browser has never heard of behaves identically. A
+    // version that compared `needs_near` to 'beer_crate' would pass every test
+    // above and fail this one.
+    expect(outOfReach({ needs_near: 'something_invented_next_year' }, crate, true)).toBe(false);
+    expect(outOfReach({ needs_near: 'something_invented_next_year' }, crate, false)).toBe(true);
+  });
+});
+
+describe('storeLabel', () => {
+  it('says nothing when the yard has no crate', () => {
+    expect(storeLabel(undefined, false)).toBeNull();
+  });
+
+  it('says the crate is empty, which means wait rather than walk', () => {
+    expect(storeLabel({ x: 0.8, y: 0.2, left: 0 }, true)).toBe('🍺 ящик пуст');
+  });
+
+  it('tells him to walk over, and how much is worth walking for', () => {
+    expect(storeLabel({ x: 0.8, y: 0.2, left: 6 }, false)).toBe('🍺 ящик: 6 — дойди');
+  });
+
+  it('drops the instruction once he has arrived', () => {
+    expect(storeLabel({ x: 0.8, y: 0.2, left: 6 }, true)).toBe('🍺 ящик: 6');
+  });
+
+  it('stays short enough for a third item in the status row at 320px', () => {
+    // The row must not wrap and must not overflow — the width that has broken
+    // this screen before. Pinned as a bound rather than as an exact string so
+    // the copy can be reworded without a test edit.
+    for (const line of [
+      storeLabel({ x: 0.8, y: 0.2, left: 0 }, false),
+      storeLabel({ x: 0.8, y: 0.2, left: 24 }, false),
+      storeLabel({ x: 0.8, y: 0.2, left: 24 }, true),
+    ]) {
+      expect([...(line ?? '')].length).toBeLessThanOrEqual(20);
+    }
   });
 });

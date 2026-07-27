@@ -648,3 +648,98 @@ describe('YARD_PROSE — the hardcoded half', () => {
     for (const line of YARD_PROSE) expect(line.trim().length).toBeGreaterThan(0);
   });
 });
+
+describe('buildRules — a verb you have to walk to something to use', () => {
+  /** The crate, as the catalogue actually ships it: named, forever, six in it. */
+  const crate = (over: Partial<VanyagotchiObjectKind> = {}): VanyagotchiObjectKind =>
+    objectKind({
+      key: 'beer_crate',
+      art: 'obj_crate',
+      label: 'ящик пива',
+      lifetime_seconds: 0,
+      stock: 6,
+      ...over,
+    });
+
+  /** «выпить пива», gated on standing at the crate and drawn from its stock. */
+  const drink = (over: Partial<VanyagotchiAction> = {}): VanyagotchiAction =>
+    action({ needs_near: 'beer_crate', contests: 'beer_crate', ...over });
+
+  const notesFor = (cfg: VanyagotchiConfig): string[] => buildRules(cfg).actions[0].notes;
+
+  it('says where he has to stand, naming the thing from the catalogue', () => {
+    const notes = notesFor(config({ actions: [drink()], object_kinds: [crate()] }));
+    expect(notes).toContain('нужно стоять рядом: ящик пива');
+  });
+
+  it('says how many the thing holds, derived from its stock', () => {
+    // The six is `crateStock` in content.go — retuned by feel one evening, which
+    // is exactly why this sentence is derived and not typed.
+    const notes = notesFor(config({ actions: [drink()], object_kinds: [crate()] }));
+    expect(notes).toContain('ящик пива — 6 порций на всех');
+  });
+
+  it('follows a retune rather than pinning the number', () => {
+    const notes = notesFor(config({ actions: [drink()], object_kinds: [crate({ stock: 2 })] }));
+    expect(notes).toContain('ящик пива — 2 порции на всех');
+  });
+
+  it('agrees the Russian numeral, which a naive template gets visibly wrong', () => {
+    const stockOf = (n: number) =>
+      notesFor(config({ actions: [drink()], object_kinds: [crate({ stock: n })] })).find((note) =>
+        note.includes('на всех'),
+      );
+    expect(stockOf(1)).toBe('ящик пива — 1 порция на всех');
+    expect(stockOf(3)).toBe('ящик пива — 3 порции на всех');
+    expect(stockOf(6)).toBe('ящик пива — 6 порций на всех');
+    expect(stockOf(11)).toBe('ящик пива — 11 порций на всех');
+    expect(stockOf(21)).toBe('ящик пива — 21 порция на всех');
+  });
+
+  it('says neither for a verb that is not gated on a place and races nobody', () => {
+    const notes = notesFor(config({ actions: [action()], object_kinds: [crate()] }));
+    expect(notes.some((note) => note.startsWith('нужно стоять рядом'))).toBe(false);
+    expect(notes.some((note) => note.includes('на всех'))).toBe(false);
+  });
+
+  it('stays silent about a kind the catalogue does not describe', () => {
+    // A client older than the server can be told about a verb gated on a kind it
+    // has never heard of, and «нужно стоять рядом: кое-что» is a fetch quest
+    // rather than a rule.
+    const notes = notesFor(config({ actions: [drink()], object_kinds: [] }));
+    expect(notes.some((note) => note.startsWith('нужно стоять рядом'))).toBe(false);
+    expect(notes.some((note) => note.includes('на всех'))).toBe(false);
+  });
+
+  it('stays silent about a kind the catalogue does not NAME', () => {
+    // Stricter than `leavesNote`, which falls back to «кое-что»: the whole
+    // content of these two sentences is WHICH thing to walk to.
+    const notes = notesFor(
+      config({ actions: [drink()], object_kinds: [crate({ label: undefined })] }),
+    );
+    expect(notes.some((note) => note.startsWith('нужно стоять рядом'))).toBe(false);
+    expect(notes.some((note) => note.includes('на всех'))).toBe(false);
+  });
+
+  it('says nothing about stock for a contested thing that is won outright', () => {
+    // The lost key is contested too, and carries no stock — it is taken whole
+    // rather than drawn down, so there is no count to state.
+    const key = objectKind({ key: 'key', art: 'obj_key', label: 'ключи', lifetime_seconds: 0 });
+    const notes = notesFor(
+      config({ actions: [action({ contests: 'key' })], object_kinds: [key] }),
+    );
+    expect(notes.some((note) => note.includes('на всех'))).toBe(false);
+  });
+
+  it('does not confuse the two gates: a place is not a stat', () => {
+    const notes = notesFor(
+      config({
+        stats: [stat({ key: 'bladder', label: 'мочевой пузырь' })],
+        actions: [drink({ needs_stat: 'bladder', needs_at_least: 15 })],
+        object_kinds: [crate()],
+      }),
+    );
+    expect(notes).toContain('нужно накопить: мочевой пузырь от 15');
+    expect(notes).toContain('нужно стоять рядом: ящик пива');
+  });
+});

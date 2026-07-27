@@ -263,6 +263,258 @@ async function shown(page: Page, key: string): Promise<number> {
 const shownHp = (page: Page) => shown(page, 'hp');
 const actionBtn = (page: Page, key: string) => page.locator(`[data-test="action-${key}"]`);
 
+/** The one line the status row says about the beer store, or nothing at all. */
+const storeLine = (page: Page) => page.locator('[data-test="store"]');
+
+/**
+ * How many drinks the status row says are left in the crate.
+ *
+ * NaN when the row says something with no number in it — «ящик пуст» — or when
+ * there is no store line at all, which is a yard with no crate in it. Both are
+ * real states rather than parse failures, so they are reported as a value a
+ * comparison will simply fail against rather than as a throw inside a poll.
+ */
+async function storeLeft(page: Page): Promise<number> {
+  if ((await storeLine(page).count()) === 0) return Number.NaN;
+  const text = (await storeLine(page).textContent()) ?? '';
+  const found = text.match(/(\d+)/);
+  return found ? Number(found[1]) : Number.NaN;
+}
+
+// ---------------------------------------------------------------------------
+// Walking to the beer.
+//
+// Drinking stopped being something he can do from wherever he is standing.
+// «Выпить пива» carries a `needs_near` for the crate, the crate stands at a
+// fixed pitch, and the server refuses the verb from further away than
+// `arrive_within`. Three tests below used to press the button from the spawn
+// point and now have to walk first — which is the shape of the iteration rather
+// than an inconvenience of the harness, and it is why these helpers exist.
+//
+// COPIED from the sibling full-stack spec rather than imported from it, for the
+// reason that file's own header gives: a game's fixtures are its own, so the two
+// specs deliberately duplicate and deleting «Ванягоччи» stays a matter of
+// deleting its files.
+// ---------------------------------------------------------------------------
+
+/**
+ * Turns a normalised target into a click on the plane. Copied from the sibling
+ * spec, where a tap is what every movement test is made of.
+ */
+async function tapAt(page: Page, x: number, y: number): Promise<void> {
+  const box = await page.locator('[data-test="plane"]').boundingBox();
+  expect(box, 'the plane has no box to tap').not.toBeNull();
+  await page.mouse.click(
+    (box?.x ?? 0) + (box?.width ?? 0) * x,
+    (box?.y ?? 0) + (box?.height ?? 0) * y,
+  );
+}
+
+/**
+ * The caller's OWN dot, normalised, read off the custom properties.
+ *
+ * Read from the properties rather than from a bounding box because that is where
+ * a position lives and nowhere else — a measured pixel offset would also be
+ * measuring the plane's size, its border radius and whatever the CSS transition
+ * happened to be doing at that instant. NaN rather than a throw when the dot is
+ * not there, so a caller inside `expect.poll` retries across a reconnect instead
+ * of failing on it. Copied from the sibling spec.
+ */
+async function you(page: Page): Promise<{ x: number; y: number }> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('[data-test="peer"][data-you="1"]');
+    if (!el) return { x: Number.NaN, y: Number.NaN };
+    const style = getComputedStyle(el);
+    return {
+      x: Number.parseFloat(style.getPropertyValue('--x')),
+      y: Number.parseFloat(style.getPropertyValue('--y')),
+    };
+  });
+}
+
+/**
+ * Where the beer store stands. Mirrored from `cratePlace` in
+ * internal/gamevanyagotchi/content.go.
+ *
+ * MIRRORED BECAUSE IT IS NOT ON THE WIRE, and that absence is deliberate rather
+ * than an oversight: `ObjectKind.At` is `json:"-"`, because the browser is
+ * kind-agnostic — it is TOLD where the store is, as a place on the roster frame,
+ * instead of being asked to find the entity whose kind is a crate. So a test
+ * that wants to tap the crate has nowhere to read its pitch from and writes it
+ * down, at the same cost and under the same rule as `NEVER_TIRES_WITHIN` in the
+ * sibling spec: it is here to REASON about a fixture, never to make one pass.
+ * Move the crate in content.go without moving this and the walk below simply
+ * never arrives, which is a loud failure rather than a silent pass.
+ */
+const CRATE_PLACE = { x: 0.82, y: 0.22 };
+
+/**
+ * Somewhere emphatically not the crate: the far corner, about 0.95 plane-widths
+ * from it and therefore some eight times the reach threshold.
+ */
+const ACROSS_THE_YARD = { x: 0.12, y: 0.86 };
+
+/**
+ * Walks his Ваня over to the beer and waits until the drink is pressable.
+ *
+ * IT WAITS ON THE BUTTON RATHER THAN ON A COORDINATE, and that is the point of
+ * the helper rather than a shortcut. What every caller below actually wants is a
+ * control it can click, and the button is enabled by exactly the arithmetic the
+ * server will redo when the verb arrives — his own position against the store's,
+ * compared with the served `arrive_within`. Waiting on the position instead
+ * would be asserting the gate here, inside a fixture, and a test that merely
+ * wanted to press a button would silently become a test of it.
+ *
+ * The retry is what tolerates the tiredness roll: a walk that ends in «устал»
+ * only means asking again from where he sat down, and each attempt starts closer
+ * than the last. It is robustness rather than an expectation — the crate stands
+ * about 0.425 plane-widths from the spawn, which is INSIDE `tiredFrom` (0.45),
+ * so a Ваня who has just arrived can always reach the beer in one tap and is
+ * never stuck between the door and a drink. That is a deliberate property of
+ * where the crate was placed (see the note over `cratePlace` in content.go); the
+ * loop is here for the other case, a Ваня an earlier test walked into a corner.
+ */
+async function walkToTheCrate(page: Page): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await tapAt(page, CRATE_PLACE.x, CRATE_PLACE.y);
+    try {
+      await expect(actionBtn(page, 'drink')).toBeEnabled({ timeout: 15_000 });
+      return;
+    } catch {
+      // He sat down part way and said so. Ask again from where he is now.
+    }
+  }
+  const at = await you(page);
+  throw new Error(
+    `he never got within reach of the crate — he is at ${at.x.toFixed(3)},${at.y.toFixed(3)} ` +
+      'and the drink is still greyed',
+  );
+}
+
+/**
+ * Puts him back where the beer is out of reach, and waits until the screen
+ * agrees.
+ *
+ * Keyed on the button for the same reason as its opposite. Note that it returns
+ * IMMEDIATELY when he is already out of reach — a Ваня at the spawn point is
+ * 0.425 away from a crate he has to be within 0.12 of — so this is a statement
+ * about where he ends up rather than a promise that he walked.
+ */
+async function walkAwayFromTheCrate(page: Page): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await tapAt(page, ACROSS_THE_YARD.x, ACROSS_THE_YARD.y);
+    try {
+      await expect(actionBtn(page, 'drink')).toBeDisabled({ timeout: 15_000 });
+      return;
+    } catch {
+      // As above: he gave up part way, which is a shorter walk to ask for again.
+    }
+  }
+  const at = await you(page);
+  throw new Error(
+    `he would not leave the crate — he is at ${at.x.toFixed(3)},${at.y.toFixed(3)} and the ` +
+      'drink is still lit',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The crate, as Postgres holds it.
+//
+// The screen is the wrong place to prove a draw HAPPENED. A count on a frame is
+// the server's cache repeating itself five times a second, and a server that
+// decremented a number in memory and never wrote it down would satisfy every
+// assertion made through the browser. So the tests below read the row.
+//
+// Whitebox, and the project's rule is real flows or direct DB setup — the same
+// reasoning `setStats` above gives for its own.
+// ---------------------------------------------------------------------------
+
+/** One world object of the stocked kind, as the table holds it. */
+interface CrateRow {
+  id: string;
+  remaining: number;
+  x: number;
+  y: number;
+  exhausted: boolean;
+}
+
+/** Every crate the world has ever stood up, oldest first, live or used up. */
+function crates(kind: string): CrateRow[] {
+  const out = psql(
+    `SELECT id::text, remaining, x, y, exhausted_at IS NOT NULL ` +
+      `FROM game_vanyagotchi_world_objects ` +
+      `WHERE kind = '${kind}' AND deleted_at IS NULL ORDER BY created_at`,
+  );
+  if (!out) return [];
+  return out.split('\n').map((line) => {
+    const [id, remaining, x, y, exhausted] = line.split('|');
+    return {
+      id,
+      remaining: Number.parseInt(remaining, 10),
+      x: Number.parseFloat(x),
+      y: Number.parseFloat(y),
+      exhausted: exhausted === 't',
+    };
+  });
+}
+
+/** The ones still standing — at most one, as a partial unique index. */
+const liveCrates = (kind: string) => crates(kind).filter((crate) => !crate.exhausted);
+
+/** One world-object kind as the catalogue serves it. */
+interface WireObjectKind {
+  key: string;
+  label?: string;
+  stock?: number;
+}
+
+/**
+ * The kind of thing the yard draws beer out of, asked of the server.
+ *
+ * FOUND BY THE FACT THAT IT CARRIES A STOCK rather than by its key, so nothing
+ * in this file writes «beer_crate» or its six down: retuning `crateStock`, or
+ * renaming the kind, moves what these tests expect with no edit here — the same
+ * discipline the sibling spec follows for the size of the cast. The key it
+ * returns is then what the SQL above names, which is the one place a kind value
+ * legitimately appears: a row's `kind` column holds it.
+ */
+async function stockedKind(page: Page): Promise<Required<WireObjectKind>> {
+  const res = await page.request.get(CONFIG_URL);
+  expect(res.status(), `GET ${CONFIG_URL}`).toBe(200);
+  const cfg = (await res.json()) as { object_kinds?: WireObjectKind[] };
+  const found = (cfg.object_kinds ?? []).find((kind) => (kind.stock ?? 0) > 0);
+  expect(found, 'the catalogue serves nothing with a stock in it').toBeDefined();
+  const kind = found as WireObjectKind;
+  return { key: kind.key, label: kind.label ?? '', stock: kind.stock as number };
+}
+
+/** How close «beside it» is, as the server serves it. Never written down here. */
+async function arriveWithin(page: Page): Promise<number> {
+  const res = await page.request.get(CONFIG_URL);
+  expect(res.status(), `GET ${CONFIG_URL}`).toBe(200);
+  const cfg = (await res.json()) as { arrive_within?: number };
+  expect(
+    typeof cfg.arrive_within === 'number' && cfg.arrive_within > 0,
+    'the catalogue serves a gate without the threshold it turns on',
+  ).toBe(true);
+  return cfg.arrive_within as number;
+}
+
+/** Everything lying about the plane, normalised — the `obj-` entities only. */
+async function objectsOnThePlane(page: Page): Promise<{ x: number; y: number }[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[data-test="peer"][data-peer^="obj-"]')].map(
+      (el) => {
+        const style = getComputedStyle(el);
+        return {
+          x: Number.parseFloat(style.getPropertyValue('--x')),
+          y: Number.parseFloat(style.getPropertyValue('--y')),
+        };
+      },
+    ),
+  );
+}
+
 /** Creates the pet the way the app does — a plain read — and returns the state. */
 async function readState(page: Page): Promise<Record<string, unknown>> {
   const res = await page.request.get(STATE_URL);
@@ -359,6 +611,12 @@ test('one drink moves three stats, and all three survive a reload', async ({ bro
 
     await enterYardFrom(page);
     await expect.poll(() => shownHp(page)).toBeLessThanOrEqual(21);
+
+    // TO THE CRATE FIRST. Beer comes out of a crate now, so a drink is refused
+    // from anywhere but beside it — this used to be a press from wherever he
+    // happened to be standing, and the walk is the only thing about this test
+    // that changed. What it is still about is the three numbers below.
+    await walkToTheCrate(page);
 
     await actionBtn(page, 'drink').click();
     await expect(page.locator('[data-test="peer-say"]')).toHaveText('хорошо пошло');
@@ -503,6 +761,22 @@ test('a dead Ваня refuses everything but the one verb that raises him', asyn
     // straggler has already been applied by the time hp goes to zero.
     await enterYardFrom(page);
 
+    // TO THE CRATE WHILE HE IS STILL ALIVE, and this is the interesting half of
+    // the test rather than a step of setup.
+    //
+    // A drink is gated on arriving now, so a corpse standing across the yard has
+    // a drink button that is greyed for DISTANCE — and a button nobody can press
+    // proves nothing at all about what a dead Ваня refuses. Walking him over
+    // first is what keeps the refusal below reachable, and it makes this test say
+    // something it could not say before: it now pins the ORDER of the two
+    // refusals. Being dead outranks being far away — the check sits immediately
+    // after `apply`, ahead of nothing and behind the fatal check, deliberately —
+    // so a corpse standing AT the crate answers «он не встаёт» and not
+    // «далековато». That ordering is the one ADR-043 records as load-bearing,
+    // because the two lines are opposite instructions: one tells him which button
+    // to press instead, the other would send him walking with a corpse.
+    await walkToTheCrate(page);
+
     // On the floor. The death is not written by this UPDATE — it is recorded by
     // the first READ that observes hp at zero, which is the lazy-materialisation
     // shape the rest of this game uses too.
@@ -518,9 +792,24 @@ test('a dead Ваня refuses everything but the one verb that raises him', asyn
     await refreshTheYardsIdeaOf(page);
     await expect(page.locator('[data-test="pet-line"]')).toHaveText(DEATH_LINE);
 
+    // He is still standing at the crate, which the reload did not move him from:
+    // a placement is in memory and is only replaced by a stored position when
+    // the yard has none or has only the provisional spawn it invents for a
+    // connection it has not been greeted by. So the button is LIT over a corpse,
+    // and the refusal about to arrive can only be about the death.
+    await expect(
+      actionBtn(page, 'drink'),
+      'the drink is greyed, so the refusal below would be about distance rather than death',
+    ).toBeEnabled({ timeout: 20_000 });
+    await expect(storeLine(page), 'the walk to the crate did not survive the reload').not.toContainText(
+      'дойди',
+    );
+
     // A beer is refused now, and pressing it first is the point: it proves the
     // corpse turns down the verb that used to be its way out, over the real
-    // stack, before the verb that actually works is tried.
+    // stack, before the verb that actually works is tried. «Он не встаёт» rather
+    // than «далековато» is the whole of the ordering claim above — he is beside
+    // the crate, so the only thing left to refuse him is being dead.
     await actionBtn(page, 'drink').click();
     await expect(page.locator('.peer--you [data-test="peer-say"]')).toHaveText('он не встаёт');
     expect((await readState(page)).alive, 'a beer brought him round; only the revival may').toBe(
@@ -677,6 +966,12 @@ test('two accounts have two Ваняs, and an action on one does not touch the o
     await enterYardFrom(pageB);
     await expect.poll(() => shownHp(pageA)).toBeLessThanOrEqual(21);
     await expect.poll(() => shownHp(pageB)).toBeLessThanOrEqual(41);
+
+    // A walks over to the beer; B does not move and does not drink. That the two
+    // Ваняs are in different parts of the yard is incidental to the claim here —
+    // one pet per account — but it is worth noticing that A crossing the yard is
+    // the only thing that happens to B at all.
+    await walkToTheCrate(pageA);
 
     await actionBtn(pageA, 'drink').click();
     // Scoped to A's OWN Ваня, and this is the one test in the file where that
@@ -987,6 +1282,305 @@ test('a Ваня who has never stood anywhere arrives in the middle of the yard'
     // server's own — published precisely so this screen never has to work out
     // which entity is somebody you could talk to.
     await expect(page.getByText('во дворе: 1')).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The beer store.
+//
+// What the stubbed suite next door cannot say. It pushes a `store` block down a
+// fake socket and checks that the client greys a button and writes the right
+// sentence, which is the client's whole job and is worth pinning there — but it
+// would pass just as happily against a server that never stood a crate up, never
+// drew one down, and never wrote a row. Every test below is about the half that
+// only Postgres and the real binary can answer: the crate is a ROW, the draw is
+// a conditional UPDATE that cannot oversell it, the crate that empties is
+// replaced in the same transaction, and a yard with nothing in it grows one back
+// the moment somebody says hello.
+// ---------------------------------------------------------------------------
+
+test('the beer is behind a walk, and the draw that follows it reaches Postgres', async ({
+  browser,
+  baseURL,
+}) => {
+  // THE claim of the iteration: distance stopped being decorative. A drink used
+  // to be a button you pressed from wherever you were standing; it is now a
+  // journey with a button at the end of it, and both ends of that rule are
+  // checked here against the real thing — the client greys the control from the
+  // frame's own numbers, the server refuses the verb from its own placement map,
+  // and the two are the same threshold because both read `arrive_within` off one
+  // catalogue.
+  //
+  // And then the draw. The count falling by one on screen is not enough on its
+  // own — a server that decremented a number in its cache would produce exactly
+  // that — so the row is read straight out of the table either side of the
+  // press. Both, because either alone is satisfied by a plausible bug: the row
+  // without the screen would be a draw nobody is told about, and the screen
+  // without the row would be a draw that evaporates on the next restart.
+  test.setTimeout(120_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const seeded = await stack();
+  forgetPet(seeded[PLAYER_A]);
+
+  const context = await browser.newContext(PHONE);
+  try {
+    await loginAs(context, PLAYER_A);
+    const page = await context.newPage();
+    await page.goto(`${base}/app/game-vanyagotchi`);
+
+    // Low enough that a drink is not a clamped no-op, and comfortably clear of
+    // every threshold so nothing drifts while the walk happens.
+    await readState(page);
+    setStats(seeded[PLAYER_A], { hp: 30, beer: 30, bladder: 10 });
+
+    const kind = await stockedKind(page);
+    const within = await arriveWithin(page);
+
+    // The yard was emptied by `beforeEach`, so this hello is what stands the
+    // crate up — the same path the last test in this file is entirely about.
+    await enterYardFrom(page);
+    await expect(storeLine(page), 'the yard never grew a crate to walk to').toBeVisible({
+      timeout: 20_000,
+    });
+
+    // ACROSS THE YARD. Asserted three ways, because each of them is a different
+    // claim: the geometry (he really is further away than the gate allows), the
+    // control (it is greyed), and the words (the row tells him to walk rather
+    // than to wait, which is the difference between the two refusals).
+    await walkAwayFromTheCrate(page);
+    const far = await you(page);
+    expect(
+      Math.hypot(far.x - CRATE_PLACE.x, far.y - CRATE_PLACE.y),
+      `he is standing at ${far.x.toFixed(3)},${far.y.toFixed(3)}, which is within reach of the ` +
+        'crate — the greyed button below would be greyed for some other reason',
+    ).toBeGreaterThan(within);
+    await expect(actionBtn(page, 'drink')).toBeDisabled();
+    await expect(storeLine(page)).toContainText('дойди');
+
+    // The count on the frame and the count in the table are the same number, and
+    // they are compared BEFORE anybody drinks — so the falling count below is a
+    // change to one thing rather than two numbers happening to end up equal.
+    const before = liveCrates(kind.key);
+    expect(before, 'the yard is holding something other than exactly one crate').toHaveLength(1);
+    expect(
+      await storeLeft(page),
+      'the status row and the row in the table disagree about how much beer there is',
+    ).toBe(before[0].remaining);
+
+    // He walks. Nothing about the world changed — same crate, same stock — so
+    // his position is the only thing that can have lit the button.
+    await walkToTheCrate(page);
+    const near = await you(page);
+    expect(
+      Math.hypot(near.x - CRATE_PLACE.x, near.y - CRATE_PLACE.y),
+      `the drink lit up while he was standing at ${near.x.toFixed(3)},${near.y.toFixed(3)}, ` +
+        'which is not at the crate',
+    ).toBeLessThanOrEqual(within);
+    await expect(actionBtn(page, 'drink')).toBeEnabled();
+    await expect(storeLine(page)).not.toContainText('дойди');
+
+    await actionBtn(page, 'drink').click();
+    await expect(page.locator('.peer--you [data-test="peer-say"]')).toHaveText('хорошо пошло');
+
+    // On screen…
+    await expect
+      .poll(() => storeLeft(page), {
+        message: 'the yard never noticed a beer leaving the crate',
+        timeout: 20_000,
+      })
+      .toBe(before[0].remaining - 1);
+    // …and in the table, which is the half a stub cannot reach. The SAME row,
+    // drawn down rather than replaced: a crate is used up gradually, and only the
+    // draw that reaches nought stands a new one up.
+    const after = liveCrates(kind.key);
+    expect(after, 'the drink left the yard with the wrong number of crates in it').toHaveLength(1);
+    expect(after[0].id, 'the crate was replaced rather than drawn from').toBe(before[0].id);
+    expect(after[0].remaining, 'the draw never reached Postgres').toBe(before[0].remaining - 1);
+
+    // And the beer he drew is in him, which is what the whole walk was for.
+    expect(await shown(page, 'beer'), 'the drink moved the crate but not the Ваня').toBeGreaterThanOrEqual(
+      30 + DRINK_BEER - 2,
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+test('the last beer exhausts the crate, and a fresh one is standing there already', async ({
+  browser,
+  baseURL,
+}) => {
+  // The only moment in the crate's life that has any mechanism in it. Five of
+  // the six draws are a decrement; the sixth exhausts the row and inserts its
+  // replacement IN THE SAME TRANSACTION, against a partial unique index that
+  // permits exactly one live crate — which is what makes «пиво кончилось» a
+  // moment rather than a state anybody has to be dug out of.
+  //
+  // THE STOCK IS SET LOW WITH SQL FIRST, deliberately, and it is worth saying
+  // why rather than draining it through the buttons. A verb is rate-limited to
+  // one a second per account, so six real draws is six seconds of pressing plus
+  // six round trips — and five of them would be testing the decrement this
+  // file's previous test already pins, at the cost of a test that fails whenever
+  // the machine is slow. What is interesting is the LAST draw, so the fixture
+  // puts the crate one beer from empty and the test presses once. Whitebox, and
+  // the project's rule is real flows or direct DB setup.
+  test.setTimeout(120_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const seeded = await stack();
+  forgetPet(seeded[PLAYER_A]);
+
+  const context = await browser.newContext(PHONE);
+  try {
+    await loginAs(context, PLAYER_A);
+    const page = await context.newPage();
+    await page.goto(`${base}/app/game-vanyagotchi`);
+
+    await readState(page);
+    const kind = await stockedKind(page);
+
+    await enterYardFrom(page);
+    await expect(storeLine(page)).toBeVisible({ timeout: 20_000 });
+
+    const opened = liveCrates(kind.key);
+    expect(opened, 'the hello did not leave exactly one crate to drain').toHaveLength(1);
+    expect(opened[0].remaining, 'a fresh crate did not come out full').toBe(kind.stock);
+
+    psql(
+      `UPDATE game_vanyagotchi_world_objects SET remaining = 1, updated_at = now() ` +
+        `WHERE id = '${opened[0].id}'`,
+    );
+    // The running process is still holding the count it read at the hello — the
+    // world cache is refreshed when a human causes it to be, never on the tick —
+    // so a row changed behind its back is a row nothing would notice. A reload is
+    // a fresh socket and therefore a fresh hello, which is the honest way to make
+    // it look again; it is also what a player does constantly.
+    await refreshTheYardsIdeaOf(page);
+    await expect
+      .poll(() => storeLeft(page), {
+        message: 'the yard never re-read a crate that had been drained behind its back',
+        timeout: 20_000,
+      })
+      .toBe(1);
+
+    await walkToTheCrate(page);
+    await actionBtn(page, 'drink').click();
+    await expect(page.locator('.peer--you [data-test="peer-say"]')).toHaveText('хорошо пошло');
+
+    // The row he drank from is used up, and says so in the column both
+    // disciplines share.
+    await expect
+      .poll(() => crates(kind.key).find((crate) => crate.id === opened[0].id)?.exhausted, {
+        message: 'the last beer left the crate standing with nothing in it',
+        timeout: 20_000,
+      })
+      .toBe(true);
+    const drained = crates(kind.key).find((crate) => crate.id === opened[0].id) as CrateRow;
+    expect(drained.remaining, 'the exhausted crate still has beer in it').toBe(0);
+
+    // And there is a new one, standing in the same place. The pitch matters:
+    // a replacement drawn a hiding place — the branch `placeFor` takes for a kind
+    // with no pitch of its own — would be a shop that moved when it restocked,
+    // which is the key hunt wearing an apron.
+    const live = liveCrates(kind.key);
+    expect(live, 'the yard was left without a beer store').toHaveLength(1);
+    expect(live[0].id, 'the exhausted crate was reused rather than replaced').not.toBe(opened[0].id);
+    expect(live[0].remaining, 'the replacement did not come out full').toBe(kind.stock);
+    expect(live[0].x, 'the new crate is standing somewhere else').toBeCloseTo(CRATE_PLACE.x, 3);
+    expect(live[0].y, 'the new crate is standing somewhere else').toBeCloseTo(CRATE_PLACE.y, 3);
+
+    // The yard is already telling everybody about it — no reload, no hello. The
+    // verb refreshed the world cache on its own goroutine, so the very next frame
+    // carries the fresh crate rather than an empty store somebody has to wait
+    // out.
+    await expect
+      .poll(() => storeLeft(page), {
+        message: 'the replacement crate never reached the frame',
+        timeout: 20_000,
+      })
+      .toBe(kind.stock);
+    // And he is still standing at it, so the next drink is one tap away: the
+    // replacement is in the same place, which is the whole point of the pitch.
+    await expect(actionBtn(page, 'drink')).toBeEnabled({ timeout: 20_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test('a hello puts a beer store back into an empty yard', async ({ browser, baseURL }) => {
+  // `ensureWorld`, which is the only thing standing between this game and a yard
+  // that is permanently out of beer.
+  //
+  // There is no timer anywhere in «Ванягоччи» and there is deliberately not
+  // going to be one, so nothing sweeps the world and nothing schedules a
+  // restock. What puts a missing singleton back is a human arriving: a hello is
+  // a fresh socket, which is the human-paced moment this game is allowed to read
+  // and write the world on the plane's behalf. That covers the three ways a yard
+  // can end up bare — the first day of the game, a cold start, and a database
+  // somebody emptied — with one mechanism rather than three.
+  //
+  // `forgetWorldObjects()` in `beforeEach` is what makes the precondition real:
+  // it deletes EVERY world object, the crate included, so this test starts in a
+  // yard with no beer in it at all.
+  test.setTimeout(120_000);
+  const base = baseURL ?? 'http://127.0.0.1:8081';
+  const seeded = await stack();
+  forgetPet(seeded[PLAYER_A]);
+
+  const context = await browser.newContext(PHONE);
+  try {
+    await loginAs(context, PLAYER_A);
+    const page = await context.newPage();
+    await page.goto(`${base}/app/game-vanyagotchi`);
+
+    // Reading the catalogue is an ordinary HTTP GET and touches no world: the
+    // config handler serves content and nothing else, which is what lets the
+    // emptiness below be asserted after it.
+    const kind = await stockedKind(page);
+    expect(liveCrates(kind.key), 'the yard was not empty to start with').toHaveLength(0);
+
+    // The splash screen is not a hello — the socket is opened when he goes out
+    // into the yard and not on mount, so that the intro spends no connection and
+    // puts nobody's dot in front of anybody. Which means the yard is still bare
+    // at this point, and the button below is the thing that changes it.
+    await enterYardFrom(page);
+
+    await expect
+      .poll(() => liveCrates(kind.key).length, {
+        message: 'nobody stood a crate up when a player walked into an empty yard',
+        timeout: 20_000,
+      })
+      .toBe(1);
+    const [standing] = liveCrates(kind.key);
+    expect(standing.remaining, 'the new crate did not come out full').toBe(kind.stock);
+    expect(standing.x, 'the crate was not put where the store stands').toBeCloseTo(CRATE_PLACE.x, 3);
+    expect(standing.y, 'the crate was not put where the store stands').toBeCloseTo(CRATE_PLACE.y, 3);
+
+    // It reached the screen, with the catalogue's own stock in it. Not asserted
+    // against «дойди» either way: where he is standing is left over from whatever
+    // this shared process last saw him do, and this test is about the crate
+    // existing rather than about his feet.
+    await expect(storeLine(page)).toBeVisible({ timeout: 20_000 });
+    await expect(storeLine(page)).toContainText(String(kind.stock));
+
+    // And it is drawn, as an ordinary entity with an art key like everybody
+    // else's — which is the property that keeps a new kind of thing on the ground
+    // a backend-only change. Found by POSITION rather than by kind, because the
+    // browser holds no kind keys at all and there is nothing on a roster entry to
+    // match one against.
+    await expect
+      .poll(
+        async () =>
+          (await objectsOnThePlane(page)).some(
+            (at) => Math.hypot(at.x - CRATE_PLACE.x, at.y - CRATE_PLACE.y) < 0.01,
+          ),
+        {
+          message: 'the crate is in the table and on the status row but nothing draws it',
+          timeout: 20_000,
+        },
+      )
+      .toBe(true);
   } finally {
     await context.close();
   }

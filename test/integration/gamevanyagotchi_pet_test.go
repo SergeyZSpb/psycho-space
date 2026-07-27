@@ -112,37 +112,71 @@ func petBuildApp(vkBaseURL string, transport gamevanyagotchi.Transport) (http.Ha
 // both.
 func petApp(t *testing.T) (*httptest.Server, *gamevanyagotchi.Service) {
 	t.Helper()
-	return petAppWith(t, nil)
-}
-
-// petAppWith is petApp for the one verb that needs a hub to talk to — see
-// petBuildApp and petHuntTransport.
-func petAppWith(t *testing.T, transport gamevanyagotchi.Transport) (*httptest.Server, *gamevanyagotchi.Service) {
-	t.Helper()
 	vkSrv := fakeVKDynamic()
 	t.Cleanup(vkSrv.Close)
-	h, game := petBuildApp(vkSrv.URL, transport)
+	h, game := petBuildApp(vkSrv.URL, petYardTransport{})
 	app := httptest.NewServer(h)
 	t.Cleanup(app.Close)
 	return app, game
 }
 
-// petHuntTransport is the hub as a won claim needs it, and nothing more.
+// petYardTransport is the hub as this file needs it, and nothing more.
 //
-// It is deliberately inert: what a winning claim does with the room is put a
-// happy face on one Ваня and a sad one on everybody else, which is in-memory,
-// cosmetic, expires in seconds and has its own unit tests in
-// internal/gamevanyagotchi. Nothing this file asserts is about it. Reporting an
-// empty room is therefore the honest answer — nobody has a socket open here, and
-// the service under test has no hub running.
-type petHuntTransport struct{}
+// It is deliberately inert, and it used to be optional: for a long time the
+// durable half of the game touched no transport at all, so most tests here were
+// built with none. Two things now reach one on the pet's own path — a won claim
+// paints every face in the yard, and a hello answers the connection that sent it
+// — and both are in-memory, cosmetic or unicast, with unit tests of their own in
+// internal/gamevanyagotchi. Nothing this file asserts is about either.
+//
+// Reporting an empty room is therefore the honest answer rather than a stub:
+// nobody has a socket open here, and the service under test has no hub running.
+type petYardTransport struct{}
 
-func (petHuntTransport) Publish(context.Context, string, []byte) error { return nil }
+func (petYardTransport) Publish(context.Context, string, []byte) error { return nil }
 
-func (petHuntTransport) PublishTo(context.Context, string, []byte) error { return nil }
+func (petYardTransport) PublishTo(context.Context, string, []byte) error { return nil }
 
-func (petHuntTransport) Members(context.Context, string) ([]realtime.Member, error) {
+func (petYardTransport) Members(context.Context, string) ([]realtime.Member, error) {
 	return nil, nil
+}
+
+// petObjectKind is the catalogue entry a test is reasoning about, fetched rather
+// than written down for the same reason petAction and petStat are.
+func petObjectKind(t *testing.T, key string) gamevanyagotchi.ObjectKind {
+	t.Helper()
+	k, ok := gamevanyagotchi.ObjectKindByKey(key)
+	if !ok {
+		t.Fatalf("the catalogue has no object kind %q", key)
+	}
+	return k
+}
+
+// petStandAtTheBeerStore puts an account at the crate, with a crate to be at.
+//
+// THE FIXTURE EVERY TEST THAT DRINKS NOW NEEDS, and that is the rule change
+// rather than a testing inconvenience: beer comes out of a crate, so a Ваня who
+// is not standing at one cannot have any. It drives the two real client frames
+// rather than reaching into the service, because both of them are the honest
+// path and neither needs a socket.
+//
+// The hello is the human-paced moment the yard reads the world, and the one that
+// stands a crate up when the world has none — so this also guarantees there is
+// beer to draw, whatever an earlier test drank. The tap is a teleport rather
+// than a walk, and deliberately: no broadcast has ever run in this suite, so the
+// yard has no clock to measure a journey against and puts him straight where he
+// asked. The walk has its own tests in internal/gamevanyagotchi; what this file
+// needs is somebody standing in the right place.
+func petStandAtTheBeerStore(t *testing.T, game *gamevanyagotchi.Service, accountID string) {
+	t.Helper()
+	crate := petObjectKind(t, gamevanyagotchi.KindCrate)
+	if crate.At == nil {
+		t.Fatalf("the catalogue no longer gives %q a pitch of its own; there is nowhere to stand", crate.Key)
+	}
+	m := realtime.Member{ConnID: "conn-" + accountID, AccountID: accountID}
+	game.HandleInbound(context.Background(), m, httpapi.DefaultRoom, []byte(`{"t":"vanyagotchi_hello"}`))
+	game.HandleInbound(context.Background(), m, httpapi.DefaultRoom,
+		fmt.Appendf(nil, `{"t":"vanyagotchi_move","x":%v,"y":%v}`, crate.At.X, crate.At.Y))
 }
 
 // petDo presses a batch of verbs the way an inbound socket frame does, and fails
@@ -1187,6 +1221,9 @@ func TestVanyagotchiPetDrinkMovesThreeStatsAtOneInstant(t *testing.T) {
 	away := petHours(petFirstOnsetHours(t, hpDef) / 2)
 	petBackdateAll(t, id, away)
 
+	// At the crate, because beer now comes out of one. This test is about the
+	// three stats a drink moves; the arrival gate has its own tests.
+	petStandAtTheBeerStore(t, game, account)
 	state := petDo(t, game, account, drink.Key)
 	if !state.Alive {
 		t.Fatalf("alive = %v after a drink, want true", state.Alive)
@@ -1412,6 +1449,9 @@ func TestVanyagotchiPetDrinkClampsAtTheMaximum(t *testing.T) {
 	// reliably still alive to do the drinking and reliably far enough down that
 	// reaching the ceiling takes several rounds.
 	petBackdateAll(t, id, petHours(petFatalHours(t, hpDef)/2))
+	// Standing at the crate for every round of this, because a drink he cannot
+	// reach would never get near a ceiling.
+	petStandAtTheBeerStore(t, game, account)
 
 	state := petDo(t, game, account, drink.Key)
 	if !state.Alive {
@@ -1468,8 +1508,8 @@ func TestVanyagotchiPetDrinkClampsAtTheMaximum(t *testing.T) {
 // that cleared it and this test would prove nothing.
 func TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies(t *testing.T) {
 	// A transport, because the evening below now includes the CONTESTED verb and
-	// winning one paints the yard — see petHuntTransport.
-	app, game := petAppWith(t, petHuntTransport{})
+	// winning one paints the yard — see petYardTransport.
+	app, game := petApp(t)
 	cli := loginAs(t, app.URL, "7234", "user")
 
 	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
@@ -1492,10 +1532,10 @@ func TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies(t *testing.T)
 	if !ok {
 		t.Fatalf("the catalogue has no object kind %q", gamevanyagotchi.KindKey)
 	}
-	petClearTheYardOfKeys(t)
-	t.Cleanup(func() { petClearTheYardOfKeys(t) })
+	petClearTheYardOf(t, gamevanyagotchi.KindKey)
+	t.Cleanup(func() { petClearTheYardOf(t, gamevanyagotchi.KindKey) })
 	if err := gamevanyagotchi.NewPostgresRepository().InsertWorldObject(context.Background(), pool,
-		kind.Key, gamevanyagotchi.LocationYard, gamevanyagotchi.Point{X: 0.5, Y: 0.5}, "", kind.Singleton, nil); err != nil {
+		kind.Key, gamevanyagotchi.LocationYard, gamevanyagotchi.Point{X: 0.5, Y: 0.5}, "", kind.Singleton, nil, nil); err != nil {
 		t.Fatalf("hide a key for him to find: %v", err)
 	}
 
@@ -1504,6 +1544,11 @@ func TestVanyagotchiPetRevivingRestartsEveryStatAndKeepsTheTallies(t *testing.T)
 	// up above its start, or the preservation asserted at the end would be
 	// indistinguishable from a reset — so that is checked rather than assumed.
 	pressed := []gamevanyagotchi.Action{drink, drink, relieve, claim}
+	// At the crate, since two of those four rounds are beer. Placed AFTER the key
+	// is hidden on purpose: the hello inside this fixture starts a hunt when it
+	// finds none running, and a key it hid first would swallow the one this test
+	// wants him to find.
+	petStandAtTheBeerStore(t, game, account)
 	petDo(t, game, account, drink.Key, drink.Key)
 	petDo(t, game, account, relieve.Key)
 	petDo(t, game, account, claim.Key)
@@ -1638,6 +1683,10 @@ func TestVanyagotchiPetsAreIsolatedPerAccount(t *testing.T) {
 	petBackdateAll(t, aliceID, petHours(petFatalHours(t, hpDef)/2))
 	beforeValue, beforeAsOf := petStoredStat(t, bobID, hpDef.Key)
 
+	// Alice at the crate, and deliberately not Bob: what this test is about is
+	// that her drink leaves his pet alone, and one of them standing somewhere is
+	// no part of the other's pet.
+	petStandAtTheBeerStore(t, game, aliceAccount)
 	state := petDo(t, game, aliceAccount, drink.Key)
 	if state.Pet.ID != aliceID {
 		t.Fatalf("alice's %s answered with pet %s, want %s", drink.Key, state.Pet.ID, aliceID)
@@ -1881,6 +1930,13 @@ func TestVanyagotchiRelievingHimselfLeavesARealDepositInTheWorld(t *testing.T) {
 	aliceAccount, bobAccount := accountIDByUID(t, "7240"), accountIDByUID(t, "7241")
 	t.Cleanup(func() { petForgetWorldObjects(t, aliceAccount, bobAccount) })
 
+	// Both at the crate, because the beer that fills a bladder now has to be
+	// fetched from one. It also decides where the deposits land, which is
+	// asserted below: the yard's opinion of where he is standing, and the yard
+	// now has one.
+	petStandAtTheBeerStore(t, game, aliceAccount)
+	petStandAtTheBeerStore(t, game, bobAccount)
+
 	pressed := time.Now().UTC()
 	state := petDo(t, game, aliceAccount, drink.Key, relieve.Key)
 
@@ -1896,10 +1952,13 @@ func TestVanyagotchiRelievingHimselfLeavesARealDepositInTheWorld(t *testing.T) {
 	if left.locationKey != state.Pet.LocationKey {
 		t.Errorf("the deposit was left in %q; want the location his pet is in, %q", left.locationKey, state.Pet.LocationKey)
 	}
-	// Nobody has ever been placed on this plane — the service here has no
-	// transport at all — so the yard's answer for where he is standing is his
-	// location's entry point, and the deposit is written there.
-	petAtPoint(t, "the deposit", left.x, left.y, petLocationEntry(t, state.Pet.LocationKey))
+	// AT THE CRATE, because that is where the fixture walked him and the deposit
+	// is written where the SERVER believes he is standing — the verb frame carries
+	// no coordinate, so there is nothing in it to forge. It used to be the
+	// location's entry point, back when nobody in this file had ever been placed
+	// on the plane at all; the beer store is what gave the tests a reason to walk
+	// anybody anywhere.
+	petAtPoint(t, "the deposit", left.x, left.y, *petObjectKind(t, gamevanyagotchi.KindCrate).At)
 	if left.singleton {
 		t.Errorf("the row was written with singleton=true; the index would then permit exactly one active %q in the whole world", kind.Key)
 	}
@@ -2064,63 +2123,72 @@ func TestVanyagotchiPetAGatedVerbIsRefusedUntilTheStatItNeedsIsThere(t *testing.
 	petRecent(t, "the instant the accepted verb stamped on every stat", petSharedAsOf(t, id))
 }
 
-// petKeyRow is one row of the singleton kind, read back with none of the
+// petContestedRow is one row of a contested kind, read back with none of the
 // service's filters.
 //
-// Unfiltered on purpose: the columns this test turns on — `claimed_by`,
-// `exhausted_at` — are precisely the ones the plane's own SELECT hides, because
-// a claimed key is a key that has stopped existing as far as the yard is
-// concerned. What is under test is what the UPDATE actually wrote.
-type petKeyRow struct {
+// Unfiltered on purpose: the columns these tests turn on — `claimed_by`,
+// `remaining`, `exhausted_at` — are precisely the ones the plane's own SELECT
+// hides or never returns, because a claimed key and an emptied crate are things
+// that have stopped existing as far as the yard is concerned. What is under test
+// is what the UPDATE actually wrote.
+//
+// One shape for both disciplines rather than one each, because the point of the
+// Contest field is that they are the same row with different statements over it:
+// a key leaves `remaining` NULL, a crate leaves `claimed_by` NULL, and both set
+// `exhausted_at` when they are used up.
+type petContestedRow struct {
 	id          string
 	claimedBy   *string
 	claimedAt   *time.Time
+	remaining   *int
 	exhaustedAt *time.Time
 }
 
-// petKeysInTheWorld reads every key ever hidden in a location, oldest first.
-func petKeysInTheWorld(t *testing.T, locationKey string) []petKeyRow {
+// petContestedRowsOf reads every row of a kind ever put out in a location,
+// oldest first — including the ones that have been used up, which is the whole
+// point of reading it here rather than through the service.
+func petContestedRowsOf(t *testing.T, kind, locationKey string) []petContestedRow {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
-		`SELECT id::text, claimed_by::text, claimed_at, exhausted_at
+		`SELECT id::text, claimed_by::text, claimed_at, remaining, exhausted_at
 		   FROM game_vanyagotchi_world_objects
 		  WHERE kind = $1 AND location_key = $2
 		  ORDER BY created_at`,
-		gamevanyagotchi.KindKey, locationKey)
+		kind, locationKey)
 	if err != nil {
-		t.Fatalf("read the keys hidden in %s: %v", locationKey, err)
+		t.Fatalf("read the %s rows in %s: %v", kind, locationKey, err)
 	}
 	defer rows.Close()
 
-	var out []petKeyRow
+	var out []petContestedRow
 	for rows.Next() {
-		var k petKeyRow
-		if err := rows.Scan(&k.id, &k.claimedBy, &k.claimedAt, &k.exhaustedAt); err != nil {
-			t.Fatalf("scan a key hidden in %s: %v", locationKey, err)
+		var k petContestedRow
+		if err := rows.Scan(&k.id, &k.claimedBy, &k.claimedAt, &k.remaining, &k.exhaustedAt); err != nil {
+			t.Fatalf("scan a %s row in %s: %v", kind, locationKey, err)
 		}
 		out = append(out, k)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read the keys hidden in %s: %v", locationKey, err)
+		t.Fatalf("read the %s rows in %s: %v", kind, locationKey, err)
 	}
 	return out
 }
 
-// petClearTheYardOfKeys removes every key row there is.
+// petClearTheYardOf removes every row of a kind there is.
 //
-// Called at the START of the test as well as from its cleanup, and the first of
-// those is the one that matters. The key is a SINGLETON: the database permits
-// exactly one active row of the kind in the whole world, and every hello in this
-// suite starts a hunt — so a key left standing by an earlier test would be the
-// one this test's players raced for, and the row it hides for them would be
-// swallowed by `ON CONFLICT DO NOTHING` in silence. The suite shares one database
-// and has no truncate step, which is why a test that writes a contended row owns
-// both ends of its own state.
-func petClearTheYardOfKeys(t *testing.T) {
+// Called at the START of a test as well as from its cleanup, and the first of
+// those is the one that matters. The key and the crate are both SINGLETONS: the
+// database permits exactly one active row of each in the whole world, and every
+// hello in this suite stands up whichever is missing — so one left standing by
+// an earlier test would be the one this test's players raced for, and the row it
+// puts out for them would be swallowed by `ON CONFLICT DO NOTHING` in silence.
+// The suite shares one database and has no truncate step, which is why a test
+// that writes a contended row owns both ends of its own state.
+func petClearTheYardOf(t *testing.T, kind string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
-		`DELETE FROM game_vanyagotchi_world_objects WHERE kind = $1`, gamevanyagotchi.KindKey); err != nil {
-		t.Fatalf("clear the yard of keys: %v", err)
+		`DELETE FROM game_vanyagotchi_world_objects WHERE kind = $1`, kind); err != nil {
+		t.Fatalf("clear the yard of %s: %v", kind, err)
 	}
 }
 
@@ -2209,7 +2277,7 @@ func TestVanyagotchiExactlyOnePlayerFindsTheKey(t *testing.T) {
 			kind.Key)
 	}
 
-	app, game := petAppWith(t, petHuntTransport{})
+	app, game := petApp(t)
 	accounts := map[string]string{}
 	pets := map[string]string{}
 	for who, uid := range map[string]string{"alice": "7250", "bob": "7251"} {
@@ -2229,18 +2297,18 @@ func TestVanyagotchiExactlyOnePlayerFindsTheKey(t *testing.T) {
 		"bob":   petSharedAsOf(t, pets["bob"]),
 	}
 
-	petClearTheYardOfKeys(t)
-	t.Cleanup(func() { petClearTheYardOfKeys(t) })
+	petClearTheYardOf(t, gamevanyagotchi.KindKey)
+	t.Cleanup(func() { petClearTheYardOf(t, gamevanyagotchi.KindKey) })
 
 	// One key, hidden by hand. The service hides its own at a hello, which is a
 	// socket and therefore this file's neighbour's subject; what this test needs is
 	// a key whose id it knows.
 	repo := gamevanyagotchi.NewPostgresRepository()
 	if err := repo.InsertWorldObject(ctx, pool, kind.Key, gamevanyagotchi.LocationYard,
-		gamevanyagotchi.Point{X: 0.5, Y: 0.5}, "", kind.Singleton, nil); err != nil {
+		gamevanyagotchi.Point{X: 0.5, Y: 0.5}, "", kind.Singleton, nil, nil); err != nil {
 		t.Fatalf("hide the key: %v", err)
 	}
-	hidden := petKeysInTheWorld(t, gamevanyagotchi.LocationYard)
+	hidden := petContestedRowsOf(t, gamevanyagotchi.KindKey, gamevanyagotchi.LocationYard)
 	if len(hidden) != 1 {
 		t.Fatalf("%d keys are in the yard before the race; want exactly the one this test hid: %+v", len(hidden), hidden)
 	}
@@ -2318,11 +2386,11 @@ func TestVanyagotchiExactlyOnePlayerFindsTheKey(t *testing.T) {
 	// that claimed it. Doing those in two statements would leave a window in
 	// which the partial index still held the old row and the replacement below
 	// would have been silently swallowed.
-	keys := petKeysInTheWorld(t, gamevanyagotchi.LocationYard)
+	keys := petContestedRowsOf(t, gamevanyagotchi.KindKey, gamevanyagotchi.LocationYard)
 	if len(keys) != 2 {
 		t.Fatalf("%d keys are in the yard after one was found; want the one that was claimed and the one that replaced it: %+v", len(keys), keys)
 	}
-	var claimed, fresh []petKeyRow
+	var claimed, fresh []petContestedRow
 	for _, k := range keys {
 		if k.exhaustedAt == nil {
 			fresh = append(fresh, k)
@@ -2381,4 +2449,309 @@ func TestVanyagotchiExactlyOnePlayerFindsTheKey(t *testing.T) {
 			got.UTC(), stamped[loser].UTC())
 	}
 	petRecent(t, "the winner's stats after finding the key", petSharedAsOf(t, pets[winner]))
+}
+
+// TestVanyagotchiTheCrateCannotBeOversold is the Stock discipline's half of what
+// the world-object table was shaped for, and the counterpart of the key race
+// above.
+//
+// TWO PLAYERS, ONE BEER, AND NOTHING IN GO DECIDES WHICH OF THEM GETS IT. The
+// guard is `remaining > 0` inside a conditional UPDATE, so the second
+// transaction blocks on the row the first is holding, re-evaluates its own WHERE
+// against the value the first committed, and finds nothing left to take. A fake
+// repository cannot say anything about this: it would be a Go function deciding
+// what a row lock decides, and it could agree with itself while the statement
+// was wrong.
+//
+// Four properties, and the last two are what make losing harmless. Exactly one
+// drink lands. The crate is left at nought and exhausted by the same statement
+// that emptied it. A FRESH, FULL crate exists afterwards, stood up inside the
+// winner's own transaction — so the store restocks without anything scheduling
+// it, and the yard is never left dry. And the loser's pet is untouched down to
+// the as_of on its stat rows: the draw is inside the transaction, so a lost race
+// rolls back the snapshot and the events with it.
+func TestVanyagotchiTheCrateCannotBeOversold(t *testing.T) {
+	ctx := context.Background()
+	drink := petAction(t, gamevanyagotchi.ActionDrink)
+	crate := petObjectKind(t, gamevanyagotchi.KindCrate)
+	if crate.Contest != gamevanyagotchi.ContestStock {
+		t.Fatalf("the catalogue settles %q by %q; this test is about the stock discipline", crate.Key, crate.Contest)
+	}
+	if !crate.Singleton {
+		t.Fatalf("the catalogue no longer marks %q a singleton; the UPDATE names a KIND rather than a row, so a second live crate would be decremented at the same time",
+			crate.Key)
+	}
+	if drink.Contests != crate.Key {
+		t.Fatalf("%q contests %q rather than %q; this test is racing the wrong verb", drink.Key, drink.Contests, crate.Key)
+	}
+
+	app, game := petApp(t)
+	accounts := map[string]string{}
+	pets := map[string]string{}
+	for who, uid := range map[string]string{"alice": "7260", "bob": "7261"} {
+		cli := loginAs(t, app.URL, uid, "user")
+		if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+			t.Fatalf("%s create: status=%d body=%v", who, s, body)
+		}
+		accounts[who] = accountIDByUID(t, uid)
+		pets[who] = petID(t, accounts[who])
+	}
+	// The instant every stat of each pet is currently stamped with. A lost draw
+	// must leave it exactly where it is, which is the finest-grained way of saying
+	// "nothing at all was written" — a rolled-back batch and a batch that wrote
+	// the same numbers again are otherwise indistinguishable.
+	stamped := map[string]time.Time{
+		"alice": petSharedAsOf(t, pets["alice"]),
+		"bob":   petSharedAsOf(t, pets["bob"]),
+	}
+
+	petClearTheYardOf(t, crate.Key)
+	t.Cleanup(func() { petClearTheYardOf(t, crate.Key) })
+
+	// ONE BEER IN THE WHOLE WORLD, put out by hand. The service stands a full
+	// crate up at a hello, which is its neighbour's subject; what this test needs
+	// is a crate holding exactly one, so that two players pressing at once is a
+	// race with a loser in it.
+	one := 1
+	repo := gamevanyagotchi.NewPostgresRepository()
+	if err := repo.InsertWorldObject(ctx, pool, crate.Key, gamevanyagotchi.LocationYard,
+		*crate.At, "", crate.Singleton, &one, nil); err != nil {
+		t.Fatalf("put out a crate with one beer in it: %v", err)
+	}
+	standing := petContestedRowsOf(t, crate.Key, gamevanyagotchi.LocationYard)
+	if len(standing) != 1 {
+		t.Fatalf("%d crates are in the yard before the race; want exactly the one this test put out: %+v", len(standing), standing)
+	}
+	last := standing[0]
+
+	// Both of them at it, and both of them told there is beer — the hello fills
+	// the world cache the arrival gate reads, and the tap puts them at the crate.
+	for _, account := range accounts {
+		petStandAtTheBeerStore(t, game, account)
+	}
+
+	// BOTH ON THE SAME CRATE, and that is arranged rather than hoped for.
+	//
+	// The test takes the crate's row lock first, so both draws reach their UPDATE
+	// and queue behind it with their statement snapshots already taken; releasing
+	// it lets exactly one of them through. Without the lock the two are only as
+	// concurrent as goroutine scheduling happens to make them, and a draw that
+	// starts AFTER the winner has committed is not contending for the same crate
+	// at all: by then the winner has stood a full one up, and the UPDATE names a
+	// KIND rather than an id, so the latecomer finds the replacement and drinks
+	// from it. That is the game working — the store restocked and somebody bought
+	// a beer — but as a test it would pass or fail by timing and say nothing about
+	// the invariant. This is the contended case, deterministically.
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the crate still: %v", err)
+	}
+	// The failure path. The lock is released explicitly below, before anything is
+	// asserted; this is what lets go of it when a Fatalf jumps out first.
+	defer func() { _ = holder.Rollback(ctx) }()
+	var pinned string
+	if err := holder.QueryRow(ctx,
+		`SELECT id::text FROM game_vanyagotchi_world_objects WHERE id = $1::uuid FOR UPDATE`, last.id).Scan(&pinned); err != nil {
+		t.Fatalf("hold the crate's row still: %v", err)
+	}
+
+	type outcome struct {
+		who string
+		err error
+	}
+	results := make(chan outcome, len(accounts))
+	var wg sync.WaitGroup
+	for who, account := range accounts {
+		wg.Add(1)
+		go func(who, account string) {
+			defer wg.Done()
+			_, err := game.Do(ctx, account, []string{drink.Key}, time.Now().UTC())
+			results <- outcome{who: who, err: err}
+		}(who, account)
+	}
+	petWaitForBlockedStatements(t, len(accounts))
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("let go of the crate: %v", err)
+	}
+	wg.Wait()
+	close(results)
+
+	var winner, loser string
+	for r := range results {
+		switch {
+		case r.err == nil:
+			if winner != "" {
+				t.Fatalf("both %s and %s got the last beer; the conditional UPDATE is not deciding this and the crate has been oversold", winner, r.who)
+			}
+			winner = r.who
+		case errors.Is(r.err, gamevanyagotchi.ErrOutOfStock):
+			if loser != "" {
+				t.Fatalf("both %s and %s were told the crate was empty; there was a beer in it and somebody had to get it", loser, r.who)
+			}
+			loser = r.who
+		default:
+			t.Fatalf("%s's drink failed for a reason that is not an empty crate: %v", r.who, r.err)
+		}
+	}
+	if winner == "" || loser == "" {
+		t.Fatalf("the race produced winner=%q loser=%q; want exactly one of each", winner, loser)
+	}
+	t.Logf("%s got the last beer and %s did not", winner, loser)
+
+	// The crate as the database left it: emptied and exhausted by the same
+	// statement, and a full one standing beside it.
+	crates := petContestedRowsOf(t, crate.Key, gamevanyagotchi.LocationYard)
+	if len(crates) != 2 {
+		t.Fatalf("%d crates are in the yard after the race; want the emptied one and its replacement: %+v", len(crates), crates)
+	}
+	emptied, replacement := crates[0], crates[1]
+	if emptied.id != last.id {
+		t.Fatalf("the first crate in the yard is %s; want the one this test put out, %s", emptied.id, last.id)
+	}
+	if emptied.remaining == nil || *emptied.remaining != 0 {
+		t.Errorf("the crate that was drunk from holds %v; want 0 — the decrement and the guard are one statement, so it cannot go below and must not stop above",
+			emptied.remaining)
+	}
+	if emptied.exhaustedAt == nil {
+		t.Error("the emptied crate has no exhausted_at; it would stay in the partial unique index for ever, and no replacement could ever be inserted")
+	}
+	if replacement.exhaustedAt != nil {
+		t.Errorf("the replacement crate is already exhausted (%s); the store would be dry from the moment it restocked", replacement.exhaustedAt.UTC())
+	}
+	if replacement.remaining == nil || *replacement.remaining != crate.Stock {
+		t.Errorf("the replacement crate holds %v; want the catalogue's %d — the vendor got another in rather than putting the empty one back",
+			replacement.remaining, crate.Stock)
+	}
+
+	// The winner drank, and it is on his tally.
+	beers := petEffectOn(drink, gamevanyagotchi.StatBeersDrunk)
+	if beers <= 0 {
+		t.Fatalf("the catalogue says %q moves %q by %v; this test is reasoning about a verb that counts something",
+			drink.Key, gamevanyagotchi.StatBeersDrunk, beers)
+	}
+	if got := petStoredValue(t, pets[winner], gamevanyagotchi.StatBeersDrunk); got != beers {
+		t.Errorf("the winner's %q is %v after his first beer; want %v", gamevanyagotchi.StatBeersDrunk, got, beers)
+	}
+
+	// AND THE LOSER WAS CHARGED NOTHING AT ALL — not a stat, not an event, and
+	// not the re-stamp every accepted verb performs. The draw is inside the
+	// transaction, so returning from it takes the whole batch back out.
+	if got := petStoredValue(t, pets[loser], gamevanyagotchi.StatBeersDrunk); got != 0 {
+		t.Errorf("the loser's %q is %v; want 0 — losing a race for the last beer costs nothing", gamevanyagotchi.StatBeersDrunk, got)
+	}
+	if n := petEventCount(t, pets[loser]); n != 0 {
+		t.Errorf("%d events survived the loser's refused drink; reaching for a beer that was not there is not something that happened to his pet", n)
+	}
+	if now := petSharedAsOf(t, pets[loser]); !now.Equal(stamped[loser]) {
+		t.Errorf("the loser's stats are stamped %s; want the %s they carried before the race — a rolled-back batch must not leave a re-stamp behind, which is silently erased damage",
+			now.UTC(), stamped[loser].UTC())
+	}
+	if n := petEventCount(t, pets[winner]); n != 1 {
+		t.Errorf("the winner's log holds %d events for one accepted drink; want 1", n)
+	}
+}
+
+// TestVanyagotchiDrinkingIsRefusedFromAcrossTheYardAndWritesNothing is the
+// arrival gate against a real database, which is the only place the "and writes
+// nothing" half can be proved.
+//
+// The gate itself is decided entirely in memory — where the yard believes he is
+// standing, against where the crate is in the world cache — and it has its
+// exhaustive tests in internal/gamevanyagotchi. What this adds is the durable
+// consequence: a refused drink must leave the stat rows, their shared as_of, the
+// event log and the crate's own `remaining` exactly as they were, and a response
+// cannot show any of that.
+func TestVanyagotchiDrinkingIsRefusedFromAcrossTheYardAndWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	drink := petAction(t, gamevanyagotchi.ActionDrink)
+	crate := petObjectKind(t, gamevanyagotchi.KindCrate)
+	if drink.NeedsNear != crate.Key {
+		t.Fatalf("the catalogue gates %q on being near %q rather than %q; this test is about a rule the game does not have",
+			drink.Key, drink.NeedsNear, crate.Key)
+	}
+
+	app, game := petApp(t)
+	cli := loginAs(t, app.URL, "7262", "user")
+	if s, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/state", nil); s != http.StatusOK {
+		t.Fatalf("create: status=%d body=%v", s, body)
+	}
+	account := accountIDByUID(t, "7262")
+	id := petID(t, account)
+
+	// At the store first — which is what fills the world cache and guarantees a
+	// crate exists — and then walked away from it, to the opposite corner of the
+	// plane. Walking away rather than never arriving is the case worth driving:
+	// it proves the gate reads his position now rather than remembering that he
+	// once qualified.
+	petStandAtTheBeerStore(t, game, account)
+	away := gamevanyagotchi.Point{X: 1 - crate.At.X, Y: 1 - crate.At.Y}
+	game.HandleInbound(ctx, realtime.Member{ConnID: "conn-" + account, AccountID: account},
+		httpapi.DefaultRoom, fmt.Appendf(nil, `{"t":"vanyagotchi_move","x":%v,"y":%v}`, away.X, away.Y))
+
+	before := petSharedAsOf(t, id)
+	beers := petStoredValue(t, id, gamevanyagotchi.StatBeersDrunk)
+	events := petEventCount(t, id)
+	stock := petLiveCrateStock(t)
+
+	if _, err := game.Do(ctx, account, []string{drink.Key}, time.Now().UTC()); !errors.Is(err, gamevanyagotchi.ErrTooFar) {
+		t.Fatalf("Do(%s) from across the yard = %v; want ErrTooFar", drink.Key, err)
+	}
+
+	if now := petSharedAsOf(t, id); !now.Equal(before) {
+		t.Errorf("his stats are stamped %s after a refused drink; want the %s they carried before it — a refusal charged him a re-stamp, which is silently erased damage",
+			now.UTC(), before.UTC())
+	}
+	if got := petStoredValue(t, id, gamevanyagotchi.StatBeersDrunk); got != beers {
+		t.Errorf("his %q went from %v to %v on a drink he never got", gamevanyagotchi.StatBeersDrunk, beers, got)
+	}
+	if n := petEventCount(t, id); n != events {
+		t.Errorf("his log holds %d events after a refused drink; want the %d it held before", n, events)
+	}
+	if now := petLiveCrateStock(t); now != stock {
+		t.Errorf("the crate holds %d after a drink that was refused before the transaction; want the %d it held before — nobody took a beer", now, stock)
+	}
+
+	// And walking back is all it takes: the gate stores no answer, so there is
+	// nothing about the refusal for him to undo.
+	petStandAtTheBeerStore(t, game, account)
+	if _, err := game.Do(ctx, account, []string{drink.Key}, time.Now().UTC()); err != nil {
+		t.Fatalf("Do(%s) back at the crate: %v; the gate asks about now and remembers nothing", drink.Key, err)
+	}
+	if now := petLiveCrateStock(t); now != stock-1 {
+		t.Errorf("the crate holds %d after one accepted drink; want %d", now, stock-1)
+	}
+}
+
+// petLiveCrateStock is what the one active crate in the yard currently holds.
+//
+// Read through the plane's OWN query rather than by hand, because "the crate the
+// world is drawing" and "some row of that kind" are different things the moment
+// one has been exhausted — and the exhausted ones stay in the table for ever,
+// since nothing sweeps.
+func petLiveCrateStock(t *testing.T) int {
+	t.Helper()
+	live, err := gamevanyagotchi.NewPostgresRepository().LiveWorldObjects(
+		context.Background(), pool, gamevanyagotchi.LocationYard, 200)
+	if err != nil {
+		t.Fatalf("read the yard: %v", err)
+	}
+	for _, o := range live {
+		if o.Kind != gamevanyagotchi.KindCrate {
+			continue
+		}
+		if o.Remaining == nil {
+			t.Fatalf("the crate standing in the yard has a NULL remaining; nothing could ever draw from it")
+		}
+		return *o.Remaining
+	}
+	t.Fatal("there is no crate standing in the yard at all; a hello stands one up when it finds none, so this is a store that will never restock")
+	return 0
+}
+
+// petStoredValue is one stat's stored value, undecayed. A counter never decays,
+// so for the tallies this is also its current value.
+func petStoredValue(t *testing.T, petIDs, statKey string) float64 {
+	t.Helper()
+	value, _ := petStoredStat(t, petIDs, statKey)
+	return value
 }

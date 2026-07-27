@@ -257,7 +257,13 @@
       <p class="petline" data-test="pet-line">{{ petLine }}</p>
 
       <!-- Fixed-size action row. One button per catalogue action, so adding a
-           verb that moves a stat needs no change here. -->
+           verb that moves a stat needs no change here.
+           A verb gated on a PLACE is greyed when he is not at it, or when the
+           thing he draws from is empty — a courtesy on top of the server's own
+           refusal, never instead of it. `unreachable` tests only that the action
+           HAS a `needs_near`, never what it names, so this row still holds no
+           content key; the line in the status row below is what says which of
+           the three reasons applies. -->
       <div v-if="actions.length" class="actions">
         <v-btn
           v-for="action in actions"
@@ -266,16 +272,23 @@
           :data-test="`action-${action.key}`"
           color="primary"
           variant="tonal"
-          :disabled="acting"
+          :disabled="acting || unreachable(action)"
           @click="act(action)"
         >
           {{ action.emoji }} {{ action.label }}
         </v-btn>
       </div>
 
-      <!-- Fixed-size status row. -->
+      <!-- Fixed-size status row.
+           The store line sits between the head count and the connection state
+           because it belongs with them: all three are facts about the yard
+           rather than about your Ваня. It is absent entirely when the frame
+           carries no crate, which keeps the row at its usual two items on a
+           server that predates the block — the row wraps rather than overflowing
+           either way, which is what the 320px case in the mobile suite holds. -->
       <div class="hud">
         <span class="hud-count">во дворе: {{ here }}</span>
+        <span v-if="storeLine" class="hud-store" data-test="store">{{ storeLine }}</span>
         <span class="hud-status" :class="`hud-status--${store.status}`">
           {{ statusLabel }}
         </span>
@@ -293,21 +306,31 @@ import {
   applyFrame,
   applyPosition,
   avatarEndpoint,
+  beside,
   huntRestarted,
   isRenderablePosition,
+  outOfReach,
   propScale,
   readAppearances,
   readHere,
   readHunt,
+  readStore,
   resolveArt,
   sameAppearance,
+  sameStore,
+  storeLabel,
   tapToPosition,
   type PeerAppearance,
 } from '../lib/vanyagotchiPlane';
 import { decayedValue, inTrouble, skewMs, statFraction } from '../lib/vanyagotchiPet';
 import { YARD_PROSE, buildRules } from '../lib/vanyagotchiRules';
 import { gameVanyagotchiApi } from '../api/endpoints';
-import type { VanyagotchiAction, VanyagotchiConfig, VanyagotchiState } from '../api/types';
+import type {
+  VanyagotchiAction,
+  VanyagotchiConfig,
+  VanyagotchiState,
+  VanyagotchiStore,
+} from '../api/types';
 
 // «Ванягоччи» — the shared plane.
 //
@@ -612,6 +635,61 @@ const appearance = shallowRef<readonly PeerAppearance[]>([]);
 const here = ref(0);
 
 /**
+ * The beer store, as the frame states it: where the crate is and how much is in
+ * it. Undefined when the yard has no crate at all.
+ *
+ * A ref, and it earns one where a position never could. What the two-tier rule
+ * at the head of this file forbids is binding things that change five times a
+ * second; a crate does not move AT ALL, and its count changes a few times an
+ * evening, so this is discrete state of exactly the kind membership is. The
+ * guard in front of it (`sameStore`) is what makes that true in practice — every
+ * frame carries the block, and all but a handful of them are assigning the same
+ * store back over itself.
+ */
+const beerStore = ref<VanyagotchiStore | undefined>(undefined);
+
+/**
+ * Is our own Ваня standing at the crate?
+ *
+ * READ THIS BEFORE ASSUMING IT BREAKS THE RULE, because it looks like it does. A
+ * position must not enter Vue — that is the load-bearing discipline of this
+ * screen — and this is derived from one. What enters reactivity is not a
+ * coordinate but a BOOLEAN, and one that changes only when somebody crosses a
+ * threshold: walking the whole way to the crate flips it once, and standing
+ * still flips it never. So the five frames a second that say "still too far"
+ * assign `false` over `false` and a ref of a primitive notifies on neither.
+ *
+ * It has to be here rather than a computed, because the coordinate it is derived
+ * from — `lastPos` — is deliberately not reactive and nothing would recompute
+ * it. So it is written where the frame is read, which is also the only place
+ * that knows the position is fresh.
+ */
+const atStore = ref(false);
+
+/**
+ * The status row's line about the store, or nothing when there is no crate.
+ *
+ * Derived rather than stored, because both of its inputs are already refs and
+ * the sentence is a pure function of them — see `storeLabel` for why the three
+ * states are spelled out rather than collapsed into a greyed button.
+ */
+const storeLine = computed(() => storeLabel(beerStore.value, atStore.value));
+
+/**
+ * Is this verb unpressable because of where he is standing, or because the thing
+ * he draws from is empty?
+ *
+ * A courtesy and never the rule: the server enforces all of it regardless, and
+ * this exists so that a control which cannot work looks like one. Note it tests
+ * the PRESENCE of the action's `needs_near` and never its value — the client
+ * holds no content keys, and the store arrives as a place rather than as a kind
+ * precisely so it never has to (ADR-028).
+ */
+function unreachable(action: VanyagotchiAction): boolean {
+  return outOfReach(action, beerStore.value, atStore.value);
+}
+
+/**
  * The hunt this screen has already seen, so that a CHANGE of hunt can be told
  * from the first sight of one.
  *
@@ -801,6 +879,13 @@ function forgetWorld() {
   // line already on the panel is left to expire on its own — the outage that gets
   // here lasted longer than the line does.
   seenHunt = '';
+  // Forgotten for the same reason the roster is: what the yard held is no longer
+  // something this screen knows. Leaving a stale crate behind would leave the
+  // drink button lit for a store that may since have been emptied, and leaving
+  // `atStore` set would leave it lit for a Ваня who is no longer standing
+  // anywhere at all.
+  beerStore.value = undefined;
+  atStore.value = false;
   lastPos.clear();
   peerEls.clear();
 }
@@ -942,6 +1027,24 @@ function onFrame(frame: RealtimeFrame) {
   for (const id of [...lastPos.keys()]) {
     if (!ids.includes(id)) lastPos.delete(id);
   }
+
+  // The store, and whether we are standing at it. Read AFTER the positions
+  // above, because the second half of it is a question about where we are and
+  // the answer has to come from this frame rather than the last one.
+  //
+  // Both assignments are guarded, and between them they are why a frame about a
+  // yard that has not changed still costs no render: the crate never moves and
+  // its count changes a few times an evening, and `atStore` is a boolean that
+  // flips only when somebody walks across the threshold.
+  const nextStore = readStore(frame.store);
+  if (!sameStore(beerStore.value, nextStore)) beerStore.value = nextStore;
+  // Our own position, off the non-reactive map — which is the only place it
+  // lives, and deliberately. `store.youId` is undefined until the hello has been
+  // answered, and `beside` reads that as "not beside anything", which is the
+  // right answer for a client that does not yet know which Ваня is its own.
+  const mine = store.youId ? lastPos.get(store.youId) : undefined;
+  const near = beside(mine, nextStore, config.value?.arrive_within);
+  if (atStore.value !== near) atStore.value = near;
 
   // The two reactive facts first — each usually a no-op, and each behind its own
   // guard so an unchanged yard costs no render — then positions, which are not
@@ -1812,10 +1915,23 @@ onBeforeUnmount(() => {
   opacity: 0.85;
 }
 .hud-count,
+.hud-store,
 .hud-status {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* The one item in the row allowed to lose characters when it is tight. The head
+   count and the connection state are short and effectively fixed width; the
+   store line is the longest of the three and the only one whose tail («— дойди»)
+   is a hint rather than a fact, so it is the right thing to truncate.
+   `min-width: 0` is what lets a flex child shrink below its own content at all —
+   without it the `text-overflow` above never fires and the row overflows
+   sideways instead, which is exactly what the 320px case in the mobile suite
+   fails on. */
+.hud-store {
+  min-width: 0;
+  flex: 0 1 auto;
 }
 .hud-status--open {
   color: rgb(var(--v-theme-success));

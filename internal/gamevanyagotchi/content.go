@@ -96,11 +96,56 @@ const (
 	// "at most one active" index keyed on kind alone would have forbidden a
 	// second player from relieving himself.
 	KindRelief = "relief"
-	// KindKey is the lost key exactly one player can find. The SINGLETON kind:
-	// at most one is active in the whole world, enforced by a partial unique
-	// index rather than by a rule in Go, so two concurrent restarts cannot
-	// produce two keys.
+	// KindKey is the lost key exactly one player can find. A SINGLETON kind: at
+	// most one is active in the whole world, enforced by a partial unique index
+	// rather than by a rule in Go, so two concurrent restarts cannot produce two
+	// keys.
 	KindKey = "key"
+	// KindCrate is the ящик of beer the vendor stands beside — the other
+	// singleton, and the first thing in this world that is used up a little at a
+	// time rather than all at once. It carries a stock, every drink takes one,
+	// and the draw that empties it exhausts the row and puts a fresh crate out in
+	// the same transaction.
+	//
+	// IT IS THE CRATE THAT IS A ROW AND NOT THE VENDOR, and that split is the
+	// whole reason a new character stays a Go-file change: everything mutable
+	// about the beer store belongs to the thing with a count, and the man
+	// standing beside it has nothing about him to store.
+	KindCrate = "beer_crate"
+)
+
+// ContestKind names how a world object is fought over.
+//
+// TWO DISCIPLINES, AND THIS FIELD IS WHAT ROUTES BETWEEN THEM — a kind picks
+// one instead of the service growing a case per kind. Both are decided by
+// PostgreSQL rather than by the hub: each is a conditional UPDATE whose WHERE
+// clause is the entire rule, so two players pressing in the same millisecond are
+// resolved by the database and a forged client claim cannot beat either.
+//
+// The field is earned rather than anticipated. While the key was the only
+// contested thing, "which verb races for which kind" was one `if` written out in
+// world.go, because a table with a single row is a table nobody reads. The beer
+// crate is the second, so the `if` became this.
+//
+// An alias rather than a defined type, exactly as PatternKey is: it is a
+// catalogue string, and giving it a type of its own would buy a compile error
+// against a typo that a lookup already turns into a plain refusal.
+type ContestKind = string
+
+const (
+	// ContestNone is a thing nobody races anybody for. A relief deposit belongs
+	// to whoever left it and there is nothing about it to win.
+	ContestNone ContestKind = ""
+	// ContestSingleWinner is all or nothing — the lost key. `UPDATE … WHERE
+	// claimed_by IS NULL` hands it to exactly one account and exhausts it in the
+	// same statement, and zero rows affected means you lost.
+	ContestSingleWinner ContestKind = "single_winner"
+	// ContestStock is drawn down one at a time — the crate of beer. `UPDATE …
+	// WHERE remaining > 0 RETURNING remaining` cannot oversell however many
+	// players press at once: the row is locked for the length of each decrement,
+	// so the one behind re-evaluates its own guard against the value the one in
+	// front committed rather than against the value it read on the way in.
+	ContestStock ContestKind = "stock"
 )
 
 // Skin and location keys.
@@ -238,6 +283,32 @@ type Action struct {
 	// verb is always available.
 	NeedsStat    string  `json:"needs_stat,omitempty"`
 	NeedsAtLeast float64 `json:"needs_at_least,omitempty"`
+	// NeedsNear gates the verb on WHERE HE IS STANDING rather than on what he
+	// holds: beer comes out of the crate, so you have to walk to the crate.
+	//
+	// The first rule in this game about position, and the one ADR-043 reserved a
+	// place for. It is checked in Service.Do against the yard's own in-memory
+	// placement at the instant the batch is folded, and NEVER inside `apply` —
+	// which has to stay a pure function of (Snapshot, Event) or a replay would
+	// need to know where everybody was standing last March, and would have to ask
+	// a database to find out.
+	//
+	// A world-object KIND rather than a coordinate, so the store can be moved by
+	// editing where it stands and nothing else. Served for the same reason
+	// NeedsStat is, and the client resolves the kind against `object_kinds`
+	// exactly as it already resolves `leaves`.
+	NeedsNear string `json:"needs_near,omitempty"`
+	// Contests is the world-object kind this verb races other players for, or
+	// empty for a verb nobody can take from you.
+	//
+	// A catalogue key rather than a case in the service, exactly as Leaves is:
+	// THE VERB NAMES THE KIND AND THE KIND NAMES THE DISCIPLINE, so the service
+	// routes on ObjectKind.Contest alone and a second contested verb is two
+	// catalogue entries and no code. This replaced an `if verb == ActionClaim`
+	// written out in world.go, which was the right shape while the key was the
+	// only contested thing in the world and stopped being it the moment the crate
+	// arrived.
+	Contests string `json:"contests,omitempty"`
 }
 
 // Skin is one look for a pet: an art key resolved against the shared blob store,
@@ -280,8 +351,59 @@ type ObjectKind struct {
 	//
 	// Written into the row at insert time so the partial unique index can
 	// express the invariant WITHOUT naming a kind in DDL — which is what keeps
-	// "a new singleton kind" a catalogue edit rather than a migration.
+	// "a new singleton kind" a catalogue edit rather than a migration. It is also
+	// what `ensureWorld` iterates: a singleton kind is one the yard always holds
+	// exactly one of, so a hello puts a missing one back.
 	Singleton bool `json:"-"`
+	// Contest is how this kind is fought over, and it is what routes a verb to a
+	// discipline instead of the service switching on a kind key. Empty for a
+	// thing nobody races anybody for.
+	//
+	// Server-side only. The player is told the RULE — that the crate runs out —
+	// through Stock below and through the store block on the frame; the name of
+	// the SQL discipline that enforces it is nobody's business but this package's,
+	// and publishing it would invite a second implementation in TypeScript, the
+	// same reason an NPC's motion pattern is withheld.
+	Contest ContestKind `json:"-"`
+	// Stock is how many draws a freshly spawned one of these carries: the row's
+	// `remaining` starts here, and the draw that takes it to nought exhausts the
+	// row and spawns its replacement in the same transaction. Nought for a kind
+	// that is not drawn down.
+	//
+	// Served, unlike the two fields either side of it, because it is a NUMBER THE
+	// PLAYER PLAYS AGAINST rather than a mechanism: «в ящике шесть» is a rule of
+	// the game, and the splash cheatsheet derives that sentence from here instead
+	// of somebody typing the six out and forgetting it after the next retune.
+	Stock int `json:"stock,omitempty"`
+	// At is where one of these stands, for a kind that has a pitch — nil for a
+	// kind that is hidden somewhere instead.
+	//
+	// That nil IS the difference between a shop and a lost key, and it is the
+	// whole of it: `placeFor` reads this field and draws a random hiding place
+	// when there is none, so "does this kind stand somewhere in particular"
+	// stopped being a case in the service the moment there were two answers.
+	//
+	// Server-side only, and deliberately: an object arrives in the roster with
+	// its own coordinates like every other entity, and the one client that needs
+	// to know where the STORE is gets told by the frame (see Roster.Store), not
+	// by matching a kind key it is not supposed to hold.
+	At *Point `json:"-"`
+}
+
+// stock is the `remaining` a freshly spawned object of this kind is inserted
+// with — nil for a kind nobody draws down, which is what the column holds for
+// every key and every deposit.
+//
+// Keyed on the DISCIPLINE rather than on Stock being non-zero, for the reason
+// Counter is keyed on its own flag: a stocked kind retuned to hold one is still
+// a stocked kind, and inferring the mechanism from the number is exactly the
+// mistake this package refuses everywhere else.
+func (k ObjectKind) stock() *int {
+	if k.Contest != ContestStock {
+		return nil
+	}
+	n := k.Stock
+	return &n
 }
 
 // Location is a place a pet can be. Only двор exists today; лес, лифт, кусты and
@@ -339,6 +461,15 @@ type Config struct {
 	// so the client can resolve an object's art the same way it resolves a pet's
 	// — it holds no kind key of its own.
 	ObjectKinds []ObjectKind `json:"object_kinds"`
+	// ArriveWithin is how close "beside it" is, in plane widths — the one number
+	// an Action.NeedsNear gate turns on.
+	//
+	// Served so that the client greying a button and the server refusing a verb
+	// are the SAME threshold rather than two numbers that drift apart, which is
+	// the identical reason a stat's WarnAt is content rather than a stylesheet
+	// value. The client has both ends of the measurement already: its own entity,
+	// from the hello, and the store's place, from the frame.
+	ArriveWithin float64 `json:"arrive_within"`
 	// DefaultSkin and DefaultLocation are what a new pet is created with.
 	DefaultSkin     string `json:"default_skin"`
 	DefaultLocation string `json:"default_location"`
@@ -417,6 +548,41 @@ const (
 	drinkBeer    = 40.0
 	drinkHP      = 15.0
 	drinkBladder = 25.0
+
+	// How much beer a crate holds before the vendor has to fetch another.
+	//
+	// Six is a round for everybody who is plausibly in the yard at once, and it
+	// is deliberately small enough that the number on screen VISIBLY falls — a
+	// stock of fifty would be a finite resource nobody ever saw run out, which is
+	// the same as no stock at all. The crate is replaced the instant it empties,
+	// so this is pacing rather than scarcity: what it buys is somebody arriving
+	// to «пиво кончилось» and having to wait a moment, not a yard that runs dry.
+	crateStock = 6
+
+	// How close to a thing you have to be standing for a verb gated on it.
+	//
+	// A little under an entity's own width — the plane draws each dot at about
+	// 0.13 plane-widths — so "beside it" means overlapping it on screen, which is
+	// the only reading of the rule a player can check by eye. Larger and the walk
+	// stops mattering, which is the entire point of the gate; smaller and
+	// arriving becomes a pixel-hunt on a phone.
+	arriveWithin = 0.12
+)
+
+// Where the beer store stands, and where its vendor stands beside it.
+//
+// THE CRATE IS DELIBERATELY INSIDE tiredFrom OF THE ENTRANCE. It is about 0.43
+// plane-widths from `spawn`, and a walk that short is never refused by the
+// tiredness roll — so somebody who has just arrived can always reach the beer in
+// one tap, and no Ваня is ever stuck between the door and a drink. Moving either
+// of these numbers without checking that distance against tiredFrom is how the
+// store quietly becomes unreachable for whoever is unlucky.
+//
+// The vendor is a little to its left: close enough to read as the man selling
+// it, far enough that the two dots do not sit on top of each other.
+var (
+	cratePlace  = Point{X: 0.82, Y: 0.22}
+	vendorPlace = Point{X: 0.68, Y: 0.26}
 )
 
 // How a Ваня crosses the yard.
@@ -690,6 +856,13 @@ var catalogue = Config{
 			// undid it, so the one moment the game is about had no moment. A
 			// death now has its own verb, and beer is just beer.
 			RevivesFatal: false,
+			// AND BEER NOW HAS TO COME FROM SOMEWHERE. Two preconditions, and
+			// they refuse for different reasons on purpose: you can be at the
+			// crate and find it empty, or hold the whole yard's beer at arm's
+			// length and be too far to reach it. Telling the player which is the
+			// difference between walking over and waiting.
+			NeedsNear: KindCrate,
+			Contests:  KindCrate,
 		},
 		{
 			Key:   ActionRelieve,
@@ -726,6 +899,15 @@ var catalogue = Config{
 			Done:    "нашёл ключи",
 			// A dead Ваня finds nothing.
 			RevivesFatal: false,
+			// The kind it races for. Read off the catalogue rather than switched
+			// on in the service, which is what let the second contested verb
+			// arrive without a second `if`.
+			//
+			// No NeedsNear: the keys are LOST, so looking for them is something
+			// you do from wherever you are standing. Being able to search the
+			// whole yard without crossing it is what keeps the hunt a race
+			// between people rather than a race against the walk.
+			Contests: KindKey,
 		},
 		{
 			Key:   ActionRevive,
@@ -761,6 +943,15 @@ var catalogue = Config{
 			Label:    "ключи",
 			Emoji:    "🔑",
 			Gradient: "linear-gradient(160deg, #7a6a2f, #3a3320)",
+		},
+		{
+			Key:   "obj_crate",
+			Label: "ящик пива",
+			Emoji: "📦",
+			// A crate rather than a glass: 🍺 is already the drink verb and 🍻 the
+			// tally, and three beer glyphs meaning three different things on one
+			// screen is how a player stops reading any of them.
+			Gradient: "linear-gradient(160deg, #6b5a2f, #35301c)",
 		},
 		{
 			Key:   "obj_relief",
@@ -799,6 +990,12 @@ var catalogue = Config{
 			Emoji:    "67",
 			Gradient: "linear-gradient(160deg, #e0762b, #6d2f0c)",
 		},
+		{
+			Key:      "npc_vendor",
+			Label:    "продавец пива",
+			Emoji:    "🧔",
+			Gradient: "linear-gradient(160deg, #4a6b3a, #21301a)",
+		},
 	},
 	ObjectKinds: []ObjectKind{
 		{
@@ -812,6 +1009,11 @@ var catalogue = Config{
 			// which is precisely why migration 008's index is predicated on this
 			// flag rather than on `exhausted_at IS NULL` alone.
 			Singleton: false,
+			// And nobody races anybody for one. Stated rather than left to the
+			// zero value, because this field is what routes a verb to a
+			// discipline and "no discipline" is an answer rather than an
+			// oversight.
+			Contest: ContestNone,
 		},
 		{
 			Key:   KindKey,
@@ -821,21 +1023,47 @@ var catalogue = Config{
 			// need a timer, and there is none — it ends when it is won.
 			Lifetime:        0,
 			LifetimeSeconds: 0,
-			// THE SINGLETON. One active key in the world, as a database
-			// invariant: the winning claim sets `exhausted_at` and inserts the
-			// replacement in the same statement, so the next frame already
-			// carries a fresh hunt and two racing restarts cannot make two.
+			// A SINGLETON. One active key in the world, as a database invariant:
+			// the winning claim sets `exhausted_at` and inserts the replacement
+			// in the same statement, so the next frame already carries a fresh
+			// hunt and two racing restarts cannot make two.
 			Singleton: true,
+			// All or nothing. One player gets it and everybody else gets a face.
+			Contest: ContestSingleWinner,
+			// No At: the whole point of a key is that it is somewhere, and
+			// `placeFor` draws a hiding place for a kind that names no pitch.
+		},
+		{
+			Key:   KindCrate,
+			Art:   "obj_crate",
+			Label: "ящик пива",
+			// Forever, like the key: a crate ends when it is empty, not when it
+			// times out, and a timeout would need the timer this design has not
+			// got.
+			Lifetime:        0,
+			LifetimeSeconds: 0,
+			// The other singleton, so the yard holds exactly one beer store and
+			// two racing restarts cannot stand up two.
+			Singleton: true,
+			// Drawn down a bottle at a time rather than won outright, which is
+			// the second discipline and the reason the Contest field exists at
+			// all.
+			Contest: ContestStock,
+			Stock:   crateStock,
+			// And unlike the key it STANDS SOMEWHERE, which is what makes the
+			// arrival gate mean anything: a shop you had to hunt for would be a
+			// second key hunt wearing an apron.
+			At: &cratePlace,
 		},
 	},
 
 	Locations: []Location{
 		{Key: LocationYard, Label: "двор", Entry: spawn},
 	},
-	// The yard's regulars. Three of them across two ways of moving, which is
-	// exactly what the pattern table exists for: the third arrived as a
-	// catalogue entry and nothing else — no code, no migration, no client
-	// change — because he reuses a pattern that was already written.
+	// The yard's regulars. Four of them across three ways of moving, which is
+	// exactly what the pattern table exists for: the last two arrived as
+	// catalogue entries and nothing else — no code, no migration, no client
+	// change — because each reuses a pattern that was already written.
 	NPCs: []NPC{
 		{
 			Key:     "sahur",
@@ -884,7 +1112,24 @@ var catalogue = Config{
 				Phase:  0.5,
 			},
 		},
+		{
+			Key:   "vendor",
+			Label: "продавец пива",
+			Art:   "npc_vendor",
+			// THE FIRST IDLER, and the pattern that has been sitting unused in
+			// the table since it was written waiting for exactly this character.
+			// He does not move, because a shop that wandered off would make the
+			// walk to it a matter of luck.
+			Pattern: PatternIdle,
+			// STATELESS, AND THAT IS THE WHOLE POINT OF HIM. Everything mutable
+			// about the beer store — how much is left, when it was emptied, who
+			// took the last one — belongs to the crate beside him, which is a row.
+			// He is catalogue and arithmetic: no row, no account, no migration,
+			// and adding the next character like him costs one entry here.
+			Params: MotionParams{Home: vendorPlace},
+		},
 	},
+	ArriveWithin:    arriveWithin,
 	DefaultSkin:     SkinVanya,
 	DefaultLocation: LocationYard,
 }
@@ -904,6 +1149,18 @@ func Content() Config {
 	c.Locations = append([]Location(nil), catalogue.Locations...)
 	c.NPCs = append([]NPC(nil), catalogue.NPCs...)
 	c.ObjectKinds = append([]ObjectKind(nil), catalogue.ObjectKinds...)
+	// The one POINTER the catalogue hands out, re-pointed rather than shared.
+	// Copying a slice of structs copies the pointer inside each one, so a caller
+	// that wrote through `At` would move the beer store for every later request
+	// in the process — the same failure the note above describes for a decorated
+	// skin, one indirection further down and correspondingly harder to see.
+	for i, k := range c.ObjectKinds {
+		if k.At == nil {
+			continue
+		}
+		at := *k.At
+		c.ObjectKinds[i].At = &at
+	}
 	return c
 }
 

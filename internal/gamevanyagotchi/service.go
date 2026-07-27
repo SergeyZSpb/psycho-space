@@ -527,7 +527,10 @@ func (s *Service) broadcast(ctx context.Context, now time.Time) error {
 	// is: a deposit is not somebody who is in the yard.
 	peers = append(peers, s.props(now)...)
 
-	frame, err := json.Marshal(Roster{T: TypeRoster, Peers: peers, Here: here, Hunt: s.hunt()})
+	frame, err := json.Marshal(Roster{
+		T: TypeRoster, Peers: peers, Here: here,
+		Hunt: s.hunt(now), Store: s.store(now),
+	})
 	if err != nil {
 		return err
 	}
@@ -988,6 +991,28 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 		if err != nil {
 			return State{}, err
 		}
+		// THE MOVEMENT GATE, and this is the line ADR-043 reserved for it.
+		//
+		// It is HERE RATHER THAN IN `apply` for a reason that is not stylistic.
+		// `apply` is replayed, and it has to stay a pure function of (Snapshot,
+		// Event): a rule about where somebody was standing cannot be one of its
+		// inputs, because a replay of last March's drinks has no idea where
+		// anybody was and finding out would put a query inside the fold. So the
+		// rule about NOW lives on the live path alone, and the log records that
+		// the drink happened rather than that it was permitted.
+		//
+		// Immediately AFTER apply, per verb and in batch order, which is what
+		// puts it in the right place in the queue of refusals: being dead
+		// outranks being far away, exactly as it already outranks an empty
+		// bladder, because «он не встаёт» is the answer that tells the player
+		// which button to press instead and «далековато» would send him walking
+		// with a corpse. It reads the placement at `at` — the instant the batch is
+		// folded — so a walk in progress is judged by where he has actually got
+		// to rather than by where he set off from.
+		if action, ok := ActionByKey(verb); ok && action.NeedsNear != "" &&
+			!s.beside(accountID, action.NeedsNear, at) {
+			return State{}, fmt.Errorf("%w: %q needs to be at %q", ErrTooFar, verb, action.NeedsNear)
+		}
 		after = next
 	}
 
@@ -1004,12 +1029,17 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 	// always passes the pool.
 	// What the verbs LEAVE BEHIND in the world, decided before the transaction
 	// so the statement below stays a list of writes rather than a place where
-	// rules live. Nothing here reads the world — a deposit is unconditional, and
-	// the first verb that is not (arriving at the crate) will do its checking
-	// above this line, beside the catalogue checks, where a refusal still costs
-	// no rows.
+	// rules live. Nothing here reads the world: a deposit is unconditional, and
+	// the one verb that is conditional on the world — arriving at the crate — did
+	// its checking above, beside the catalogue checks, where a refusal costs no
+	// rows.
 	leavings := worldLeavings(verbs)
-	claimed := false
+	// won records a SingleWinner outcome, which is the only one that paints the
+	// yard; touched records that anything at all moved in the world, which is
+	// what the cache has to be refreshed for. They are separate because drinking
+	// changes the world and gives nobody a face: nothing is taken from anybody,
+	// so there is nobody to look sad.
+	won, touched := false, false
 
 	if err := s.inTx(ctx, func(q db.DBTX) error {
 		if err := s.repo.WriteStats(ctx, q, before.Pet.ID, rowsAt(after)); err != nil {
@@ -1023,32 +1053,64 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 		// event explains and no snapshot accounts for — and this is already the
 		// one place in the game where a multi-statement atomic write exists, so
 		// it costs nothing to be honest here.
-		// THE CONTESTED CLAIM, and it is inside the transaction on purpose: a
-		// player who lost the race must not have his stats written either, and
-		// returning an error here rolls the whole batch back. That is also how
-		// "no stat moves for losing" falls out for free rather than as a special
-		// case — a refused batch writes nothing at all.
+		// THE CONTEST, and it is inside the transaction on purpose: a player who
+		// loses must not have his stats written either, and returning an error
+		// here rolls the whole batch back. That is also how "losing costs
+		// nothing" falls out for free rather than as a special case somebody has
+		// to remember to write — a refused batch writes nothing at all.
+		//
+		// TWO DISCIPLINES, ROUTED BY THE CATALOGUE. The verb names a kind and the
+		// kind names its discipline, so this is a switch over `Contest` rather
+		// than over a verb or a kind key, and a third contested verb is two
+		// catalogue entries and nothing here. What the two share is the shape:
+		// one conditional UPDATE decides it, zero rows affected means you lost,
+		// and whichever of them EXHAUSTS the thing stands its replacement up in
+		// the same transaction.
 		for _, verb := range verbs {
-			kind, ok := contested(verb)
+			def, ok := contests(verb)
 			if !ok {
 				continue
 			}
-			won, err := s.repo.ClaimSingleton(ctx, q, kind, before.Pet.LocationKey, accountID, at)
-			if err != nil {
-				return err
-			}
-			if !won {
-				return ErrClaimLost
-			}
-			claimed = true
-			// Exhausting it and starting the next hunt in the SAME transaction,
-			// so the very next frame already carries a fresh key rather than an
-			// empty yard somebody has to be told about.
-			def, ok := ObjectKindByKey(kind)
-			if !ok {
+			exhausted := false
+			switch def.Contest {
+			case ContestSingleWinner:
+				got, err := s.repo.ClaimSingleton(ctx, q, def.Key, before.Pet.LocationKey, accountID, at)
+				if err != nil {
+					return err
+				}
+				if !got {
+					return ErrClaimLost
+				}
+				// All or nothing: winning it is the same event as using it up.
+				won, exhausted = true, true
+			case ContestStock:
+				left, got, err := s.repo.DrawFromStock(ctx, q, def.Key, before.Pet.LocationKey, at)
+				if err != nil {
+					return err
+				}
+				if !got {
+					return ErrOutOfStock
+				}
+				// A crate is used up gradually, so only the draw that reaches
+				// nought exhausts it — and the statement that decremented it has
+				// already written `exhausted_at`, which is what lets the insert
+				// below succeed against the partial index.
+				exhausted = left <= 0
+			default:
+				// A kind that names no discipline is not contested by anybody,
+				// which makes a verb pointing at one a content bug rather than a
+				// refusal: nothing was taken, so nothing is owed.
 				continue
 			}
-			if err := s.repo.InsertWorldObject(ctx, q, kind, before.Pet.LocationKey, s.hidingPlace(), "", def.Singleton, nil); err != nil {
+			touched = true
+			if !exhausted {
+				continue
+			}
+			// The replacement, in the SAME transaction as the thing it replaces,
+			// so the very next frame already carries a fresh key or a fresh crate
+			// rather than an empty yard somebody has to be told about.
+			if err := s.repo.InsertWorldObject(ctx, q, def.Key, before.Pet.LocationKey,
+				s.placeFor(def), "", def.Singleton, def.stock(), nil); err != nil {
 				return err
 			}
 		}
@@ -1067,7 +1129,8 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 			// verb and never a coordinate — there is nothing in the frame to
 			// forge — so where he is standing is the yard's opinion rather than
 			// his own.
-			if err := s.repo.InsertWorldObject(ctx, q, kind, before.Pet.LocationKey, s.standing(accountID, at), accountID, def.Singleton, expires); err != nil {
+			if err := s.repo.InsertWorldObject(ctx, q, kind, before.Pet.LocationKey,
+				s.standing(accountID, at), accountID, def.Singleton, def.stock(), expires); err != nil {
 				return err
 			}
 		}
@@ -1075,12 +1138,14 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, at t
 	}); err != nil {
 		return State{}, err
 	}
-	if claimed {
+	if won {
 		// Cosmetic, and only now that the write has committed: one happy face
-		// and everybody else's sad, for a few seconds.
+		// and everybody else's sad, for a few seconds. Only the all-or-nothing
+		// discipline does this — a drink takes nothing from anybody, so there is
+		// nobody to look sad about it.
 		s.settleHunt(ctx, accountID, at)
 	}
-	if len(leavings) > 0 || claimed {
+	if len(leavings) > 0 || touched {
 		// The world changed, so the cache the tick renders from is refreshed —
 		// here, on the verb's own goroutine, which is human-paced. The tick
 		// still reads nothing.
@@ -1434,6 +1499,13 @@ func refusalLine(ctx context.Context, err error) string {
 		return "рано ещё"
 	case errors.Is(err, ErrClaimLost):
 		return "кто-то успел раньше"
+	case errors.Is(err, ErrTooFar):
+		// Deliberately NOT the same line as the empty crate below. The two
+		// refusals want opposite things from the player — walk over, or wait —
+		// and one sentence covering both would tell him to do neither.
+		return "далековато"
+	case errors.Is(err, ErrOutOfStock):
+		return "пиво кончилось"
 	case errors.Is(err, ErrBatchTooLong):
 		return "не части"
 	case errors.Is(err, ErrUnknownAction):

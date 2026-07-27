@@ -645,3 +645,166 @@ func TestTheWorldEpochIsAFixedInstant(t *testing.T) {
 		t.Fatal("worldEpoch changed between two reads, so it is being recomputed rather than fixed")
 	}
 }
+
+// TestEverythingTheYardDrawsHasASkinToDrawItWith is the join between an entity
+// and its picture, and it is the join that fails INVISIBLY.
+//
+// A missing art key is not an error anywhere: the client resolves whatever it is
+// sent against this one catalogue and falls back to a placeholder. The
+// placeholder is a PERSON-shaped silhouette, so a world object with no skin
+// entry draws as somebody standing in the yard rather than as a thing in it —
+// which is exactly what happened to the relief deposit once, and is the reason
+// this is checked here rather than left to somebody noticing on a phone.
+//
+// NPCs and object kinds are checked together because to the client there is no
+// difference between them: both are entities carrying an art key, and neither
+// exists as a concept in the browser at all.
+func TestEverythingTheYardDrawsHasASkinToDrawItWith(t *testing.T) {
+	c := Content()
+	skins := make(map[string]bool, len(c.Skins))
+	for _, s := range c.Skins {
+		skins[s.Key] = true
+	}
+
+	for _, kind := range c.ObjectKinds {
+		t.Run("object "+kind.Key, func(t *testing.T) {
+			if kind.Art == "" {
+				t.Fatal("no art key at all; the client has nothing to resolve and draws a person standing where a thing is lying")
+			}
+			if !skins[kind.Art] {
+				t.Errorf("art %q is in no skin the catalogue serves; the browser falls back to its person-shaped placeholder, so this kind draws as somebody in the yard",
+					kind.Art)
+			}
+		})
+	}
+	for _, npc := range c.NPCs {
+		t.Run("regular "+npc.Key, func(t *testing.T) {
+			if !skins[npc.Art] {
+				t.Errorf("art %q is in no skin the catalogue serves; a regular with no face is a dot the yard cannot tell from a stranger", npc.Art)
+			}
+		})
+	}
+}
+
+// TestTheBeerStoreIsAlwaysOneWalkFromTheDoor is a coupling between two numbers
+// in different parts of this file, and the failure it prevents is a Ваня who
+// cannot get a drink.
+//
+// The tiredness roll can refuse any walk longer than tiredFrom, and a refused
+// walk leaves him sitting where he gave up. Beer is gated on ARRIVING at the
+// crate, so if the crate were further from the entrance than tiredFrom, a player
+// who has just walked in could be told no repeatedly with no way to see why —
+// and it would be a run of bad luck rather than a bug anybody could reproduce.
+//
+// Retuning either number is expected; retuning one PAST the other is the thing
+// that has to fail loudly, which is why this compares them rather than pinning
+// either.
+func TestTheBeerStoreIsAlwaysOneWalkFromTheDoor(t *testing.T) {
+	crate := mustObjectKind(t, KindCrate)
+	if crate.At == nil {
+		t.Fatal("the beer crate no longer stands anywhere in particular; the arrival gate has nothing to measure against and this rule cannot be stated")
+	}
+	if d := distance(spawn, *crate.At); d > tiredFrom {
+		t.Errorf("the crate is %v from the entrance and a walk longer than tiredFrom (%v) may be given up on; somebody who has just arrived could be refused a drink for reasons he cannot see",
+			d, tiredFrom)
+	}
+	if arriveWithin <= 0 || arriveWithin >= 1 {
+		t.Errorf("arriveWithin is %v; a threshold of nought makes the gate unpassable and one of a whole plane-width makes it meaningless", arriveWithin)
+	}
+	// And the pitch is on the plane, because the column CHECKs 0..1 and a row
+	// outside it is a refused insert rather than a badly placed crate.
+	for _, kind := range Content().ObjectKinds {
+		if kind.At == nil {
+			continue
+		}
+		if kind.At.X < 0 || kind.At.X > 1 || kind.At.Y < 0 || kind.At.Y > 1 {
+			t.Errorf("%q stands at (%v,%v), off the plane; that insert would be refused outright and the kind would never appear at all",
+				kind.Key, kind.At.X, kind.At.Y)
+		}
+	}
+}
+
+// TestEveryContestedVerbNamesAKindWithADisciplineToSettleIt is the two-hop
+// lookup the service routes on, checked in the one place both hops are visible.
+//
+// A verb names a KIND and the kind names a DISCIPLINE, which is what let the
+// second contested verb arrive without a second `if` in the service — and it is
+// also what can be got wrong in silence. A verb pointing at a kind the catalogue
+// dropped contests nothing, and a kind carrying no discipline falls through the
+// switch: in both cases the player presses a button that quietly costs him
+// nothing and wins him nothing.
+//
+// The gate is checked here for the same reason: `NeedsNear` names a kind, and
+// one naming a kind that does not exist is a verb nobody can ever use, because
+// you cannot stand beside a thing the world does not hold.
+func TestEveryContestedVerbNamesAKindWithADisciplineToSettleIt(t *testing.T) {
+	contesting := 0
+	for _, action := range Content().Actions {
+		t.Run(action.Key, func(t *testing.T) {
+			if action.Contests != "" {
+				contesting++
+				kind, ok := ObjectKindByKey(action.Contests)
+				if !ok {
+					t.Fatalf("it contests %q, which is not a kind the catalogue has; the verb would race nobody for nothing", action.Contests)
+				}
+				if kind.Contest == ContestNone {
+					t.Errorf("it contests %q, which names no discipline; the switch in Do falls through and the verb quietly takes nothing",
+						kind.Key)
+				}
+				if !kind.Singleton {
+					t.Errorf("it contests %q, which is not a singleton; the statements that settle a contest name a KIND rather than a row, so a second live one would be decremented or claimed at the same time",
+						kind.Key)
+				}
+			}
+			if action.NeedsNear == "" {
+				return
+			}
+			near, ok := ObjectKindByKey(action.NeedsNear)
+			if !ok {
+				t.Fatalf("it needs him near %q, which is not a kind the catalogue has; nobody can ever stand beside it, so the verb can never be used",
+					action.NeedsNear)
+			}
+			if !near.Singleton {
+				t.Errorf("it needs him near %q, of which the world may hold many; `beside` asks about THE one of a kind, so this gate would turn on whichever happened to be first in the cache",
+					near.Key)
+			}
+		})
+	}
+	if contesting < 2 {
+		t.Fatalf("%d verbs contest anything; the Contest field exists because there are two disciplines, and with fewer than two contested verbs it is a table with one row",
+			contesting)
+	}
+}
+
+// TestAStockedKindHasSomethingInItAndNothingElseDoes pins the discipline against
+// the number it is meant to govern.
+//
+// `stock()` is keyed on the DISCIPLINE rather than on the count being non-zero,
+// deliberately — a crate retuned to hold one is still a crate. The failure that
+// leaves is a stocked kind with a stock of nought, which would be stood up empty
+// and exhausted by the first draw for ever; and its mirror, an unstocked kind
+// carrying a count that no statement would ever move.
+func TestAStockedKindHasSomethingInItAndNothingElseDoes(t *testing.T) {
+	for _, kind := range Content().ObjectKinds {
+		t.Run(kind.Key, func(t *testing.T) {
+			switch kind.Contest {
+			case ContestStock:
+				if kind.Stock <= 0 {
+					t.Errorf("it is drawn down but holds %d; it would be stood up already empty, and the draw that empties it would stand up another empty one for ever",
+						kind.Stock)
+				}
+				left := kind.stock()
+				if left == nil || *left != kind.Stock {
+					t.Errorf("stock() gives %v; want the catalogue's %d, which is what the row is inserted holding", left, kind.Stock)
+				}
+			default:
+				if kind.Stock != 0 {
+					t.Errorf("nothing draws from it and yet it carries a stock of %d; that number would be written into a column no statement ever moves", kind.Stock)
+				}
+				if kind.stock() != nil {
+					t.Error("stock() gives a count for a kind nobody draws from; the column is nullable precisely so that \"not drawn down\" and \"drawn down and empty\" are different values")
+				}
+			}
+		})
+	}
+}

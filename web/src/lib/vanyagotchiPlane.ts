@@ -1,4 +1,4 @@
-import type { VanyagotchiSkin } from '../api/types';
+import type { VanyagotchiSkin, VanyagotchiStore } from '../api/types';
 
 // Applying positions to the plane, deliberately outside Vue.
 //
@@ -676,6 +676,193 @@ export function readHunt(raw: unknown): string {
  */
 export function huntRestarted(before: string, now: string): boolean {
   return !!before && !!now && before !== now;
+}
+
+// ---------------------------------------------------------------------------
+// The beer store, and the one rule in this game that is about WHERE somebody is
+// standing.
+//
+// It is the second thing on a roster frame that is state about the world rather
+// than about an entity — the hunt id above is the first — and it is read the
+// same way: through a guard, tolerant of every shape a server halfway through a
+// deploy can send, and never trusted to be well-formed because it came over a
+// socket.
+//
+// WHAT IS NOT HERE IS THE POINT. There is no kind key anywhere in this module,
+// no list of what a crate looks like, and no way for the browser to tell which
+// `obj-` entity is the store: it is TOLD where the store is, as a place and a
+// count, rather than being asked to find it. Which is what keeps a new kind of
+// thing on the ground a backend-only change (ADR-028), and it is why the gate
+// below tests the PRESENCE of a verb's `needs_near` and never its value.
+// ---------------------------------------------------------------------------
+
+/** A place on the plane, in the same normalised 0..1 coordinates everything uses. */
+interface Place {
+  x: number;
+  y: number;
+}
+
+/** Is this something we can measure a distance to? */
+function isPlace(value: unknown): value is Place {
+  if (typeof value !== 'object' || value === null) return false;
+  const p = value as Record<string, unknown>;
+  return typeof p.x === 'number' && Number.isFinite(p.x) && typeof p.y === 'number' && Number.isFinite(p.y);
+}
+
+/**
+ * Reads the store block off a roster frame, or reports that the yard has none.
+ *
+ * A store with an unreadable PLACE is no store at all, because the place is what
+ * the whole block is for: a count with nowhere to walk to could only grey a
+ * button and never explain it.
+ *
+ * A store with an unreadable COUNT reads as EMPTY rather than as absent, and the
+ * asymmetry is deliberate. Both greys the button, so the difference is only what
+ * the player is told — and «в ящике: 0» beside a crate he can see is a truer
+ * account of a client that cannot read the number than silently pretending the
+ * yard has no crate in it. It is also the safe way round: the server refuses the
+ * draw regardless, so the worst case is a drink that has to be waited for rather
+ * than one that is offered and cannot be poured.
+ */
+export function readStore(raw: unknown): VanyagotchiStore | undefined {
+  if (!isPlace(raw)) return undefined;
+  const left = (raw as unknown as Record<string, unknown>).left;
+  return {
+    x: raw.x,
+    y: raw.y,
+    left: typeof left === 'number' && Number.isFinite(left) ? Math.max(0, Math.trunc(left)) : 0,
+  };
+}
+
+/**
+ * Do these two frames describe the same store?
+ *
+ * The guard that keeps the store out of the five-times-a-second re-render, and
+ * it is the same discipline `sameIds` and `sameAppearance` follow — with a much
+ * easier job, because a store is genuinely discrete state: the crate does not
+ * move at all, and its count changes a few times an evening. So this is true on
+ * essentially every frame, which is exactly what makes a `ref` the right place
+ * to keep it.
+ *
+ * Two absent stores are the same store: a yard with no crate in it, frame after
+ * frame, must not look like a change.
+ */
+export function sameStore(
+  a: VanyagotchiStore | undefined,
+  b: VanyagotchiStore | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.x === b.x && a.y === b.y && a.left === b.left;
+}
+
+/**
+ * Is he standing close enough to something to use a verb gated on it?
+ *
+ * THE SAME ARITHMETIC THE SERVER DOES, deliberately — plain Euclidean distance
+ * in the plane's normalised coordinates, compared with `<=` — so that the button
+ * this greys and the verb the server refuses turn on one number rather than two
+ * that agree until they do not. See `beside` in internal/gamevanyagotchi/world.go;
+ * `within` comes off the served catalogue for the same reason (`arrive_within`),
+ * so a retune moves both ends at once.
+ *
+ * It is also why THIS gate is enforced in the browser at all when the pet's own
+ * `needs_stat` gate deliberately is not: a stat is interpolated here and read
+ * there, so the two ends hold different numbers between frames, whereas a
+ * position is not interpolated by this client at all — the frame states it.
+ *
+ * FALSE FOR ANYTHING IT CANNOT READ, and each of those is a real shape rather
+ * than a defensive flourish. No `here` is a client that has not had its hello
+ * answered yet, so it does not know which entity it is: it cannot be beside
+ * anything, and a fresh Ваня spawns across the yard from the crate anyway. No
+ * `there` is a yard with no crate. An unusable `within` is a server that shipped
+ * a gate without the threshold it turns on — impossible from the catalogue,
+ * which carries both in one struct, and possible from a fixture that stubs one
+ * of them. Guessing a threshold would be worse than greying: it would grey at a
+ * distance nothing else in the system agrees with.
+ */
+export function beside(
+  here: Place | undefined,
+  there: Place | undefined,
+  within: number | undefined,
+): boolean {
+  if (!isPlace(here) || !isPlace(there)) return false;
+  if (typeof within !== 'number' || !Number.isFinite(within) || within < 0) return false;
+  return Math.hypot(there.x - here.x, there.y - here.y) <= within;
+}
+
+/**
+ * Is this verb unpressable right now because of where he is standing — or
+ * because there is nothing left to press it on?
+ *
+ * THE PRESENCE OF `needs_near` IS TESTED AND ITS VALUE IS NEVER LOOKED AT, and
+ * that is the load-bearing line in this function. The client holds no kind keys:
+ * it does not know that a crate is called `beer_crate`, cannot tell which entity
+ * in the yard is one, and must not learn either — the server publishes the store
+ * as a PLACE precisely so that the browser can gate a button without holding any
+ * content at all. Comparing `needs_near` to a string here would put the
+ * catalogue in the SPA and make a new gated verb a client deploy (ADR-028).
+ *
+ * Three reasons, and the caller can tell them apart because it holds all three
+ * inputs: no crate in the yard, a crate with nothing in it, and a crate he is
+ * not standing at. They want opposite things from the player — wait, versus walk
+ * over — which is why the server answers them with two different lines
+ * («пиво кончилось» and «далековато») and why the screen says which one it is
+ * rather than only greying the button.
+ *
+ * A COURTESY, NEVER A RULE. The server enforces all three regardless, so the
+ * worst this can be is unkind: an ungreyed button that is refused, or a greyed
+ * one that would have been accepted. That is what makes it safe for it to fail
+ * closed on a threshold it cannot read.
+ */
+export function outOfReach(
+  action: { needs_near?: string } | null | undefined,
+  store: VanyagotchiStore | undefined,
+  atStore: boolean,
+): boolean {
+  if (!action?.needs_near) return false;
+  if (!store) return true;
+  if (store.left <= 0) return true;
+  return !atStore;
+}
+
+/**
+ * The one line the status row says about the beer store, or nothing when the
+ * yard has no crate.
+ *
+ * A GREYED BUTTON IS NOT AN EXPLANATION, and this is the explanation. The three
+ * states `outOfReach` collapses into one boolean are three different
+ * instructions to the player, and they are the same three the server answers
+ * with when the button is pressed anyway: nothing left («пиво кончилось» — wait),
+ * too far («далековато» — walk over), and ready. A screen that greyed the button
+ * without saying which of them applied would leave him staring at a dead control
+ * with no idea whether the problem was his feet or the crate.
+ *
+ * The count is stated even when he cannot reach it, because that is the half he
+ * is deciding on: six left is worth crossing the yard for and one is a race he
+ * has probably already lost.
+ *
+ * NOTHING HERE KNOWS WHAT IS IN THE CRATE. The emoji is the drink's, not the
+ * kind's, because the client holds no object kinds — see the note at the head of
+ * this section. If the store ever stops selling beer this line is wrong, and
+ * that is the honest trade for a browser that cannot be told what a crate is.
+ */
+export function storeLabel(store: VanyagotchiStore | undefined, atStore: boolean): string | null {
+  if (!store) return null;
+  // Never reached from a well-formed frame — the draw that empties a crate
+  // exhausts it and stands a fresh one up in the same transaction, so the server
+  // publishes an absent store rather than a nought. It is here because
+  // `readStore` deliberately reads an UNREADABLE count as nought, and because a
+  // count on a frame is always a moment out of date.
+  if (store.left <= 0) return '🍺 ящик пуст';
+  // Deliberately terse. It is the THIRD item in a status row that must not wrap
+  // and must not overflow at 320px — the width that has broken this screen
+  // before — so the sentence is as short as it can be while still saying which
+  // of the three states applies. «дойди» is the whole instruction: the yard is
+  // already showing him the crate, and the button lighting up is how he learns
+  // he has arrived.
+  if (!atStore) return `🍺 ящик: ${store.left} — дойди`;
+  return `🍺 ящик: ${store.left}`;
 }
 
 /**

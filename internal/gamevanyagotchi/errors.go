@@ -45,6 +45,22 @@ var (
 	// the player's fault — it is the ordinary outcome of a contested claim for
 	// everybody but one person, which is why it costs nothing but a sad face.
 	ErrClaimLost = errors.New("gamevanyagotchi: somebody claimed it first")
+	// ErrTooFar means the verb needs him STANDING BESIDE something and he is not.
+	// The first refusal in this game about where he is rather than what he holds,
+	// and it is deliberately distinct from the one below it: being too far from
+	// the crate is fixed by walking over, and finding it empty is fixed by
+	// waiting. Telling the player which is the whole value of having two.
+	ErrTooFar = errors.New("gamevanyagotchi: too far from it")
+	// ErrOutOfStock means the thing he was drawing from has nothing left. It is
+	// the Stock discipline's version of ErrClaimLost — somebody else got there
+	// first — and it costs exactly as little: the draw is inside the transaction,
+	// so a batch refused by it writes nothing at all.
+	//
+	// A player should meet it rarely, because the crate is replaced the instant
+	// it empties and the frame carries the count so the button can grey itself.
+	// It exists because a greyed button is a suggestion, and because a count on a
+	// frame is always a moment out of date.
+	ErrOutOfStock = errors.New("gamevanyagotchi: nothing left in it")
 	// ErrNotYet means the verb needs one of his own numbers to be further along
 	// — there is nothing to do on an empty bladder. The client greys the button,
 	// so a player should rarely meet this; it exists because a greyed button is

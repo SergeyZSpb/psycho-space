@@ -97,14 +97,18 @@ type Repository interface {
 
 	// InsertWorldObject puts one durable thing on the plane.
 	//
-	// `singleton` comes from the CATALOGUE rather than from a predicate naming
-	// a kind, which is what lets the "at most one active of this kind" index
-	// express itself without a content key ever entering an immutable
-	// migration. The insert is `ON CONFLICT DO NOTHING` against that partial
-	// index, so a kind that may only have one active row cannot get two however
-	// many callers race — and a kind that may have many is unaffected, because
-	// it does not participate in the index at all.
-	InsertWorldObject(ctx context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, expires *time.Time) error
+	// `singleton` and `remaining` both come from the CATALOGUE rather than from
+	// anything in here naming a kind, which is what lets the "at most one active
+	// of this kind" index express itself without a content key ever entering an
+	// immutable migration. The insert is `ON CONFLICT DO NOTHING` against that
+	// partial index, so a kind that may only have one active row cannot get two
+	// however many callers race — and a kind that may have many is unaffected,
+	// because it does not participate in the index at all.
+	//
+	// `remaining` is nil for every kind but a stocked one, and the column is
+	// nullable precisely so that "this is not drawn down" and "this is drawn
+	// down and is empty" are different values rather than the same nought.
+	InsertWorldObject(ctx context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, remaining *int, expires *time.Time) error
 
 	// LiveWorldObjects reads what is standing in a location right now, newest
 	// first and capped.
@@ -117,7 +121,29 @@ type Repository interface {
 	// ClaimSingleton hands the one active object of a kind to one account, and
 	// reports whether this caller is the one who got it. False means somebody
 	// else was first — a lost race rather than an error.
+	//
+	// The SingleWinner half of the contest; DrawFromStock below is the other.
+	// Which one a verb goes through is decided by the kind's catalogue
+	// `Contest`, never by anything in this interface.
 	ClaimSingleton(ctx context.Context, q db.DBTX, kind, locationKey, accountID string, at time.Time) (bool, error)
+
+	// DrawFromStock takes one unit out of the one active stocked object of a
+	// kind, and reports what is left and whether there was anything to take.
+	//
+	// The Stock half of the contest, and it CANNOT OVERSELL under any amount of
+	// concurrency: the guard is `remaining > 0` inside a conditional UPDATE, so
+	// a second player's statement blocks on the row the first is holding and
+	// re-evaluates that guard against the value the first committed. False means
+	// the crate was already empty — a lost race rather than an error, exactly as
+	// a lost claim is.
+	//
+	// The decrement that reaches nought sets `exhausted_at` in the SAME
+	// statement, which is what takes the row out of the partial unique index and
+	// lets its replacement be inserted in the same transaction. Splitting those
+	// would leave a window in which the index still held the empty crate and the
+	// insert silently did nothing — a yard with a crate nobody can draw from and
+	// no mechanism that would ever replace it.
+	DrawFromStock(ctx context.Context, q db.DBTX, kind, locationKey string, at time.Time) (int, bool, error)
 
 	// ActiveSingleton returns the id of the active object of a kind.
 	ActiveSingleton(ctx context.Context, q db.DBTX, kind, locationKey string) (string, bool, error)

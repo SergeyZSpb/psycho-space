@@ -231,6 +231,18 @@ function actionRow(
   // false three times out of four.
   const needs = needsNote(def, byKey);
   if (needs) notes.push(needs);
+  // SECOND, because it is the other note that says when the button will do
+  // NOTHING, and the two are ordered as a player meets them: what he has to be
+  // holding, then where he has to be standing. A verb gated on a place is
+  // refused with «далековато» and applies nothing, exactly as the stat gate is
+  // refused with «рано ещё» — the difference is only what the player has to do
+  // about it, which is the whole reason the two lines are separate.
+  const near = needsNearNote(def, objectKinds);
+  if (near) notes.push(near);
+  // Then what he is drawing FROM, which is a fact about the world rather than
+  // about the press: the thing he had to walk to is not bottomless.
+  const stock = stockNote(def, objectKinds);
+  if (stock) notes.push(stock);
   const leaves = leavesNote(def, objectKinds);
   if (leaves) notes.push(leaves);
   // `revives_fatal` says both things at once: the action that carries it is the
@@ -283,6 +295,82 @@ function needsNote(
   const stat = byKey.get(def.needs_stat);
   if (!stat) return null;
   return `нужно накопить: ${stat.label || def.needs_stat} от ${amount(amountNeeded as number)}`;
+}
+
+/**
+ * Where the pet has to be STANDING before this verb will do anything, or nothing
+ * for a verb he can press from anywhere.
+ *
+ * DERIVED IN TWO HOPS like `leavesNote` below: the verb carries a kind KEY
+ * (`needs_near`) and the kind carries what it is called, both out of
+ * internal/gamevanyagotchi/content.go. So moving the beer store, renaming it, or
+ * gating a second verb on a second place are all backend edits that this
+ * sentence follows on its own. What it deliberately does NOT say is how close
+ * "beside it" is: `arrive_within` is a distance in plane widths, and a number
+ * the player cannot measure by eye is not a rule he can act on — the instruction
+ * is «walk over», and the yard shows him whether he has arrived by whether the
+ * button lights up.
+ *
+ * A KIND THE CATALOGUE DOES NOT NAME YIELDS NO NOTE, and this is STRICTER than
+ * `leavesNote`, which falls back to «кое-что» for an unnamed kind. The two
+ * sentences survive namelessness differently: «оставляет кое-что на земле» still
+ * teaches the whole rule — something appears, everybody sees it, it goes after
+ * ten minutes — whereas the entire content of this one is WHICH THING TO WALK
+ * TO. «Нужно стоять рядом: кое-что» is a fetch quest, not a rule, so silence is
+ * the honest answer and the server's «далековато» stays the first the player
+ * hears of it.
+ */
+function needsNearNote(
+  def: VanyagotchiAction,
+  objectKinds: Map<string, VanyagotchiObjectKind>,
+): string | null {
+  if (!def.needs_near) return null;
+  const kind = objectKinds.get(def.needs_near);
+  if (!kind?.label) return null;
+  return `нужно стоять рядом: ${kind.label}`;
+}
+
+/**
+ * How many draws the thing this verb races other players for holds, or nothing
+ * for a verb that is not drawing from a finite pile.
+ *
+ * DERIVED IN THE SAME TWO HOPS, and the number is the whole point of making it a
+ * derivation: `crateStock` is a constant in internal/gamevanyagotchi/content.go
+ * chosen for pacing — small enough that the count on screen VISIBLY falls — and
+ * it is exactly the sort of number somebody retunes by feel one evening. A
+ * hand-typed «в ящике шесть» would be wrong that same evening, silently, because
+ * nothing compares the two.
+ *
+ * IT SAYS NOTHING ABOUT WHAT HAPPENS WHEN THE PILE IS EMPTY, and that is not an
+ * omission: the crate is replaced the instant it is drawn to nothing, which is a
+ * property of the server's own write and appears nowhere in the catalogue. It is
+ * in YARD_PROSE at the foot of this file, with the rest of what cannot be
+ * derived — and without it «6 порций на всех» reads as a yard that runs dry,
+ * which is the opposite of the truth.
+ *
+ * A CONTESTED KIND WITH NO STOCK YIELDS NO NOTE, which is not a fallback but the
+ * correct reading of the other discipline: the lost key is contested too, and it
+ * is won outright rather than drawn down, so it carries no stock and there is no
+ * count to state. Nor does an unnamed kind, for the reason `needsNearNote` gives
+ * above — the label is this sentence's subject.
+ */
+function stockNote(
+  def: VanyagotchiAction,
+  objectKinds: Map<string, VanyagotchiObjectKind>,
+): string | null {
+  if (!def.contests) return null;
+  const kind = objectKinds.get(def.contests);
+  if (!kind?.label) return null;
+  const stock = kind.stock;
+  // An integer, because the next line agrees a Russian noun with it and half a
+  // serving is not a thing the catalogue can mean. Nought or absent is the
+  // ordinary case — it is what every kind that is not drawn down carries.
+  if (typeof stock !== 'number' || !Number.isInteger(stock) || stock <= 0) return null;
+  // «порция» rather than «бутылка»: what is in the crate is content and this
+  // line is not allowed to know it, so the unit is the generic one — the same
+  // licence `duration` takes with «минуту», where the number is derived and the
+  // word around it is not.
+  return `${kind.label} — ${stock} ${plural(stock, 'порция', 'порции', 'порций')} на всех`;
 }
 
 /**
@@ -477,6 +565,18 @@ function signed(value: number): string {
  *      and that a replacement is lost the instant the old one is found. The verb
  *      carries no `leaves` kind either, so even «где-то на земле» has to be said
  *      here rather than coming off the object kind the way a deposit's does.
+ *   6. the beer store, where the derived half stops one sentence short of the
+ *      rule. `needs_near` and the crate's `stock` give «нужно стоять рядом» and
+ *      «6 порций на всех» one section up, and read alone those describe a yard
+ *      that runs dry — which is the opposite of what happens. What is missing is
+ *      that the crate is REPLACED the instant it is drawn to nothing, in the
+ *      same transaction as the draw that empties it, so a shortage lasts as long
+ *      as it takes somebody to press again. That is a property of the server's
+ *      own write (`DrawFromStock` plus the replacement insert in world.go), not
+ *      a catalogue value, so nothing on the wire could ever say it. Nor could
+ *      anything say how close «рядом» is in a way a player could act on:
+ *      `arrive_within` is a distance in plane widths, and the honest instruction
+ *      is «walk to the crate and watch the button light up».
  *
  * If one of those numbers or behaviours moves, this text is what goes wrong. Keep
  * it honest, keep it short, and resist adding anything here that the config
@@ -490,4 +590,5 @@ export const YARD_PROSE: readonly string[] = [
   'Остальные во дворе — живые люди. Кто ушёл, тот лежит спит там, где стоял. А пара местных вообще ничьи.',
   'Не всё во дворе — люди. Что кто-то оставил на земле, то там и лежит: видно всем, но в счётчике народу не числится.',
   'Ключи одни на весь двор и всегда где-то на земле: кто первым нажал, тот их и нашёл. Опоздавшему не будет ничего — только грустная морда на пару секунд. И новые ключи теряются сразу же, так что искать можно вечно.',
+  'Пиво не берётся из воздуха: у ящика во дворе стоит продавец, и дойти до ящика надо ногами. Ящик один на всех, и разбирают его вместе — кто дошёл, тот и налил. Кончилось — продавец тут же тащит новый, так что ждать долго не придётся.',
 ];

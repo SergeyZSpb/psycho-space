@@ -738,3 +738,58 @@ func TestRowsAtIsDeterministicAndInCatalogueOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyKnowsNothingAboutWhereAnybodyIsStandingOrWhatIsLeftInTheCrate is the
+// boundary that keeps a replay possible at all, asserted from the side that can
+// break it.
+//
+// Drinking is now gated twice — he has to be AT the crate, and there has to be
+// beer in it — and neither of those rules is here. `apply` interprets one event
+// against a snapshot and nothing else, so a fold over a history has no idea
+// where anybody was standing last March and does not have to: the log records
+// that the drink HAPPENED, and the gates recorded at the time are what let it
+// happen. Both live in Service.Do.
+//
+// Putting either inside `apply` would be the mistake, and it would look
+// reasonable: the rules belong to the verb. What it would cost is the whole
+// point of the log — a replay would need a position nobody stored and a crate
+// count that has since moved, which means a database read inside a pure fold and
+// an answer that changes every time it is asked.
+//
+// So this drives the fold with NO service, NO position map, NO world and NO
+// repository at all, which is the strongest available statement that it needs
+// none of them: a package-level function over two values.
+func TestApplyKnowsNothingAboutWhereAnybodyIsStandingOrWhatIsLeftInTheCrate(t *testing.T) {
+	drink := mustAction(t, ActionDrink)
+	if drink.NeedsNear == "" && drink.Contests == "" {
+		t.Fatalf("the catalogue no longer gates %q on the world at all; this test is guarding a boundary the game does not have", drink.Key)
+	}
+	moves := effectOn(drink, StatBeer)
+	if moves <= 0 {
+		t.Fatalf("the catalogue says %q moves %q by %v; this test needs a verb whose effect is visible", drink.Key, StatBeer, moves)
+	}
+
+	start := freshPet(eventEpoch)
+	before := valueOf(t, start, StatBeer)
+
+	out, err := apply(start, Event{Seq: 1, Verb: ActionDrink, At: eventEpoch})
+	if err != nil {
+		t.Fatalf("apply(%s) = %v; a replay must be able to apply a drink with nobody standing anywhere and no crate in sight", ActionDrink, err)
+	}
+	if got, want := valueOf(t, out, StatBeer), mustStat(t, StatBeer).Clamp(before+moves); got != want {
+		t.Errorf("%q = %v after a replayed drink; want %v — the verb applied, so it has to have applied fully", StatBeer, got, want)
+	}
+
+	// And a whole history of them, which is what a replay actually does: an
+	// arrival gate hiding in here would refuse every drink but the ones somebody
+	// could prove, and a stock check would refuse them all after the seventh.
+	history := make([]Event, 0, crateStock+4)
+	for i := 0; i < crateStock+4; i++ {
+		history = append(history, Event{Seq: int64(i + 1), Verb: ActionDrink, At: eventEpoch.Add(time.Duration(i) * time.Hour)})
+	}
+	folded := fold(freshPet(eventEpoch), history)
+	if got := valueOf(t, folded, StatBeersDrunk); got != float64(len(history)) {
+		t.Errorf("%q = %v after replaying %d drinks; want %d — `fold` SKIPS what it cannot apply, so a gate in here would be silently dropped events rather than a failure",
+			StatBeersDrunk, got, len(history), len(history))
+	}
+}

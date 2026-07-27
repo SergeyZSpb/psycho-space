@@ -140,6 +140,30 @@ type fakeRepo struct {
 	active      map[string]string
 	activeReads int
 	activeErr   error
+
+	// The Stock discipline: what the crate holds, what has been drawn out of it,
+	// and — as with the claim — an inverse registered per draw so a rolled-back
+	// batch really does put the beer back.
+	//
+	// `stock` is nil until the first draw fills it from the CATALOGUE, which is
+	// the opposite default from `claimWon` above and deliberately so rather than
+	// for symmetry. Losing is the ordinary outcome of an all-or-nothing claim for
+	// everybody but one person, so a fake that handed out the prize by default
+	// would make the interesting half untestable; a crate is stood up full and
+	// replaced the instant it empties, so HAVING BEER is its ordinary state and a
+	// fake that started empty would make every test that drinks arrange the beer
+	// before it could say anything about drinking. Both defaults are "what
+	// usually happens", and either interesting case is set explicitly.
+	stock   map[string]int
+	draws   []fakeDraw
+	drawErr error
+}
+
+// fakeDraw is one DrawFromStock call, exactly as it was made.
+type fakeDraw struct {
+	Kind     string
+	Location string
+	At       time.Time
 }
 
 // savedPosition is one SavePosition call, exactly as it was made.
@@ -156,6 +180,7 @@ type insertedObject struct {
 	at          Point
 	owner       string
 	singleton   bool
+	remaining   *int
 	expires     *time.Time
 }
 
@@ -256,7 +281,7 @@ func (f *fakeRepo) saved() []savedPosition {
 // test/integration, and a copy of it here would be a second, weaker statement of
 // a rule that lives in migration 008 — one that could agree with itself while
 // the index was wrong.
-func (f *fakeRepo) InsertWorldObject(_ context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, expires *time.Time) error {
+func (f *fakeRepo) InsertWorldObject(_ context.Context, q db.DBTX, kind, locationKey string, at Point, owner string, singleton bool, remaining *int, expires *time.Time) error {
 	f.journal(q)
 	// COPIED rather than aliased, like every other value this fake keeps: the
 	// caller owns the instant it took the address of, and a test comparing what
@@ -267,10 +292,16 @@ func (f *fakeRepo) InsertWorldObject(_ context.Context, q db.DBTX, kind, locatio
 		when := *expires
 		until = &when
 	}
+	var left *int
+	if remaining != nil {
+		n := *remaining
+		left = &n
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inserted = append(f.inserted, insertedObject{
-		kind: kind, locationKey: locationKey, at: at, owner: owner, singleton: singleton, expires: until,
+		kind: kind, locationKey: locationKey, at: at, owner: owner,
+		singleton: singleton, remaining: left, expires: until,
 	})
 	return f.insertErr
 }
@@ -330,6 +361,71 @@ func (f *fakeRepo) ClaimSingleton(_ context.Context, q db.DBTX, kind, locationKe
 		})
 	}
 	return true, nil
+}
+
+// DrawFromStock takes one out of the crate and answers with what is left.
+//
+// It mirrors the SQL's two decisions and neither of its races. `remaining > 0`
+// is the guard, so an empty crate answers "there was nothing to take" rather
+// than going negative — which is the outcome the CHECK constraint exists to
+// forbid outright. And the draw registers its OWN INVERSE on the transaction,
+// exactly as ClaimSingleton does and for the same reason: a whole-state snapshot
+// would put the beer back whichever handle the UPDATE had used, and "the draw is
+// inside the transaction" is precisely what a test needs to be able to fail.
+//
+// What is deliberately NOT mirrored is the concurrency. Whether two players
+// pressing at once can oversell a crate is a row lock and a re-evaluated WHERE
+// clause, it is proved against a real PostgreSQL in test/integration, and a
+// second implementation of it here could agree with itself while the statement
+// was wrong.
+func (f *fakeRepo) DrawFromStock(_ context.Context, q db.DBTX, kind, locationKey string, at time.Time) (int, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.draws = append(f.draws, fakeDraw{Kind: kind, Location: locationKey, At: at})
+	if f.drawErr != nil {
+		return 0, false, f.drawErr
+	}
+	if f.stock == nil {
+		// The world as it ordinarily stands: every stocked kind full, straight
+		// off the catalogue rather than out of a number written down here, so a
+		// retuned crate size does not quietly stop being what these tests drink
+		// from.
+		f.stock = make(map[string]int, 1)
+		for _, def := range Content().ObjectKinds {
+			if def.Contest == ContestStock {
+				f.stock[def.Key] = def.Stock
+			}
+		}
+	}
+	left, ok := f.stock[kind]
+	if !ok || left <= 0 {
+		return 0, false, nil
+	}
+	left--
+	f.stock[kind] = left
+	if tx, ok := q.(*fakeTx); ok {
+		tx.undo = append(tx.undo, func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.stock[kind] = left + 1
+		})
+	}
+	return left, true, nil
+}
+
+// drawn is every draw that has been made, in the order it was made.
+func (f *fakeRepo) drawn() []fakeDraw {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeDraw(nil), f.draws...)
+}
+
+// leftIn is what the crate currently holds, as the durable state stands — and
+// what it holds again after a batch that drew from it was rolled back.
+func (f *fakeRepo) leftIn(kind string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stock[kind]
 }
 
 // attempts is every claim that has been made, in the order it was made.
@@ -1034,9 +1130,15 @@ func TestAVerbAppliesEveryEffectOfAMultiStatAction(t *testing.T) {
 			}
 			requireNoPenaltyWithin(t, rows, tc.ageHrs)
 			repo := playedFor(rows...)
+			svc := petService(repo)
+			// Standing at the crate, because beer now comes out of one. This test
+			// is about the effects a drink APPLIES, so the arrival gate is
+			// arranged past rather than exercised — it has tests of its own in
+			// world_test.go, and reaching it here would say nothing about clamping.
+			atTheStore(t, svc, repo, testAccount, crateStock)
 
 			before := time.Now().UTC()
-			st, err := petService(repo).Do(context.Background(), testAccount, []string{ActionDrink}, time.Now().UTC())
+			st, err := svc.Do(context.Background(), testAccount, []string{ActionDrink}, time.Now().UTC())
 			after := time.Now().UTC()
 			if err != nil {
 				t.Fatalf("Do: %v", err)
@@ -1107,9 +1209,15 @@ func TestEveryActionRestampsEveryStatAtOneInstant(t *testing.T) {
 			// is world_test.go's subject rather than this one's. The fake loses by
 			// default on purpose, so saying so here is deliberate.
 			repo.claimWon = true
+			svc := contestedService(repo)
+			// And a verb gated on WHERE HE IS has to be allowed to happen for the
+			// same reason. Applied to every case rather than only to the one that
+			// needs it, so that a second gated verb joins this loop without
+			// anybody having to notice.
+			atTheStore(t, svc, repo, testAccount, crateStock)
 
 			before := time.Now().UTC()
-			if _, err := contestedService(repo).Do(context.Background(), testAccount, []string{action.Key}, time.Now().UTC()); err != nil {
+			if _, err := svc.Do(context.Background(), testAccount, []string{action.Key}, time.Now().UTC()); err != nil {
 				t.Fatalf("Do(%q): %v", action.Key, err)
 			}
 			after := time.Now().UTC()

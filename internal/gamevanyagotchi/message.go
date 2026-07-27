@@ -84,6 +84,48 @@ type Roster struct {
 	// about 20 bytes a frame, 100 B/s to each phone, for a field that changes a
 	// few times an evening.
 	Hunt string `json:"hunt,omitempty"`
+	// Store is the beer store: where it stands and how much is left in it.
+	// Absent when the yard has no crate at all, which is a state the next hello
+	// ends.
+	//
+	// ONE SHARED FIELD, NOT A FIELD PER PEER, and the arithmetic is the reason.
+	// `"store":{"x":0.82,"y":0.22,"left":6},` is about 36 bytes; on the frame it
+	// costs 36 × 5 = 180 B/s to each phone however busy the yard is. Hung off
+	// every peer instead it would be 36 × entities × 5 per viewer — at the
+	// twenty-four the world cap allows, 4.3 KB/s to each phone to say the same
+	// number twenty-four times. It is one fact about the world, so it is carried
+	// once.
+	//
+	// It is also why this is not a per-recipient field either: the frame is fanned
+	// out to the whole room, so anything that differed per player would have to be
+	// rendered per player — the identical reason Peer carries no "you" flag. The
+	// client works out its own distance from its own entity, which it already
+	// knows from the hello.
+	//
+	// AND WHY IT IS A STRUCTURE RATHER THAN A KIND KEY. The client is deliberately
+	// kind-agnostic: an object arrives as an ordinary entity and the browser has
+	// no way to tell which `obj-` id is a crate, which is exactly the property
+	// that makes a new kind a backend change. So it is told "here is the store"
+	// rather than "find the entity whose kind is beer_crate", and it can grey the
+	// drink button — too far, or nothing left — while still holding no content key
+	// at all.
+	Store *Store `json:"store,omitempty"`
+}
+
+// Store is the beer store on the wire: a place and a count.
+//
+// Both halves are gates the client renders and the SERVER enforces regardless.
+// `Left` is the one contested number published before the fact, which is safe
+// because it decides nothing: the draw is a conditional UPDATE, so a client
+// acting on a count that has just gone stale is refused rather than served, and
+// no arrangement of stale frames can oversell the crate.
+type Store struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	// Left is how many drinks the crate still holds. Never nought on a published
+	// frame — the draw that empties a crate exhausts it and stands a fresh one up
+	// in the same transaction, so an empty store is absent rather than zero.
+	Left int `json:"left"`
 }
 
 // Peer is one entity on the plane: one ACCOUNT, not one connection. Signing in

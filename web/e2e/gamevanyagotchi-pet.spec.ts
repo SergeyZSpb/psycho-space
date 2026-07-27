@@ -109,6 +109,23 @@ interface ActionDef {
    */
   needs_stat?: string;
   needs_at_least?: number;
+  /**
+   * A world-object KIND this verb needs the pet to be standing beside, and the
+   * kind it races other players for. Both `omitempty` on the wire.
+   *
+   * Unlike `needs_stat` above, `needs_near` IS enforced in the browser: the
+   * button greys when he is not at the thing. The asymmetry is the point and it
+   * is not inconsistency — a stat is interpolated here and read there, so the
+   * two ends genuinely hold different numbers between frames, whereas a position
+   * is not interpolated by this client at all. The roster states where everybody
+   * is, five times a second, on the same frame that carries the store, so the
+   * browser and the server read ONE number.
+   *
+   * The client must never look at the VALUE of either — it holds no content keys
+   * — which is a property this suite pins directly.
+   */
+  needs_near?: string;
+  contests?: string;
 }
 
 /**
@@ -125,6 +142,17 @@ interface ObjectKindDef {
   art: string;
   label?: string;
   lifetime_seconds: number;
+  /**
+   * How many draws a freshly spawned one carries, for a kind that is drawn down
+   * rather than won outright. `omitempty`, so every other kind omits it.
+   *
+   * Served — unlike the contest DISCIPLINE beside it in content.go, which is not
+   * — because it is a number the player plays against rather than a mechanism:
+   * «шесть на всех» is a rule of the game, and the splash derives that sentence
+   * from here instead of somebody typing the six out and forgetting it after the
+   * next retune.
+   */
+  stock?: number;
 }
 
 interface ConfigFixture {
@@ -141,6 +169,17 @@ interface ConfigFixture {
    */
   object_kinds: ObjectKindDef[];
   locations: { key: string; label: string; entry: { x: number; y: number } }[];
+  /**
+   * How close «beside it» is, in plane widths — the one number a `needs_near`
+   * gate turns on.
+   *
+   * Served so that the button this client greys and the verb the server refuses
+   * turn on the SAME threshold rather than two that agree until somebody retunes
+   * one. Mirrored with the shipped 0.12 for that reason and not because any
+   * assertion depends on the value: what the tests below pin is that the client
+   * uses whatever it is told.
+   */
+  arrive_within: number;
   default_skin: string;
   default_location: string;
 }
@@ -275,6 +314,33 @@ const SHITS_TAKEN: StatDef = {
   fatal: false,
 };
 
+/**
+ * The crate of beer, with the shipped stock and the shipped "forever".
+ *
+ * NAMED, unlike the deposit above, and the label is load-bearing rather than
+ * decorative: the two sentences the splash derives from this kind are both about
+ * WHICH thing to walk to, so a nameless crate yields no note at all rather than
+ * «нужно стоять рядом: кое-что», which is a fetch quest and not a rule.
+ */
+const CRATE_KIND: ObjectKindDef = {
+  key: 'beer_crate',
+  art: 'obj_crate',
+  label: 'ящик пива',
+  lifetime_seconds: 0,
+  stock: 6,
+};
+
+/**
+ * The beer store as the roster publishes it: a place and a count.
+ *
+ * ONE SHARED FIELD on the frame rather than one per peer, because it is one fact
+ * about the world — and a STRUCTURE rather than a kind key, which is what lets
+ * this client gate a button while still holding no content at all. The
+ * coordinates are the shipped pitch; what matters to the tests is only that they
+ * are further than `arrive_within` from where a Ваня starts.
+ */
+const STORE = { x: 0.82, y: 0.22, left: CRATE_KIND.stock ?? 6 };
+
 /** Four stats in one press, and the joke is the third — the fourth just counts. */
 const DRINK: ActionDef = {
   key: 'drink',
@@ -291,6 +357,12 @@ const DRINK: ActionDef = {
   // almost invisible; a corpse now refuses this like every other verb.
   revives_fatal: false,
   starts_over: false,
+  // AND BEER NOW HAS TO COME FROM SOMEWHERE. Two preconditions that refuse for
+  // different reasons on purpose: he can be at the crate and find it empty, or
+  // hold the whole yard's beer at arm's length and be too far to reach it.
+  // Telling the player which is the difference between walking over and waiting.
+  needs_near: CRATE_KIND.key,
+  contests: CRATE_KIND.key,
 };
 
 /**
@@ -307,6 +379,7 @@ const RELIEF_KIND: ObjectKindDef = {
   art: 'obj_relief',
   lifetime_seconds: 600,
 };
+
 
 /** The other half of the loop drinking creates — and the verb a corpse is refused. */
 const RELIEVE: ActionDef = {
@@ -442,8 +515,9 @@ const CATALOGUE: ConfigFixture = {
       image: PAINTED_IMAGE,
     },
   ],
-  object_kinds: [RELIEF_KIND, KEY_KIND],
+  object_kinds: [RELIEF_KIND, KEY_KIND, CRATE_KIND],
   locations: [{ key: 'yard', label: 'двор', entry: { x: 0.5, y: 0.5 } }],
+  arrive_within: 0.12,
   default_skin: SKIN_VANYA,
   default_location: 'yard',
 };
@@ -734,6 +808,61 @@ interface Peer {
  */
 function roster(...peers: Peer[]): string {
   return JSON.stringify({ t: TYPE_ROSTER, peers, here: peers.length });
+}
+
+/**
+ * The same frame, carrying the beer store — or deliberately carrying none.
+ *
+ * A separate builder rather than an optional first argument to `roster`, because
+ * most of this file is about the pet rather than the yard and those frames
+ * should keep saying nothing about a crate: a server that has not got one, and a
+ * client being told so, is a real state and the tests that do not care about it
+ * should exercise it rather than the other one.
+ */
+function rosterWithStore(
+  store: { x: number; y: number; left: number } | undefined,
+  ...peers: Peer[]
+): string {
+  return JSON.stringify({ t: TYPE_ROSTER, peers, here: peers.length, store });
+}
+
+/**
+ * The unicast answer to a hello: which entity in the roster is you.
+ *
+ * The gate needs it. «Am I at the crate» is a question about ONE entity, and a
+ * client that has not been told which one it is cannot answer it — which is why
+ * `beside` reads a missing `youId` as "not beside anything" rather than
+ * guessing. Pushing this is how a test says the handshake finished.
+ */
+function youAre(id: string): string {
+  return JSON.stringify({ t: TYPE_YOU, id });
+}
+
+/** Where a Ваня has to stand to reach the crate: on it. */
+const AT_THE_CRATE = { x: STORE.x, y: STORE.y };
+
+/** And where he starts, which is most of a plane away from it. */
+const ACROSS_THE_YARD = { x: 0.2, y: 0.8 };
+
+/**
+ * Walks the player's own Ваня to the crate, so that a verb gated on the place is
+ * pressable at all.
+ *
+ * EVERY TEST THAT PRESSES «выпить пива» NEEDS THIS NOW, and that is the whole
+ * shape of the iteration rather than an inconvenience of the harness: beer comes
+ * out of a crate, so you have to be at the crate. It is two frames because the
+ * gate is two questions — which entity am I, and where is it — and the client
+ * refuses to guess at either.
+ *
+ * It waits for the button rather than for the frames, because what the caller
+ * actually needs is a control it can click; asserting the enabling here also
+ * means a test that merely wanted to press a button does not silently become a
+ * test of the gate.
+ */
+async function standAtTheCrate(page: Page, socket: SocketHarness, id = 'me'): Promise<void> {
+  await socket.push(youAre(id));
+  await socket.push(rosterWithStore(STORE, { id, ...AT_THE_CRATE }));
+  await expect(actionBtn(page, 'drink'), 'never got within reach of the crate').toBeEnabled();
 }
 
 /** Copied, not imported — see the header. */
@@ -1165,6 +1294,9 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(statValue(page, 'beer')).toHaveText('4');
     await expect(tallyValue(page, 'beers_drunk')).toHaveText('6');
 
+    // Beer comes out of a crate, so he has to be at the crate before the button
+    // will do anything at all.
+    await standAtTheCrate(page, socket);
     await actionBtn(page, 'drink').click();
 
     await expect(statValue(page, 'hp')).toHaveText('61');
@@ -1328,6 +1460,7 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await enterYard(page);
     await expect(statValue(page, 'hp')).toHaveText('40');
 
+    await standAtTheCrate(page, socket);
     const drink = actionBtn(page, 'drink');
     await drink.click();
     await drink.click({ force: true });
@@ -1753,5 +1886,154 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     // Still playable: the CTA is what matters and it is still there.
     await expect(page.getByRole('button', { name: 'Во двор' })).toBeVisible();
     await expectNoOverflow(page, 'vanyagotchi splash with no catalogue');
+  });
+});
+
+test.describe('«Ванягоччи» — the beer store', () => {
+  /** The one line the status row says about the crate. */
+  const storeLine = (page: Page) => page.locator('[data-test="store"]');
+
+  test('the drink is out of reach from across the yard, and the row says to walk', async ({
+    page,
+  }) => {
+    // The whole of I9 in one assertion pair: beer comes out of a crate, so
+    // distance stops being decorative. The button is greyed as a COURTESY — the
+    // server refuses it regardless — and the row is what stops a greyed control
+    // being a mystery, because "wait" and "walk over" are different instructions.
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
+
+    await expect(actionBtn(page, 'drink')).toBeDisabled();
+    await expect(storeLine(page)).toContainText('дойди');
+    await expect(storeLine(page)).toContainText('6');
+    // The verb never left the browser, which is the point of greying it.
+    expect(socket.asked()).toEqual([]);
+    await expectNoOverflow(page, 'vanyagotchi yard with the store out of reach');
+  });
+
+  test('walking to the crate is what makes the button work', async ({ page }) => {
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
+    await expect(actionBtn(page, 'drink')).toBeDisabled();
+
+    // He walks. Nothing else about the world changed — same crate, same stock —
+    // so his position is the only thing that can have enabled it.
+    await socket.push(rosterWithStore(STORE, { id: 'me', ...AT_THE_CRATE }));
+
+    await expect(actionBtn(page, 'drink')).toBeEnabled();
+    await expect(storeLine(page)).not.toContainText('дойди');
+    await expect(storeLine(page)).toContainText('6');
+  });
+
+  test('an empty crate greys the button even standing on it, and says so', async ({ page }) => {
+    // The other refusal, and deliberately NOT the same line: «пиво кончилось»
+    // means wait, «далековато» means walk. One sentence covering both would tell
+    // him to do neither.
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore({ ...STORE, left: 0 }, { id: 'me', ...AT_THE_CRATE }));
+
+    await expect(actionBtn(page, 'drink')).toBeDisabled();
+    await expect(storeLine(page)).toContainText('пуст');
+    await expect(storeLine(page)).not.toContainText('дойди');
+  });
+
+  test('a yard with no crate says nothing about one, and still refuses the drink', async ({
+    page,
+  }) => {
+    // A real state rather than a defensive one: the frame omits the block
+    // outright when the world holds no crate, and a server that predates the
+    // field sends none either. The row must fall back to its usual two items.
+    await stubBackend(page, { config: CATALOGUE, state: () => stateOf({ beer: 30 }) });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(undefined, { id: 'me', ...AT_THE_CRATE }));
+
+    await expect(storeLine(page)).toHaveCount(0);
+    await expect(actionBtn(page, 'drink')).toBeDisabled();
+    await expectNoOverflow(page, 'vanyagotchi yard with no crate in it');
+  });
+
+  test('a verb that needs no place is never greyed by one', async ({ page }) => {
+    // «покакать» is gated on a STAT, and that gate is deliberately not enforced
+    // here at all. So the store being absent, empty, or across the yard must not
+    // reach it — a version that greyed every button when the crate was out of
+    // reach would pass every test above.
+    await stubBackend(page, {
+      config: CATALOGUE,
+      state: () => stateOf({ beer: 30, bladder: 90 }),
+    });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(undefined, { id: 'me', ...ACROSS_THE_YARD }));
+
+    await expect(actionBtn(page, 'drink')).toBeDisabled();
+    await expect(actionBtn(page, 'relieve')).toBeEnabled();
+    await expect(actionBtn(page, 'claim')).toBeEnabled();
+  });
+
+  test('the gate turns on the served threshold rather than a number in the SPA', async ({
+    page,
+  }) => {
+    // `arrive_within` is catalogue content, so retuning it in content.go must
+    // move the client's idea of «beside it» with no client edit. Served as a
+    // whole plane width here, which makes a Ваня standing across the yard near
+    // enough — a client holding a hardcoded 0.12 would still grey the button.
+    await stubBackend(page, {
+      config: { ...CATALOGUE, arrive_within: 1.5 },
+      state: () => stateOf({ beer: 30 }),
+    });
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(youAre('me'));
+    await socket.push(rosterWithStore(STORE, { id: 'me', ...ACROSS_THE_YARD }));
+
+    await expect(actionBtn(page, 'drink')).toBeEnabled();
+  });
+
+  test('the splash says where to stand and how many are in it, from the catalogue', async ({
+    page,
+  }) => {
+    // Both sentences are DERIVED — the verb names a kind, the kind carries its
+    // label and its stock — so retuning `crateStock` changes what the player is
+    // told with no client change. That is the property being pinned, and the
+    // next test is what proves it rather than the number.
+    await stubBackend(page, { config: CATALOGUE });
+    await page.goto('/app/game-vanyagotchi');
+
+    const row = page.locator('[data-test="rule-action-drink"]');
+    await expect(row).toContainText('нужно стоять рядом: ящик пива');
+    await expect(row).toContainText('ящик пива — 6 порций на всех');
+    await expectNoOverflow(page, 'vanyagotchi splash with the beer store');
+  });
+
+  test('retuning the stock retunes the cheatsheet, with the numeral agreed', async ({ page }) => {
+    await stubBackend(page, {
+      config: {
+        ...CATALOGUE,
+        object_kinds: [RELIEF_KIND, KEY_KIND, { ...CRATE_KIND, stock: 2 }],
+      },
+    });
+    await page.goto('/app/game-vanyagotchi');
+
+    const row = page.locator('[data-test="rule-action-drink"]');
+    await expect(row).toContainText('ящик пива — 2 порции на всех');
+    await expect(row).not.toContainText('6 порций');
   });
 });

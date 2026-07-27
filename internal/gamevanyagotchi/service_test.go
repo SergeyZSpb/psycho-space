@@ -109,6 +109,18 @@ func youFor(t *testing.T, tr *fakeTransport, connID string) (You, bool) {
 	return got, n == 1
 }
 
+// rawFrames is every published frame as it went on the wire.
+//
+// Decoding loses the one thing a couple of assertions are about: how many TIMES
+// something appears in a frame. A Roster with one Store and a Roster whose every
+// peer also carried one decode identically, and the difference between them is
+// kilobytes a second to somebody's phone.
+func (f *fakeTransport) rawFrames() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.published...)
+}
+
 func (f *fakeTransport) frames() []Roster {
 	f.mu.Lock()
 	defer f.mu.Unlock()
