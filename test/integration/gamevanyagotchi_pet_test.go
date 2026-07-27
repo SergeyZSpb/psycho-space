@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/config"
+	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
 	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
@@ -93,8 +94,18 @@ func petBuildApp(vkBaseURL string, transport gamevanyagotchi.Transport) (http.Ha
 		Env: "dev",
 		VK:  config.VK{AppID: "app-1", ServiceToken: "svc", RedirectURI: vkRedirect, BaseURL: vkBaseURL},
 	}
-	game := gamevanyagotchi.NewService(transport, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository(), newAccountService())
+	// Wired to the REAL shared blob store, because the art seam is only worth
+	// anything end to end: the unit tests can say the service asks, and only this
+	// can say an uploaded picture actually reaches the config a browser reads.
+	// ONE store, handed to both halves — which is the shape main.go uses and the
+	// reason this test harness needs it twice. The game asks it WHICH keys have a
+	// picture, so the config can advertise a URL; the router serves the BYTES at
+	// that URL. Wiring only the first would publish links to a 404, which is
+	// exactly what this builder did until an assertion followed one.
+	assets := gameassets.NewService(pool, gameassets.NewPostgresRepository())
+	game := gamevanyagotchi.NewService(transport, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository(), newAccountService(), assets)
 	h := httpapi.NewServer(httpapi.Deps{
+		GameAssets:      assets,
 		Config:          cfg,
 		Pool:            pool,
 		WebFS:           fstest.MapFS{"index.html": {Data: []byte("<html>psycho</html>")}},
@@ -3415,4 +3426,78 @@ func TestVanyagotchiAPressHeBacksOutOfWritesNothingAtAll(t *testing.T) {
 		return
 	}
 	t.Fatalf("%d presses all came off; either the FailChance is disconnected or this is the luckiest run in the history of the game", attempts)
+}
+
+// TestVanyagotchiAnUploadedSpriteReachesTheConfig is the whole of the art seam,
+// end to end, and it is the check the plan asked for: upload ONE picture and see
+// exactly one character gain a face.
+//
+// It is worth having against a real database rather than a fake, because the
+// claim being made is about two packages agreeing — a game's catalogue and the
+// shared blob store — through a key that is DATA rather than a name. Nothing in
+// `gamevanyagotchi`'s own schema carries a `game_key`; the value lives in its
+// catalogue and is what the store is keyed on, so a mismatch would be invisible
+// to both sides and would simply serve no art forever.
+func TestVanyagotchiAnUploadedSpriteReachesTheConfig(t *testing.T) {
+	ctx := context.Background()
+	app, _ := petApp(t)
+	cli := loginAs(t, app.URL, "7275", "user")
+
+	// A key the catalogue really has, taken from the catalogue rather than typed.
+	skins := gamevanyagotchi.Content().Skins
+	if len(skins) < 2 {
+		t.Fatalf("the catalogue has %d skins; this test needs one with a picture and one without", len(skins))
+	}
+	withArt, without := skins[0].Key, skins[1].Key
+
+	t.Cleanup(func() {
+		if _, err := pool.Exec(ctx, `DELETE FROM game_assets WHERE game_key = $1`, gamevanyagotchi.GameKey); err != nil {
+			t.Fatalf("clean up the uploaded sprite: %v", err)
+		}
+	})
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO game_assets (game_key, art_key, content_type, bytes) VALUES ($1, $2, 'image/webp', $3)
+		 ON CONFLICT (game_key, art_key) DO UPDATE SET bytes = EXCLUDED.bytes`,
+		gamevanyagotchi.GameKey, withArt, []byte("not really a webp, and nothing here decodes it")); err != nil {
+		t.Fatalf("upload a sprite: %v", err)
+	}
+
+	status, body := doJSON(t, cli, http.MethodGet, app.URL+"/api/game-vanyagotchi/config", nil)
+	if status != http.StatusOK {
+		t.Fatalf("config: status=%d body=%v", status, body)
+	}
+	served, ok := body["skins"].([]any)
+	if !ok || len(served) == 0 {
+		t.Fatalf("the config served no skins at all: %v", body["skins"])
+	}
+
+	images := map[string]string{}
+	for _, raw := range served {
+		skin, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("a skin came back as %T", raw)
+		}
+		key, _ := skin["key"].(string)
+		image, _ := skin["image"].(string)
+		images[key] = image
+	}
+
+	// EXACTLY ONE gained a face, and it is the one that was uploaded.
+	want := "/api/game-assets/" + gamevanyagotchi.GameKey + "/" + withArt
+	if got := images[withArt]; got != want {
+		t.Errorf("the skin with an upload advertises image=%q; want %q", got, want)
+	}
+	if got := images[without]; got != "" {
+		t.Errorf("a skin with nothing uploaded advertises image=%q; want none, so the client draws its emoji", got)
+	}
+	// And the picture is actually reachable at the URL the config just published
+	// — a config advertising a 404 would be worse than advertising nothing.
+	res, err := cli.Get(app.URL + want)
+	if err != nil {
+		t.Fatalf("fetch the advertised sprite: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("the advertised sprite answered %d; the config published a URL nothing serves", res.StatusCode)
+	}
 }

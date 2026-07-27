@@ -183,3 +183,19 @@ type Repository interface {
 	// silently refused.
 	ActiveSingleton(ctx context.Context, q db.DBTX, kind string) (string, bool, error)
 }
+
+// AssetPresence reports which art keys have an uploaded image.
+//
+// Declared HERE and satisfied by the shared `gameassets` service, so the
+// dependency points from this game at infrastructure and never the other way —
+// the identical seam «Смолтолк в Химках» already has, and for the identical
+// reason. Storing and serving bytes is a mechanism every game needs; WHICH keys
+// this game expects is a rule of this game and lives in its catalogue
+// (ADR-028/031).
+//
+// It is an interface rather than the concrete service so a test can answer it
+// without a database, and so that a nil one is a legitimate state: art is never
+// a hard dependency, and the yard is playable with none of it uploaded.
+type AssetPresence interface {
+	PresentKeys(ctx context.Context, gameKey string) (map[string]bool, error)
+}

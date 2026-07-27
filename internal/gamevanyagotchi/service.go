@@ -102,6 +102,11 @@ type Service struct {
 	// tick — see display.go for why that boundary is the whole design.
 	profiles Profiles
 
+	// assets says which of this game's art keys have a picture uploaded. Read on
+	// the CONFIG path only — never on the tick, and never per entity — because
+	// which keys exist changes when somebody uploads one and not otherwise.
+	assets AssetPresence
+
 	// pseudonymKey turns an account id into the handle that goes on the wire.
 	// Read-only after construction, so it needs no lock. See pseudonym.
 	pseudonymKey []byte
@@ -268,7 +273,7 @@ type placement struct {
 // accepts frames from; the caller supplies it so the game does not hardcode a
 // name the platform's allowlist also owns. q and repo are the durable half and
 // may both be nil for a caller that only drives the plane.
-func NewService(transport Transport, room string, q db.DBTX, repo Repository, profiles Profiles) *Service {
+func NewService(transport Transport, room string, q db.DBTX, repo Repository, profiles Profiles, assets AssetPresence) *Service {
 	key := make([]byte, pseudonymKeyBytes)
 	// crypto/rand, never math/rand: this key is the only thing standing between
 	// a broadcast handle and the account id behind it, so a guessable one would
@@ -282,6 +287,7 @@ func NewService(transport Transport, room string, q db.DBTX, repo Repository, pr
 		q:            q,
 		repo:         repo,
 		profiles:     profiles,
+		assets:       assets,
 		pseudonymKey: key,
 		pos:          make(map[string]placement),
 		display:      make(map[string]display),
@@ -1833,4 +1839,27 @@ func doneLine(verbs []string) string {
 		return ""
 	}
 	return action.Done
+}
+
+// PresentArtKeys reports which of this game's art keys have an uploaded image.
+//
+// The config advertises an image URL only for those, and every other key falls
+// back to the emoji-over-gradient placeholder the catalogue already carries — so
+// ART IS NEVER A HARD DEPENDENCY. The yard is playable with none uploaded, which
+// is what makes commissioning it a separate errand from shipping the mechanic.
+//
+// A nil `assets` answers nil rather than failing, because that is a legitimate
+// wiring: every unit test in this package builds a Service without one, and a
+// deployment that has not been given the blob store should draw emoji rather
+// than 503 a screen.
+//
+// Read on the config path alone. The blobs live in shared infrastructure
+// (internal/gameassets) rather than here: storing and serving bytes is a
+// mechanism any game needs, whereas which keys this game expects is a rule of
+// this game (ADR-031).
+func (s *Service) PresentArtKeys(ctx context.Context, gameKey string) (map[string]bool, error) {
+	if s.assets == nil {
+		return nil, nil
+	}
+	return s.assets.PresentKeys(ctx, gameKey)
 }

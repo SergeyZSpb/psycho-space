@@ -914,7 +914,7 @@ Spans and trace ids are generated unconditionally; only export is gated on `PSYC
 
 _Accepted · 2026-07-25_
 
-Image bytes live in Postgres rather than in git or the binary, and the config endpoint advertises a URL only for keys that actually have a blob, everything else falling back to an emoji placeholder. Art would otherwise inflate the repository and the binary forever, and a partial upload degrades into a placeholder instead of a broken image.
+Image bytes live in Postgres rather than in git or the binary, and the config endpoint advertises a URL only for keys that actually have a blob, everything else falling back to an emoji placeholder. Art would otherwise inflate the repository and the binary forever, and a partial upload degrades into a placeholder instead of a broken image. **Both games are wired to it now** — «Ванягоччи» was not for its whole life, which made "a new sprite is an upload and a catalogue entry" false for it: `Skin.Image` existed, was typed on the client and was read by the renderer, and nothing ever filled it in. Each game declares its own narrow `AssetPresence` interface and the shared service satisfies it, so the dependency points from a game at infrastructure and never back.
 
 [Full record → `docs/adrs/ADR-026-game-art-lives-in-postgres-not-in-git-or-the.md`](adrs/ADR-026-game-art-lives-in-postgres-not-in-git-or-the.md)
 

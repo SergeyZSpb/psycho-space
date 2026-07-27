@@ -34,7 +34,28 @@ func (s *Server) handleGameVanyagotchiConfig(w http.ResponseWriter, r *http.Requ
 	if !s.gameVanyagotchiAvailable(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.d.GameVanyagotchi.Config())
+	cfg := s.d.GameVanyagotchi.Config()
+	// Point each skin at its uploaded picture, if there is one. A skin with no
+	// upload keeps an empty `Image` and the client draws the emoji over its
+	// gradient — which is what every character in this game has looked like so
+	// far, because until now nothing populated this field at all.
+	//
+	// Read here rather than in the catalogue because it is not content: which
+	// keys have a picture is a fact about the blob store, and it changes when
+	// somebody uploads one rather than when the game is redeployed. A failure is
+	// logged and treated as "none uploaded", so a database blip costs the yard
+	// its faces rather than its config.
+	present, err := s.d.GameVanyagotchi.PresentArtKeys(r.Context(), cfg.GameKey)
+	if err != nil {
+		slog.WarnContext(r.Context(), "game-vanyagotchi asset keys lookup failed", "err", err)
+		present = nil
+	}
+	for i := range cfg.Skins {
+		if present[cfg.Skins[i].Key] {
+			cfg.Skins[i].Image = GameAssetPath + cfg.GameKey + "/" + cfg.Skins[i].Key
+		}
+	}
+	writeJSON(w, http.StatusOK, cfg)
 }
 
 // handleGameVanyagotchiState returns the caller's pet with every stat decayed to

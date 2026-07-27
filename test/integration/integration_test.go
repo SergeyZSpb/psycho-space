@@ -249,7 +249,7 @@ func buildAppRealtimeFull(t *testing.T, vkBaseURL string) (http.Handler, *realti
 		<-hub.Done()
 	})
 
-	vanya := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository(), newAccountService())
+	vanya := gamevanyagotchi.NewService(hub, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository(), newAccountService(), nil)
 	tick := make(chan time.Time)
 	go vanya.Run(ctx, tick)
 
@@ -310,7 +310,7 @@ func buildAppCfg(vkBaseURL, llmURL string) http.Handler {
 		// shortcut: the HTTP path never touches the hub, so a nil one is the
 		// honest way to say this app has no socket. A test that needs the plane
 		// uses buildAppRealtime* instead.
-		GameVanyagotchi: gamevanyagotchi.NewService(nil, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository(), newAccountService()),
+		GameVanyagotchi: gamevanyagotchi.NewService(nil, httpapi.DefaultRoom, pool, gamevanyagotchi.NewPostgresRepository(), newAccountService(), nil),
 		GameAssets:      gameAssets,
 		Settings:        settings.NewService(pool),
 	}).Handler()

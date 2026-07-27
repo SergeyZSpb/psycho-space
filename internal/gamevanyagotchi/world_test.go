@@ -397,7 +397,7 @@ func TestTheDepositTheStatsAndTheEventsAreOneWrite(t *testing.T) {
 	// that cannot would watch three writes land one after another and stay landed
 	// — and would prove precisely nothing.
 	pool := &txPool{}
-	svc := NewService(nil, testRoom, pool, repo, nil)
+	svc := NewService(nil, testRoom, pool, repo, nil, nil)
 
 	// Materialised first, so the rows this test compares against are the ones a
 	// player would already have rather than the seeding the verb would do.
@@ -857,7 +857,7 @@ func TestOnlyTheWinnerOfTheKeyHasAnythingWrittenDownAtAll(t *testing.T) {
 			// with a fake that cannot would watch the writes land one after another
 			// and stay landed however the claim went — and would prove nothing.
 			pool := &txPool{}
-			svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil)
+			svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil, nil)
 
 			// Materialised first, so the rows compared against below are the ones a
 			// player would already have. Seeding happens on the read path, outside
@@ -1018,7 +1018,7 @@ func TestTheClaimAndTheKeyThatReplacesItAreOneWrite(t *testing.T) {
 	kind := mustObjectKind(t, KindKey)
 	repo := playedFor()
 	pool := &txPool{}
-	svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil)
+	svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil, nil)
 
 	if _, err := svc.State(context.Background(), testAccount); err != nil {
 		t.Fatalf("State: %v", err)
@@ -1803,7 +1803,7 @@ func TestTheDrawAndTheCrateThatReplacesItAreOneWrite(t *testing.T) {
 	// that cannot would watch the writes land one after another and stay landed
 	// however the insert ended — and would prove nothing.
 	pool := &txPool{}
-	svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil)
+	svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil, nil)
 	atTheStore(t, svc, repo, testAccount, 1)
 
 	if _, err := svc.State(context.Background(), testAccount); err != nil {
@@ -1873,7 +1873,7 @@ func TestAnEmptyCrateRefusesTheDrinkAndCostsHimNothing(t *testing.T) {
 	// state rather than the default.
 	repo.stock = map[string]int{crate.Key: 0}
 	pool := &txPool{}
-	svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil)
+	svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil, nil)
 	// The CACHE still says there is beer, which is the case worth arranging: the
 	// frame the player acted on was a moment out of date, and the database is
 	// what decides.
@@ -2151,7 +2151,7 @@ func TestASearchIsRefusedUnlessHeNamedAPlaceAndWalkedToIt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := playedFor()
 			pool := &txPool{}
-			svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil)
+			svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil, nil)
 			if _, err := svc.State(context.Background(), testAccount); err != nil {
 				t.Fatalf("State: %v", err)
 			}
@@ -2227,7 +2227,7 @@ func TestSearchingTheRightPlaceFindsTheKeysAndTheWrongOneDoesNot(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := playedFor()
-			svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+			svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil, nil)
 			if _, err := svc.State(context.Background(), testAccount); err != nil {
 				t.Fatalf("State: %v", err)
 			}
@@ -2309,7 +2309,7 @@ func TestARefusalNeverSaysWhereTheKeyIs(t *testing.T) {
 			answers := map[string]string{}
 			for _, asked := range yard.Hotspots {
 				repo := playedFor()
-				svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+				svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil, nil)
 				theKeyIsIn(t, svc, repo, yard.Hotspots[i])
 				repo.claimWon = true
 				standAt(svc, testAccount, far)
@@ -2352,7 +2352,7 @@ func TestOneCorrectSearchWinsOneKeyHoweverManyClaimsAreInTheFrame(t *testing.T) 
 	spot := aHotspot(t, LocationYard, 0)
 	repo := playedFor()
 	pool := &txPool{}
-	svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil)
+	svc := NewService(&fakeTransport{}, testRoom, pool, repo, nil, nil)
 	if _, err := svc.State(context.Background(), testAccount); err != nil {
 		t.Fatalf("State: %v", err)
 	}
@@ -2408,7 +2408,7 @@ func TestTheKeyThatReplacesAFoundOneIsHiddenAtAHotspotToo(t *testing.T) {
 	spot := aHotspot(t, LocationYard, 0)
 
 	repo := playedFor()
-	svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+	svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil, nil)
 	if _, err := svc.State(context.Background(), testAccount); err != nil {
 		t.Fatalf("State: %v", err)
 	}
@@ -2507,7 +2507,7 @@ func TestTheKeyIsHiddenSomewhereAndTheOtherPlacesAreEmpty(t *testing.T) {
 	there := aHotspot(t, LocationKusty, 0)
 
 	repo := playedFor()
-	svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+	svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil, nil)
 	if _, err := svc.State(context.Background(), testAccount); err != nil {
 		t.Fatalf("State: %v", err)
 	}
@@ -2700,7 +2700,7 @@ func TestBeerCannotBeDrunkFromAnotherLocation(t *testing.T) {
 		t.Fatalf("the catalogue no longer gates %q on standing beside anything; this test is about a rule the game does not have", drink.Key)
 	}
 	repo := playedFor()
-	svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil)
+	svc := NewService(&fakeTransport{}, testRoom, &txPool{}, repo, nil, nil)
 	if _, err := svc.State(context.Background(), testAccount); err != nil {
 		t.Fatalf("State: %v", err)
 	}

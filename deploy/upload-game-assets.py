@@ -56,7 +56,19 @@ print("BEGIN;")
 for f in files:
     key = os.path.splitext(os.path.basename(f))[0]
     buf = io.BytesIO()
-    Image.open(f).convert("RGB").save(buf, "WEBP", quality=82, method=6)
+    src = Image.open(f)
+    # KEEP THE ALPHA CHANNEL. This was an unconditional .convert("RGB"), which
+    # silently flattens transparency onto black — so every cut-out sprite would
+    # have shipped as an opaque rectangle with a box behind the character, and
+    # the only sign would have been the artwork looking wrong on the plane.
+    # Harmless while the only assets were full-bleed illustrations; a real defect
+    # the moment anything is drawn over a background.
+    #
+    # RGBA only when the source actually has alpha, because WebP with an unused
+    # alpha channel is bytes on the wire for nothing — and these are fetched by
+    # phones on mobile data.
+    mode = "RGBA" if src.mode in ("RGBA", "LA", "PA") or "transparency" in src.info else "RGB"
+    src.convert(mode).save(buf, "WEBP", quality=82, method=6)
     b64 = base64.b64encode(buf.getvalue()).decode()
     print(
         "INSERT INTO game_assets (game_key, art_key, content_type, bytes) VALUES ("

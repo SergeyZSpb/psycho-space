@@ -745,7 +745,7 @@ func (f *fakeRepo) lastBatch(t *testing.T) []StatRow {
 // halves of Service never meet — nothing on the pet path touches the position
 // map and nothing on the plane path touches storage — so both are genuinely
 // unused here rather than being stubbed out.
-func petService(repo Repository) *Service { return NewService(nil, "yard", nil, repo, nil) }
+func petService(repo Repository) *Service { return NewService(nil, "yard", nil, repo, nil, nil) }
 
 // contestedService is petService for a verb that can WIN A CONTESTED CLAIM.
 //
@@ -759,7 +759,7 @@ func petService(repo Repository) *Service { return NewService(nil, "yard", nil, 
 // Every other verb still goes through petService, which keeps stating the
 // separation the rest of this file relies on.
 func contestedService(repo Repository) *Service {
-	return NewService(&fakeTransport{}, "yard", nil, repo, nil)
+	return NewService(&fakeTransport{}, "yard", nil, repo, nil, nil)
 }
 
 // playedFor builds a repository already holding a pet and the rows it was left
@@ -1976,7 +1976,7 @@ func TestAVerbThatLosesItsNerveWritesNothingAtAll(t *testing.T) {
 	for i := 0; i < attempts; i++ {
 		repo := playedFor(enoughFor(t, ActionRelieve, epoch))
 		pool := &txPool{}
-		svc := NewService(nil, testRoom, pool, repo, nil)
+		svc := NewService(nil, testRoom, pool, repo, nil, nil)
 
 		// Materialised first, so the rows compared against are the ones a player
 		// would already have. Seeding runs on the read path and would otherwise
@@ -2054,4 +2054,67 @@ func TestAVerbThatLosesItsNerveWritesNothingAtAll(t *testing.T) {
 		return
 	}
 	t.Fatalf("%d presses all came off; either the FailChance is disconnected or this is the luckiest run in the history of the game", attempts)
+}
+
+// fakeAssets answers which art keys have a picture, without a database.
+type fakeAssets struct {
+	present map[string]bool
+	err     error
+	asked   []string
+}
+
+func (f *fakeAssets) PresentKeys(_ context.Context, gameKey string) (map[string]bool, error) {
+	f.asked = append(f.asked, gameKey)
+	return f.present, f.err
+}
+
+// TestTheYardAsksTheAssetStoreWhichFacesExist is the seam «Ванягоччи» spent its
+// whole life without.
+//
+// `Skin.Image` has existed, been typed on the client and been read by the
+// renderer since the game shipped, and NOTHING EVER FILLED IT IN — the game was
+// never wired to the shared blob store the way «Смолтолк в Химках» is. So the
+// repo's standing claim that new art is "an upload plus a catalogue entry" was
+// simply false here: no image could reach the screen at all.
+//
+// A NIL SEAM IS A LEGITIMATE WIRING and answers nil rather than failing, which
+// is what keeps art from being a hard dependency: every unit test in this
+// package builds a Service without one, and a deployment given no blob store
+// should draw emoji rather than refuse to serve a config.
+func TestTheYardAsksTheAssetStoreWhichFacesExist(t *testing.T) {
+	t.Run("no store wired at all", func(t *testing.T) {
+		got, err := petService(playedFor()).PresentArtKeys(context.Background(), GameKey)
+		if err != nil {
+			t.Fatalf("PresentArtKeys with no asset store: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("a service with no asset store reported %v; want nothing, so every skin falls back to its emoji", got)
+		}
+	})
+
+	t.Run("asks under this game's own key", func(t *testing.T) {
+		assets := &fakeAssets{present: map[string]bool{SkinVanya: true}}
+		svc := NewService(nil, testRoom, nil, playedFor(), nil, assets)
+
+		got, err := svc.PresentArtKeys(context.Background(), GameKey)
+		if err != nil {
+			t.Fatalf("PresentArtKeys: %v", err)
+		}
+		if !got[SkinVanya] {
+			t.Errorf("the store says %q has a picture and the service reported %v", SkinVanya, got)
+		}
+		// The blob store is shared between games, so asking under the wrong key
+		// would hand this game another game's art.
+		if len(assets.asked) != 1 || assets.asked[0] != GameKey {
+			t.Errorf("the store was asked about %v; want exactly one lookup for %q", assets.asked, GameKey)
+		}
+	})
+
+	t.Run("a failing store costs the faces and nothing else", func(t *testing.T) {
+		assets := &fakeAssets{err: errors.New("the blob store is having a moment")}
+		svc := NewService(nil, testRoom, nil, playedFor(), nil, assets)
+		if _, err := svc.PresentArtKeys(context.Background(), GameKey); err == nil {
+			t.Fatal("a failing asset store was reported as success; the handler decides what to do about it and cannot if it is not told")
+		}
+	})
 }
