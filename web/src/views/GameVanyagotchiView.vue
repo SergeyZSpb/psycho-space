@@ -311,6 +311,38 @@
                frames free. -->
           <span v-if="peer.say" class="peer-say" data-test="peer-say">{{ peer.say }}</span>
         </div>
+        <!-- CONFETTI WHERE SOMEBODY JUST FOUND THE KEYS.
+             Over every depth band and under the caption, which is the whole of
+             why it is a layer of its own rather than a child of the dot that won:
+             a burst hung on a peer would be scaled by that peer's depth and
+             stacked in that peer's band, so a win at the back of the yard would
+             be small and drawn behind the people in front of it. A celebration is
+             not further away because the man celebrating is.
+             It takes no taps, so the ground under a winner stays walkable — the
+             same rule the balloons follow, and for the same reason: a burst that
+             swallowed a tap would make part of the yard briefly and invisibly
+             unreachable. -->
+        <div class="bursts" aria-hidden="true">
+          <div
+            v-for="burst in bursts"
+            :key="burst.key"
+            class="burst"
+            data-test="burst"
+            :style="{ '--x': String(burst.x), '--y': String(burst.y) }"
+          >
+            <span
+              v-for="(bit, i) in burst.bits"
+              :key="i"
+              class="burst-bit"
+              :style="{
+                '--dx': String(bit.dx),
+                '--dy': String(bit.dy),
+                '--hue': String(bit.hue),
+                '--delay': `${bit.delay}ms`,
+              }"
+            />
+          </div>
+        </div>
         <p v-if="store.peerIds.length === 0" class="plane-empty">
           {{ emptyMessage }}
         </p>
@@ -509,6 +541,8 @@ import {
   applyPosition,
   avatarEndpoint,
   bandFor,
+  burstBits,
+  newlyHappy,
   beside,
   hereLabel,
   hotspotsFor,
@@ -532,6 +566,7 @@ import {
   storeLabel,
   tapToPosition,
   travelPlaces,
+  type BurstBit,
   type PeerAppearance,
   type TravelPlace,
 } from '../lib/vanyagotchiPlane';
@@ -938,6 +973,60 @@ function act(action: VanyagotchiAction): void {
   window.setTimeout(() => {
     acting.value = false;
   }, ACT_COOLDOWN_MS);
+}
+
+/**
+ * How long a burst of confetti is on the plane, in milliseconds.
+ *
+ * A little longer than the animation, so the last piece has finished travelling
+ * and faded before its element is taken away — a burst removed mid-flight is a
+ * celebration that stops rather than ends. Comfortably shorter than the mood it
+ * accompanies, which the server holds for four seconds: the burst is the moment
+ * itself and the happy face is what is left of it.
+ */
+const BURST_MS = 1_400;
+
+/**
+ * The celebrations currently on the plane.
+ *
+ * KEYED AND ADDITIVE, because two people can win in the same yard within a
+ * second of each other — a single "current burst" would have the second one
+ * restart the first one's animation, which reads as one longer burst rather than
+ * as two wins. The key is the winner and the moment, so a re-render never
+ * restarts an animation that is already running.
+ *
+ * Reactive, and it may be: a win happens a few times an evening, so this costs a
+ * render twice per hunt. The five frames a second that describe an unchanged yard
+ * still write nothing here, because nothing becomes newly happy on them.
+ */
+const bursts = shallowRef<
+  readonly { key: string; x: number; y: number; bits: readonly BurstBit[] }[]
+>([]);
+const burstTimers = new Set<number>();
+let burstSeq = 0;
+
+/**
+ * Throws confetti at a point, and takes it away again.
+ *
+ * The timer is remembered so that leaving the screen mid-celebration cancels it
+ * rather than firing into a component that has gone — the same discipline the
+ * stale-world timer and the hunt's own flash follow.
+ */
+function burstAt(seed: string, at: { x: number; y: number }): void {
+  // The SEED decides what the confetti looks like and the KEY decides which
+  // element it is, and they are not the same string on purpose. The seed is the
+  // winner and the hunt he ended, so two people watching one win see the same
+  // burst; the key carries a counter as well, because the hunt id can be absent
+  // on a malformed frame and two identical keys in a `v-for` are a bug Vue only
+  // warns about.
+  const key = `${seed}#${burstSeq}`;
+  burstSeq += 1;
+  bursts.value = [...bursts.value, { key, x: at.x, y: at.y, bits: burstBits(seed) }];
+  const timer = window.setTimeout(() => {
+    burstTimers.delete(timer);
+    bursts.value = bursts.value.filter((burst) => burst.key !== key);
+  }, BURST_MS);
+  burstTimers.add(timer);
 }
 
 /**
@@ -1612,6 +1701,23 @@ function onFrame(frame: RealtimeFrame) {
     if (!ids.includes(id)) lastPos.delete(id);
   }
 
+  // AND ANYBODY WHO JUST WON GETS CONFETTI, thrown where he is standing.
+  //
+  // Read here, between the positions being refreshed and `appearance` being
+  // replaced, and both halves of that sandwich are load-bearing: `appearance`
+  // still holds the PREVIOUS frame's poses, which is what makes this a difference
+  // rather than a state, and `lastPos` already holds THIS frame's coordinates,
+  // which is what makes the burst land where he is now rather than where he was
+  // 200 ms ago.
+  //
+  // The seed is the winner plus the hunt he ended, so the same win draws the same
+  // confetti on every screen watching it, and two wins in one yard are two
+  // different bursts rather than one restarted.
+  for (const id of newlyHappy(appearance.value, looks)) {
+    const at = lastPos.get(id);
+    if (at) burstAt(`${id}|${hunt}`, at);
+  }
+
   // The store, and whether we are standing at it. Read AFTER the positions
   // above, because the second half of it is a question about where we are and
   // the answer has to come from this frame rather than the last one.
@@ -1755,6 +1861,12 @@ onBeforeUnmount(() => {
     window.clearInterval(displayTimer);
     displayTimer = undefined;
   }
+  // A celebration in flight when the player leaves the screen. Each piece owns a
+  // timer that would otherwise fire into a component that has gone; the list is
+  // emptied with them so a return visit does not open on somebody else's confetti.
+  for (const timer of burstTimers) window.clearTimeout(timer);
+  burstTimers.clear();
+  bursts.value = [];
   document.removeEventListener('visibilitychange', onWake);
   window.removeEventListener('pageshow', onWake);
   peerEls.clear();
@@ -2070,6 +2182,64 @@ onBeforeUnmount(() => {
   --unit-base: clamp(52px, 17cqw, 104px);
   --unit: var(--unit-base);
 }
+/* CONFETTI, WHERE SOMEBODY FOUND THE KEYS.
+   A layer of its own at z-index 4 — above every depth band (0..3) and below the
+   place caption (5) and the travel sheet (10). A burst hung on the winner's own
+   element would inherit his depth scale and his band, so a win at the back of the
+   yard would be drawn small and behind the people in front of it; a celebration
+   is not further away because the man celebrating is.
+   Taking no taps, so the ground under a winner stays walkable. */
+.bursts {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+/* One burst, placed by the same mapping every other thing on the plane uses, so a
+   celebration and the man it belongs to cannot disagree about where he is
+   standing. No `--depth` and no `--band`, deliberately — see above. */
+.burst {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate3d(calc(var(--x, 0.5) * 100cqw - 50%), calc(var(--y, 0.5) * 100cqh - 50%), 0);
+}
+/* One piece of it. The travel is an OFFSET rather than an angle, computed in
+   `burstBits` — CSS `sin()`/`cos()` would be shorter and would draw fourteen
+   pieces in a heap at the origin on a phone one release behind, silently.
+   The default transform IS the finished position, and the animation is what makes
+   it arrive there from the middle. That order matters under reduced motion below:
+   with the animation off, the burst is a static starburst that says «somebody won
+   here» rather than a blob of everything stacked on one point. */
+.burst-bit {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: calc(var(--unit) * 0.14);
+  height: calc(var(--unit) * 0.14);
+  border-radius: 2px;
+  background: hsl(var(--hue, 40) 90% 62%);
+  transform: translate3d(calc(var(--dx, 0) * var(--unit)), calc(var(--dy, 0) * var(--unit)), 0);
+  animation: burst-fly 1100ms cubic-bezier(0.15, 0.7, 0.35, 1) var(--delay, 0ms) both;
+}
+@keyframes burst-fly {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.4);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(calc(var(--dx, 0) * var(--unit)), calc(var(--dy, 0) * var(--unit)), 0)
+      scale(1);
+    opacity: 0;
+  }
+}
+
 .plane-empty {
   position: absolute;
   inset: 0;
@@ -3169,6 +3339,19 @@ onBeforeUnmount(() => {
     transition: none;
   }
   .peer-face[data-condition='poorly'] {
+    animation: none;
+  }
+  /* The confetti stops travelling and is simply THERE. Written on the class alone
+     like everything else in this block — `.bursts .burst-bit` would compile one
+     class higher and switch this off without a word, which is the bug the note at
+     the head of this block describes.
+     Turning the animation off is enough BECAUSE the base rule already places each
+     piece at its finished offset and the animation only makes it arrive: the
+     effect degrades to a static starburst over the winner's head, which still
+     says somebody won here and then disappears with the rest of the burst. Had
+     the offset lived in the keyframes, this would have drawn fourteen squares in
+     a heap on one point. */
+  .burst-bit {
     animation: none;
   }
   .stat-fill {

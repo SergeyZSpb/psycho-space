@@ -1001,6 +1001,50 @@ var idleSays = []string{
 	"холодно чёт",
 }
 
+// reekSays is what everybody standing nearby says when somebody relieves
+// himself in front of them.
+//
+// THE ONLY LINE IN THIS FILE SOMEBODY ELSE'S ACTION PUTS IN YOUR MOUTH, and that
+// is the point of it. Every other balloon is a Ваня narrating himself — he is
+// tired, he lost his nerve, he is standing about muttering — so the yard was a
+// row of people talking past each other. A deed everybody can see and nobody
+// asked for is the cheapest thing there is to make it read as one place with
+// several people in it: you press a button and four strangers object.
+//
+// It is also the joke, and the joke needs the reaction more than it needs the
+// deed. Relieving himself already leaves a deposit that ages out of the yard over
+// ten minutes; what it did not have was an audience.
+var reekSays = []string{
+	"ну и вонь",
+	"я сейчас блевану",
+	"фу бля",
+	"кто это сделал",
+	"дышать нечем",
+	"воняет пиздец",
+	"мои глаза",
+	"ты чё творишь",
+	"я такое не подписывал",
+	"тут вообще-то люди",
+	"пойду отсюда",
+	"это уже слишком",
+}
+
+// How near you have to be standing to notice, and how long you go on about it.
+//
+// MUCH WIDER THAN arriveWithin, and deliberately: arriving is a question about
+// whether he can touch a thing, and smelling one is a question about whether he
+// is anywhere near it. At 0.35 of the plane a deed in the middle of the yard
+// reaches most of it and one in a corner reaches the people in that corner, which
+// is the difference worth drawing — a yard-wide reaction would be the whole
+// screen shouting at a thing half of it cannot see.
+//
+// The duration matches sayFor, because these are balloons like any other and two
+// different lifetimes for one kind of thing is a difference nobody could explain.
+const (
+	reekWithin = 0.35
+	reekFor    = 4 * time.Second
+)
+
 // How the idle muttering is timed, and why there is no timer.
 //
 // Time is cut into fixed slots measured from worldEpoch. Within one slot an

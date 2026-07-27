@@ -1096,6 +1096,42 @@ const petLine = (page: Page) => page.locator('[data-test="pet-line"]');
  */
 const avatarOf = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-avatar"]`);
+/**
+ * How many pieces one burst of confetti throws. Mirrored from BURST_BITS.
+ *
+ * Mirrored rather than counted, for the reason every other constant in this file
+ * is: a burst quietly reduced to one piece is still a burst to a selector, and
+ * this is what would fail instead of being agreed with.
+ */
+const BURST_BITS = 14;
+
+/** The celebrations currently drawn on the plane. */
+const bursts = (page: Page) => page.locator('[data-test="burst"]');
+
+/**
+ * How the pieces of the first burst are laid out, and whether they are moving.
+ *
+ * Both read in one pass in the page, because they are two facts about one instant
+ * and the burst is over in a second — read as separate round trips the second
+ * could land after the first piece had gone.
+ */
+async function burstSpread(
+  page: Page,
+): Promise<{ places: number; animated: boolean; where: string }> {
+  return page.evaluate(() => {
+    const el = document.querySelector('[data-test="burst"]');
+    if (!el) throw new Error('no burst on the plane');
+    const at: string[] = [];
+    let animated = false;
+    for (const bit of Array.from(el.children)) {
+      const b = bit.getBoundingClientRect();
+      at.push(`${Math.round(b.x)},${Math.round(b.y)}`);
+      if (getComputedStyle(bit).animationName !== 'none') animated = true;
+    }
+    return { places: new Set(at).size, animated, where: at.join(' ') };
+  });
+}
+
 /** The catalogue's figure for an entity's skin, drawn whether or not it has a face. */
 const spriteOf = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-sprite"]`);
@@ -3180,6 +3216,116 @@ test.describe('«Ванягоччи» — the key hunt', () => {
   // undoing the kind-agnosticism the suite above exists to pin. Where a search
   // is exercised is the pet spec, which is the file that stubs a catalogue and
   // therefore the only one that has hiding places in it at all.
+
+  test('winning throws confetti where it was won, and a win we did not watch throws none', async ({
+    page,
+  }) => {
+    // A CELEBRATION THE WIRE NEVER SENDS. There is no event for "somebody just
+    // found the keys" — the frame carries which key is hidden, as state — so the
+    // burst is a DIFFERENCE this client works out: a pose it saw go from
+    // something else to «happy». That is why the second half of this test is the
+    // half that matters. A client that celebrated every peer it first saw wearing
+    // the face would throw confetti on every reconnect, and a phone reconnects
+    // constantly.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    const WINNER = { id: 'winner', x: 0.3, y: 0.7, art: 'vanya' };
+    const JOINED = { id: 'joined', x: 0.7, y: 0.3, art: 'vanya' };
+
+    // Somebody ALREADY happy on the first frame this client ever sees. He won
+    // before we were watching, exactly as a hunt already running was started
+    // before we were watching.
+    await socket.push(
+      rosterHunt('key-1', { ...WINNER, pose: 'fine' }, { ...JOINED, pose: 'happy' }),
+    );
+    await expect(dots(page)).toHaveCount(2);
+    // Waited for by the FACE rather than by the dot, because what has to have
+    // reached the DOM before the count below means anything is the pose: a client
+    // that celebrated this frame would have done it as the pose landed.
+    await expect(face(page, 'joined')).toHaveAttribute('data-condition', 'happy');
+    // A SNAPSHOT AND NOT A POLL, and the difference is the whole assertion.
+    // `toHaveCount(0)` retries until it matches — so a burst thrown wrongly here
+    // and removed a second later satisfies it, which is exactly the bug this test
+    // exists to catch and exactly what it did when it was written that way.
+    expect(
+      await bursts(page).count(),
+      'confetti was thrown for a win that had already happened when this client connected',
+    ).toBe(0);
+
+    // And now one in front of us.
+    await socket.push(
+      rosterHunt('key-2', { ...WINNER, pose: 'happy' }, { ...JOINED, pose: 'happy' }),
+    );
+    await expect(bursts(page)).toHaveCount(1);
+
+    // WHERE HE IS STANDING, and the assertion is worth the arithmetic: a burst
+    // hung at the wrong point is still a burst, and a screenshot of a busy yard
+    // would not show which Ваня it belonged to. Read through
+    // getBoundingClientRect rather than boundingBox(), for the reason
+    // peerDrawnBox gives — the burst's own box has no area, its pieces do.
+    const where = await page.evaluate(() => {
+      const el = document.querySelector('[data-test="burst"]');
+      const box = document.querySelector('[data-test="plane"]');
+      if (!el || !box) throw new Error('no burst on the plane');
+      const b = el.getBoundingClientRect();
+      const p = box.getBoundingClientRect();
+      return { x: (b.x - p.x) / p.width, y: (b.y - p.y) / p.height, bits: el.children.length };
+    });
+    expect(where.x, `the confetti is ${where.x.toFixed(3)} across a yard whose winner is at ${WINNER.x}`).toBeCloseTo(WINNER.x, 2);
+    expect(where.y, `the confetti is ${where.y.toFixed(3)} down a yard whose winner is at ${WINNER.y}`).toBeCloseTo(WINNER.y, 2);
+    expect(where.bits, 'the burst is drawn with the wrong number of pieces').toBe(BURST_BITS);
+
+    // AND IT TRAVELS. Asserted as a change between two reads rather than as a
+    // spread at one instant, and the difference is not pedantry: every piece
+    // starts AT the point and is carried out to its own offset, so a single
+    // sample taken as the burst appears finds fourteen squares on one spot and
+    // reports a working animation as broken. Two samples cannot: confetti that
+    // has not moved between them is confetti that is not moving.
+    const flying = await burstSpread(page);
+    expect(flying.animated, 'the pieces are not animating at all').toBe(true);
+    await page.waitForTimeout(500);
+    const later = await burstSpread(page);
+    expect(later.where, 'the confetti never left the spot it was thrown from').not.toBe(
+      flying.where,
+    );
+    expect(
+      later.places,
+      'every piece of confetti is travelling to the same place, so the burst is one square',
+    ).toBeGreaterThan(BURST_BITS / 2);
+
+    // And it ends. A burst left on the plane is a celebration that never stops,
+    // and the elements are real DOM nodes: one win an evening is nothing, one win
+    // an evening that never goes away is a leak.
+    await expect(bursts(page)).toHaveCount(0, { timeout: 5_000 });
+  });
+
+  test('the confetti still says somebody won under prefers-reduced-motion', async ({ page }) => {
+    // MOTION IS THE WHOLE EFFECT, so switching it off is where this is most
+    // likely to degrade into nothing — and "nothing" here would specifically be
+    // fourteen squares stacked on one point, because `animation: none` leaves an
+    // element wherever its base rule puts it. The base rule therefore puts each
+    // piece at its FINISHED offset and the animation only makes it travel there,
+    // which turns the degraded case into a static starburst rather than a blob.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    const WINNER = { id: 'winner', x: 0.5, y: 0.5, art: 'vanya' };
+    await socket.push(rosterHunt('key-1', { ...WINNER, pose: 'fine' }));
+    await expect(dots(page)).toHaveCount(1);
+    await socket.push(rosterHunt('key-2', { ...WINNER, pose: 'happy' }));
+    await expect(bursts(page)).toHaveCount(1);
+
+    const spread = await burstSpread(page);
+    expect(spread.animated, 'the burst is still animating under reduced motion').toBe(false);
+    expect(
+      spread.places,
+      'with the animation off every piece is drawn on one point, so the win is invisible',
+    ).toBeGreaterThan(BURST_BITS / 2);
+  });
 
   test('a fresh hunt is announced, and one already running is joined in silence', async ({
     page,

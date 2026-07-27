@@ -16,10 +16,12 @@ import {
   UNNAMED_PLACE,
   X_PROPERTY,
   Y_PROPERTY,
+  BURST_BITS,
   applyFrame,
   applyPosition,
   avatarEndpoint,
   bandFor,
+  burstBits,
   beside,
   capLabel,
   capSay,
@@ -27,6 +29,7 @@ import {
   hotspotsFor,
   hueFor,
   huntRestarted,
+  newlyHappy,
   isRenderablePosition,
   outOfReach,
   shortOf,
@@ -1677,5 +1680,106 @@ describe('readStore / sameStore — the shop belongs to a place', () => {
     expect(
       sameStore({ x: 0.82, y: 0.22, left: 6, loc: 'les' }, { x: 0.82, y: 0.22, left: 6, loc: 'les' }),
     ).toBe(true);
+  });
+});
+
+describe('newlyHappy', () => {
+  const look = (id: string, pose: string) => ({ id, art: 'vanya', pose }) as never;
+
+  it('finds the win it actually watched happen', () => {
+    const won = newlyHappy([look('a', 'fine'), look('b', 'fine')], [look('a', 'happy'), look('b', 'sad')]);
+    expect(won).toEqual(['a']);
+  });
+
+  it('stays quiet about somebody who was already happy when we arrived', () => {
+    // THE SAME DISCIPLINE `huntRestarted` KEEPS, and for the same reason: a hunt
+    // already running is joined in silence rather than announced, because
+    // somebody who opened the app thirty seconds late did not miss an event, he
+    // arrived after one. A client that threw confetti at every peer it first saw
+    // wearing the face would celebrate on every reconnect — and a phone
+    // reconnects constantly.
+    expect(newlyHappy([], [look('a', 'happy')])).toEqual([]);
+    expect(newlyHappy([look('a', 'happy')], [look('a', 'happy')])).toEqual([]);
+  });
+
+  it('celebrates a second win by the same person', () => {
+    // He put the face on, it expired, he found the next key. Two wins, and the
+    // second one is not less of a win for being his.
+    expect(newlyHappy([look('a', 'happy')], [look('a', 'fine')])).toEqual([]);
+    expect(newlyHappy([look('a', 'fine')], [look('a', 'happy')])).toEqual(['a']);
+  });
+
+  it('celebrates everybody who won at once, and nobody who lost', () => {
+    const won = newlyHappy(
+      [look('a', 'fine'), look('b', 'fine'), look('c', 'fine')],
+      [look('a', 'happy'), look('b', 'happy'), look('c', 'sad')],
+    );
+    expect([...won].sort()).toEqual(['a', 'b']);
+  });
+
+  it('answers a frozen list, like every other reader here', () => {
+    expect(Object.isFrozen(newlyHappy([look('a', 'fine')], [look('a', 'happy')]))).toBe(true);
+  });
+});
+
+describe('burstBits', () => {
+  it('throws the same confetti at the same win every time', () => {
+    // SEEDED RATHER THAN RANDOM, so two people watching one win see one burst —
+    // and so this test is a test rather than a coin toss. `Math.random` here
+    // would be unobservable in production and unrepeatable in a suite.
+    expect(burstBits('a|hunt-1')).toEqual(burstBits('a|hunt-1'));
+    expect(burstBits('a|hunt-1')).not.toEqual(burstBits('a|hunt-2'));
+  });
+
+  it('throws the number of pieces it says it does, and none for a burst of none', () => {
+    expect(burstBits('seed')).toHaveLength(BURST_BITS);
+    expect(burstBits('seed', 3)).toHaveLength(3);
+    expect(burstBits('seed', 0)).toHaveLength(0);
+    expect(burstBits('seed', -4)).toHaveLength(0);
+  });
+
+  it('fans the pieces out rather than stacking them on one point', () => {
+    // The failure this is really about is CSS trigonometry on a browser one
+    // release behind, which draws every piece at the origin and reports nothing.
+    // A burst whose pieces all travelled the same way would look exactly like
+    // that bug, so distinctness is the assertion, not the spread.
+    const bits = burstBits('a|hunt-1');
+    const places = new Set(bits.map((bit) => `${bit.dx.toFixed(3)},${bit.dy.toFixed(3)}`));
+    expect(places.size).toBeGreaterThan(bits.length / 2);
+    for (const bit of bits) {
+      expect(Math.hypot(bit.dx, bit.dy)).toBeGreaterThan(0.2);
+      // Bounded as well, in world units: a piece thrown two Ваняs away is
+      // confetti that lands on somebody else's head, or off the plane entirely.
+      expect(Math.hypot(bit.dx, bit.dy)).toBeLessThan(1.5);
+    }
+  });
+
+  it('opens the arc over his head rather than around his knees', () => {
+    // The plane's y grows downward, so a celebration goes UP. Confetti thrown
+    // evenly in a circle reads as an explosion; a fountain reads as a
+    // celebration, and half of it would be drawn behind the man who threw it.
+    for (const bit of burstBits('a|hunt-1')) {
+      expect(bit.dy, `a piece was thrown downward, to dy=${bit.dy}`).toBeLessThan(0);
+    }
+  });
+
+  it('staggers the pieces, so it is a burst rather than a ring', () => {
+    const delays = new Set(burstBits('a|hunt-1').map((bit) => bit.delay));
+    expect(delays.size).toBeGreaterThan(1);
+    for (const bit of burstBits('a|hunt-1')) {
+      expect(bit.delay).toBeGreaterThanOrEqual(0);
+      // Comfortably inside the life of the burst, or the last piece is removed
+      // before it has set off.
+      expect(bit.delay).toBeLessThan(400);
+    }
+  });
+
+  it('gives the pieces different colours', () => {
+    const hues = new Set(burstBits('a|hunt-1').map((bit) => bit.hue));
+    expect(hues.size).toBeGreaterThan(1);
+    for (const bit of burstBits('a|hunt-1')) {
+      expect(bit.hue).toBeGreaterThanOrEqual(0);
+      expect(bit.hue).toBeLessThan(360);
+    }
   });
 });

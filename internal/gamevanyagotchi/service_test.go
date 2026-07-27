@@ -2627,7 +2627,9 @@ func TestTheComplaintIsChosenOnceAndCarriedOnTheWalk(t *testing.T) {
 // «я тут стесняюсь» is the ONLY evidence a test has that a press was refused for
 // nerves rather than for any of the reasons that are the player's fault.
 func TestThePhrasePoolsAreDisjoint(t *testing.T) {
-	pools := map[string][]string{"tiredSays": tiredSays, "idleSays": idleSays, "shySays": shySays}
+	pools := map[string][]string{
+		"tiredSays": tiredSays, "idleSays": idleSays, "shySays": shySays, "reekSays": reekSays,
+	}
 	for name, pool := range pools {
 		if len(pool) == 0 {
 			t.Fatalf("%s is empty, so every balloon assertion resting on it is vacuous", name)

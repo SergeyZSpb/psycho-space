@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2794,5 +2795,187 @@ func TestTheSadFacesStayInTheLocationTheKeyWasFoundIn(t *testing.T) {
 		if p.Pose != tc.want {
 			t.Errorf("%s is drawn %q after the claim; want %q — %s", tc.who.ConnID, p.Pose, tc.want, tc.why)
 		}
+	}
+}
+
+// TestRelievingHimselfIsHeardByTheYardAndOnlyByTheYardThatCanSmellIt.
+//
+// The one line in this game somebody ELSE's action puts in your mouth, so what
+// it is really pinning is the two filters around it: the place, because the room
+// is the whole world and an unfiltered reaction would gag somebody standing in
+// another location at something he cannot see; and the distance, because a yard
+// where everybody objects to everything is the whole screen shouting.
+func TestRelievingHimselfIsHeardByTheYardAndOnlyByTheYardThatCanSmellIt(t *testing.T) {
+	actor, near, far, elsewhere := member("1"), member("2"), member("3"), member("4")
+	if actor.AccountID != testAccount {
+		t.Fatalf("the actor's connection belongs to %q and the fake repository holds the pet of %q; the verb below would act for somebody else",
+			actor.AccountID, testAccount)
+	}
+
+	repo := playedFor(enoughFor(t, ActionRelieve, epoch))
+	tr := &fakeTransport{}
+	tr.setMembers(actor, near, far, elsewhere)
+	svc := planeService(tr, repo)
+
+	// A tick, so all four have a placement — somebody the yard has never placed
+	// has nowhere to wear a balloon, which would make this pass for the wrong
+	// reason.
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	// Placed by hand rather than walked: what is under test is who is close
+	// enough, so the distances are the fixture and a tiredness roll partway
+	// through a journey would be a second thing deciding them.
+	// Left of centre so that the far witness, a full two reekWithin away, is still
+	// on the plane — the guard below is what says so.
+	deed := Point{X: 0.2, Y: 0.5}
+	standAt(svc, actor.AccountID, deed)
+	standAt(svc, near.AccountID, Point{X: deed.X + reekWithin/2, Y: deed.Y})
+	standAt(svc, far.AccountID, Point{X: deed.X + reekWithin*2, Y: deed.Y})
+	if deed.X+reekWithin*2 > 1 {
+		t.Fatalf("the fixture puts the far witness at %v, which is off the plane; the distance filter would be untested",
+			deed.X+reekWithin*2)
+	}
+	// The fourth one leaves for лифт, through the production path so the fixture
+	// cannot disagree with what a real journey does — and is then stood back on
+	// the DEED'S OWN COORDINATES. That is the sharpest form of the location filter
+	// there is: a position is a TRIPLE, so identical x and y in another place is
+	// not nearness at all, and a distance check that forgot to ask *where* first
+	// would put him at zero paces from it.
+	lift, ok := LocationByKey(LocationLift)
+	if !ok {
+		t.Fatalf("the catalogue has no location %q", LocationLift)
+	}
+	svc.arrive(elsewhere.AccountID, lift)
+	standAt(svc, elsewhere.AccountID, deed)
+
+	if _, _, err := pressPastNerves(t, svc, testAccount, []string{ActionRelieve}, "", at(0)); err != nil {
+		t.Fatalf("Do(%q): %v", ActionRelieve, err)
+	}
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast after the deed: %v", err)
+	}
+	frames := tr.frames()
+	f := frames[len(frames)-1]
+
+	said := func(who realtime.Member) string {
+		t.Helper()
+		p, ok := peerOf(svc, f, who.AccountID)
+		if !ok {
+			t.Fatalf("%s is not in the frame at all: %+v", who.ConnID, f)
+		}
+		return p.Say
+	}
+
+	if line := said(near); !slices.Contains(reekSays, line) {
+		t.Errorf("the witness standing %v away says %q; want one of reekSays — the whole joke is that the deed has an audience",
+			reekWithin/2, line)
+	}
+	if line := said(far); slices.Contains(reekSays, line) {
+		t.Errorf("the witness standing %v away — past reekWithin of %v — says %q; a yard where everybody objects to everything is the whole screen shouting",
+			reekWithin*2, reekWithin, line)
+	}
+	if line := said(elsewhere); slices.Contains(reekSays, line) {
+		t.Errorf("somebody standing in %q on the same coordinates says %q; the room is the whole world, so a reaction with no local cause reads as a broken game rather than as a joke",
+			LocationLift, line)
+	}
+	// And the man himself is telling the yard he feels better, not agreeing with
+	// it that he stinks.
+	if line := said(actor); slices.Contains(reekSays, line) {
+		t.Errorf("the man who did it says %q, which is one of the bystanders' lines; his own confirmation is what belongs over his head", line)
+	}
+}
+
+// TestTheYardObjectsInSeveralVoicesRatherThanInChorus. One shared roll would
+// draw four identical balloons, which reads as a scripted cutscene rather than
+// as four people who each happened to notice.
+func TestTheYardObjectsInSeveralVoicesRatherThanInChorus(t *testing.T) {
+	svc := planeService(nil, nil)
+	seen := make(map[string]bool, len(reekSays))
+	for i := 0; i < 200; i++ {
+		seen[svc.reekLine(fmt.Sprintf("witness-%d", i), "actor", at(0))] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("two hundred witnesses of one deed produced %d distinct line(s); the roll is not keyed on the witness at all", len(seen))
+	}
+	// And the SAME witness of the SAME deed says the same thing every time it is
+	// asked, which is what lets a balloon survive being recomputed.
+	first := svc.reekLine("witness-1", "actor", at(0))
+	if again := svc.reekLine("witness-1", "actor", at(0)); again != first {
+		t.Errorf("the same witness of the same deed said %q and then %q; a line has to be a property of the deed rather than of when it was asked about", first, again)
+	}
+	// A second deed at a second instant gets its own draw, or somebody standing
+	// through an evening of them repeats himself all night.
+	sweep := make(map[string]bool, len(reekSays))
+	for i := 0; i < 200; i++ {
+		sweep[svc.reekLine("witness-1", "actor", at(0).Add(time.Duration(i)*time.Second))] = true
+	}
+	if len(sweep) < 2 {
+		t.Fatalf("one witness standing through two hundred deeds said %d distinct line(s); the roll is not keyed on the deed", len(sweep))
+	}
+}
+
+// TestTheRegularsRecoilTooBecauseOtherwiseNobodyDoes.
+//
+// The reason `npcSaid` exists at all, and the reason it was worth giving the cast
+// its first piece of remembered state. On the evening this is actually played the
+// yard is one player and three regulars, so a players-only reaction would be
+// invisible in its commonest case — this is that case, driven with a single
+// member in the room.
+func TestTheRegularsRecoilTooBecauseOtherwiseNobodyDoes(t *testing.T) {
+	if len(catalogue.NPCs) == 0 {
+		t.Skip("the catalogue has no regulars, so there is nobody for a deed to be witnessed by")
+	}
+	repo := playedFor(enoughFor(t, ActionRelieve, epoch))
+	tr := &fakeTransport{}
+	tr.setMembers(member("1"))
+	svc := planeService(tr, repo)
+
+	if err := svc.broadcast(context.Background(), at(0)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+	// Standing on top of a regular, so the distance filter cannot be what decides
+	// this: the deed happens exactly where somebody is already standing.
+	npc := catalogue.NPCs[0]
+	standAt(svc, testAccount, evaluate(npc.Pattern, npc.Params, at(0).Sub(worldEpoch)))
+
+	_, when, err := pressPastNerves(t, svc, testAccount, []string{ActionRelieve}, "", at(0))
+	if err != nil {
+		t.Fatalf("Do(%q): %v", ActionRelieve, err)
+	}
+
+	regular := func(now time.Time) Peer {
+		t.Helper()
+		if err := svc.broadcast(context.Background(), now); err != nil {
+			t.Fatalf("broadcast: %v", err)
+		}
+		frames := tr.frames()
+		f := frames[len(frames)-1]
+		for _, p := range f.Peers {
+			if p.ID == npcPrefix+npc.Key {
+				return p
+			}
+		}
+		t.Fatalf("%q is not in the frame at all: %+v", npc.Key, f)
+		return Peer{}
+	}
+
+	if line := regular(when).Say; !slices.Contains(reekSays, line) {
+		t.Errorf("%q watched it happen at his own feet and says %q; want one of reekSays — without the regulars the yard says nothing at all when one player is in it",
+			npc.Key, line)
+	}
+	// AND IT EXPIRES BY ARITHMETIC, like every other balloon: the read is what
+	// prunes it, so nothing schedules a removal and the cast keeps no state it
+	// does not need this second.
+	if line := regular(when.Add(reekFor)).Say; line != "" {
+		t.Errorf("%q is still saying %q after reekFor; a line the tick never drops is state the cast has to be cleaned up", npc.Key, line)
+	}
+	svc.mu.Lock()
+	held := len(svc.npcSaid)
+	svc.mu.Unlock()
+	if held != 0 {
+		t.Errorf("the cast still holds %d remembered line(s) after they expired; the read is supposed to be what forgets them", held)
 	}
 }

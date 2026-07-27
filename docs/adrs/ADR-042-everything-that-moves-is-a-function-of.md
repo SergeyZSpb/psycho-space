@@ -5,13 +5,15 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** Everything that moves is a function of absolute time
-- **status:** Accepted · 2026-07-26
+- **status:** Accepted · 2026-07-26 · rewritten 2026-07-27, when a regular gained a line to say and the boundary had to be drawn at motion rather than at state
 - **summary:** one paragraph in [ARCHITECTURE.md §8.8](../ARCHITECTURE.md#adr-042--everything-that-moves-is-a-function-of-absolute-time) — this file is the detail behind it.
 - **related:** [ADR-038](./ADR-038-time-varying-state-is-computed-on-read-never.md)
 
 ---
 
-Nothing on the plane accumulates. An NPC's position is `pattern(params, now − epoch)`; a player's is a point along a walk with a known start; a pose is derived from stats and the clock. All of it is evaluated on the existing 5 Hz render tick, none of it is stored, and **the tick still writes nothing**. NPCs consequently have no rows, no accounts and no placements — adding one is a catalogue entry, and because the client renders whatever entities it is sent, no client deploy either.
+Nothing that MOVES on the plane accumulates. An NPC's position is `pattern(params, now − epoch)`; a player's is a point along a walk with a known start; a pose is derived from stats and the clock. All of it is evaluated on the existing 5 Hz render tick, none of it is stored, and **the tick still writes nothing**. NPCs consequently have no rows, no accounts and no placements — adding one is a catalogue entry, and because the client renders whatever entities it is sent, no client deploy either.
+
+**The one thing about a regular that is remembered is what he is SAYING**, and the boundary is worth stating precisely because it looks like an exception. A reaction to something a player just did — the yard objecting out loud when somebody relieves himself in it — has a cause outside the clock, so there is no `f(now)` to evaluate; it is a line with an expiry, held in memory beside the display cache and forgotten by the tick that finds it stale. What that costs is exactly one map of at most one short string per character in the catalogue, for the seconds it is up. What it buys is the feature existing at all: on the evening this is actually played the yard is one player and three regulars, so a reaction only other players could have would be invisible in its commonest case. **Position stays closed-form**, which is the property this record is about — two processes still agree about where everybody is, a restart still teleports nobody, and a late or duplicated tick still produces the identical answer.
 
 _Reasoning:_ the alternative is a simulation — advance each thing by its velocity on every tick — and it fails in a way that is invisible until it is not. A GC pause, a slow publish or a missed tick would permanently displace the world, so two players would slowly stop seeing the same yard with nothing anywhere reporting a fault. Because position depends only on `now`, a tick that is late, early, skipped, duplicated or served to a client that has just reconnected produces the identical correct answer. It is the same self-correcting shape as computing decay from timestamps instead of counting ticks ([ADR-038](./ADR-038-time-varying-state-is-computed-on-read-never.md)), applied to space.
 

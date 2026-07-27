@@ -1432,3 +1432,143 @@ export function resolveArt(
   if (skin.image) resolved.image = skin.image;
   return resolved;
 }
+
+// ---------------------------------------------------------------------------
+// SOMEBODY JUST WON SOMETHING, AND THE YARD SAYS SO.
+//
+// The wire has no event for it, deliberately and for the reason `hunt` states:
+// this game publishes state five times a second and never announcements, because
+// an announcement is exactly what somebody who opened the app thirty seconds
+// later misses. So "a key was just found" is a DIFFERENCE a client works out for
+// itself, the same way «нам повезло» is worked out from the hunt id changing.
+//
+// It is read off the POSE rather than off that id, and the two are not the same
+// question. The hunt id says a fresh key is hidden somewhere in the world; it
+// names neither the winner nor the place, so a burst driven from it would have
+// nowhere to happen. A pose going happy says who, and the frame it arrives on
+// says where he is standing. Gating on both would also lose the burst whenever
+// the mood and the replacement key land a frame apart, which is a race nothing
+// on the server promises will not happen.
+// ---------------------------------------------------------------------------
+
+/**
+ * Who has just become happy, out of two consecutive frames.
+ *
+ * ABSENT BEFORE IS NOT THE SAME AS NOT HAPPY BEFORE, and the difference is the
+ * whole of what keeps a late joiner quiet: somebody already wearing the face when
+ * a client first sees him won something before it was watching, exactly as a hunt
+ * already running is joined in silence rather than announced. Only a peer this
+ * client saw NOT happy and then saw happy is a win it witnessed.
+ */
+export function newlyHappy(
+  before: readonly PeerAppearance[],
+  now: readonly PeerAppearance[],
+): readonly string[] {
+  const was = new Map(before.map((look) => [look.id, look.pose]));
+  const out: string[] = [];
+  for (const look of now) {
+    if (look.pose !== 'happy') continue;
+    const then = was.get(look.id);
+    if (then === undefined || then === 'happy') continue;
+    out.push(look.id);
+  }
+  return Object.freeze(out);
+}
+
+/**
+ * How many pieces of confetti one burst throws.
+ *
+ * Enough to read as a burst at a hand's distance and few enough to be free: each
+ * is one absolutely-positioned span animating a transform, for about a second,
+ * at most once every few minutes. The whole effect is over before anything could
+ * accumulate.
+ */
+export const BURST_BITS = 14;
+
+/** One piece of confetti, as a distance from the spot and a colour. */
+export interface BurstBit {
+  /** How far to travel, in world units, along each axis. */
+  dx: number;
+  dy: number;
+  /** Its own hue, 0..359. */
+  hue: number;
+  /** How long it waits before setting off, in milliseconds. */
+  delay: number;
+}
+
+/**
+ * The pieces of one burst, as offsets rather than as angles.
+ *
+ * COMPUTED HERE RATHER THAN IN CSS, and that is the point of the function
+ * existing at all. The obvious stylesheet version is `translate(calc(cos(var(--a))
+ * * var(--r)), …)`, which is shorter and which this deliberately does not do:
+ * trigonometry in CSS is recent enough that a phone one release behind would draw
+ * fourteen pieces of confetti stacked in a heap at the origin and nothing would
+ * report it. Offsets are arithmetic every browser has had for twenty years, and
+ * doing them here makes the geometry something a unit test can hold an opinion
+ * about.
+ *
+ * SEEDED RATHER THAN RANDOM, for the reason everything else in this game that
+ * looks random is: `Math.random` would give two people watching the same win two
+ * different bursts, and — much worse for a test — would make this function's
+ * output unrepeatable. The seed is the winner's id plus the moment, so the same
+ * win looks the same on every screen and a different one looks different.
+ *
+ * The spread is deliberately uneven and biased UPWARD: confetti thrown evenly in
+ * a circle reads as an explosion, and a fountain over somebody's head reads as
+ * celebration. `dy` is negative for most of the arc because the plane's y grows
+ * downward.
+ */
+export function burstBits(seed: string, count: number = BURST_BITS): readonly BurstBit[] {
+  const out: BurstBit[] = [];
+  for (let i = 0; i < Math.max(0, count); i += 1) {
+    // Three independent draws out of one hash each, by asking about a different
+    // aspect of the same piece — the same trick the server's `unitTriple` plays,
+    // and here for the same reason: one seed, several uncorrelated numbers.
+    const spread = unitOf(`${seed}|spread|${i}`);
+    const reach = unitOf(`${seed}|reach|${i}`);
+    const when = unitOf(`${seed}|when|${i}`);
+    // Fanned across most of a circle rather than all of it, with the gap at the
+    // bottom: a piece thrown straight down disappears behind the figure that
+    // threw it and is drawn for nothing.
+    const angle = (-0.9 + 1.8 * spread) * Math.PI;
+    const radius = 0.45 + 0.75 * reach;
+    out.push({
+      dx: Math.sin(angle) * radius,
+      // Lifted, so the arc opens over his head rather than around his knees.
+      dy: -Math.abs(Math.cos(angle)) * radius * 0.85 - 0.15,
+      hue: Math.floor(unitOf(`${seed}|hue|${i}`) * 360),
+      delay: Math.round(when * 220),
+    });
+  }
+  return Object.freeze(out);
+}
+
+/**
+ * A number in 0..1 from a string, for the burst's own draws.
+ *
+ * NOT `hueFor`'S HASH, AND THE DIFFERENCE IS A BUG THAT SHIPPED INTO A TEST AND
+ * WAS CAUGHT THERE. The plain `*31 + charCode` hash is fine for what `hueFor`
+ * asks of it — one colour per id, where neighbouring ids being similar is
+ * invisible because nobody sees two hues of one string. Here the inputs are
+ * `…|spread|0` through `…|spread|13`, which differ only in the last character,
+ * and that hash moves by exactly that character: all fourteen draws came out
+ * within a thousandth of each other, so the "burst" was two tight clumps of seven
+ * pieces sitting on top of one another. It looked like a bug in the animation.
+ *
+ * So this one AVALANCHES: an FNV-1a pass over the characters and then a
+ * murmur-style finalizer, which is the cheapest way to make one bit of input
+ * change half the output bits. Still not a security boundary and still not meant
+ * to be a good generator — what it has to be is STABLE, so one win looks the same
+ * on every screen, and SENSITIVE, so fourteen nearly-identical seeds are fourteen
+ * different pieces of confetti.
+ */
+function unitOf(text: string): number {
+  let hash = 2166136261 >>> 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = Math.imul(hash ^ text.charCodeAt(i), 16777619) >>> 0;
+  }
+  hash = Math.imul(hash ^ (hash >>> 15), 2246822507) >>> 0;
+  hash = Math.imul(hash ^ (hash >>> 13), 3266489909) >>> 0;
+  return ((hash ^ (hash >>> 16)) >>> 0) / 4294967296;
+}

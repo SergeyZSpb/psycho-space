@@ -207,7 +207,7 @@ func buildApp(vkBaseURL string) http.Handler { return buildAppCfg(vkBaseURL, llm
 // called on cleanup, and cancelling twice is harmless.
 func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc) {
 	t.Helper()
-	h, hub, cancel, _, _ := buildAppRealtimeFull(t, vkBaseURL)
+	h, hub, cancel, _, _, _ := buildAppRealtimeFull(t, vkBaseURL)
 	return h, hub, cancel
 }
 
@@ -215,8 +215,25 @@ func buildAppRealtime(t *testing.T, vkBaseURL string) (http.Handler, *realtime.H
 // returning the channel that drives its broadcast.
 func buildAppRealtimeGame(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc, chan time.Time) {
 	t.Helper()
-	h, hub, cancel, tick, _ := buildAppRealtimeFull(t, vkBaseURL)
+	h, hub, cancel, tick, _, _ := buildAppRealtimeFull(t, vkBaseURL)
 	return h, hub, cancel, tick
+}
+
+// buildAppRealtimeVerbs is buildAppRealtimeGame plus the game service itself,
+// for a test that has to press a verb AT A CHOSEN INSTANT.
+//
+// Everything else on the plane drives verbs over the socket, which is the path
+// production uses and the one worth exercising — but the socket handler takes
+// its clock from the wall, so a test about something that EXPIRES cannot then
+// say when the press happened, and its own ticks carry a clock of their own.
+// Service.Do is the single funnel that handler goes through and it takes the
+// instant as a parameter, so one press made through it puts the deed and the
+// broadcast on the same clock. Everything asserted is still read off a real
+// socket.
+func buildAppRealtimeVerbs(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, chan time.Time, *gamevanyagotchi.Service) {
+	t.Helper()
+	h, hub, _, tick, _, game := buildAppRealtimeFull(t, vkBaseURL)
+	return h, hub, tick, game
 }
 
 // buildAppRealtimeSweep is buildAppRealtime plus the channel that fires one
@@ -224,12 +241,14 @@ func buildAppRealtimeGame(t *testing.T, vkBaseURL string) (http.Handler, *realti
 // authorisation gets cut.
 func buildAppRealtimeSweep(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, chan time.Time) {
 	t.Helper()
-	h, hub, _, _, sweep := buildAppRealtimeFull(t, vkBaseURL)
+	h, hub, _, _, sweep, _ := buildAppRealtimeFull(t, vkBaseURL)
 	return h, hub, sweep
 }
 
 // buildAppRealtimeFull builds the app with a running hub, «Ванягоччи», and the
-// revalidation sweep, returning the channel that drives each.
+// revalidation sweep, returning the channel that drives each — and the game
+// service itself, for the one test that presses a verb at an instant of its own
+// choosing rather than over the socket (see buildAppRealtimeVerbs).
 //
 // Both ticks are the test's, not tickers: a test fires one and then reads the
 // frame it caused, so there is no "wait 200 ms and hope" anywhere. That is the
@@ -239,7 +258,7 @@ func buildAppRealtimeSweep(t *testing.T, vkBaseURL string) (http.Handler, *realt
 // The revalidator is wired exactly as main wires it, over the real
 // session.Manager — so these tests exercise the production query rather than a
 // stand-in, which is the only way the SQL itself can be guarded.
-func buildAppRealtimeFull(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc, chan time.Time, chan time.Time) {
+func buildAppRealtimeFull(t *testing.T, vkBaseURL string) (http.Handler, *realtime.Hub, context.CancelFunc, chan time.Time, chan time.Time, *gamevanyagotchi.Service) {
 	t.Helper()
 	hub := realtime.NewHub()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -281,7 +300,7 @@ func buildAppRealtimeFull(t *testing.T, vkBaseURL string) (http.Handler, *realti
 		RealtimeCtx:     ctx,
 		RealtimeHandler: vanya,
 	}).Handler()
-	return observability.WrapHandler(h, "http.server"), hub, cancel, tick, sweep
+	return observability.WrapHandler(h, "http.server"), hub, cancel, tick, sweep, vanya
 }
 
 // buildAppCfg builds the app with an optional LLM endpoint. Pass llmURL="" to

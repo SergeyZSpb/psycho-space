@@ -628,13 +628,91 @@ func (s *Service) settleHunt(ctx context.Context, winner, where string, now time
 		// Somebody the display cache has never heard of is treated as being in the
 		// default location, exactly as the frame draws him there — one rule for
 		// "empty means the yard", applied here as well.
-		// Somebody the display cache has never heard of is treated as being in the
-		// default location, exactly as the frame draws him there — one rule for
-		// "empty means the yard", applied here as well.
 		if locationOr(standing[m.AccountID]) != where {
 			continue
 		}
 		s.setMood(m.AccountID, PoseSad, until)
+	}
+}
+
+// recoil is the yard objecting, out loud, to somebody relieving himself in it.
+//
+// A DEED WITH AN AUDIENCE, which is what every other balloon in this game is not:
+// tiredness, nerves and idle muttering are all a Ваня narrating himself, so the
+// yard was several people talking past each other. This is the one line somebody
+// else's action puts in your mouth, and it is the cheapest thing there is to make
+// the place read as one world with people in it.
+//
+// WHO REACTS IS A QUESTION ABOUT WHERE, and it is asked twice for the same reason
+// settleHunt asks it once: the room is the whole world (locations are not rooms),
+// so an unfiltered reaction would gag somebody standing in лифт at something that
+// happened in заброшка — a balloon with no local cause, which reads as a broken
+// game. On top of the place, a distance: `reekWithin` is much wider than
+// `arriveWithin`, because arriving is about touching a thing and smelling one is
+// about being anywhere near it.
+//
+// THE REGULARS REACT TOO, and they are the reason this exists in the shape it
+// does. On a quiet evening the yard is one player and three of them, so a
+// players-only version of this would be invisible in its commonest case — see
+// `npcSaid` for what that costs. They are placed the way the tick places them,
+// closed-form at this instant, so nobody has to be told where a regular is.
+//
+// The lock discipline is the one `locations` documents: `Say` and `standing` both
+// take `s.mu`, so nothing here may call them while holding it.
+func (s *Service) recoil(ctx context.Context, actor, where string, now time.Time) {
+	if len(reekSays) == 0 {
+		return
+	}
+	here := locationOr(where)
+	// Where the deed happened, which is where he is standing: the deposit is
+	// written at exactly this point too (see `standing` in the verb path), so the
+	// thing everybody is objecting to and the thing they are measured against are
+	// the same point rather than two answers a frame apart.
+	at := s.standing(actor, now)
+
+	elapsed := now.Sub(worldEpoch)
+	s.mu.Lock()
+	for _, npc := range catalogue.NPCs {
+		if locationOr(npc.Location) != here {
+			continue
+		}
+		if distance(evaluate(npc.Pattern, npc.Params, elapsed), at) > reekWithin {
+			continue
+		}
+		s.npcSaid[npc.Key] = spoken{
+			text:  s.reekLine(npcPrefix+npc.Key, actor, now),
+			until: now.Add(reekFor),
+		}
+	}
+	s.mu.Unlock()
+
+	// THE PET PATH STAYS TRANSPORT-FREE, exactly as settleHunt's comment says:
+	// a service built without one — every test of the pet in isolation — reaches
+	// this and must not panic. The regulars have already spoken by then, which is
+	// the honest fallback: they are catalogue, and the catalogue is always there.
+	if s.transport == nil {
+		return
+	}
+	members, err := s.transport.Members(ctx, s.room)
+	if err != nil {
+		return
+	}
+	standing := s.locations()
+	for _, m := range members {
+		// Not the man himself. He has his own line for this — «полегчало», set by
+		// the verb path once the whole batch has been accepted — and it would
+		// overwrite anything written here anyway; skipping him says so on purpose
+		// rather than relying on the order of two writes.
+		if m.AccountID == actor {
+			continue
+		}
+		if locationOr(standing[m.AccountID]) != here {
+			continue
+		}
+		if distance(s.standing(m.AccountID, now), at) > reekWithin {
+			continue
+		}
+		s.Say(m.AccountID, s.reekLine(m.AccountID, actor, now), reekFor)
 	}
 }
 

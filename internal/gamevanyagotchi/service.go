@@ -135,6 +135,24 @@ type Service struct {
 	// for the same reason, and refreshed at the same human-paced moments: the
 	// tick reads it and never fills it.
 	world []WorldObject
+	// npcSaid is the one thing about a regular that is remembered rather than
+	// computed, and it is worth being uncomfortable about.
+	//
+	// The cast is otherwise catalogue plus arithmetic (ADR-042): no rows, no
+	// placements, nothing stored, so every process draws the same three
+	// characters in the same places at the same instant with nothing to keep in
+	// step. Their POSITIONS still are, and that is the property worth having.
+	// What could not be closed-form is a reaction to something a player did: it
+	// has no formula, because it has a cause outside the clock.
+	//
+	// Without it the yard only recoils when a second person is standing in it,
+	// and on the evening this is actually played that is a yard of one player and
+	// three regulars saying nothing — the feature would be invisible in its
+	// commonest case. So a regular gets a line with an expiry, in memory, under
+	// the same lock as everything else here, keyed by his catalogue key. It
+	// expires by comparison against the tick's clock, so nothing schedules its
+	// removal, exactly as a player's balloon does.
+	npcSaid map[string]spoken
 
 	// lastTick is the instant of the most recent broadcast, and it is THE clock
 	// this game measures walks against.
@@ -291,6 +309,7 @@ func NewService(transport Transport, room string, q db.DBTX, repo Repository, pr
 		pseudonymKey: key,
 		pos:          make(map[string]placement),
 		display:      make(map[string]display),
+		npcSaid:      make(map[string]spoken),
 		saves:        make(chan positionSave, savesBuffer),
 		done:         make(chan struct{}),
 	}
@@ -738,15 +757,34 @@ type sleeper struct {
 	since time.Time
 }
 
+// spoken is a line and the instant it stops being drawn.
+//
+// The same shape as a placement's `says`/`saysUntil` pair, given a name because
+// the cast needs one too and a map of two parallel maps would be a second thing
+// to keep in step. It is state with an expiry and never a message: the tick
+// compares against its own clock, so nothing has to remove it.
+type spoken struct {
+	text  string
+	until time.Time
+}
+
 // cast places every NPC, closed-form, at this instant.
 //
-// No rows, no accounts, no placements: they are catalogue plus arithmetic, so
-// they cannot acquire a position, cannot be written to pets, and are not counted
-// among the people in the yard. Roughly one sine per axis per character per
-// tick, which does not register.
+// No rows, no accounts, no placements: their POSITIONS are catalogue plus
+// arithmetic, so they cannot acquire one, cannot be written to pets, and are not
+// counted among the people in the yard. Roughly one sine per axis per character
+// per tick, which does not register.
+//
+// The one thing that is looked up rather than computed is what a regular is
+// SAYING, because a reaction to a player's deed has a cause outside the clock and
+// therefore no formula — see `npcSaid`. The lock is taken once for the whole
+// loop rather than per character: it is three map reads, and `broadcast` still
+// marshals and publishes the frame outside it.
 func (s *Service) cast(now time.Time) []Peer {
 	elapsed := now.Sub(worldEpoch)
 	out := make([]Peer, 0, len(catalogue.NPCs))
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, npc := range catalogue.NPCs {
 		at := evaluate(npc.Pattern, npc.Params, elapsed)
 		out = append(out, Peer{
@@ -759,9 +797,29 @@ func (s *Service) cast(now time.Time) []Peer {
 			Art:   npc.Art,
 			Label: npc.Label,
 			Pose:  PoseFine,
+			Say:   s.npcSaying(npc.Key, now),
 		})
 	}
 	return out
+}
+
+// npcSaying is the line over a regular's head right now, and forgets it once it
+// has run out. Assumes s.mu is held.
+//
+// The read is what prunes, which is why there is no cleanup anywhere else: a
+// regular who has stopped talking is one nobody asks about again until the next
+// tick, and that tick is what drops the entry. The map therefore holds at most
+// one line per character in the catalogue, and only for the seconds it is up.
+func (s *Service) npcSaying(key string, now time.Time) string {
+	said, ok := s.npcSaid[key]
+	if !ok {
+		return ""
+	}
+	if !now.Before(said.until) {
+		delete(s.npcSaid, key)
+		return ""
+	}
+	return said.text
 }
 
 // planWalk decides the journey a tap asks for, including whether he manages it.
@@ -820,6 +878,23 @@ func (s *Service) shy(accountID, verb string, chance float64, now time.Time) (bo
 		return false, ""
 	}
 	return true, pickPhrase(shySays, phrase)
+}
+
+// reekLine is what one bystander says about one particular deed — see `recoil`.
+//
+// Hashed per witness so that four people objecting say four different things: one
+// shared roll would be a chorus, which reads as a scripted cutscene rather than
+// as a yard full of individuals. Keyed on the deed as well, so the same person
+// standing through two of them does not repeat himself.
+//
+// The `reek|` namespace is what keeps it clear of the rolls above, for the reason
+// `shy` gives: the walk, the muttering and this all hash the same key, and
+// without a prefix a loss of nerve and a bystander's disgust at the same instant
+// would be the same draw.
+func (s *Service) reekLine(witness, actor string, now time.Time) string {
+	seed := fmt.Sprintf("reek|%s|%s|%d", witness, actor, now.UnixNano())
+	_, phrase, _ := unitTriple(crypto.HMACSHA256(s.pseudonymKey, []byte(seed)))
+	return pickPhrase(reekSays, phrase)
 }
 
 // rolls turns (who, where, when) into three independent numbers in 0..1.
@@ -1288,6 +1363,18 @@ func (s *Service) Do(ctx context.Context, accountID string, verbs []string, spot
 		// here, on the verb's own goroutine, which is human-paced. The tick
 		// still reads nothing.
 		s.loadWorld(ctx)
+	}
+	for _, kind := range leavings {
+		if kind != KindRelief {
+			continue
+		}
+		// And everybody who watched him do it says so. AFTER THE COMMIT, like
+		// the moods above and for the same reason: everything before this point
+		// can still be refused — by his nerve, by a lost claim, by the write
+		// failing — and a yard that gags at a deed that did not happen is worse
+		// than one that says nothing.
+		s.recoil(ctx, accountID, before.Pet.LocationKey, at)
+		break
 	}
 	// Only the CLEARING belongs here: a death is recorded by the read path, and
 	// only a verb can undo one.

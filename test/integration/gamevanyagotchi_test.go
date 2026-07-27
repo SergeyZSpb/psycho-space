@@ -5,8 +5,10 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1525,8 +1527,12 @@ func TestVanyagotchiAВаняStandingAboutMuttersOverTheWire(t *testing.T) {
 			time.Duration(ticks)*step)
 	}
 
-	// And the regulars stayed out of it. They are furniture, and furniture that
-	// talked would turn the yard into a chatroom.
+	// And the regulars stayed out of it. They have no part in the ambient
+	// chatter — they do not walk, do not tire and do not mutter — so anything
+	// over a regular's head is somebody else's doing rather than his own. That is
+	// what makes their silence assertable here and, elsewhere in this file, what
+	// makes a regular who IS talking unambiguous evidence of the one thing that
+	// can put words in his mouth: a player relieving himself in front of him.
 	npcs := regulars()
 	r := expectRosterAt(t, tick, frames, base)
 	for id := range npcs {
@@ -1951,5 +1957,238 @@ func TestVanyagotchiGoingToAnotherLocationSurvivesTheRoundTrip(t *testing.T) {
 	}
 	if stored != gamevanyagotchi.LocationLes {
 		t.Errorf("a goto naming a location nobody has heard of moved him to %q; the column is plain text and would have accepted anything", stored)
+	}
+}
+
+// TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem is
+// the yard reacting to something a PLAYER did, read off the bytes a browser
+// receives.
+//
+// Every other balloon in this game is a Ваня narrating himself — he is tired, he
+// lost his nerve, he is standing about muttering — so the yard was several people
+// talking past each other. This is the one line somebody else's deed puts over
+// your head, and the only one whose cause is outside the clock, which is exactly
+// why it cannot be derived and has to be carried.
+//
+// IT IS ASSERTED ON A REGULAR RATHER THAN ON A SECOND PLAYER, and that is the
+// design of the test rather than a convenience.
+// TestVanyagotchiAВаняStandingAboutMuttersOverTheWire pins the other half of it:
+// the regulars are furniture that never says anything at all — they do not
+// mutter, they do not walk and they cannot tire — so a non-empty `say` over one
+// of them is UNAMBIGUOUSLY this feature. Over a second player it would not be,
+// because he mutters on the clock, and a test that happened to catch him
+// mid-remark would pass for entirely the wrong reason. It is also the case that
+// actually happens: on a quiet evening the yard is one player and three
+// regulars, so a players-only reaction would be invisible in production.
+//
+// THREE PHASES, because two would pass vacuously. Silent before the verb,
+// speaking at the instant it lands, and silent again once the balloon has run
+// out — a server that simply put a permanent line over every regular's head
+// would satisfy the middle assertion on its own.
+//
+// Neither the reach nor the duration is written down here. The reach is
+// sidestepped by waiting until the frame itself says a character is within the
+// catalogue's own ArriveWithin, which is the tightest notion of "near" the game
+// has and therefore comfortably inside any radius a smell could have; the
+// duration is FOUND, by walking the world's clock on until the yard goes quiet,
+// the same way the muttering test finds its window. Mirroring either constant
+// into this package would be a second copy of a number, and the copy is the one
+// that goes stale.
+func TestVanyagotchiTheRegularsObjectWhenSomebodyRelievesHimselfInFrontOfThem(t *testing.T) {
+	relieve := petAction(t, gamevanyagotchi.ActionRelieve)
+	drink := petAction(t, gamevanyagotchi.ActionDrink)
+	if relieve.NeedsStat == "" {
+		t.Fatalf("the catalogue no longer gates %q on a stat, so the beer below fills nothing this test needs", relieve.Key)
+	}
+	if petEffectOn(drink, relieve.NeedsStat) <= 0 {
+		t.Fatalf("%q no longer fills %q, which %q needs; there is nothing to press before the bushes",
+			drink.Key, relieve.NeedsStat, relieve.Key)
+	}
+	crate := petObjectKind(t, gamevanyagotchi.KindCrate)
+	if crate.At == nil {
+		t.Fatalf("the catalogue no longer gives %q a pitch of its own; there is nowhere to stand and drink", crate.Key)
+	}
+	reach := gamevanyagotchi.Content().ArriveWithin
+
+	vkSrv := fakeVKDynamic()
+	defer vkSrv.Close()
+	handler, hub, tick, game := buildAppRealtimeVerbs(t, vkSrv.URL)
+	app := httptest.NewServer(handler)
+	defer app.Close()
+
+	cli := loginAs(t, app.URL, "7313", "user")
+	account := accountIDByUID(t, "7313")
+	// The deposit is durable and this package shares one database, so it is
+	// cleared up after: left behind, it is one more thing lying about in every
+	// other test's yard.
+	t.Cleanup(func() { petForgetWorldObjects(t, account) })
+
+	conn, _, err := dialRealtime(t, app.URL, cookieHeader(t, cli, app.URL), "http://localhost")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	frames := readFrames(t, conn)
+	waitRegistered(t, hub, frames)
+	handle := helloAndWaitForTheLoad(t, conn, frames)
+
+	// TO THE CRATE FIRST, because beer has to be fetched from one and «покакать»
+	// is gated on the bladder that beer fills. This tap is a TELEPORT and is
+	// allowed to be: no tick has been fired yet, so the plane has no clock to
+	// measure a journey against and puts him straight where he asked — the same
+	// property petStandAtTheBeerStore leans on. Every tick below comes after it,
+	// so from here on he is simply standing at the beer store and never moves
+	// again.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText,
+		fmt.Appendf(nil, `{"t":"%s","x":%v,"y":%v}`, gamevanyagotchi.TypeMove, crate.At.X, crate.At.Y)); err != nil {
+		t.Fatalf("sending him to the crate: %v", err)
+	}
+	// The tap and this handshake are read by one connection's own pump, in order,
+	// so the reply arriving is proof the move has already been applied. Without
+	// that barrier the first tick would race it.
+	expectYou(t, conn, frames)
+
+	base := time.Now().UTC()
+	drainFrames(frames)
+	first := expectRosterAt(t, tick, frames, base)
+	me, ok := peerByID(first, handle)
+	if !ok {
+		t.Fatalf("the player is not in his own roster: %+v", first)
+	}
+	if got := math.Hypot(me.X-crate.At.X, me.Y-crate.At.Y); got > reach {
+		t.Fatalf("he is standing at (%v,%v), %v from the crate at (%v,%v) and out of its reach of %v; he cannot drink from there",
+			me.X, me.Y, got, crate.At.X, crate.At.Y, reach)
+	}
+	if _, err := game.Do(context.Background(), account, []string{drink.Key}, "", base); err != nil {
+		t.Fatalf("a beer at the crate: %v", err)
+	}
+
+	// AND THEN HE WAITS FOR COMPANY, which is cheaper than going looking for it in
+	// both senses. The regulars are a closed-form function of the tick's instant,
+	// so walking that instant on IS the simulation and costs nothing but ticks —
+	// where chasing one would be a tap per step, and the socket hangs up on a
+	// client that sends more than a handful a second. Сахур ambles about the top
+	// half of the yard and the crate stands in it, so he comes past soon enough.
+	//
+	// How near is near enough is read off the SAME frame the assertion is made
+	// on, rather than recomputed from the catalogue's motion parameters here: a
+	// second implementation of the patterns living in this package could agree
+	// with itself perfectly and disagree with the wire.
+	const (
+		step     = 2 * time.Second
+		patience = 10 * time.Minute
+	)
+	var (
+		near  time.Time
+		who   string
+		ready gamevanyagotchi.Roster
+	)
+	best := math.Inf(1)
+	for waited := time.Duration(0); waited <= patience && who == ""; waited += step {
+		at := base.Add(waited)
+		drainFrames(frames)
+		r := expectRosterAt(t, tick, frames, at)
+		standing, ok := peerByID(r, handle)
+		if !ok {
+			t.Fatalf("the player vanished from his own roster while he was waiting: %+v", r)
+		}
+		closest, gap := "", math.Inf(1)
+		for id := range regulars() {
+			npc, ok := peerByID(r, id)
+			if !ok {
+				t.Fatalf("the regular %q is not in the roster at all: %+v", id, r)
+			}
+			if d := math.Hypot(npc.X-standing.X, npc.Y-standing.Y); d < gap {
+				closest, gap = id, d
+			}
+		}
+		best = math.Min(best, gap)
+		if gap <= reach {
+			near, who, ready = at, closest, r
+		}
+	}
+	if who == "" {
+		t.Fatalf("across %v of the world's clock no regular came within %v of the beer store — the nearest any of them got was %v — so there is nobody standing close enough to be disgusted by anything",
+			patience, reach, best)
+	}
+
+	// PHASE ONE — SILENT. The baseline that makes the rest unambiguous: nothing
+	// in this game gives a regular a line of his own.
+	for id := range regulars() {
+		p, ok := peerByID(ready, id)
+		if !ok {
+			t.Fatalf("the regular %q is not in the roster at all: %+v", id, ready)
+		}
+		if p.Say != "" {
+			t.Fatalf("the regular %q was already saying %q before anybody had done anything; the assertion below would then hold whatever the verb did",
+				id, p.Say)
+		}
+	}
+
+	// PHASE TWO — SPEAKING. The press is re-tried, and the instant moves with each
+	// retry: «покакать» carries a FailChance whose roll is a hash of who and WHEN,
+	// so pressing again at the very same instant would draw the very same refusal
+	// for ever. A millisecond apart is a fresh draw and moves nobody on the plane
+	// anywhere that matters.
+	const presses = 100
+	pressed := near
+	for i := 0; ; i++ {
+		if i == presses {
+			t.Fatalf("%d presses of %q were every one of them refused for nerves; either the roll is stuck on or this is the unluckiest run in the history of the game",
+				presses, relieve.Key)
+		}
+		_, err := game.Do(context.Background(), account, []string{relieve.Key}, "", pressed)
+		if err == nil {
+			break
+		}
+		var shy gamevanyagotchi.ShyRefusal
+		if !errors.As(err, &shy) {
+			t.Fatalf("%q at the beer store: %v", relieve.Key, err)
+		}
+		pressed = pressed.Add(time.Millisecond)
+	}
+
+	drainFrames(frames)
+	after := expectRosterAt(t, tick, frames, pressed)
+	objected, ok := peerByID(after, who)
+	if !ok {
+		t.Fatalf("the regular %q is no longer in the roster: %+v", who, after)
+	}
+	if objected.Say == "" {
+		t.Fatalf("%q was standing within %v of a player relieving himself and had nothing to say about it; the deed reaches the world and the audience does not",
+			who, reach)
+	}
+
+	// PHASE THREE — SILENT AGAIN. Found rather than asserted against a constant:
+	// the clock is walked on in steps small enough to land inside any plausible
+	// window, and the first instant at which the whole cast has stopped talking is
+	// the answer.
+	const (
+		quietStep = 250 * time.Millisecond
+		quietBy   = time.Minute
+	)
+	var quiet time.Duration
+	for waited := quietStep; waited <= quietBy && quiet == 0; waited += quietStep {
+		drainFrames(frames)
+		r := expectRosterAt(t, tick, frames, pressed.Add(waited))
+		hushed := true
+		for id := range regulars() {
+			p, ok := peerByID(r, id)
+			if !ok {
+				t.Fatalf("the regular %q is no longer in the roster: %+v", id, r)
+			}
+			if p.Say != "" {
+				hushed = false
+			}
+		}
+		if hushed {
+			quiet = waited
+		}
+	}
+	if quiet == 0 {
+		t.Fatalf("%v of the world's clock after the deed the regulars were still going on about it; a balloon nothing ever takes down is a line over their heads for the rest of the session",
+			quietBy)
 	}
 }
