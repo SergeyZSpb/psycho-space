@@ -101,7 +101,7 @@ const (
 	// rather than by a rule in Go, so two concurrent restarts cannot produce two
 	// keys.
 	KindKey = "key"
-	// KindCrate is the ящик of beer the vendor stands beside — the other
+	// KindCrate is the ящик of beer — the other
 	// singleton, and the first thing in this world that is used up a little at a
 	// time rather than all at once. It carries a stock, every drink takes one,
 	// and the draw that empties it exhausts the row and puts a fresh crate out in
@@ -550,8 +550,8 @@ type Location struct {
 // NPCS HAVE NO ROWS AND NEED NONE. Appearance is catalogue and position is a
 // pure function of (params, elapsed), so there is nothing about one to store and
 // adding one therefore cannot require a migration. Anything about an NPC that IS
-// mutable is not the NPC: the vendor's beer stock is a world object with a count,
-// and the vendor is the stateless thing standing next to it. Keeping that split
+// mutable is not the NPC: a beer stock is a world object with a count, and any
+// character standing next to it would be the stateless half. Keeping that split
 // is what preserves "a new character is a Go-file change".
 type NPC struct {
 	Key   string `json:"key"`
@@ -608,6 +608,19 @@ type Config struct {
 	// Derived rather than written, from the one kind `Service.store` publishes, so
 	// there is no second place to keep in step.
 	StoreArt string `json:"store_art,omitempty"`
+	// StoreLabel is the sign over the beer store — a constant caption, not a
+	// count, so the box says what it is without anybody having to walk over and
+	// find out.
+	//
+	// IT REPLACED A CHARACTER. There used to be a vendor standing beside the
+	// crate: a stateless NPC, one catalogue entry, no row. He read as a third dot
+	// in the corner of the yard and said nothing about what the box next to him
+	// was for. A sign on the box says it better and costs one string.
+	//
+	// Served rather than typed into the SPA for the same reason every other label
+	// is, and derived from the kind's own `Label` so there is one name for the
+	// thing rather than two that drift.
+	StoreLabel string `json:"store_label,omitempty"`
 	// DefaultSkin and DefaultLocation are what a new pet is created with.
 	DefaultSkin     string `json:"default_skin"`
 	DefaultLocation string `json:"default_location"`
@@ -687,7 +700,7 @@ const (
 	drinkHP      = 15.0
 	drinkBladder = 25.0
 
-	// How much beer a crate holds before the vendor has to fetch another.
+	// How much beer a crate holds before a fresh one is put out.
 	//
 	// Six is a round for everybody who is plausibly in the yard at once, and it
 	// is deliberately small enough that the number on screen VISIBLY falls — a
@@ -707,21 +720,22 @@ const (
 	arriveWithin = 0.12
 )
 
-// Where the beer store stands, and where its vendor stands beside it.
+// Where the beer store stands.
 //
 // THE CRATE IS DELIBERATELY INSIDE tiredFrom OF THE ENTRANCE. It is about 0.43
 // plane-widths from `spawn`, and a walk that short is never refused by the
 // tiredness roll — so somebody who has just arrived can always reach the beer in
-// one tap, and no Ваня is ever stuck between the door and a drink. Moving either
-// of these numbers without checking that distance against tiredFrom is how the
-// store quietly becomes unreachable for whoever is unlucky.
+// one tap, and no Ваня is ever stuck between the door and a drink. Moving this
+// without checking that distance against tiredFrom is how the store quietly
+// becomes unreachable for whoever is unlucky.
 //
-// The vendor is a little to its left: close enough to read as the man selling
-// it, far enough that the two dots do not sit on top of each other.
-var (
-	cratePlace  = Point{X: 0.82, Y: 0.22}
-	vendorPlace = Point{X: 0.68, Y: 0.26}
-)
+// THERE IS NO VENDOR STANDING BESIDE IT ANY MORE. He was a stateless NPC — a
+// catalogue entry with a motion pattern and no row — and he was a good
+// illustration of the state-versus-appearance split. He was also a third dot in
+// a corner of the yard that said nothing about what the box was for, and the box
+// carrying its own sign says it better. The split he illustrated is unharmed:
+// everything mutable about the store is still the crate's `remaining`.
+var cratePlace = Point{X: 0.82, Y: 0.22}
 
 // How a Ваня crosses the yard.
 //
@@ -1137,12 +1151,6 @@ var catalogue = Config{
 			Emoji:    "67",
 			Gradient: "linear-gradient(160deg, #e0762b, #6d2f0c)",
 		},
-		{
-			Key:      "npc_vendor",
-			Label:    "продавец пива",
-			Emoji:    "🧔",
-			Gradient: "linear-gradient(160deg, #4a6b3a, #21301a)",
-		},
 	},
 	ObjectKinds: []ObjectKind{
 		{
@@ -1233,7 +1241,7 @@ var catalogue = Config{
 			// entities themselves respect.
 			//
 			// They are kept well clear of the beer store: the crate stands at
-			// (0.82, 0.22) with its vendor at (0.68, 0.26), and a hotspot inside
+			// (0.82, 0.22), and a hotspot inside
 			// arriveWithin of either would put "search here" and "drink here" on
 			// the same square of a 360 px screen. Every one of these is at least
 			// 0.35 plane-widths from both, which is three times the reach of the
@@ -1309,22 +1317,6 @@ var catalogue = Config{
 				Phase:  0.5,
 			},
 		},
-		{
-			Key:   "vendor",
-			Label: "продавец пива",
-			Art:   "npc_vendor",
-			// THE FIRST IDLER, and the pattern that has been sitting unused in
-			// the table since it was written waiting for exactly this character.
-			// He does not move, because a shop that wandered off would make the
-			// walk to it a matter of luck.
-			Pattern: PatternIdle,
-			// STATELESS, AND THAT IS THE WHOLE POINT OF HIM. Everything mutable
-			// about the beer store — how much is left, when it was emptied, who
-			// took the last one — belongs to the crate beside him, which is a row.
-			// He is catalogue and arithmetic: no row, no account, no migration,
-			// and adding the next character like him costs one entry here.
-			Params: MotionParams{Home: vendorPlace},
-		},
 	},
 	ArriveWithin:    arriveWithin,
 	DefaultSkin:     SkinVanya,
@@ -1355,6 +1347,7 @@ func Content() Config {
 	// the honest answer, and the same one an absent `store` block gets.
 	if crate, ok := ObjectKindByKey(KindCrate); ok {
 		c.StoreArt = crate.Art
+		c.StoreLabel = crate.Label
 	}
 	c.Skins = append([]Skin(nil), catalogue.Skins...)
 	c.Locations = append([]Location(nil), catalogue.Locations...)

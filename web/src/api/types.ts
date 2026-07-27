@@ -639,6 +639,16 @@ export interface VanyagotchiConfig {
    * key — the same capability-not-reason split `needs_spot` makes (ADR-039).
    */
   store_art?: string;
+  /**
+   * The sign over the beer store — a constant caption saying what the box is,
+   * so it reads as a shop without anybody having to walk over.
+   *
+   * It replaced a vendor NPC who stood beside the crate: a third dot in the
+   * corner that said nothing about the box next to him. Served rather than typed
+   * here, and derived server-side from the kind's own label, so there is one name
+   * for the thing.
+   */
+  store_label?: string;
   locations: VanyagotchiLocation[];
   default_skin: string;
   default_location: string;

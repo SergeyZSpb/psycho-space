@@ -3060,3 +3060,94 @@ test.describe('«Ванягоччи» — a mood must not move the face', () => 
   });
   }
 });
+
+test.describe('«Ванягоччи» — what a Ваня says hangs outside his dot', () => {
+  // A REGRESSION TEST FOR A BUG THAT SHIPPED. Fixing a mood that displaced the
+  // avatar, `overflow: hidden` was added to `.peer` to stop a scaled face
+  // spilling out of its circle — and it silently deleted every speech balloon and
+  // every name in the yard, because both hang OUTSIDE that box by design:
+  // `.peer-say` at `bottom: 100%` above the head, `.peer-label` at `top: 100%`
+  // below it. Nothing failed. The whole game speaks through those balloons —
+  // refusals, «устал», the idle muttering — so the yard went quiet and the only
+  // symptom was that it had.
+  //
+  // Asserted as GEOMETRY rather than as visibility, deliberately: a clipped
+  // element still reports as present, and what actually broke was the box. So
+  // this checks each one has real area and genuinely extends past the dot it
+  // belongs to — which is precisely what a clip on the dot removes.
+  test('a balloon and a name are drawn beyond the edges of the dot', async ({ page }) => {
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      rosterHere(1, {
+        id: 'me',
+        x: 0.5,
+        y: 0.5,
+        art: 'vanya',
+        label: 'Ваня',
+        say: 'кладмен мудак',
+        pose: 'fine',
+      }),
+    );
+
+    const dot = page.locator('[data-peer="me"]');
+    const balloon = page.locator('[data-peer="me"] [data-test="peer-say"]');
+    const name = page.locator('[data-peer="me"] [data-test="peer-label"]');
+    await expect(balloon).toHaveText('кладмен мудак');
+    await expect(name).toHaveText('Ваня');
+
+    const dotBox = await dot.boundingBox();
+    const sayBox = await balloon.boundingBox();
+    const nameBox = await name.boundingBox();
+    expect(dotBox, 'the dot has no box').not.toBeNull();
+    expect(sayBox, 'the balloon has no box — it has been clipped away').not.toBeNull();
+    expect(nameBox, 'the name has no box — it has been clipped away').not.toBeNull();
+
+    // THE ASSERTION THAT ACTUALLY CATCHES IT, and it took a failed attempt to
+    // find. `boundingBox()` reports LAYOUT geometry, so a balloon clipped away to
+    // nothing by an ancestor still measures full size and still reads as visible
+    // — the same computed-versus-used trap that makes `getComputedStyle().zIndex`
+    // useless for proving a stacking order. Geometry cannot see a clip. So the
+    // rule is asserted directly: the dot must not clip its own children, because
+    // everything a Ваня says is drawn outside it.
+    const clips = await dot.evaluate((el) => getComputedStyle(el).overflow);
+    expect(clips, 'the dot clips its children, which erases every balloon and name').toBe('visible');
+
+    expect(sayBox!.width * sayBox!.height, 'the balloon is drawn at zero size').toBeGreaterThan(0);
+    expect(nameBox!.width * nameBox!.height, 'the name is drawn at zero size').toBeGreaterThan(0);
+
+    // And both genuinely EXTEND PAST the dot — the balloon above its top edge,
+    // the name below its bottom one. Stated as "extends past" rather than as
+    // "starts after", because `top: 100%` resolves against the padding box while
+    // `boundingBox()` reports the border box, so the two differ by the rim and an
+    // exact comparison is a fight with sub-pixel arithmetic rather than a rule.
+    // Extending past the edge is the thing a clip on the dot destroys.
+    expect(sayBox!.y, 'the balloon does not reach above the dot').toBeLessThan(dotBox!.y);
+    expect(
+      nameBox!.y + nameBox!.height,
+      'the name does not reach below the dot',
+    ).toBeGreaterThan(dotBox!.y + dotBox!.height);
+  });
+
+  test('and they survive a mood, which is when the yard most needs to speak', async ({ page }) => {
+    // «нашёл ключи» arrives on the same frame as `happy`. That is the exact
+    // combination the shipped bug made invisible.
+    await stubBackend(page);
+    const socket = await stubSocket(page);
+    await enterYard(page);
+
+    await socket.push(
+      rosterHere(1, { id: 'me', x: 0.5, y: 0.5, art: 'vanya', say: 'нашёл ключи', pose: 'happy' }),
+    );
+
+    const balloon = page.locator('[data-peer="me"] [data-test="peer-say"]');
+    await expect(balloon).toHaveText('нашёл ключи');
+    const box = await balloon.boundingBox();
+    expect(
+      (box?.width ?? 0) * (box?.height ?? 0),
+      'a winner says nothing anybody can see',
+    ).toBeGreaterThan(0);
+  });
+});

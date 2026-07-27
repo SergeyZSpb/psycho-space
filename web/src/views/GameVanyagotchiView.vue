@@ -196,6 +196,14 @@
                depth transform to keep it a constant size. It has a hard 9px floor
                regardless, because a count is text. -->
           <span class="shop-badge" data-test="shop-left">{{ beerStore.left }}</span>
+          <!-- The sign. CONSTANT, unlike the badge beside it: it says what the
+               box is rather than how much is in it, which is what lets the shop
+               read as a shop from across the yard with nobody standing next to
+               it. Absent on a server that predates the field, in which case the
+               box is still a box and the status row still names it. -->
+          <span v-if="config?.store_label" class="shop-sign" data-test="shop-sign">{{
+            config.store_label
+          }}</span>
         </div>
         <div
           v-for="peer in drawn"
@@ -1839,10 +1847,6 @@ onBeforeUnmount(() => {
   width: var(--unit);
   height: var(--unit);
   border-radius: 50%;
-  /* The dot CLIPS ITS OWN CONTENTS. A pose may scale the face — `happy` does —
-     and without this the picture spills outside the circle it is supposed to be
-     inside, which is half of the bug the mood rules above record. */
-  overflow: hidden;
   /* Rim and shadow in world units too, or a big Ваня wears a hairline and a
      small one wears a hoop. The fractions are 2/44 and 6/44 — the proportions a
      44px dot was drawn with, kept as proportions so they follow the unit
@@ -1860,6 +1864,14 @@ onBeforeUnmount(() => {
   transition: transform 220ms linear;
   will-change: transform;
   pointer-events: none; /* the plane is the tap target, not the dots */
+  /* NO `overflow: hidden` HERE, EVER — it was added once, to stop a scaled face
+     spilling out of its circle, and it silently deleted every speech balloon and
+     every name in the yard. Both hang OUTSIDE this box on purpose: `.peer-say`
+     sits at `bottom: 100%` above the head and `.peer-label` at `top: 100%` below
+     it, so clipping the dot clips them. The face is kept inside by ARITHMETIC
+     instead — the sprite is inset by the rim (0.864 of a unit), so even `happy`'s
+     1.12× leaves it at 0.968 of the dot — which is why a pose may only ever scale
+     UP and never translate. See the mood rules below. */
 }
 /* A world that is no longer being updated, held on screen across a reconnect.
    Dimmed and drained of colour so it reads as "this is what was there" rather
@@ -2379,6 +2391,25 @@ onBeforeUnmount(() => {
 /* The count, small and in the corner. Decoration reinforcing a fact the status
    row already states in full, which is what licenses it to be this small — but a
    count is TEXT, so it carries a hard 9px floor whatever the world scale does. */
+/* The sign over the box. Sits ABOVE it like a balloon over a head, and for the
+   same reason: it belongs to the thing and must not cover it. It is the one
+   caption in the yard that is always on, so it is the smallest legible size the
+   world scale allows and carries a hard floor in pixels — a sign nobody can read
+   is worse than no sign, because the box then looks like it means something
+   else. */
+.shop-sign {
+  position: absolute;
+  bottom: calc(100% + var(--unit-base) * 0.12);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: calc(var(--unit-base) * 0.04) calc(var(--unit-base) * 0.14);
+  border-radius: calc(var(--unit-base) * 0.2);
+  background: rgba(12, 18, 26, 0.86);
+  color: rgba(255, 255, 255, 0.95);
+  font-size: max(9px, calc(var(--unit-base) * 0.26));
+  line-height: 1.35;
+  white-space: nowrap;
+}
 .shop-badge {
   position: absolute;
   top: calc(var(--unit-base) * -0.14);

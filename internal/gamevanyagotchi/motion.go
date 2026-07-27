@@ -33,7 +33,10 @@ type PatternKey = string
 // below: with one, a map would be a map with a single key and a function would
 // have done.
 const (
-	// PatternIdle does not move. The beer vendor stands at his crate.
+	// PatternIdle does not move. No character uses it today — the beer vendor
+	// who did was removed once the crate carried its own sign — and it is kept
+	// because it is what makes a stationary character a catalogue entry rather
+	// than a code change, which is the whole point of the pattern table.
 	PatternIdle PatternKey = "idle"
 	// PatternWander ambles about a rectangle — Тунг Тунг Сахур, who is going
 	// nowhere in particular.

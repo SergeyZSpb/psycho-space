@@ -287,7 +287,7 @@ func TestAnUnknownPatternParksTheCharacterAtHome(t *testing.T) {
 }
 
 // TestAnIdlerNeverMoves is the boring one, and it is the guard against the
-// pattern table being wired up wrongly: the beer vendor standing at his crate is
+// pattern table being wired up wrongly: a character standing in one place is
 // what the whole yard is arranged around, and an idler that drifted by a
 // thousandth an hour would be noticed by nobody until his stall was in the road.
 func TestAnIdlerNeverMoves(t *testing.T) {

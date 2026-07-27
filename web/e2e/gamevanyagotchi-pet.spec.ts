@@ -225,6 +225,8 @@ interface ConfigFixture {
   arrive_within: number;
   /** The art key the beer store is drawn with, resolved against `skins`. */
   store_art?: string;
+  /** The constant sign over the beer store. */
+  store_label?: string;
   default_skin: string;
   default_location: string;
 }
@@ -601,6 +603,9 @@ const CATALOGUE: ConfigFixture = {
   // The store's picture, named ONCE in the catalogue rather than on the frame —
   // a constant has no business on a payload sent five times a second.
   store_art: CRATE_KIND.art,
+  // The sign, derived server-side from the kind's own label so there is one
+  // name for the thing rather than two that drift.
+  store_label: CRATE_KIND.label,
   default_skin: SKIN_VANYA,
   default_location: 'yard',
 };
@@ -2573,6 +2578,9 @@ test.describe('«Ванягоччи» — the store is a shop, not a dot', () =>
 
     await expect(shop(page)).toBeVisible();
     await expect(shopLeft(page)).toHaveText(String(STORE.left));
+    // And it SAYS what it is, permanently — there is no vendor standing beside it
+    // any more, so the box has to carry its own sign.
+    await expect(page.locator('[data-test="shop-sign"]')).toHaveText(CRATE_KIND.label!);
     // Exactly one person in the yard, and no object entity at all — the server
     // no longer sends one for the crate.
     await expect(dots(page)).toHaveCount(1);

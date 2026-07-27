@@ -263,7 +263,7 @@ func TestOnlyAPersonCanEverHaveAFace(t *testing.T) {
 		want bool
 	}{
 		{"a character the world owns", npcPrefix + "sahur", true},
-		{"the beer vendor", npcPrefix + "vendor", true},
+		{"another character", npcPrefix + "ballerina", true},
 		{"a thing lying on the ground", propPrefix + "a1b2c3d4e5f6", true},
 		{"a person's pseudonym", "AV0XmddbiDyp", false},
 		{"a pseudonym that merely starts with n", "npcLookAlike", false},

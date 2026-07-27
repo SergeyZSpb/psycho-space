@@ -1705,7 +1705,7 @@ func TestTheCrateIsReplacedOnlyByTheDrawThatEmptiesIt(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("%d crates were stood up by the draw that emptied the last one; want exactly the replacement: %+v", len(got), got)
 	}
-	// A FULL one, in the same place, owned by nobody — the vendor got another in,
+	// A FULL one, in the same place, owned by nobody — another crate was put out,
 	// rather than somebody putting the empty one back.
 	assertSpawned(t, got[0], crate)
 }

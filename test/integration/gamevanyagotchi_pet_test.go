@@ -2640,7 +2640,7 @@ func TestVanyagotchiTheCrateCannotBeOversold(t *testing.T) {
 		t.Errorf("the replacement crate is already exhausted (%s); the store would be dry from the moment it restocked", replacement.exhaustedAt.UTC())
 	}
 	if replacement.remaining == nil || *replacement.remaining != crate.Stock {
-		t.Errorf("the replacement crate holds %v; want the catalogue's %d — the vendor got another in rather than putting the empty one back",
+		t.Errorf("the replacement crate holds %v; want the catalogue's %d — a fresh crate was put out rather than the empty one being left",
 			replacement.remaining, crate.Stock)
 	}
 
