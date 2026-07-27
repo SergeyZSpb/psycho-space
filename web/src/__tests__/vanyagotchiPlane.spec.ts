@@ -187,14 +187,32 @@ describe('DEPTH_SCALES', () => {
     expect(PEER_BASE_PX * Math.min(...DEPTH_SCALES)).toBeGreaterThanOrEqual(PEER_BASE_PX);
   });
 
-  it('grows towards the viewer, and only gently', () => {
+  it('grows towards the viewer, and stops short of the ceiling that matters', () => {
     for (let i = 1; i < DEPTH_SCALES.length; i += 1) {
       expect(DEPTH_SCALES[i]).toBeGreaterThan(DEPTH_SCALES[i - 1]);
     }
-    // A band boundary is a jump, so the step has to stay small enough not to
-    // read as a pop — and the whole range small enough that the far and near
-    // ends of the yard are the same game.
-    expect(Math.max(...DEPTH_SCALES) / Math.min(...DEPTH_SCALES)).toBeLessThanOrEqual(1.35);
+
+    // A band boundary is a JUMP — an entity crossing one changes size in a
+    // single frame — so what must stay small is the step, not the total. This
+    // used to be asserted only on the whole range, at 1.35, which conflated the
+    // two and made the ramp too shallow to read as depth at all: end to end the
+    // yard differed by about six pixels on a phone.
+    for (let i = 1; i < DEPTH_SCALES.length; i += 1) {
+      expect(
+        DEPTH_SCALES[i]! / DEPTH_SCALES[i - 1]!,
+        `band ${i} is a pop rather than a step`,
+      ).toBeLessThanOrEqual(1.2);
+    }
+
+    // And the CEILING is about the phone rather than about taste. The unit
+    // clamps at 64px, so the front band is drawn at `64 × max`. At 1.6 that is
+    // ~102px; at 2.0 it would be 128px, a third of a 360px plane for one dot —
+    // and the owner has already called a smaller ratio than that too big once,
+    // which is why the unit came down from 13cqw to 9cqw. This is also the
+    // number the sprite spec is commissioned against (~320px source at 3× DPR),
+    // so raising it silently makes every piece of art under-resolved.
+    const UNIT_MAX_PX = 64;
+    expect(UNIT_MAX_PX * Math.max(...DEPTH_SCALES)).toBeLessThanOrEqual(110);
   });
 
   it('has between three and five bands', () => {

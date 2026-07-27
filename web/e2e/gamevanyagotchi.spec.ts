@@ -50,7 +50,7 @@ const LABEL_MAX = 16;
  * numbers that could drift apart. A change that scaled the far band DOWN would
  * still draw a perfectly plausible yard, and should fail here.
  */
-const DEPTH_SCALES = [1, 1.08, 1.16, 1.24] as const;
+const DEPTH_SCALES = [1, 1.15, 1.35, 1.6] as const;
 
 /**
  * The SMALLEST a dot is ever drawn — the floor of `--unit`, not the size.
@@ -1134,6 +1134,12 @@ test.describe('«Ванягоччи» — the shared plane', () => {
     await socket.push(roster({ id: 'peer-a', x: 0.3, y: 0.4 }));
     await expect(dots(page)).toHaveCount(1);
 
+    // WAIT FOR `peer--instant` TO COME OFF FIRST. It is added for exactly one
+    // frame when a dot is first placed — so that it appears where it is instead
+    // of flying in from the corner — and reading the style inside that frame
+    // reports `0s` for an honest reason that has nothing to do with the media
+    // query. Synchronised on the class rather than on a delay.
+    await expect(page.locator('[data-peer="peer-a"]:not(.peer--instant)')).toHaveCount(1);
     const moving = await page.evaluate(() => {
       const dot = document.querySelector<HTMLElement>('[data-peer="peer-a"]');
       if (!dot) throw new Error('no dot');
@@ -1158,6 +1164,7 @@ test.describe('«Ванягоччи» — the shared plane', () => {
     await socket.push(roster({ id: 'peer-a', x: 0.3, y: 0.4 }));
     await expect(dots(page)).toHaveCount(1);
 
+    await expect(page.locator('[data-peer="peer-a"]:not(.peer--instant)')).toHaveCount(1);
     const withClass = await page.evaluate(() => {
       const dot = document.querySelector<HTMLElement>('[data-peer="peer-a"]');
       if (!dot) throw new Error('no dot');

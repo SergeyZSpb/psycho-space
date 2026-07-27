@@ -116,10 +116,25 @@ export function isRenderablePosition(peer: unknown): peer is PeerPosition {
  * band DOWN instead would have meant every future change to either number
  * re-deriving whether the smallest entity was still readable.
  *
- * 8% a band: enough that two entities a band apart read as at different
- * distances, small enough that the jump at a boundary is not a pop.
+ * WIDENED FROM `[1, 1.08, 1.16, 1.24]`, which was a 24% ramp across the whole
+ * plane and barely read as depth at all — two Ваняs at opposite ends differed by
+ * about six pixels on a phone, which is noise rather than distance. The shape of
+ * the change is what keeps it free: the first entry is still exactly 1, so the
+ * legibility floor, `PEER_BASE_PX`, and the pinned e2e assertions are all
+ * untouched, and only the near bands grew.
+ *
+ * ~1.6 IS A CEILING RATHER THAN A PREFERENCE. The unit clamps at 64px, so the
+ * front band draws at `64 × 1.6 ≈ 102px`; at 2.0 it would be 128px, which on a
+ * 360px phone is a third of the plane's width for one dot — and the owner has
+ * already called a ratio smaller than that too big once, which is why the unit
+ * fell from 13cqw to 9cqw. Going past this trades the thing the ramp is for
+ * (telling near from far) against the thing that was already fixed once.
+ *
+ * The steps are deliberately uneven — 15, 20, 25 points — because perceived size
+ * runs closer to the square of the scale than to the scale, so equal multiplier
+ * steps read as a ramp that flattens out towards the front.
  */
-export const DEPTH_SCALES: readonly number[] = [1, 1.08, 1.16, 1.24];
+export const DEPTH_SCALES: readonly number[] = [1, 1.15, 1.35, 1.6];
 
 /**
  * The SMALLEST a WHOLE entity is ever drawn, in CSS pixels.
