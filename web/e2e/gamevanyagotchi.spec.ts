@@ -53,29 +53,32 @@ const LABEL_MAX = 16;
 const DEPTH_SCALES = [1, 1.15, 1.35, 1.6] as const;
 
 /**
- * The SMALLEST a dot is ever drawn — the floor of `--unit`, not the size.
+ * The SMALLEST an entity is ever drawn — the floor of `--unit`, not the size.
  *
- * `.peer` is `var(--unit)` and `--unit` is `clamp(32px, 9cqw, 64px)` on
- * `.plane`, so an entity grows with the yard and 32 is the bottom of that clamp.
+ * `.peer` is `var(--unit)` and `--unit` is `clamp(52px, 17cqw, 104px)` on
+ * `.plane`, so an entity grows with the yard and 52 is the bottom of that clamp.
  *
- * IT IS A LEGIBILITY FLOOR AND NEVER A TAP TARGET, which is what made lowering
- * it from 44 allowed at all: `.peer` is `pointer-events: none` and the plane
- * takes every tap, so no dot in this yard has ever been tappable and the 44 that
- * some assertion names below is not the WCAG number it resembles. It bounds how
- * small a face may be drawn and still be read across a phone-sized yard, and
- * nothing else.
+ * IT IS A LEGIBILITY FLOOR AND NEVER A TAP TARGET, which is what has let it move
+ * in both directions: `.peer` is `pointer-events: none` and the plane takes every
+ * tap, so no entity in this yard has ever been tappable and the 44 that some
+ * assertion below names is not the WCAG number it resembles. It bounds how small
+ * a Ваня may be drawn and still be read across a phone-sized yard, and nothing
+ * else.
  *
- * WHAT THE WHOLE CLAMP MOVED FOR: the owner, on a phone, reported everything in
- * the yard as too big — not the yard, the things standing in it. The plane's own
- * size is untouched (`min(100cqw, 75cqh)`, unchanged), and only the fraction of
- * it an entity occupies came down, from 13% to 9%. So the yard is the same box
- * with more room in it, which is the point: a dozen deposits and four players
- * now fit without covering each other.
+ * WHAT THE WHOLE CLAMP HAS MOVED FOR, TWICE AND IN OPPOSITE DIRECTIONS. It was
+ * 13% of the plane, the owner reported everything standing in the yard as too big
+ * from a phone, and it came down to 9%. It is 17% now, and that is not a reversal
+ * of his report: an entity was a COLOURED DISC then and is a cut-out FIGURE now,
+ * and the same fraction is a different visual mass for the two. A disc's presence
+ * is its area; a figure's is its height, and most of its box is transparent — so
+ * 9% that made a comfortable token makes a speck of a person. The plane's own
+ * size is untouched through all of it (`min(100cqw, 75cqh)`), which is what keeps
+ * the two changes comparable at all.
  */
-const PEER_BASE_PX = 32;
+const PEER_BASE_PX = 52;
 /** The top of the clamp, and the fraction of the plane between the two. */
-const PEER_UNIT_MAX_PX = 64;
-const PEER_UNIT_PLANE_FRACTION = 0.09;
+const PEER_UNIT_MAX_PX = 104;
+const PEER_UNIT_PLANE_FRACTION = 0.17;
 
 /**
  * `--unit` at a given plane width, mirroring the stylesheet's clamp.
@@ -98,25 +101,30 @@ function unitFor(planeWidth: number): number {
  * name — which is still legibly somebody's name — a clipped balloon is nothing
  * at all.
  */
-const SAY_FLIP_Y = 0.15;
+const SAY_FLIP_Y = 0.18;
 
 /**
- * The stylesheet's cap on a balloon's WIDTH, in world units: `--unit * 2.182`.
+ * The stylesheet's cap on a balloon's WIDTH, in world units: `--unit * 1.35`.
  *
  * It used to be `min(96px, 34cqw)`, and the two branches were asserted
  * separately because they could each be the binding one. There is one branch
  * now: `--unit` is itself clamped, so the balloon cannot grow past legible
- * without a second ceiling to stop it. 2.182 is 96/44 — the proportion a
- * balloon has always been drawn at, expressed as what it is a proportion OF, so
- * it followed the unit down when the world shrank instead of leaving a balloon
- * two and a half Ваняs wide.
+ * without a second ceiling to stop it.
  *
- * The plane-fraction bound below is kept as an independent second opinion. It is
- * now the looser of the two everywhere by a wide margin (2.182 x 0.09 = 19.6% of
- * the plane at most, against a 34% bound), which is the point: it is derived
- * from a different quantity, so it still fails if the unit rule itself is wrong.
+ * IT WAS 2.182 — 96/44, the proportion a balloon was drawn at when a Ваня was
+ * 44px — AND THE FRACTION WAS CUT WHEN THE UNIT GREW. A balloon is interface
+ * drawn over the yard rather than a thing standing in it, so it keeps the size it
+ * had while the figures around it grew; 1.35 of the new unit is the same 70–140px
+ * that 2.182 of the old one was. Left alone it would also have blown straight
+ * through the plane-fraction bound below (2.182 x 0.17 = 37% against a 34% cap),
+ * which is exactly what that bound is for.
+ *
+ * The plane-fraction bound is kept as an independent second opinion, and it is
+ * still the looser of the two (1.35 x 0.17 = 23% of the plane at most, against
+ * 34%) — derived from a different quantity, so it still fails if the unit rule
+ * itself is wrong.
  */
-const SAY_MAX_UNITS = 96 / 44;
+const SAY_MAX_UNITS = 1.35;
 const SAY_MAX_PLANE_FRACTION = 0.34;
 
 /** The longest line a balloon will show, in code points. Mirrored from SAY_MAX. */
@@ -202,14 +210,21 @@ const FACE_PNG_BASE64 =
 const UNKNOWN_ART = '👤';
 
 /**
- * How far a picture is inset inside its dot, in world units: `--unit * 0.136`,
- * which is the 6/44 the rim always was.
+ * How much of an entity's box the avatar badge takes, and how far past the right
+ * edge it is pushed. Mirrored from `.peer-badge`.
  *
- * The inset IS the rim, and the rim is what stops a yard of avatars losing the
- * one thing that says which Ваня is which. Mirrored rather than measured, so a
- * picture quietly grown to fill its dot fails here instead of being agreed with.
+ * IT REPLACES AN INSET. A picture used to be inset inside its dot by the rim —
+ * 6/44 of a unit — because the rim was the identity colour and covering it lost
+ * the one thing that said which Ваня was which. The colour is on the ground now
+ * and the figure fills its box, so there is no inset left to mirror; what is
+ * worth pinning instead is the badge, whose whole design is a size and a place.
+ *
+ * Both were measured against the real sprite: 30% overlapping the head covered
+ * the face, which is the part that identifies the character, and at the feet it
+ * read as a ground marker rather than as an identity.
  */
-const PEER_SPRITE_INSET_UNITS = 6 / 44;
+const BADGE_BOX_FRACTION = 0.24;
+const BADGE_RIGHT_FRACTION = -0.16;
 
 /**
  * Which band an entity at this height belongs to. Mirrored from `bandFor`.
@@ -636,6 +651,49 @@ async function stubFaces(page: Page, withFace: readonly string[]): Promise<{ ask
   return { asked };
 }
 
+/**
+ * The address the catalogue's own sprite for the default skin is served from.
+ *
+ * Shaped like the real one — the config path rewrites an art key into
+ * `/api/game-assets/<game>/<key>` — but nothing here depends on the shape: what
+ * matters is that it is a URL the client is handed and draws.
+ */
+const SKIN_ART_PATH = '/api/game-assets/vanyagotchi/vanya';
+
+/**
+ * Gives the default skin a picture, so a Ваня can be drawn as a FIGURE.
+ *
+ * The rest of this file runs against `skins: []`, where every entity falls back
+ * to a glyph — which is the right default for a suite about positions and
+ * layout, and useless for the one question this helper exists to ask: what
+ * happens when an entity has a catalogue sprite AND the person behind it has a
+ * photograph. Those two used to be the same field, one replacing the other; they
+ * are two pictures now, and only a fixture carrying both can tell the difference.
+ *
+ * Registered AFTER stubBackend, for the reason stubFaces is: Playwright tries the
+ * most recently added route first.
+ */
+async function stubSkinArt(page: Page): Promise<void> {
+  await page.route(`**${CONFIG_PATH}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'X-Trace-Id': 'e2e-trace-id' },
+      body: JSON.stringify({
+        ...CATALOGUE,
+        skins: [{ key: 'vanya', label: 'Ваня', emoji: '🧔', image: SKIN_ART_PATH }],
+      }),
+    }),
+  );
+  await page.route(`**${SKIN_ART_PATH}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'image/png',
+      body: Buffer.from(FACE_PNG_BASE64, 'base64'),
+    }),
+  );
+}
+
 /** Copied, not imported — see the header. */
 async function expectNoOverflow(page: Page, label: string): Promise<void> {
   const diff = await page.evaluate(
@@ -736,24 +794,32 @@ async function peerDrawnBox(page: Page, id: string): Promise<{ width: number; he
 }
 
 /**
- * The circle an entity is drawn on, or the absence of one.
+ * The identity mark an entity wears, and the box it is drawn in.
  *
- * Four separate declarations make that circle — a background colour, a
- * background image, a rim and a shadow — and a thing lying on the ground must
- * have none of them, so all four are read. Asserting only on the background
- * would pass against a deposit still wearing a white rim and a drop shadow,
- * which is most of what made the litter look like people.
+ * IT USED TO BE THE BOX ITSELF — a coloured disc with a rim and a drop shadow,
+ * four declarations that a thing lying on the ground had to have none of. The
+ * disc is gone: an entity is a cut-out figure in a transparent box now, and the
+ * hashed colour is a soft ellipse of ground shadow under its feet, drawn by
+ * `.peer::before` off a `--peer-colour` custom property.
+ *
+ * So `ground` is what carries the meaning and the other three are the negative:
+ * the box must have no background, no rim and no shadow of its own, or the disc
+ * has quietly come back. A deposit is still told apart by the same absence it
+ * always was — the template withholds `--peer-colour` for anything with an
+ * expiry, so the gradient falls back to transparent at both stops and the
+ * ellipse is not drawn at all.
  *
  * Read out of the USED values, so this fails if a rule stops applying for any
- * reason rather than only if somebody deletes it — the background in particular
- * is an inline binding that the stylesheet could not override even if it tried,
- * which is exactly the sort of thing a computed-style read catches and a source
- * read does not.
+ * reason rather than only if somebody deletes it — the colour in particular is an
+ * inline binding the stylesheet could not override even if it tried, which is
+ * exactly the sort of thing a computed-style read catches and a source read does
+ * not.
  */
 async function peerSkin(
   page: Page,
   id: string,
 ): Promise<{
+  ground: string;
   background: string;
   image: string;
   borderWidth: string;
@@ -764,12 +830,27 @@ async function peerSkin(
     if (!el) throw new Error(`no dot for ${peerId}`);
     const s = getComputedStyle(el);
     return {
+      ground: getComputedStyle(el, '::before').backgroundImage,
       background: s.backgroundColor,
       image: s.backgroundImage,
       borderWidth: s.borderTopWidth,
       boxShadow: s.boxShadow,
     };
   }, id);
+}
+
+/**
+ * Does this ground shadow carry a colour, or is it the transparent nothing a
+ * thing on the ground gets?
+ *
+ * A fully transparent stop serialises as `rgba(0, 0, 0, 0)` and an opaque one as
+ * `rgb(r, g, b)`, so the presence of the shorter form is the test. Written this
+ * way rather than against the exact hue because the hue is hashed from an id this
+ * suite makes up: what is being asserted is that the yard drew SOMEBODY's colour
+ * there, not which one.
+ */
+function wearsAColour(ground: string): boolean {
+  return /\brgb\(/.test(ground);
 }
 
 /** What a computed background colour reads as when there is not one. */
@@ -1003,33 +1084,37 @@ const nameTag = (page: Page, id: string) =>
  */
 const petLine = (page: Page) => page.locator('[data-test="pet-line"]');
 /**
- * The person's own photograph on a dot, if one is being drawn.
+ * The badge carrying the person's own photograph, if one is being drawn.
  *
- * There is ONE img element on a dot and it carries either kind of picture — a
- * VK avatar or the catalogue's sprite — so what tells them apart is the
- * `data-test`, not the tag or the class. That distinction is the whole point of
- * the attribute: `img.peer-sprite` would match either, so a suite written
- * against it could not tell "the avatar reached the screen" from "a picture
- * did", which is precisely the regression this iteration can produce.
+ * An entity draws up to TWO pictures now — the catalogue's figure and, beside its
+ * head, the face of whoever is driving it — and what tells them apart is the
+ * `data-test`, not the tag or the class. They were one element and one field
+ * once, the photograph replacing the sprite, and a suite written against `img`
+ * could not tell "the avatar reached the screen" from "a picture did" then
+ * either. The attribute is the stable handle; the classes are part of what is
+ * under test.
  */
 const avatarOf = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-avatar"]`);
-/** The catalogue's picture for an entity's skin, drawn when there is no avatar. */
+/** The catalogue's figure for an entity's skin, drawn whether or not it has a face. */
 const spriteOf = (page: Page, id: string) =>
   page.locator(`[data-peer="${id}"] [data-test="peer-sprite"]`);
 
 /**
- * The stylesheet's cap on a name's WIDTH, in world units: `--unit * 1.818`.
+ * The stylesheet's cap on a name's WIDTH, in world units: `--unit * 1.05`.
  *
- * Was `min(80px, 30cqw)`. 1.818 is 80/44 — the proportion a name has always been
- * drawn at, now expressed as a proportion of the unit, so a name grows and
- * shrinks with the yard instead of being left behind by it. That is the same
- * correction `--unit` makes to the dot itself, and it is what carried the labels
- * down with everything else when the world scale dropped. The plane-fraction
- * bound is kept as an independent second opinion, derived from a different
- * quantity.
+ * Was `min(80px, 30cqw)`, then 80/44 of the unit, so that a name grew and shrank
+ * with the yard instead of being left behind by it — the same correction `--unit`
+ * makes to the entity itself.
+ *
+ * THE FRACTION WAS CUT WHEN THE UNIT GREW, exactly as the balloon's was and for
+ * the same reason: a name is interface drawn over the yard rather than a thing
+ * standing in it, so it keeps the 55–110px it has always been while the figures
+ * around it grew. Left at 1.818 it would have broken the plane-fraction bound
+ * below on its own (1.818 x 0.17 = 30.9% against a 30% cap), which is what that
+ * independently-derived second opinion is there to catch.
  */
-const LABEL_MAX_UNITS = 80 / 44;
+const LABEL_MAX_UNITS = 1.05;
 const LABEL_MAX_PLANE_FRACTION = 0.3;
 
 /**
@@ -2026,13 +2111,17 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     await expect(page.getByText('двор: 2')).toBeVisible();
   });
 
-  test('a thing on the ground is half a Ваня and has no circle round it', async ({ page }) => {
+  test('a thing on the ground is half a Ваня and wears nobody in particular', async ({ page }) => {
     // WHAT THE OWNER SAW ON A PHONE: a yard whose deposits were drawn exactly
     // like people — a full-size coloured disc with a glyph on it — so a busy
     // evening's litter read as a crowd, and each piece of it, wearing a hue
     // hashed from its id, read as somebody in particular. Both are wrong in the
     // same direction, and this pins the fix in the only terms that mean anything
     // to a player: how big is it next to a person, and does it look like one.
+    //
+    // The disc has since gone for EVERYBODY, so the identity half of this is now
+    // asked of the ground shadow that replaced it. The claim is unchanged: a
+    // deposit is smaller than a person and is not somebody.
     //
     // BOTH FIXTURES STAND AT THE SAME HEIGHT, which is load-bearing rather than
     // tidy. A drawn box includes the depth band's scale, so a deposit measured
@@ -2079,24 +2168,40 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     // rather than off one axis of the box.
     expect(deposit.height / person.height).toBeCloseTo(ratio, 2);
 
-    // NO CIRCLE, in all four of the ways there is to draw one. Asserting only the
-    // background would pass a deposit still wearing a white rim and a drop
-    // shadow, which is most of what made the litter look like people.
+    // NOBODY'S COLOUR UNDER IT. A deposit is not a who, so the ground shadow that
+    // says whose feet these are is simply not drawn for one — the template
+    // withholds `--peer-colour` and the gradient falls back to transparent at both
+    // stops.
     const litter = await peerSkin(page, DEPOSIT.id);
-    expect(litter.background, 'a deposit is still filled with a colour').toBe(TRANSPARENT);
-    expect(litter.image).toBe('none');
-    expect(litter.borderWidth).toBe('0px');
-    expect(litter.boxShadow).toBe('none');
+    expect(
+      wearsAColour(litter.ground),
+      `a deposit is wearing somebody's identity colour: ${litter.ground}`,
+    ).toBe(false);
 
-    // And a person still has every one of them, so this is a DIFFERENCE rather
-    // than the stylesheet having quietly lost the circle for the whole yard. The
-    // identity colour is the sharpest of the four: it is an inline binding that
-    // no stylesheet rule could take away, so the only thing that can put a
-    // deposit at transparent is the binding itself declining to emit one.
+    // And a person DOES wear one, so this is a difference rather than the
+    // stylesheet having quietly lost the ground shadow for the whole yard. It is
+    // the sharpest of the checks here: the colour is an inline binding that no
+    // stylesheet rule could take away, so the only thing that can put a deposit at
+    // transparent is the binding itself declining to emit one.
     const mine = await peerSkin(page, PERSON.id);
-    expect(mine.background, 'nobody is wearing an identity colour any more').not.toBe(TRANSPARENT);
-    expect(Number.parseFloat(mine.borderWidth)).toBeGreaterThan(0);
-    expect(mine.boxShadow).not.toBe('none');
+    expect(wearsAColour(mine.ground), 'nobody is wearing an identity colour any more').toBe(true);
+
+    // AND NEITHER OF THEM IS A DISC, which is the half of this test that changed
+    // when the yard stopped being a board of tokens. A person used to have a
+    // background colour, a rim and a drop shadow and a deposit had to have none of
+    // them; now the box is transparent for everybody and the colour lives on the
+    // floor. Asserting it on the PERSON is what has teeth — a disc creeping back
+    // would creep back there first, and it would put every cut-out figure in the
+    // yard inside a coloured hole.
+    for (const [who, skin] of [
+      ['a deposit', litter],
+      ['a Ваня', mine],
+    ] as const) {
+      expect(skin.background, `${who} is filled with a colour`).toBe(TRANSPARENT);
+      expect(skin.image, `${who} is filled with an image`).toBe('none');
+      expect(skin.borderWidth, `${who} is wearing a rim`).toBe('0px');
+      expect(skin.boxShadow, `${who} is wearing a drop shadow`).toBe('none');
+    }
 
     // The glyph is still there. A thing with no circle must not become a thing
     // with nothing — the whole point is that it is smaller and quieter, not that
@@ -2487,10 +2592,15 @@ test.describe('«Ванягоччи» — a yard of faces, not a yard of the sam
   // so 404 is not an error path here — it is the ordinary other half of the
   // yard, and what it means is "draw the catalogue art".
 
-  test("a player's own face is drawn on their Ваня, and one without keeps its art", async ({
+  test("a player's own face is drawn beside their Ваня, and one without keeps its art", async ({
     page,
   }) => {
     await stubBackend(page);
+    // The catalogue has a sprite here, unlike everywhere else in this file, and
+    // that is the whole subject: a photograph used to REPLACE the figure, and now
+    // it annotates one. With `skins: []` the two designs are indistinguishable,
+    // because there is no figure for a badge to be beside.
+    await stubSkinArt(page);
     const faces = await stubFaces(page, ['photographed']);
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -2507,8 +2617,9 @@ test.describe('«Ванягоччи» — a yard of faces, not a yard of the sam
     await expect(dots(page)).toHaveCount(2);
 
     // The photograph, marked as a photograph. The `data-test` is what carries
-    // the distinction — one img element draws either kind of picture, so a
-    // selector on the tag or the class could not tell an avatar from a sprite.
+    // the distinction, and it still has to: the two pictures are two elements
+    // now, but a selector on the tag would match either and the classes are the
+    // thing under test rather than a stable handle on it.
     await expect(avatarOf(page, 'photographed')).toHaveCount(1);
     // ASKED FOR UNDER HIS OWN NAME. This is the assertion with teeth: the
     // address is derived rather than delivered, so a client that derived it from
@@ -2525,21 +2636,56 @@ test.describe('«Ванягоччи» — a yard of faces, not a yard of the sam
       'referrerpolicy',
       'no-referrer',
     );
-    // It is the photograph and not the catalogue's own sprite, and there is
-    // exactly one picture — nothing was drawn a second time underneath it.
-    await expect(spriteOf(page, 'photographed')).toHaveCount(0);
-    await expect(page.locator('[data-peer="photographed"] img')).toHaveCount(1);
-    // And no glyph behind it: the emoji is the fallback, not a backdrop.
+    // AND HE IS STILL A ВАНЯ UNDERNEATH IT, which is the assertion this whole
+    // change turns on. The photograph used to be the character — `avatar ??
+    // art.image`, so a player with a VK picture had no sprite at all — and the
+    // figure is drawn unconditionally now, with the face beside its head. Two
+    // pictures on one entity, and the sprite is the catalogue's.
+    await expect(spriteOf(page, 'photographed')).toHaveCount(1);
+    await expect(spriteOf(page, 'photographed')).toHaveAttribute('src', SKIN_ART_PATH);
+    await expect(page.locator('[data-peer="photographed"] img')).toHaveCount(2);
+    // And no glyph: the emoji is what stands in for a sprite, not a backdrop
+    // behind one.
     await expect(face(page, 'photographed')).toHaveText('');
 
-    // The Ваня nobody has a picture of falls back to the art he would have had
-    // anyway — a glyph, drawn by the same element the photograph is not in. The
-    // stub answers the catalogue with an empty object, so the glyph here is the
-    // placeholder; what the assertion means is that a character was drawn rather
-    // than a picture.
-    await expect(page.locator('[data-peer="anonymous"] img')).toHaveCount(0);
+    // BESIDE THE HEAD RATHER THAN OVER IT, and small. Measured against the real
+    // sprite: at 30% it covered the face, which is the part that identifies the
+    // character, and centred on the feet it read as a ground marker.
+    const badge = await page.evaluate((id) => {
+      const dot = document.querySelector<HTMLElement>(`[data-peer="${id}"]`);
+      const img = dot?.querySelector<HTMLImageElement>('[data-test="peer-avatar"]');
+      if (!dot || !img) throw new Error(`no photograph on ${id}`);
+      const d = dot.getBoundingClientRect();
+      const b = img.getBoundingClientRect();
+      return {
+        loaded: img.naturalWidth > 0,
+        fraction: b.width / d.width,
+        // How far past the right edge of the entity's box it is pushed, as a
+        // fraction of that box. Positive means it hangs off the side, which is
+        // what keeps it clear of the head.
+        overhang: (b.x + b.width - (d.x + d.width)) / d.width,
+        // Its top against the entity's top: a badge that had drifted down the
+        // figure would still be 24% wide and would be beside his knees.
+        top: (b.y - d.y) / d.height,
+      };
+    }, 'photographed');
+    expect(badge.loaded, 'the browser never decoded the avatar it was given').toBe(true);
+    expect(badge.fraction, `the badge is ${(badge.fraction * 100).toFixed(1)}% of the box`).toBeCloseTo(
+      BADGE_BOX_FRACTION,
+      2,
+    );
+    expect(
+      badge.overhang,
+      `the badge hangs ${(badge.overhang * 100).toFixed(1)}% past the edge, against ${-BADGE_RIGHT_FRACTION * 100}%`,
+    ).toBeCloseTo(-BADGE_RIGHT_FRACTION, 2);
+    expect(badge.top, 'the badge has slipped down off the head').toBeLessThanOrEqual(0.02);
+
+    // The Ваня nobody has a picture of is exactly the same figure without the
+    // badge — the sprite was never the avatar's understudy, so nothing about him
+    // changes when there is no face to hang beside it.
+    await expect(spriteOf(page, 'anonymous')).toHaveCount(1);
+    await expect(page.locator('[data-peer="anonymous"] img')).toHaveCount(1);
     await expect(avatarOf(page, 'anonymous')).toHaveCount(0);
-    await expect(face(page, 'anonymous')).toHaveText(UNKNOWN_ART);
 
     // KIND-AGNOSTIC, which is the property that lets an NPC arrive with no
     // client deploy: it asked about the entity that turned out to have no face
@@ -2556,16 +2702,23 @@ test.describe('«Ванягоччи» — a yard of faces, not a yard of the sam
     await expect(nameTag(page, 'anonymous')).toHaveText('аноним');
   });
 
-  test('a photographed Ваня keeps the identity colour as a rim around his face', async ({
+  test('a Ваня is a cut-out standing on his own colour, and the photograph is a disc', async ({
     page,
   }) => {
-    // THE property that makes avatars affordable at all. A picture answers "who
-    // is that" far better than a hue does — but only if you can see it, and at
-    // one world unit across a photograph is a thumbnail. The hue is what still
-    // reads from the other side of the yard, and it survives because the picture
-    // is inset rather than filling the dot: the colour is the rim, always, for
-    // an avatar exactly as it already was for a catalogue sprite.
+    // THE RULE THAT KEPT FOUR DRAWN SPRITES OFF THE SCREEN. `.peer-sprite` was
+    // `border-radius: 50%` with `object-fit: cover`, so a full-figure sprite was
+    // cropped to its middle with its head cut off — strictly worse than the emoji
+    // it replaced. `contain` plus `object-position: bottom` is the whole of what
+    // makes a figure stand on the ground rather than sit in a token, and it is
+    // asserted here because it is a rule with no visible failure in a suite that
+    // draws glyphs: a circle-cropped sprite lays out identically.
+    //
+    // The identity colour that used to be that circle is on the FLOOR now, and
+    // the photograph is the one thing still drawn round — a VK avatar is a
+    // portrait, and bottom-anchoring one in a tall transparent box would leave a
+    // head hovering over a gap.
     await stubBackend(page);
+    await stubSkinArt(page);
     await stubFaces(page, ['photographed']);
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -2573,6 +2726,7 @@ test.describe('«Ванягоччи» — a yard of faces, not a yard of the sam
     const Y = 0.6;
     await socket.push(roster({ id: 'photographed', x: 0.5, y: Y, art: 'vanya', pose: 'fine' }));
     await expect(avatarOf(page, 'photographed')).toHaveCount(1);
+    await expect(spriteOf(page, 'photographed')).toHaveCount(1);
 
     // Every box at one instant, for the reason the unit test above the depth
     // suite states: read as separate round trips they can straddle a reflow, and
@@ -2581,50 +2735,58 @@ test.describe('«Ванягоччи» — a yard of faces, not a yard of the sam
     const drawn = await page.evaluate((id) => {
       const dot = document.querySelector<HTMLElement>(`[data-peer="${id}"]`);
       const faceEl = dot?.querySelector<HTMLElement>('[data-test="peer-face"]');
-      const img = dot?.querySelector<HTMLImageElement>('[data-test="peer-avatar"]');
-      if (!dot || !faceEl || !img) throw new Error(`no photograph on ${id}`);
-      const style = getComputedStyle(img);
+      const sprite = dot?.querySelector<HTMLImageElement>('[data-test="peer-sprite"]');
+      const badge = dot?.querySelector<HTMLImageElement>('[data-test="peer-avatar"]');
+      if (!dot || !faceEl || !sprite || !badge) throw new Error(`no pictures on ${id}`);
+      const figure = getComputedStyle(sprite);
+      const photo = getComputedStyle(badge);
       return {
         face: faceEl.getBoundingClientRect().width,
-        img: img.getBoundingClientRect().width,
-        colour: getComputedStyle(dot).backgroundColor,
-        radius: style.borderRadius,
-        fit: style.objectFit,
-        // Whether the browser really decoded the picture, rather than reserving
-        // a box for one it never got. Without this every assertion below would
-        // pass just as happily for a broken image.
-        loaded: img.naturalWidth > 0,
+        sprite: sprite.getBoundingClientRect().width,
+        spriteFit: figure.objectFit,
+        spritePosition: figure.objectPosition,
+        spriteRadius: figure.borderRadius,
+        photoFit: photo.objectFit,
+        photoRadius: photo.borderRadius,
+        // Whether the browser really decoded the pictures, rather than reserving
+        // boxes for ones it never got. Without this every assertion below would
+        // pass just as happily for two broken images.
+        loaded: sprite.naturalWidth > 0 && badge.naturalWidth > 0,
       };
     }, 'photographed');
 
-    expect(drawn.loaded, 'the browser never decoded the avatar it was given').toBe(true);
-    expect(
-      drawn.colour,
-      'the dot lost the identity colour that the photograph is supposed to be rimmed with',
-    ).not.toBe('rgba(0, 0, 0, 0)');
-    expect(drawn.colour, `the dot is painted ${drawn.colour}`).toMatch(/^rgba?\(/);
+    expect(drawn.loaded, 'the browser never decoded the pictures it was given').toBe(true);
 
-    // The inset, against the stylesheet's own number rather than against
-    // "smaller than the dot": a picture one pixel in from the edge is
-    // technically inset and shows no rim a player could see.
-    const planeBox = await plane(page).boundingBox();
-    expect(planeBox, 'the plane has no box').not.toBeNull();
-    const inset =
-      PEER_SPRITE_INSET_UNITS * unitFor(planeBox?.width ?? 1) * DEPTH_SCALES[bandFor(Y)];
+    // THE FIGURE: contained, bottom-anchored, square-cornered, and filling its
+    // box rather than inset by a rim that no longer exists.
+    expect(drawn.spriteFit, 'a full-figure sprite is being cropped to fill its box').toBe('contain');
     expect(
-      drawn.img,
-      'the photograph fills its dot edge to edge, leaving no identity rim at all',
-    ).toBeLessThan(drawn.face);
+      drawn.spritePosition,
+      'the sprite is centred in its box, so its feet float above the ground',
+    ).toBe('50% 100%');
+    expect(drawn.spriteRadius, 'the figure is still being cropped to a circle').toBe('0px');
     expect(
-      Math.abs(drawn.face - drawn.img - inset),
-      `the rim is ${(drawn.face - drawn.img).toFixed(1)}px against the ${inset.toFixed(1)}px the stylesheet asks for`,
+      Math.abs(drawn.sprite - drawn.face),
+      `the figure is ${drawn.sprite.toFixed(1)}px inside a ${drawn.face.toFixed(1)}px box`,
     ).toBeLessThanOrEqual(1);
 
-    // Round and cropped rather than square and squashed: a VK avatar is not
-    // necessarily square, and `object-fit: cover` is what stops a wide one being
-    // drawn as a wide face.
-    expect(drawn.radius, 'a square photograph on a round Ваня').not.toBe('0px');
-    expect(drawn.fit, 'a photograph that is not square is being distorted to fit').toBe('cover');
+    // THE PHOTOGRAPH: round and cropped rather than square and squashed. A VK
+    // avatar is not necessarily square, and `cover` is what stops a wide one
+    // being drawn as a wide face.
+    expect(drawn.photoRadius, 'a square photograph beside a round-headed Ваня').not.toBe('0px');
+    expect(drawn.photoFit, 'a photograph that is not square is being distorted to fit').toBe(
+      'cover',
+    );
+
+    // AND THE COLOUR IS UNDER HIS FEET. It answers "which of these is my friend"
+    // from across the yard, where a 12px badge cannot; losing it would leave a
+    // yard of identical Ваняs distinguishable only by a name tag.
+    const skin = await peerSkin(page, 'photographed');
+    expect(
+      wearsAColour(skin.ground),
+      `nobody's colour under a photographed Ваня: ${skin.ground}`,
+    ).toBe(true);
+    expect(skin.background, 'the disc has come back behind the figure').toBe(TRANSPARENT);
   });
 
   test('a face nobody has leaves a Ваня rather than a hole, and is asked for once', async ({
@@ -3181,7 +3343,7 @@ test.describe('«Ванягоччи» — the key hunt', () => {
   });
 });
 
-test.describe('«Ванягоччи» — a mood must not move the face', () => {
+test.describe('«Ванягоччи» — a mood must not move the feet', () => {
   // REPORTED FROM PRODUCTION, the moment somebody won the keys: the avatar came
   // away from its own circle and a crescent of the owner's identity colour showed
   // underneath it. The cause was that `happy` and `sad` expressed themselves by
@@ -3189,80 +3351,57 @@ test.describe('«Ванягоччи» — a mood must not move the face', () => 
   // coloured disc, and is broken on a photograph, because a photograph covers the
   // disc almost exactly and any movement uncovers it.
   //
-  // Pinned as containment rather than as pixels: whatever a pose does, the picture
-  // stays inside the dot it belongs to.
-  const MOODS = ['happy', 'sad', 'fine', 'poorly', 'dead', 'asleep'] as const;
+  // THE DISC IS GONE AND THE INVARIANT MOVED WITH IT, from containment to
+  // contact. There is nothing behind a figure to be uncovered any more, so a mood
+  // that grows one is welcome; what a mood may never do is take his feet off the
+  // floor. Everybody in the yard stands on the same ground and depth is drawn by
+  // scaling each figure about the point where he meets it, so a pose that shifted
+  // that point would make one Ваня hover while the rest stood — the artefact the
+  // whole `transform-origin: 50% 100%` discipline exists to prevent, and one that
+  // a containment check cannot see at all.
+  //
+  // TWO POSES ARE ROTATIONS AND ARE LEFT OUT, both deliberately: `poorly` wobbles
+  // on an animation, so its angle at the instant of measurement is arbitrary, and
+  // `asleep` topples over on purpose. Rotating about the feet keeps the pivot
+  // exactly where it is, but `boundingBox()` reports an axis-aligned box, so a
+  // corner swinging below the pivot reads as a figure sinking into the ground.
+  // The sleeper is pinned by its own test elsewhere in this file.
+  const STILL = ['happy', 'sad', 'fine', 'dead'] as const;
 
-  for (const pose of MOODS) {
-    test(`the face stays inside its dot while «${pose}»`, async ({ page }) => {
+  for (const pose of STILL) {
+    test(`a «${pose}» Ваня keeps his feet on the ground`, async ({ page }) => {
       await stubBackend(page);
-      await stubFaces(page, ['me']);
+      await stubSkinArt(page);
       const socket = await stubSocket(page);
       await enterYard(page);
 
       await socket.push(rosterHere(1, { id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose }));
-      await expect(avatarOf(page, 'me')).toBeVisible();
+      await expect(spriteOf(page, 'me')).toBeVisible();
 
       const dot = await page.locator('[data-peer="me"]').boundingBox();
-      const pic = await avatarOf(page, 'me').boundingBox();
+      const pic = await face(page, 'me').boundingBox();
       expect(dot, 'the dot has no box').not.toBeNull();
       expect(pic, 'the face has no box').not.toBeNull();
 
-      // A pixel of slack for sub-pixel rounding; anything more is the picture
-      // hanging out of its own circle.
+      // A pixel of slack for sub-pixel rounding; anything more is a Ваня standing
+      // somewhere other than where the server put him.
       const slack = 1;
-      expect(pic!.x, `«${pose}» pushed the face off the left of its dot`).toBeGreaterThanOrEqual(
-        dot!.x - slack,
-      );
-      expect(pic!.y, `«${pose}» pushed the face off the top of its dot`).toBeGreaterThanOrEqual(
-        dot!.y - slack,
-      );
+      const footY = pic!.y + pic!.height;
+      const groundY = dot!.y + dot!.height;
       expect(
-        pic!.x + pic!.width,
-        `«${pose}» pushed the face off the right of its dot`,
-      ).toBeLessThanOrEqual(dot!.x + dot!.width + slack);
+        Math.abs(footY - groundY),
+        `«${pose}» lifted him ${(groundY - footY).toFixed(1)}px off his own ground`,
+      ).toBeLessThanOrEqual(slack);
+
+      // And he did not slide sideways either, which is the other half of a pose
+      // pivoting somewhere it should not.
+      const footX = pic!.x + pic!.width / 2;
+      const standX = dot!.x + dot!.width / 2;
       expect(
-        pic!.y + pic!.height,
-        `«${pose}» pushed the face off the bottom of its dot`,
-      ).toBeLessThanOrEqual(dot!.y + dot!.height + slack);
+        Math.abs(footX - standX),
+        `«${pose}» slid him ${(footX - standX).toFixed(1)}px sideways`,
+      ).toBeLessThanOrEqual(slack);
     });
-  }
-
-  // HAPPY ONLY, and the reason is worth recording because it is a trap rather
-  // than an oversight. This assertion measures AREA off `boundingBox()`, which is
-  // an axis-aligned box — so a ROTATED element reports a box about 24% wider than
-  // it is, and a face both rotated and shrunk measures the same as one that was
-  // left alone. The shipped `sad` did exactly that (`rotate(16deg) scale(0.8)`),
-  // so this test read it as fine. Containment above still holds it, and `sad` now
-  // carries no transform at all, which is the only shape that cannot lie here.
-  for (const pose of ['happy'] as const) {
-  test(`a «${pose}» face still covers the disc it is drawn on`, async ({ page }) => {
-    // The other half of the same bug, and the one the screenshot showed: the disc
-    // must not peek out from behind the picture. Asserted as area rather than as
-    // geometry — a face covering nearly all of its dot cannot be leaving a
-    // crescent of colour anywhere.
-    await stubBackend(page);
-    await stubFaces(page, ['me']);
-    const socket = await stubSocket(page);
-    await enterYard(page);
-
-    await socket.push(rosterHere(1, { id: 'me', x: 0.5, y: 0.5, art: 'vanya', pose }));
-    await expect(avatarOf(page, 'me')).toBeVisible();
-
-    const dot = await page.locator('[data-peer="me"]').boundingBox();
-    const pic = await avatarOf(page, 'me').boundingBox();
-    const covered = ((pic?.width ?? 0) * (pic?.height ?? 0)) / ((dot?.width ?? 1) * (dot?.height ?? 1));
-    // NOT "covers everything", and the number is measured rather than derived.
-    // The picture is deliberately inset by the rim so the owner's identity colour
-    // survives as a ring (`.peer-sprite`), and the dot's own box includes its
-    // border — which together put the natural coverage at about 0.64. The
-    // threshold sits below that and well above the ~0.41 a face shrunk to 0.8
-    // leaves, which is the shipped bug this pins.
-    expect(
-      covered,
-      `the «${pose}» face leaves too much of the identity disc showing`,
-    ).toBeGreaterThan(0.55);
-  });
   }
 });
 
@@ -3649,3 +3788,4 @@ test.describe('«Ванягоччи» — one room, several places', () => {
     await expect(sheet(page)).toHaveCount(0);
   });
 });
+

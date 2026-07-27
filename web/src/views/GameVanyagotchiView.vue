@@ -238,12 +238,15 @@
           :data-peer="peer.id"
           :data-prop="peer.prop ? '1' : undefined"
           :style="{
-            // NOT EMITTED AT ALL for a thing on the ground, which is the only way
-            // to take the circle away: an inline style beats any class, so a
-            // `background: none` in the stylesheet could not undo this one. It is
-            // also the honest reading — the colour is hashed from the id to say
-            // WHO somebody is, and a deposit is not a who.
-            background: peer.prop ? undefined : peerColour(peer.id),
+            // WHO THIS IS, AS A COLOUR — hashed from the id, and drawn as the
+            // soft ellipse of ground shadow under his feet rather than as a disc
+            // behind him (see `.peer::before`).
+            // NOT EMITTED AT ALL for a thing on the ground, which is what takes
+            // the shadow away: the pseudo-element falls back to transparent when
+            // the property is absent, so one mechanism covers both cases. It is
+            // also the honest reading — the colour says WHO somebody is, and a
+            // deposit is not a who.
+            '--peer-colour': peer.prop ? undefined : peerColour(peer.id),
             // How much of its life is left, as a fraction. Unconditional because
             // it is 1 for everybody who is not going anywhere, and unread by any
             // rule but `.peer--prop`'s.
@@ -256,37 +259,47 @@
                from numbers only its owner can see, so your Ваня would look ill
                to you and fine to everybody standing next to him. -->
           <span class="peer-face" data-test="peer-face" :data-condition="peer.pose">
-            <!-- ONE element for both kinds of picture — the person's own VK
-                 avatar and the catalogue's sprite — because they are the same
-                 thing to draw: a round picture inset by a world unit so the
-                 identity colour survives as a rim. A second img would be a
-                 second place to keep that true.
-                 What the two are NOT is the same thing to a test, so the
-                 `data-test` says which one this is rather than merely that a
-                 picture is there. That is the difference between "the avatar
-                 reached the screen" and "something did", and a selector on the
-                 class could not tell them apart at all.
-                 `referrerpolicy="no-referrer"`: this request starts at our own
-                 origin but does not end there — the endpoint answers a redirect
-                 to a third-party CDN, and the policy travels with the fetch
-                 across it, so the CDN is never told which page of this site the
-                 viewer is on. It costs nothing and it is the whole of what the
-                 browser would otherwise volunteer.
-                 A face that does not arrive — a 404, which is the ordinary
-                 answer for an NPC and for anybody VK has no picture of, or a
-                 CDN that is down — falls back to the catalogue art rather than
-                 drawing the browser's broken-image mark; see onArtError. -->
+            <!-- THE FIGURE, which is always the catalogue's sprite for this art
+                 key and never a photograph. The two used to be one element and
+                 one field, because a round token inset by a world unit was the
+                 same thing to draw either way; they are two elements now because
+                 a cut-out standing on the ground and a portrait in a circle
+                 stopped being the same thing to draw at all. -->
             <img
               v-if="peer.image"
               class="peer-sprite"
-              :data-test="peer.avatar ? 'peer-avatar' : 'peer-sprite'"
+              data-test="peer-sprite"
               :src="peer.image"
               alt=""
-              referrerpolicy="no-referrer"
-              @error="onArtError(peer)"
             />
             <template v-else>{{ peer.emoji }}</template>
           </span>
+          <!-- WHOSE ВАНЯ THIS IS — the player's own VK photograph, small and
+               beside the head. Outside `.peer-face` on purpose: the face is
+               rotated when its owner is asleep and drained when he is dead, and
+               identity is not a pose. The 💤 hangs off the opposite corner for
+               the same reason and the same way.
+               `referrerpolicy="no-referrer"`: this request starts at our own
+               origin but does not end there — the endpoint answers a redirect to
+               a third-party CDN, and the policy travels with the fetch across it,
+               so the CDN is never told which page of this site the viewer is on.
+               It costs nothing and it is the whole of what the browser would
+               otherwise volunteer.
+               A face that does not arrive — a 404, which is the ordinary answer
+               for an NPC and for anybody VK has no picture of, or a CDN that is
+               down — takes the badge away and leaves the figure alone, rather
+               than drawing the browser's broken-image mark. It no longer has to
+               fall back to anything, because the sprite it used to replace was
+               never taken off the screen; see onArtError. -->
+          <img
+            v-if="peer.avatar"
+            class="peer-badge"
+            data-test="peer-avatar"
+            :src="peer.avatar"
+            alt=""
+            referrerpolicy="no-referrer"
+            @error="onArtError(peer)"
+          />
           <!-- Absent until a Ваня has been named, which is most of them today. -->
           <span v-if="peer.label" class="peer-label" data-test="peer-label">{{
             peer.label
@@ -1281,24 +1294,27 @@ const brokenAvatars = ref(new Set<string>());
 /**
  * A face that did not arrive, remembered so the fallback can take over.
  *
- * A MISSING AVATAR MUST NEVER LEAVE A HOLE WHERE A ВАНЯ IS, and missing is the
- * common case rather than the exceptional one: the endpoint answers 404 for
- * every NPC in the yard and for every player VK has no picture of, and beyond
- * that the picture itself comes from a CDN this project neither runs nor can
- * repair. Left to itself the browser answers all of those with its broken-image
- * mark, which reads as a bug in the yard rather than as a face nobody has.
+ * A MISSING AVATAR MUST NEVER LEAVE A BROKEN-IMAGE MARK ON A ВАНЯ, and missing
+ * is the common case rather than the exceptional one: the endpoint answers 404
+ * for every NPC in the yard and for every player VK has no picture of, and
+ * beyond that the picture itself comes from a CDN this project neither runs nor
+ * can repair. Left to itself the browser answers all of those with its
+ * broken-image mark, which reads as a bug in the yard rather than as a face
+ * nobody has.
+ *
+ * IT NO LONGER FALLS BACK TO ANYTHING, and that is the badge's doing: the
+ * photograph used to replace the figure, so a face that failed to load had to be
+ * swapped for the catalogue's sprite or the Ваня was a hole. The badge annotates
+ * a figure that was already there, so all this has to do is take the badge away.
  *
  * Remembering it is also what stops the asking repeating. The browser is told
  * to cache the answer for five minutes, 404s included, but a cache is a
  * courtesy and the keyed list rebuilds an element every time the yard's
- * membership changes; this makes the fallback a fact of the render rather than
+ * membership changes; this makes the absence a fact of the render rather than
  * something re-derived from a request that may go out again.
  */
-function onArtError(peer: { id: string; avatar: boolean }): void {
-  // False when the picture that failed was a catalogue sprite rather than a
-  // face. That is this server's own asset store and its own bug to fix, and
-  // there is no third picture to fall back to, so it is left alone.
-  if (!peer.avatar || brokenAvatars.value.has(peer.id)) return;
+function onArtError(peer: { id: string }): void {
+  if (brokenAvatars.value.has(peer.id)) return;
   brokenAvatars.value.add(peer.id);
 }
 
@@ -1311,13 +1327,14 @@ function onArtError(peer: { id: string; avatar: boolean }): void {
  * routinely populated before it lands, and every dot is a placeholder until it
  * does.
  *
- * THREE THINGS CAN BE DRAWN ON A DOT AND THEY ARE RANKED, most personal first:
- * the person's own VK avatar, then the catalogue's sprite for their skin, then
- * the catalogue's emoji. The avatar wins because it answers the question the
- * yard is actually for — which of these is my friend — and the skin below it
- * answers only what kind of thing this is, which in a yard where everybody wears
- * the same Ваня is no answer at all. The identity colour survives underneath all
- * three as the rim, so the two questions are still layered rather than traded.
+ * TWO PICTURES ARE DRAWN AND THEY ANSWER DIFFERENT QUESTIONS, which is why
+ * neither one ranks above the other any more. The figure — the catalogue's sprite
+ * for this skin, or its emoji when there is no sprite — says WHAT is standing
+ * there; the avatar beside its head says WHO is driving it. They used to be one
+ * field with the avatar winning, because a round token could only show one
+ * picture and "which of these is my friend" is the better question of the two;
+ * a cut-out has a head to hang a badge beside, so the yard can now answer both
+ * at once. The identity colour is the third answer and is under his feet.
  *
  * IT READS THE CLOCK, which is new and is the one thing here worth defending.
  * `displayNow` ticks once a second, so this recomputes once a second — and that
@@ -1345,14 +1362,14 @@ const drawn = computed(() => {
     const avatar = brokenAvatars.value.has(peer.id) ? undefined : avatarEndpoint(peer.id);
     return {
       ...peer,
+      // The figure, straight from the catalogue. It used to be `avatar ??
+      // art.image`, which meant a player with a VK photograph had no sprite at
+      // all; the two are independent now and each is drawn by its own element.
       ...art,
-      // Overrides `art.image`, so the template keeps its single `v-if` on one
-      // field and never has to know which of the two kinds of picture it is
-      // showing. `avatar` is what says which — see the img's `data-test` — and
-      // it is a flag rather than the URL because the URL is now recoverable
-      // from the id anywhere it is wanted.
-      image: avatar ?? art.image,
-      avatar: avatar !== undefined,
+      // And who is driving it, as the URL rather than as a flag: there is a
+      // second img to point at now, so the address is wanted here and not only
+      // the fact of it.
+      avatar,
       // WHETHER THIS IS A THING RATHER THAN A PERSON, AND THE CLIENT IS NOT
       // TOLD — it works it out from the one field only a world object ever
       // carries. Nothing here maps an art key to a kind, holds a list of kinds,
@@ -2001,19 +2018,34 @@ onBeforeUnmount(() => {
      because `min(100cqw, 75cqh)` above switches which term binds, so no
      breakpoint-keyed fix would have been correct.
 
-     THE NUMBERS WERE 44 / 13cqw / 88 AND THE WHOLE WORLD WAS TOO BIG. That is
-     the owner's report from a phone, and it is a judgement about legibility
-     rather than about accessibility, which is what made it safe to act on: a dot
-     is `pointer-events: none` and the plane takes every tap (see `.peer`), so
+     THE FRACTION IS 17% BECAUSE AN ENTITY IS A FIGURE AND NO LONGER A DISC, and
+     that distinction is the whole of why this number has moved twice in opposite
+     directions. It was 13cqw, the owner played on a phone and reported the yard
+     as too big, and it came down to 9cqw — a judgement about legibility rather
+     than about accessibility, which is what made it safe to act on: a dot is
+     `pointer-events: none` and the plane takes every tap (see `.peer`), so
      nothing in this yard has ever been a tap target and no 44px rule applies to
-     any of it. The floor here is only ever "how small can a face be and still be
-     read across a phone-sized yard", and a third off it leaves room for the yard
-     to be a place with things in it rather than four faces filling a box.
-     `9cqw` keeps the proportion the same everywhere — that is the property the
-     spread above violated and it is untouched — with 32 and 64 as the same
-     floor-and-double-it pair the old numbers were. The ceiling is still a guard
+     any of it. That ruling was made about COLOURED DISCS and does not transfer to
+     what is drawn now. The same fraction is a different visual mass for the two:
+     a disc at 9% of the plane's width is a substantial blob, and a standing
+     figure at 9% is a speck, because a figure's presence is carried by its height
+     and most of its box is transparent.
+     17 was MEASURED rather than derived — the real sprite rendered in the real
+     yard at 9, 17 and 23 — and it puts a front-band figure at about a fifth of
+     the plane's height, which is a believable human scale. At 23 one figure
+     dominates a yard that has to hold several. The ceiling is still a guard
      rather than an active constraint; it stops a very tall window drawing an
      absurd Ваня.
+
+     IT MOVES THE WORLD AND NOT THE INTERFACE OVER IT. Everything that is a THING
+     IN THE YARD keeps its fraction of this unit and grows with it — the figures,
+     the crate, what is lying on the ground, the hiding places — because they
+     stand next to each other and a crate that stayed put while the people beside
+     it grew would read as a matchbox. Everything that is INTERFACE DRAWN OVER the
+     yard had its fraction cut by roughly the same factor, so it keeps the size it
+     had: the name under a Ваня and the balloon over him. Both also gained a 10px
+     floor, because a pure fraction of the old unit is what made them 7px tall on
+     a phone.
 
      TWO PROPERTIES RATHER THAN ONE, and only because a world object is drawn at
      half scale. A custom property cannot be redefined in terms of itself — a
@@ -2035,7 +2067,7 @@ onBeforeUnmount(() => {
      here, `--depth` says how much nearer this one is, and they compose by
      multiplication without either knowing about the other. Keeping them apart is
      what lets sprites arrive later without touching any of this. */
-  --unit-base: clamp(32px, 9cqw, 64px);
+  --unit-base: clamp(52px, 17cqw, 104px);
   --unit: var(--unit-base);
 }
 .plane-empty {
@@ -2083,7 +2115,11 @@ onBeforeUnmount(() => {
   align-items: center;
   /* A button, so tap and keyboard both work — and so everything a button brings
      with it has to be undone, exactly as `.hotspot` does. */
-  padding: 0 calc(var(--unit) * 0.15);
+  /* Fractions cut when the world scale grew, exactly as the name and the balloon
+     were: this caption is interface drawn over the yard, and it also SWALLOWS the
+     taps in the corner it occupies, so every pixel it gains is a pixel of ground
+     nobody can walk to. */
+  padding: 0 calc(var(--unit) * 0.09);
   border: none;
   background: none;
   color: inherit;
@@ -2095,9 +2131,9 @@ onBeforeUnmount(() => {
 .place-pill-chip {
   display: inline-flex;
   align-items: baseline;
-  gap: calc(var(--unit) * 0.08);
+  gap: calc(var(--unit) * 0.05);
   min-width: 0;
-  padding: calc(var(--unit) * 0.05) calc(var(--unit) * 0.18);
+  padding: calc(var(--unit) * 0.03) calc(var(--unit) * 0.11);
   border-radius: 999px;
   background: rgba(12, 18, 26, 0.72);
   color: rgba(255, 255, 255, 0.95);
@@ -2105,7 +2141,7 @@ onBeforeUnmount(() => {
      reason: it is always on, so it is drawn as small as the world allows, and a
      caption nobody can read is worse than none because the place then looks like
      it has no name. */
-  font-size: max(10px, calc(var(--unit) * 0.26));
+  font-size: max(10px, calc(var(--unit) * 0.16));
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
@@ -2244,11 +2280,19 @@ onBeforeUnmount(() => {
 
    THE 44px FLOOR IS A TAP TARGET AND NOT A LEGIBILITY ONE, which makes it the
    first length inside this plane that really is the WCAG number the rest only
-   resembles. `--unit` bottoms out at 32px on a phone (see the note on `.plane`),
-   and 32px is fine for a face nobody can press and much too small for something
-   a thumb has to hit — so the box is the larger of the two, and grows with the
-   world above it. The glyph inside stays a world unit, so what the player sees
-   is a small object with generous room around it rather than an enormous bush.
+   resembles. A hiding place is a BUTTON, and that is what decides its size: the
+   box is the larger of the thumb floor and a fraction of the world, and the glyph
+   inside stays a world unit, so what the player sees is a small object with
+   generous room around it rather than an enormous bush.
+
+   ITS FRACTION WAS CUT WHEN THE WORLD SCALE GREW — 1.25 to 0.7 — so that it keeps
+   the 44–73px it has always been, and this one was not a matter of taste. A
+   hotspot SWALLOWS the tap that lands on it (`@pointerdown.stop`), so every pixel
+   of it is a pixel of the yard nobody can walk to. Grown with the unit it went to
+   65px at the floor, which was enough to cover a walk target the full-stack suite
+   uses and to make a Ваня standing near a bush unable to move at all — a real
+   regression the suite caught, and the sharpest possible argument that a button
+   is interface rather than scenery however much it looks like a shrub.
    The plane's `overflow: hidden` clips a hotspot standing near an edge exactly
    as it clips a dot, so no page can be made to scroll sideways by one. */
 .hotspot {
@@ -2261,8 +2305,8 @@ onBeforeUnmount(() => {
     0
   );
   z-index: 0;
-  width: max(44px, calc(var(--unit) * 1.25));
-  height: max(44px, calc(var(--unit) * 1.25));
+  width: max(44px, calc(var(--unit) * 0.7));
+  height: max(44px, calc(var(--unit) * 0.7));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2284,9 +2328,12 @@ onBeforeUnmount(() => {
   transition: opacity 160ms ease;
 }
 .hotspot-glyph {
-  /* Smaller than a face (0.59 of the unit) on purpose — a hiding place is a
-     thing in the yard, and the yard is for finding people in. */
-  font-size: calc(var(--unit) * 0.5);
+  /* Much smaller than a figure (0.59 of the unit) on purpose — a hiding place is
+     a thing in the yard, and the yard is for finding people in. Cut with the box
+     around it when the world scale grew, and by more: a glyph that grew 1.6x
+     while the figures did the same would have made every bush the size of a Ваня
+     and a yard of five hiding places unreadable. */
+  font-size: calc(var(--unit) * 0.3);
   line-height: 1;
   /* Legible over both ends of the plane's gradient without a plate behind it,
      the same way a name is. */
@@ -2359,13 +2406,6 @@ onBeforeUnmount(() => {
      not an accessibility regression. */
   width: var(--unit);
   height: var(--unit);
-  border-radius: 50%;
-  /* Rim and shadow in world units too, or a big Ваня wears a hairline and a
-     small one wears a hoop. The fractions are 2/44 and 6/44 — the proportions a
-     44px dot was drawn with, kept as proportions so they follow the unit
-     wherever it goes. */
-  border: calc(var(--unit) * 0.045) solid rgba(255, 255, 255, 0.85);
-  box-shadow: 0 calc(var(--unit) * 0.045) calc(var(--unit) * 0.136) rgba(0, 0, 0, 0.35);
   transform: translate3d(
       calc(var(--x, 0.5) * 100cqw - 50%),
       calc(var(--y, 0.5) * 100cqh - 50%),
@@ -2379,12 +2419,45 @@ onBeforeUnmount(() => {
   pointer-events: none; /* the plane is the tap target, not the dots */
   /* NO `overflow: hidden` HERE, EVER — it was added once, to stop a scaled face
      spilling out of its circle, and it silently deleted every speech balloon and
-     every name in the yard. Both hang OUTSIDE this box on purpose: `.peer-say`
-     sits at `bottom: 100%` above the head and `.peer-label` at `top: 100%` below
-     it, so clipping the dot clips them. The face is kept inside by ARITHMETIC
-     instead — the sprite is inset by the rim (0.864 of a unit), so even `happy`'s
-     1.12× leaves it at 0.968 of the dot — which is why a pose may only ever scale
-     UP and never translate. See the mood rules below. */
+     every name in the yard. Four things hang OUTSIDE this box on purpose:
+     `.peer-say` at `bottom: 100%` above the head, `.peer-label` at `top: 100%`
+     below it, the avatar badge pushed clear of the head at `right: -16%`, and the
+     ground shadow that straddles the bottom edge. Clipping the box clips all
+     four. The plane's own `overflow: hidden` is the boundary that matters, and it
+     already treats a figure standing at the edge the way it always has. */
+}
+
+/* THE GROUND HE STANDS ON, and where the identity colour went.
+   The hue used to be the whole dot: a coloured disc with a picture inset inside
+   it, the rim showing round the edge. That reads well for a round token and
+   badly for a cut-out — a standing figure over a disc looks like a figure
+   standing in a hole, and the disc is mostly wasted area besides. So the colour
+   became a soft ellipse under the feet, which is a shadow's job and an identity
+   cue at the same time, and gives the figure something to stand on.
+   It is fed by a PROPERTY rather than by inheriting a background, because a
+   pseudo-element cannot read its originating element's background — and the
+   property is what carries the old rule that a thing on the ground is not a who:
+   `--peer-colour` is not emitted at all for a deposit (see the template), so the
+   `var()` falls back to transparent and the shadow is simply not drawn. One
+   mechanism, and absence is still the switch.
+   A gradient rather than a `filter: blur()`, so the softness costs no
+   compositing layer and so that `.peer--you` can put a hard ring on the same
+   element without the ring being blurred along with it.
+   `z-index: -1` puts it behind the figure inside `.peer`'s own stacking context,
+   which `z-index` plus `transform` on `.peer` already established — so it never
+   escapes upwards into the yard's depth order. */
+.peer::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 52%;
+  height: 13%;
+  transform: translate(-50%, 45%);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--peer-colour, transparent), transparent);
+  opacity: 0.75;
+  z-index: -1;
 }
 /* A world that is no longer being updated, held on screen across a reconnect.
    Dimmed and drained of colour so it reads as "this is what was there" rather
@@ -2423,24 +2496,25 @@ onBeforeUnmount(() => {
 .peer--instant {
   transition: none;
 }
-/* Your own Ваня. Marked by a second ring rather than by colour, because the
-   colour is already carrying identity — hashed from the id so everybody's dot
-   looks the same on every screen — and overriding it here would make you the
-   one player who cannot see what colour you are to everyone else. */
-.peer--you {
-  border-color: #fff;
-  /* World units, like every other length in here — 3/44 and 2/44 + 8/44 of the
-     unit. A fixed 3px ring is a bold outline on a phone and a thread on a
-     desktop, which is the same bug this whole file's `--unit` fixes. */
-  box-shadow:
-    0 0 0 calc(var(--unit) * 0.068) rgba(0, 0, 0, 0.45),
-    0 calc(var(--unit) * 0.045) calc(var(--unit) * 0.182) rgba(0, 0, 0, 0.5);
-  /* No z-index of its own any more. It used to be 1, which was harmless while
-     everything else was 0 and is wrong now that the stacking order MEANS
-     something: lifting your own Ваня above his band would draw him in front of
-     somebody standing nearer the viewer than he is, in a yard where that is the
-     one cue for how far away anybody is. The ring already says which one is you,
-     and it says it without lying about where you are standing. */
+/* Your own Ваня. Marked by a white ring ON THE GROUND SHADOW rather than by
+   colour, because the colour is already carrying identity — hashed from the id
+   so everybody's figure looks the same on every screen — and overriding it here
+   would make you the one player who cannot see what colour you are to everyone
+   else. It used to be a rim around the disc; the disc is gone, so the mark
+   followed the colour down to the floor, where it reads as the one figure with a
+   marker under him.
+   The width is a world unit, like every other length in here. A fixed 2px ring is
+   a bold outline on a phone and a thread on a desktop, which is the same bug this
+   whole file's `--unit` fixes.
+   No z-index of its own. It used to be 1, which was harmless while everything
+   else was 0 and is wrong now that the stacking order MEANS something: lifting
+   your own Ваня above his band would draw him in front of somebody standing
+   nearer the viewer than he is, in a yard where that is the one cue for how far
+   away anybody is. The ring already says which one is you, and it says it
+   without lying about where you are standing. */
+.peer--you::before {
+  border: calc(var(--unit) * 0.03) solid rgba(255, 255, 255, 0.9);
+  opacity: 1;
 }
 
 /* SOMETHING LYING ON THE GROUND, rather than somebody standing on it.
@@ -2478,40 +2552,90 @@ onBeforeUnmount(() => {
    life the template did not write is drawn at full half-size rather than
    vanishing, which is the failure this must have if `--life` ever goes missing.
 
-   `border-radius` is left alone deliberately — with nothing to fill or outline
-   it, rounding is invisible, and a rule that turned it off would be one more
-   thing to keep consistent for no drawn difference. */
+   IT TURNS NOTHING OFF ANY MORE, and that is the point of it now. This rule used
+   to have to undo the rim and the shadow that every dot wore; nobody wears them,
+   and the identity colour a deposit must not carry is withheld at the template
+   instead — no `--peer-colour`, so the ground shadow under it is never drawn.
+   The size is all that is left. */
 .peer--prop {
   --unit: calc(var(--unit-base) * 0.5 * var(--life, 1));
-  border: none;
-  box-shadow: none;
 }
 
-/* Everybody's face, centred on their dot. `pointer-events: none` is inherited
-   from .peer — the plane is the tap target, not the sprite. */
+/* Everybody's figure, standing on their own patch of ground. `pointer-events:
+   none` is inherited from .peer — the plane is the tap target, not the sprite.
+
+   BOTTOM-ALIGNED AND PIVOTING AT THE FEET, both of which follow from a cut-out
+   rather than a token. `flex-end` is what puts an emoji Ваня on the same ground
+   a drawn one stands on; centred, he floated while the figure beside him stood.
+   `transform-origin: 50% 100%` is the same argument the depth scale makes on
+   `.peer`: a pose that scales about the centre slides the feet off the floor, and
+   `asleep`'s rotation about the centre made a figure pivot around his own navel
+   instead of toppling over from where he was standing. */
 .peer-face {
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  /* 26/44 of the dot — the face has to grow with the head it is drawn on. */
+  transform-origin: 50% 100%;
+  /* 26/44 of the box — an emoji has to grow with the figure it stands in for. */
   font-size: calc(var(--unit) * 0.59);
   line-height: 1;
 }
 
-/* A sprite, once the catalogue has one for this art key. Inset rather than
-   filling the dot, so the entity's own colour survives as a rim: the picture
-   says WHAT this is and the hue says WHO, and a skin everybody happens to be
-   wearing would otherwise erase the second. */
+/* A CUT-OUT FIGURE, once the catalogue has a sprite for this art key.
+
+   `contain` and not `cover`, `bottom` and not centre, and no circle: those three
+   are the whole of what makes the yard 2.5D rather than a board of tokens.
+   Cropping a full-figure sprite to a circle showed its middle and cut the head
+   off — strictly worse than the emoji it replaces — and it is why four drawn
+   sprites sat on disk unuploaded until this rule changed.
+   `contain` also means the art decides its own silhouette: a tall character uses
+   the full height and a low heap of relief uses the bottom third of the same box,
+   with the transparent remainder simply not drawn. Nothing here knows which it is
+   looking at, which is the same kind-agnosticism the rest of this screen keeps.
+   It fills the box now rather than being inset by a rim, because there is no rim
+   left to reveal: the identity colour is on the ground (see `.peer::before`), so
+   the picture no longer has to shrink to let a hue show around it. */
 .peer-sprite {
-  /* The inset is the rim, so it is a world unit — 6/44 — and not a fixed 6px.
-     `100%` already follows the dot; a fixed inset would eat the whole rim on a
-     small screen and leave a thick ring on a large one. */
-  width: calc(100% - var(--unit) * 0.136);
-  height: calc(100% - var(--unit) * 0.136);
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: bottom;
+}
+
+/* WHO IS DRIVING THIS ВАНЯ — the player's own VK photograph, as a badge.
+
+   It used to BE the character: `image: avatar ?? art.image` put the photograph
+   where the sprite would go, so a player with a VK picture was a round portrait
+   and a player without was a Ваня. That was right while everybody was a token and
+   is wrong now that everybody is a figure standing in a place — a floating
+   headshot among cut-outs reads as a different game. So the figure is always the
+   sprite and this says whose it is. It reverses a consequence ADR-037 records,
+   and that record was rewritten with this change rather than left contradicted.
+   ROUND, unlike the figure, and deliberately: a VK photo IS a portrait, and
+   bottom-anchoring one inside a tall transparent box would leave a head hovering
+   over a gap. The two kinds of picture stopped being the same thing to draw,
+   which is exactly why they stopped being the same element.
+   24% OF THE BOX AND PUSHED CLEAR OF THE HEAD, both measured against the real
+   sprite: a first attempt at 30% overlapping covered the face, which is the one
+   part that identifies the character, and at the feet it read as a ground marker
+   rather than as an identity. At the far band the whole figure is 52px, so the
+   badge is about 12px — a colour cue rather than a recognisable face. That is
+   inherent to the depth ramp and not a bug to fix.
+   ON `.peer` RATHER THAN INSIDE `.peer-face`, for the same reason the 💤 is: the
+   face rotates when its owner falls asleep and is drained when he dies, and
+   identity is not a pose. */
+.peer-badge {
+  position: absolute;
+  top: 0;
+  right: -16%;
+  width: 24%;
+  height: 24%;
   border-radius: 50%;
   object-fit: cover;
+  border: calc(var(--unit) * 0.025) solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 calc(var(--unit) * 0.02) calc(var(--unit) * 0.05) rgba(0, 0, 0, 0.45);
 }
 
 /* The name under the dot, capped in three independent places, because several
@@ -2539,15 +2663,25 @@ onBeforeUnmount(() => {
   /* Sized in world units, the WHOLE label and not only its ceiling. It used to
      be `min(80px, 30cqw)` wide with a fixed 10px face: the width followed the
      yard and the text did not, so a name was a third of the plane wide on a
-     phone and a seventh on a tablet — two different games. Now both come off
-     `--unit` (80/44 and 10/44), which is already clamped, so the two-branch
-     `min()` is not needed to stop it growing past legible. */
-  max-width: calc(var(--unit) * 1.818);
+     phone and a seventh on a tablet — two different games. Both come off
+     `--unit`, which is already clamped, so the two-branch `min()` is not needed
+     to stop it growing past legible.
+     THE FRACTIONS WERE CUT WHEN THE UNIT GREW, and that is the rule stated on
+     `.plane`: a name is interface drawn over the yard rather than a thing
+     standing in it, so it keeps the size it had while the figures around it grew.
+     1.818 → 1.05 leaves it at the same 55–110px it has always been, and keeps it
+     inside the 30%-of-the-plane bound the mobile suite enforces, which 1.818 at
+     the new unit would have blown through.
+     THE TEXT GAINED A HARD FLOOR. A pure fraction of the old unit drew a name at
+     7px on a phone, which is not a legibility judgement so much as a decorative
+     one; 10px is where it stops being that. Above the floor it still follows the
+     yard, so a big screen still gets a proportional name. */
+  max-width: calc(var(--unit) * 1.05);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   text-align: center;
-  font-size: calc(var(--unit) * 0.227);
+  font-size: max(10px, calc(var(--unit) * 0.15));
   line-height: 1.25;
   color: rgba(255, 255, 255, 0.94);
   /* Legible over both ends of the plane's gradient without a background plate,
@@ -2589,11 +2723,13 @@ onBeforeUnmount(() => {
 .peer--asleep::after {
   content: '💤';
   position: absolute;
-  /* Hung off the dot in world units — 10/44, 6/44 and 15/44 — so the badge stays
-     in the same place on the head at every size instead of sliding towards the
-     middle as the dot grows. */
-  top: calc(var(--unit) * -0.227);
-  right: calc(var(--unit) * -0.136);
+  /* Hung off the box in world units so it stays in the same place on the head at
+     every size instead of sliding towards the middle as the figure grows.
+     ON THE LEFT because the right is taken: the avatar badge sits at the top
+     right corner, and a player who has both a photograph and an absent owner
+     would otherwise wear one on top of the other. */
+  top: calc(var(--unit) * -0.14);
+  left: calc(var(--unit) * -0.1);
   font-size: calc(var(--unit) * 0.341);
   line-height: 1;
   /* The dot it sits on is at 55% opacity and so, being a child, is this — which
@@ -2633,23 +2769,23 @@ onBeforeUnmount(() => {
    alone: it is nowhere near `asleep`'s 74deg, and unlike `poorly` it is holding
    still. */
 /* A MOOD MAY NOT MOVE THE PICTURE, and this is a bug fixed rather than a taste.
-   These two used to translate and shrink the face, which reads fine on an emoji
-   drawn over a coloured disc and is BROKEN on a photograph: the avatar covers the
-   disc almost exactly, so lifting it by a seventh of a unit slid it out of its own
-   circle and exposed a crescent of the owner's identity colour underneath, and
-   scaling it past 1 spilled it outside the dot entirely. It went unnoticed because
-   every Ваня was an emoji until faces arrived, and it fires exactly when somebody
-   wins the keys — the one moment everybody is looking.
+   These two used to translate and shrink the face, which read fine on an emoji
+   drawn over a coloured disc and was BROKEN on a photograph: the avatar covered
+   the disc almost exactly, so lifting it by a seventh of a unit slid it out of
+   its own circle and exposed a crescent of the owner's identity colour
+   underneath. It went unnoticed because every Ваня was an emoji until faces
+   arrived, and it fires exactly when somebody wins the keys — the one moment
+   everybody is looking.
 
    So the geometry is gone and the FILTER carries both moods on its own. A filter
    is content-agnostic: it reads the same on an emoji, a photograph and a sprite,
    and it cannot displace anything. `dead` has always worked this way — grayscale
    and a little transparency — and nobody has ever reported it as broken.
 
-   Happy keeps a small scale-UP, which is safe in a way scaling down is not: a
-   picture larger than its disc still covers it, and `overflow: hidden` on `.peer`
-   clips the overflow to the circle. Sad gets no transform at all — shrinking is
-   what exposes the disc, and rotating a circular photo is invisible anyway. */
+   Happy keeps a small scale-UP, and with `.peer-face` pivoting at the feet that
+   is now literally somebody standing taller rather than a picture growing out of
+   its frame. Sad gets no transform at all: the two are meant to be a pair of
+   filters, and a figure that shrank would read as having walked away. */
 .peer-face[data-condition='happy'] {
   transform: scale(1.12);
   filter: saturate(1.5) brightness(1.3);
@@ -2677,19 +2813,25 @@ onBeforeUnmount(() => {
 .peer-say {
   position: absolute;
   left: 50%;
-  /* Every length here is a world unit — 6/44 gap, 96/44 wide, 2/44 and 6/44 of
-     padding, 9/44 of radius, 10/44 of text. The flip distance is exactly TWO
-     units, which is what 88px always was: it has to clear the dot and the name
-     hanging under it, and both of those are now `--unit`-sized, so a fixed 88px
-     would under-clear on a desktop and over-clear on a phone. */
-  bottom: calc(100% + var(--unit) * 0.136);
+  /* Every length here is a world unit, and every one of them had its fraction cut
+     when the unit grew — a balloon is interface drawn over the yard rather than a
+     thing standing in it, so it keeps the size it had while the figures around it
+     grew (see `.plane`). 2.182 → 1.35 also keeps it inside the 34%-of-the-plane
+     bound the mobile suite enforces, which the old fraction at the new unit would
+     have blown through. The text has the same 10px floor the name does and for
+     the same reason.
+     The flip distance is still exactly TWO units, which is what 88px always was:
+     it has to clear the figure and the name hanging under it, and both of those
+     are still `--unit`-sized, so a fixed 88px would under-clear on a desktop and
+     over-clear on a phone. */
+  bottom: calc(100% + var(--unit) * 0.084);
   transform: translateX(-50%) translateY(calc(var(--say-below, 0) * var(--unit) * 2));
-  max-width: calc(var(--unit) * 2.182);
-  padding: calc(var(--unit) * 0.045) calc(var(--unit) * 0.136);
-  border-radius: calc(var(--unit) * 0.205);
+  max-width: calc(var(--unit) * 1.35);
+  padding: calc(var(--unit) * 0.028) calc(var(--unit) * 0.084);
+  border-radius: calc(var(--unit) * 0.126);
   background: rgba(12, 18, 26, 0.86);
   color: rgba(255, 255, 255, 0.95);
-  font-size: calc(var(--unit) * 0.227);
+  font-size: max(10px, calc(var(--unit) * 0.15));
   line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
@@ -2945,11 +3087,14 @@ onBeforeUnmount(() => {
   bottom: calc(100% + var(--unit-base) * 0.12);
   left: 50%;
   transform: translateX(-50%);
-  padding: calc(var(--unit-base) * 0.04) calc(var(--unit-base) * 0.14);
-  border-radius: calc(var(--unit-base) * 0.2);
+  /* Fractions cut when the world scale grew — the BOX is a thing standing in the
+     yard and grew with it, this is the caption over it and keeps its size, which
+     is the same split `.peer-label` and `.peer-say` make. */
+  padding: calc(var(--unit-base) * 0.025) calc(var(--unit-base) * 0.086);
+  border-radius: calc(var(--unit-base) * 0.12);
   background: rgba(12, 18, 26, 0.86);
   color: rgba(255, 255, 255, 0.95);
-  font-size: max(9px, calc(var(--unit-base) * 0.26));
+  font-size: max(9px, calc(var(--unit-base) * 0.16));
   line-height: 1.35;
   white-space: nowrap;
 }
@@ -2957,12 +3102,13 @@ onBeforeUnmount(() => {
   position: absolute;
   top: calc(var(--unit-base) * -0.14);
   right: calc(var(--unit-base) * -0.14);
-  min-width: calc(var(--unit-base) * 0.44);
-  padding: 0 calc(var(--unit-base) * 0.08);
+  min-width: calc(var(--unit-base) * 0.27);
+  padding: 0 calc(var(--unit-base) * 0.05);
   border-radius: 999px;
   background: rgb(var(--v-theme-primary));
   color: rgb(var(--v-theme-on-primary));
-  font-size: max(9px, calc(var(--unit-base) * 0.3));
+  /* Cut with the sign above, and for the same reason: a count is text. */
+  font-size: max(9px, calc(var(--unit-base) * 0.18));
   font-weight: 700;
   line-height: 1.5;
   text-align: center;

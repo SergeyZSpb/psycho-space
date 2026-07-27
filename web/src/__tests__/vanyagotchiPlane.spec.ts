@@ -174,15 +174,16 @@ describe('DEPTH_SCALES', () => {
     // instead would make this a product of two numbers that have to be re-checked
     // together every time either one moves.
     //
-    // IT USED TO SAY 44 AND TO CALL IT A TAP TARGET, and both halves of that were
-    // wrong in a way worth recording rather than quietly editing. A dot is
-    // `pointer-events: none` and the plane takes every tap, so nothing here has
-    // ever been tappable; 44 was how small a face may be drawn and still be read.
-    // That made it a DRAWING judgement, which is what allowed the world scale to
-    // come down to 32 when the owner reported the yard's contents as too big. The
-    // invariant this test is really about — depth never shrinks anybody, so the
-    // smallest drawn size is the CSS size — is untouched by that, which is why
-    // the assertion is written against the constant rather than against a number.
+    // THE FLOOR ITSELF HAS BEEN 44, THEN 32, AND IS NOW 52, and this test has
+    // survived all three unedited — which is the point of writing it against the
+    // constant rather than against a number. Nothing on this plane has ever been
+    // tappable (`pointer-events: none`, the plane takes every tap), so the number
+    // has only ever been a DRAWING judgement: how small a Ваня may be and still
+    // be read. It came down when the owner reported a yard of coloured discs as
+    // too big and went up when those discs became cut-out figures, most of whose
+    // box is transparent. The invariant this test is really about — depth never
+    // shrinks anybody, so the smallest drawn size is the CSS size — is untouched
+    // by any of it.
     expect(Math.min(...DEPTH_SCALES)).toBe(1);
     expect(PEER_BASE_PX * Math.min(...DEPTH_SCALES)).toBeGreaterThanOrEqual(PEER_BASE_PX);
   });
@@ -204,15 +205,28 @@ describe('DEPTH_SCALES', () => {
       ).toBeLessThanOrEqual(1.2);
     }
 
-    // And the CEILING is about the phone rather than about taste. The unit
-    // clamps at 64px, so the front band is drawn at `64 × max`. At 1.6 that is
-    // ~102px; at 2.0 it would be 128px, a third of a 360px plane for one dot —
-    // and the owner has already called a smaller ratio than that too big once,
-    // which is why the unit came down from 13cqw to 9cqw. This is also the
-    // number the sprite spec is commissioned against (~320px source at 3× DPR),
-    // so raising it silently makes every piece of art under-resolved.
-    const UNIT_MAX_PX = 64;
-    expect(UNIT_MAX_PX * Math.max(...DEPTH_SCALES)).toBeLessThanOrEqual(110);
+    // And the CEILING is about the phone rather than about taste — but it is a
+    // ceiling on the FRACTION OF THE PLANE one figure occupies, which is the only
+    // form of it that survives a change to the world scale. A pixel bound cannot:
+    // it was written as `64px × max ≤ 110`, and the unit has since gone to 104,
+    // so the same assertion would have passed while describing a product the
+    // yard no longer draws.
+    //
+    // The unit is 17% of the plane's width, so a front-band figure is
+    // `0.17 × 1.6 ≈ 27%` of it — about a fifth of the plane's height, since the
+    // plane is 3:4. A third of the width for one Ваня is where a yard that has to
+    // hold several stops working, and a smaller ratio than that has already been
+    // called too big here once.
+    const UNIT_PLANE_FRACTION = 0.17;
+    expect(UNIT_PLANE_FRACTION * Math.max(...DEPTH_SCALES)).toBeLessThanOrEqual(0.3);
+
+    // The same number read the other way: it is what the art is commissioned
+    // against. The unit caps at 104px, so a front-band figure is drawn at ~166
+    // CSS px, which at 3× device pixel ratio wants a ~500px sprite — and the
+    // sprites are 512². Raising this silently under-resolves every one of them.
+    const UNIT_MAX_PX = 104;
+    const SPRITE_PX = 512;
+    expect(UNIT_MAX_PX * Math.max(...DEPTH_SCALES) * 3).toBeLessThanOrEqual(SPRITE_PX);
   });
 
   it('has between three and five bands', () => {
@@ -239,10 +253,17 @@ describe('sayBelow', () => {
   });
 
   it('leaves room for the balloon on the shortest plane we support', () => {
-    // 320x568 gives a plane about 308 px tall, and the balloon needs roughly
-    // 45 px above the entity's centre. Anything less than that here means a
-    // balloon clipped away on the smallest phone.
-    expect(SAY_FLIP_Y * 308).toBeGreaterThanOrEqual(45);
+    // 320x568 gives a plane about 308 px tall, where an entity is drawn at the
+    // floor. The balloon hangs off the top of a box centred on the coordinate, so
+    // it needs roughly that box's height above the coordinate — anything less
+    // means a balloon clipped away on the smallest phone we support.
+    //
+    // WRITTEN AGAINST THE CONSTANT, because a bare `45` was what nearly let this
+    // through: it was derived from a 44px entity, stayed true through 32, and
+    // would have stayed true — and silently wrong — at 52, where the real
+    // requirement is 0.169 against a flip line that was 0.15.
+    const SHORTEST_PLANE_PX = 308;
+    expect(SAY_FLIP_Y * SHORTEST_PLANE_PX).toBeGreaterThanOrEqual(PEER_BASE_PX);
   });
 
   it('does not flip on a coordinate it cannot read', () => {

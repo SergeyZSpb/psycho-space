@@ -123,12 +123,16 @@ export function isRenderablePosition(peer: unknown): peer is PeerPosition {
  * legibility floor, `PEER_BASE_PX`, and the pinned e2e assertions are all
  * untouched, and only the near bands grew.
  *
- * ~1.6 IS A CEILING RATHER THAN A PREFERENCE. The unit clamps at 64px, so the
- * front band draws at `64 × 1.6 ≈ 102px`; at 2.0 it would be 128px, which on a
- * 360px phone is a third of the plane's width for one dot — and the owner has
- * already called a ratio smaller than that too big once, which is why the unit
- * fell from 13cqw to 9cqw. Going past this trades the thing the ramp is for
- * (telling near from far) against the thing that was already fixed once.
+ * ~1.6 IS A CEILING RATHER THAN A PREFERENCE, and what it is a ceiling ON is the
+ * fraction of the plane one figure occupies. The unit is `17cqw`, so the front
+ * band draws a figure at 27% of the plane's width — about a fifth of its height,
+ * which is a believable human scale. At 2.0 that would be a third of the width
+ * for one Ваня in a yard that has to hold several, which is the complaint that
+ * has already been made about this game once.
+ *
+ * It is also what the art is commissioned against: the unit caps at 104px, so a
+ * front-band figure is drawn at ~166 CSS px, which at 3× device pixel ratio wants
+ * a ~500px sprite. Raising this silently under-resolves every piece of art.
  *
  * The steps are deliberately uneven — 15, 20, 25 points — because perceived size
  * runs closer to the square of the scale than to the scale, so equal multiplier
@@ -140,17 +144,22 @@ export const DEPTH_SCALES: readonly number[] = [1, 1.15, 1.35, 1.6];
  * The SMALLEST a WHOLE entity is ever drawn, in CSS pixels.
  *
  * A floor, not the size. `.peer` is `var(--unit)` and the unit is
- * `clamp(32px, 9cqw, 64px)`, so an entity grows with the yard and this is the
+ * `clamp(52px, 17cqw, 104px)`, so an entity grows with the yard and this is the
  * bottom of that clamp.
  *
- * IT USED TO BE 44, AND LOWERING IT WAS ALLOWED PRECISELY BECAUSE IT IS NOT A
- * TAP TARGET. `.peer` is `pointer-events: none` and the plane takes every tap
- * (see `.peer` in GameVanyagotchiView.vue), so no dot on this plane has ever
- * been tappable and the 44 that several assertions still name was never the
- * WCAG number it looks like — it is how small a face can be drawn and still be
- * read across a phone-sized yard. The owner, playing on a phone, reported the
- * whole yard as too big; a third off every length in it is a legibility
- * judgement, which is the only kind this number was ever making.
+ * IT HAS NEVER BEEN A TAP TARGET, WHICH IS WHY IT HAS BEEN FREE TO MOVE BOTH
+ * WAYS. `.peer` is `pointer-events: none` and the plane takes every tap (see
+ * `.peer` in GameVanyagotchiView.vue), so no entity on this plane has ever been
+ * tappable and the 44 that several assertions once named was never the WCAG
+ * number it looked like — it is how small a Ваня can be drawn and still be read
+ * across a phone-sized yard. That is a legibility judgement, which is the only
+ * kind this number has ever made.
+ *
+ * It was 44, then 32 when the owner reported the yard as too big from a phone,
+ * and it is 52 now. The last move is not a reversal of the middle one: 32 was
+ * measured against a COLOURED DISC, and a disc's presence is its area where a
+ * figure's is its height. Most of a cut-out's box is transparent, so the same
+ * number that made a comfortable token makes a speck of a person.
  *
  * It mirrors the stylesheet rather than driving it: the stylesheet owns the
  * size, and this exists so the floor can be asserted in a unit test. The e2e
@@ -166,7 +175,7 @@ export const DEPTH_SCALES: readonly number[] = [1, 1.15, 1.35, 1.6];
  * ever shrinking anybody; the day a far band draws smaller than a near one, this
  * becomes `base * minScale` and the assertions naming it have to be re-argued.
  */
-export const PEER_BASE_PX = 32;
+export const PEER_BASE_PX = 52;
 
 /**
  * Which band an entity at this height belongs to.
@@ -184,22 +193,26 @@ export function bandFor(y: number): number {
 /**
  * How far up the plane a speech balloon stops fitting above its entity.
  *
- * The balloon hangs off the top of a dot that is centred on its own coordinates,
- * so it needs roughly a dot's height of plane above that point; on the shortest
- * plane we support (about 308 px tall, at 320x568) a 44 px dot made that 0.145 of
- * the height, and the number was chosen against it.
+ * The balloon hangs off the top of an entity that is centred on its own
+ * coordinates, so it needs roughly the entity's own height of plane above that
+ * point. On the shortest plane we support — about 308 px tall, at 320x568 — an
+ * entity is drawn at the floor below, so the requirement is `PEER_BASE_PX / 308`
+ * and this is that with a little to spare.
  *
- * The dot is 32 px now, which needs 0.107 — so this is LOOSER than it has to be
- * rather than wrong, and it is left alone: over-flipping costs a balloon nothing
- * (below the entity is a perfectly good place for it, and where it goes for the
- * whole bottom 85% anyway) whereas under-flipping clips it away to nothing.
- * Normalised rather than measured, deliberately — measuring would mean
- * caching the plane's box in JavaScript, which is the one thing this module is
- * built not to do. On a tall screen it therefore flips a balloon that would just
- * have fitted, which costs nothing: below the entity is a perfectly good place
- * for it, and it is where the balloon goes for the whole bottom 85% anyway.
+ * IT MOVED WHEN THE WORLD SCALE DID, and the direction matters: this was 0.15
+ * against a 32 px entity, where it was looser than it needed to be, and a 52 px
+ * entity needs 0.169 — so leaving it alone would have been the first time this
+ * number was too TIGHT, and a balloon clipped away to nothing is the failure it
+ * exists to prevent. Over-flipping costs nothing by comparison: below the entity
+ * is a perfectly good place for a balloon, and it is where the balloon goes for
+ * the whole rest of the plane anyway.
+ *
+ * Normalised rather than measured, deliberately — measuring would mean caching
+ * the plane's box in JavaScript, which is the one thing this module is built not
+ * to do. On a tall screen it therefore flips a balloon that would just have
+ * fitted, which is the cheap direction to be wrong in.
  */
-export const SAY_FLIP_Y = 0.15;
+export const SAY_FLIP_Y = 0.18;
 
 /** Does this entity's balloon have to hang below it to stay on the plane? */
 export function sayBelow(y: number): boolean {
