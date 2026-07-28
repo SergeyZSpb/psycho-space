@@ -84,11 +84,34 @@ export function useVkLogin() {
     }
   }
 
-  // Mount the OneTap widget into `container`. onError receives VK widget errors
-  // and any failure from the backend exchange. Returns a cleanup function.
+  /**
+   * Mount the OneTap widget into `container`. Returns a cleanup function.
+   *
+   * THE TWO FAILURE CALLBACKS ARE SEPARATE ON PURPOSE, because the two failures
+   * are nothing alike and used to share a modal.
+   *
+   * `onWidgetError` is the VK widget saying it could not do something — most
+   * often that it could not personalise its button, because it reads your VK
+   * session from an iframe on VK's origin and the browser would not hand that
+   * iframe VK's cookies. **Firefox's Total Cookie Protection partitions
+   * third-party storage per top-level site**, so on psycho-space.ru that iframe
+   * gets an empty cookie jar and sees no session; Chrome still passes the real
+   * ones through, which is the entire difference between the two browsers here.
+   * Nothing is broken when this fires: the button still works, because clicking
+   * it opens VK top-level in a new tab where VK is first-party. There is
+   * nothing for the user to do and nothing to investigate, so it must not
+   * produce an error dialog.
+   *
+   * `onExchangeError` is our own backend refusing the code exchange. That is a
+   * real ApiError carrying a real trace id, the user genuinely cannot log in,
+   * and it belongs in the modal.
+   */
   async function mountOneTap(
     container: HTMLElement,
-    onError: (err: unknown) => void,
+    handlers: {
+      onWidgetError: (err: unknown) => void;
+      onExchangeError: (err: unknown) => void;
+    },
   ): Promise<() => void> {
     const { codeVerifier, codeChallenge } = await createPkce();
     // Persist for the redirect-mode fallback (survives a full-page round trip).
@@ -112,9 +135,9 @@ export function useVkLogin() {
     const oneTap = new VKID.OneTap();
     oneTap.render({ container, showAlternativeLogin: true });
 
-    oneTap.on(VKID.WidgetEvents.ERROR, (err: unknown) => onError(err));
+    oneTap.on(VKID.WidgetEvents.ERROR, (err: unknown) => handlers.onWidgetError(err));
     oneTap.on(VKID.OneTapInternalEvents.LOGIN_SUCCESS, (payload: OneTapSuccessPayload) => {
-      exchange(payload.code, payload.device_id, state, codeVerifier).catch(onError);
+      exchange(payload.code, payload.device_id, state, codeVerifier).catch(handlers.onExchangeError);
     });
 
     return () => {

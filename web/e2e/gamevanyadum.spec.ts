@@ -265,8 +265,12 @@ test.describe('«ВАНЯДУМ» play', () => {
     // have nothing to say.
     await page.keyboard.down('KeyW');
     await expect
+      // Generous, because this waits on a requestAnimationFrame loop and the
+      // whole suite runs in parallel — a loaded machine throttles the frames
+      // this depends on. The claim is "a frame is eventually sent", not "within
+      // four seconds".
       .poll(async () => (await socket.sent()).filter((m) => m.includes('vanyadum_input')).length, {
-        timeout: 4000,
+        timeout: 15_000,
       })
       .toBeGreaterThan(0);
     await page.keyboard.up('KeyW');

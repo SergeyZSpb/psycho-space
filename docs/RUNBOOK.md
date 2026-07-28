@@ -460,6 +460,55 @@ psql "postgres://psychospace:<POSTGRES_PASSWORD>@127.0.0.1:5433/psychospace?sslm
 
 Treat everything you pull this way as confidential; profile columns are ciphertext regardless.
 
+## «Ой, ошибка / unexpected» on the landing page in Firefox
+
+**Not a bug, and not our CSP.** Diagnosed 2026-07-28 from a production report.
+
+Symptoms: in Firefox, ticking the consent box shows the error modal with code
+`unexpected` and an **empty trace id**, and the console logs
+
+```
+Content-Security-Policy: The page's settings blocked the loading of a resource
+(frame-ancestors) at <unknown> because it violates the following directive:
+"frame-ancestors 'self' https://vk.com https://*.vk.com https://vk.ru https://*.vk.ru"
+```
+
+In Chrome the same page works and the VK button reads «Продолжить как Сергей»;
+in Firefox it reads the generic «Войти с VK ID». **Login works in both** — the
+button opens VK top-level in a new tab and comes back fine.
+
+What is actually happening: the OneTap widget personalises its button by reading
+your VK session from an iframe on VK's origin. **Firefox's Total Cookie
+Protection partitions third-party storage per top-level site**, so on
+psycho-space.ru that iframe gets an empty cookie jar keyed to our domain, sees
+no session, and reports failure. (The console shows `Cookie warnings` beside the
+CSP line — that is the same thing.) Chrome still passes VK's real cookies to the
+iframe. Expect Chrome to behave like Firefox eventually.
+
+**The CSP line is not ours.** Verify rather than assume:
+
+```bash
+curl -sI https://psycho-space.ru/ | grep -i content-security-policy
+```
+
+Our policy has **no `frame-ancestors` directive at all** — there is exactly one
+`add_header Content-Security-Policy` in `deploy/nginx/psycho-space.conf`, and
+nothing in the Go binary or `index.html` adds another. The quoted policy is the
+CSP of the document being framed, i.e. a VK page whose own allowlist does not
+include us. Its resemblance to ours is because both list the VK domain family.
+A second, decisive check: `frame-ancestors` is enforced identically by Chrome
+and Firefox, so if it were the cause Chrome would fail too.
+
+**What was ours** was the modal: the widget's `ERROR` event went to
+`errorStore.report`, which renders anything that is not an `ApiError` as code
+`unexpected` with an empty trace id and asks the user to send it to Sergei — a
+meaningless code, no id, and nothing wrong. `mountOneTap` now takes separate
+`onWidgetError` / `onExchangeError` callbacks: the widget's is a console
+warning, and a backend exchange failure (a real `ApiError` with a real trace id)
+keeps the modal. Pinned by `web/src/__tests__/vkLoginErrors.spec.ts`, with the
+SDK mocked — the Playwright layout suite cannot make the real widget fail on
+demand, and a test written there passed just as happily with the bug in place.
+
 ## Forgetting a user (irreversible)
 
 **Админка → «Забыть»**, superadmin only. It anonymises the person and keeps

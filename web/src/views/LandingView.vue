@@ -72,8 +72,26 @@ watch(consented, async (yes) => {
   mounted = true;
   mounting.value = true;
   try {
-    cleanup = await mountOneTap(vkContainer.value, (err) => errorStore.report(err));
+    cleanup = await mountOneTap(vkContainer.value, {
+      // The widget could not do something — nearly always that it could not
+      // personalise its button, because the browser would not let VK's iframe
+      // see VK's cookies. Firefox partitions third-party storage per top-level
+      // site, so that is the normal state of affairs there and will be
+      // everywhere as third-party cookies go away.
+      //
+      // NOTHING IS BROKEN WHEN THIS FIRES. The button still logs you in: it
+      // opens VK top-level in a new tab, where VK is first-party and can see
+      // your session. So this must not open the error modal, which used to
+      // report it as code `unexpected` with an EMPTY trace id and tell the user
+      // to send that to Sergei — a meaningless code, no id, and nothing wrong.
+      onWidgetError: (err) => console.warn('VK widget could not personalise', err),
+      // A backend refusal, on the other hand, is a real ApiError with a real
+      // trace id, and the user genuinely cannot get in. That keeps the modal.
+      onExchangeError: (err) => errorStore.report(err),
+    });
   } catch (err) {
+    // The SDK failed to initialise at all — no widget, so no way to log in.
+    // That is worth the modal.
     mounted = false; // allow a retry on next toggle
     errorStore.report(err);
   } finally {
