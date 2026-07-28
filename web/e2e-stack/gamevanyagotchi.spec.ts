@@ -344,6 +344,87 @@ async function settleNear(
 }
 
 /**
+ * A far-side target that no hotspot can swallow.
+ *
+ * Every hotspot is a tap target of at least 44px by the mobile rule, which on a
+ * 390px plane is more than a tenth of its width, and a tap inside one is handled
+ * as "search that place" rather than "walk to that spot" — a different verb, to a
+ * different destination. Which hotspots are on screen depends on the location the
+ * yard happens to be in, and this suite is serial against one database, so the
+ * location is inherited from whatever ran before: a fixed literal target is a
+ * coin toss between runs, and it is the toss that failed in CI with a stray of
+ * 0.030 against a limit of 0.03.
+ *
+ * So the target is chosen against what is actually rendered: the first candidate
+ * whose pixel is clear of every hotspot box by a margin. All candidates are on
+ * the far side, so the journey stays the width of the yard whichever is picked.
+ */
+async function freeFarSideSpot(page: Page): Promise<{ x: number; y: number }> {
+  const MARGIN = 12; // px of clearance, so a rounding error cannot land inside
+  const plane = await page.locator('[data-test="plane"]').boundingBox();
+  expect(plane, 'the plane has no box to aim at').not.toBeNull();
+  const spots = await page.locator('[data-test="hotspot"]').all();
+  const boxes = (await Promise.all(spots.map((spot) => spot.boundingBox()))).filter(
+    (box): box is NonNullable<typeof box> => box !== null,
+  );
+
+  const candidates = [
+    { x: 0.92, y: 0.5 },
+    { x: 0.92, y: 0.62 },
+    { x: 0.92, y: 0.38 },
+    { x: 0.88, y: 0.54 },
+    { x: 0.9, y: 0.72 },
+  ];
+  for (const candidate of candidates) {
+    const px = (plane?.x ?? 0) + (plane?.width ?? 0) * candidate.x;
+    const py = (plane?.y ?? 0) + (plane?.height ?? 0) * candidate.y;
+    const claimed = boxes.some(
+      (box) =>
+        px >= box.x - MARGIN &&
+        px <= box.x + box.width + MARGIN &&
+        py >= box.y - MARGIN &&
+        py <= box.y + box.height + MARGIN,
+    );
+    if (!claimed) return candidate;
+  }
+  throw new Error('every far-side candidate is under a hotspot; the yard has changed shape');
+}
+
+/**
+ * Waits until he has actually stopped moving, and answers where that was.
+ *
+ * `settleNear` returns the instant he is within its tolerance of the target,
+ * which is the right contract for "put him there" but the wrong one for anything
+ * that then MEASURES: he is still walking those last two hundredths, and the
+ * broadcast keeps writing positions from the old journey for another tick or
+ * three. A test that reads his position, forgets the trail and taps in that
+ * window is measuring a journey whose recorded start is not where it started and
+ * whose first frames belong to the previous walk — which is exactly how a
+ * perfectly straight lerp gets accused of straying off its line.
+ *
+ * Four identical reads 150 ms apart is 600 ms without movement: three broadcast
+ * ticks at 5 Hz, so it cannot be an unlucky gap between two frames.
+ */
+async function stillAt(page: Page): Promise<{ x: number; y: number }> {
+  const deadline = Date.now() + 30_000;
+  const STILL_ENOUGH = 4;
+  let last = { x: Number.NaN, y: Number.NaN };
+  let still = 0;
+  while (Date.now() < deadline) {
+    const at = await you(page);
+    if (Number.isFinite(at.x) && at.x === last.x && at.y === last.y) {
+      still += 1;
+      if (still >= STILL_ENOUGH) return at;
+    } else {
+      still = 0;
+      last = at;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw new Error('he never stopped moving');
+}
+
+/**
  * Walks your Ваня to a point and waits until he is standing on it.
  *
  * Asks again when he gives up part way, which is why this is a loop rather than
@@ -1207,12 +1288,24 @@ test('a tap is a walk across the yard, not a teleport', async ({ browser, baseUR
     // Put him against one wall first, so the journey below is the width of the
     // yard rather than however far he happens to be from the far side.
     await walkTo(page, 0.08, 0.5);
-    const from = await you(page);
+    // `stillAt`, not `you`: the walk that put him there may still have a tick to
+    // run, and the recorded journey would then start somewhere he had already
+    // left.
+    const from = await stillAt(page);
 
-    const to = { x: 0.92, y: 0.5 };
+    const to = await freeFarSideSpot(page);
     await forgetTrail(page);
     await tapAt(page, to.x, to.y);
     const arrived = await settleNear(page, to.x, to.y);
+
+    // WHERE HE ACTUALLY GOT TO, which is where the line under test ends. He may
+    // have sat down part way — the server rolls on that at accept time — and the
+    // shape of the journey is the same claim either way: a stream of positions
+    // along the straight line he was walking, rather than one position and then
+    // another. Measuring against the point he was SENT to instead would make
+    // this test fail every time that roll came up, for a reason that has nothing
+    // to do with what it asserts.
+    const dest = await stillAt(page);
 
     const journey = (await trail(page)).filter((step) => step.id === me);
     expect(journey.length, 'nothing about his position was ever written').toBeGreaterThan(0);
@@ -1221,7 +1314,7 @@ test('a tap is a walk across the yard, not a teleport', async ({ browser, baseUR
     // is the assertion a teleport fails outright.
     const first = journey[0];
     expect(
-      Math.hypot(first.x - to.x, first.y - to.y),
+      Math.hypot(first.x - dest.x, first.y - dest.y),
       `the very first frame after the tap already had him at the destination ` +
         `(${first.x.toFixed(3)},${first.y.toFixed(3)}) — that is a teleport`,
     ).toBeGreaterThan(0.1);
@@ -1231,7 +1324,7 @@ test('a tap is a walk across the yard, not a teleport', async ({ browser, baseUR
     const between = journey.filter(
       (step) =>
         Math.hypot(step.x - from.x, step.y - from.y) > 0.05 &&
-        Math.hypot(step.x - to.x, step.y - to.y) > 0.05,
+        Math.hypot(step.x - dest.x, step.y - dest.y) > 0.05,
     );
     expect(
       between.length,
@@ -1243,8 +1336,8 @@ test('a tap is a walk across the yard, not a teleport', async ({ browser, baseUR
     // walk rather than a dot wandering about on its way.
     for (const step of between) {
       expect(
-        offLine(from, to, step),
-        `he strayed ${offLine(from, to, step).toFixed(3)} off the line to where he was asked to go`,
+        offLine(from, dest, step),
+        `he strayed ${offLine(from, dest, step).toFixed(3)} off the line to where he was asked to go`,
       ).toBeLessThan(0.03);
     }
 
