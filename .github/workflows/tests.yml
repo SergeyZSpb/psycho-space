@@ -72,6 +72,11 @@ jobs:
         with:
           name: results-go
           path: .coverage
+          # .coverage is a dotfile directory and upload-artifact treats hidden
+          # paths as excluded unless told otherwise — without this the artifact
+          # uploads empty, the summary job finds nothing, and the Go rows of the
+          # test table are silently blank on an otherwise green run.
+          include-hidden-files: true
           retention-days: 5
           if-no-files-found: ignore
 
