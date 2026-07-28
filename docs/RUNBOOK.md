@@ -10,7 +10,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **app:** systemd unit `psycho-space` under user `psychospace`; binary `/opt/psycho-space/psycho-space`; env `/etc/psycho-space/app.env`; logs `/var/log/psycho-space/app.log`.
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/gamekhimki/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
-- **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*` — **two reads (`config`, `state`) and nothing that writes**, because a verb travels over the socket as a `vanyagotchi_do` frame and cannot be curl'd (ADR-043) — view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and both phrase pools are in `content.go`, not the database — so retuning, renaming, adding an NPC or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from two disjoint pools and mean different things: `tiredSays` means he gave up on a walk, `idleSays` means he is just standing about. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep.
+- **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*` — **two reads (`config`, `state`) and nothing that writes**, because a verb travels over the socket as a `vanyagotchi_do` frame and cannot be curl'd (ADR-043) — view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and every phrase pool are in `content.go`, not the database — so retuning, renaming, adding a regular or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from **five disjoint pools** (a test enforces the disjointness, so a line can only ever mean one thing) and they say different things about him: `tiredSays` — he gave up on a walk; `idleSays` — he is just standing about; `shySays` — he lost his nerve and the verb did nothing; `reekSays` — **somebody else** relieved himself near him; `enviousSays` — **somebody else** found the keys. The last two are the only lines another player's action puts in your mouth, and the regulars get them too. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep; the two reactions are held in memory with an expiry and dropped by the tick that finds them stale.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
@@ -127,10 +127,11 @@ It's an **LLM-judged** character dialogue: convince дядя Ваня (a strange
 
 Each art in the catalog needs an image. **Placeholders (emoji + gradient) render until real images land** — adding images is backend-only, no client change.
 
-**Names — derive from the art catalog** (source of truth: `internal/gamekhimki/content.go`, `Character.Arts`). The required filenames are exactly the art keys per game:
+**Names — derive from the art catalog, never from a list kept here.** The required filename is exactly the art key, and each game's catalogue is the source of truth:
 
-- from the API: `curl -s -b <cookie> 'http://localhost:8080/api/game-khimki/config?game=smalltalk_khimki' | jq -r '.characters[].arts[].key'`
-- or read the `Arts: []Art{…}` block in `content.go`.
+- **game 1** — `internal/gamekhimki/content.go`, `Character.Arts`; from the API, `curl -s -b <cookie> 'http://localhost:8080/api/game-khimki/config?game=smalltalk_khimki' | jq -r '.characters[].arts[].key'`.
+- **game 2** — `internal/gamevanyagotchi/content.go`, where art keys live on **four** different things rather than one: `Skins[].Art` (the pet and every regular), `ObjectKinds[].Art` (what is lying about — a deposit, the crate) and `Locations[].Art` (the backdrop behind the plane). `grep -n 'Art:' internal/gamevanyagotchi/content.go` lists the lot.
+- A key with no blob is not an error and never logs one: the config simply advertises no image and the client draws the emoji placeholder. **So a misspelt filename is silent** — it uploads cleanly and nothing ever asks for it.
 
 Current game `smalltalk_khimki` — 10 arts (file name = `<key>.webp`):
 
@@ -167,19 +168,41 @@ Two kinds: **character-mood** (`vanya_*`) — the same дядя Ваня, changi
 
 `deploy/upload-game-assets.py` converts each image in a dir to WebP and prints
 `INSERT … ON CONFLICT` SQL to stdout; pipe it to a psql. Requires Pillow
-(`pip install pillow`). The emitted SQL targets `game_assets`, so the
-uploader is specific to «Смолтолк в Химках» — a second game gets its own, the
-same way it gets its own table.
+(`pip install pillow`). The blob store is shared infrastructure scoped by
+`game_key` (ADR-031), so **one uploader serves every game** — it takes the
+directory and the game key as arguments: `upload-game-assets.py [dir] [game_key]`,
+defaulting to «Смолтолк в Химках».
 
 ```bash
-# prod (hardened SSH alias `psycho`):
+# prod (hardened SSH alias `psycho`) — game 1:
 python3 deploy/upload-game-assets.py ~/Desktop/psycho-space/vanya_assets \
+  | ssh psycho "sudo -u postgres psql psychospace"
+
+# prod — game 2, whose key is `vanyagotchi`:
+python3 deploy/upload-game-assets.py ~/Desktop/psycho-space/vanyagotchi_assets vanyagotchi \
   | ssh psycho "sudo -u postgres psql psychospace"
 
 # local dev DB:
 python3 deploy/upload-game-assets.py ~/Desktop/psycho-space/vanya_assets \
   | psql "postgres://psychospace:psychospace@localhost:5432/psychospace"
 ```
+
+**Stage the files you actually mean to upload, in their own directory.** Every
+image in the directory becomes an art key named after its filename, so a contact
+sheet, a source photograph or a scratch render sitting beside the sprites becomes
+a blob nothing ever asks for. Copy the ones you want into a clean directory and
+point the uploader at that.
+
+**Checking it landed** — there is no cache to bust and no deploy to run:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code} %{content_type} %{size_download}B\n' \
+  https://psycho-space.ru/api/game-assets/vanyagotchi/<key>
+```
+
+A 200 with `image/webp` is the whole contract. `GET /api/game-<name>/config` then
+carries `"image": "/api/game-assets/<game>/<key>"` on exactly the entries that
+have a blob, and every other entry keeps its emoji placeholder.
 
 - Art key = filename without extension; it **must** match a key in `content.go`. Re-running upserts. Remove one with `DELETE FROM game_assets WHERE game_key='…' AND art_key='…'`.
 - After upload, reload the game — the config now serves the real images (`<img>` in `GameKhimkiView.vue`; falls back to the emoji if a load fails).
@@ -228,10 +251,13 @@ actually reached zero, worked out across the rate change when the beer ran dry,
 not "now". A `died_at` equal to the moment you looked means something is wrong
 with the derivation rather than with your test.
 
-**To bring somebody back**, press «выпить пива» in the app; it is the action that
-revives (and «покакать» deliberately is not — a dead Ваня goes nowhere, so it is
-refused, and the refusal appears as «он не встаёт» in the balloon over his head
-rather than as an error).
+**To bring somebody back**, open the app: a dead Ваня is a **death screen** over
+the yard carrying his lifetime totals and one button, «восстать из мертвых»,
+which is the only verb that revives. There is no way to press anything else while
+he is dead — the screen covers every other control, deliberately — so the server's
+refusal of an ordinary verb on a corpse («он не встаёт», in the balloon over his
+head rather than as an error) is now reachable only from a client that has not
+re-read since he died.
 
 **A verb cannot be curl'd, and that is deliberate** — do not go looking for the
 endpoint. It travels over the socket as a `vanyagotchi_do` frame and is answered
