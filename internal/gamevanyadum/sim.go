@@ -39,6 +39,10 @@ const PickupReach = 0.9
 // radians, not deltas — the client owns where it is looking and the server
 // merely clamps it, because aim is an input rather than a simulated quantity.
 type Command struct {
+	// Seq is the client's own monotonic per-command counter. The server echoes
+	// the last one it applied so the client can drop acknowledged commands from
+	// its pending list and replay the rest — the whole of reconciliation.
+	Seq   int64
 	Dt    float64
 	MX    float64
 	MY    float64

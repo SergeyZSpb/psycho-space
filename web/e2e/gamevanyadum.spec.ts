@@ -56,7 +56,16 @@ const CONFIG = {
     { key: 'floor', base: '#4a4d4b', accent: '#2e3130', noise: 0.7, roughness: 0.5, pattern: 'concrete' },
     { key: 'ceiling', base: '#3a3d3c', accent: '#242626', noise: 0.3, roughness: 0.6, pattern: 'concrete' },
   ],
-  sim: { hz: 20, snapshot_hz: 20, input_hz: 10, max_commands: 4, max_step_seconds: 0.2 },
+  sim: {
+    hz: 20,
+    snapshot_hz: 20,
+    input_hz: 10,
+    max_commands: 4,
+    max_step_seconds: 0.2,
+    redundant: 6,
+    interp_delay_ms: 120,
+    collision_passes: 3,
+  },
 };
 
 /** Two rooms and a doorway — enough geometry to be a level, small enough to read. */
@@ -241,6 +250,28 @@ test.describe('«ВАНЯДУМ» play', () => {
     await expect(page.getByTestId('vanyadum-count-beer')).toBeVisible();
   });
 
+  test('movement is predicted, so the camera does not wait for a snapshot', async ({ page }) => {
+    // The complaint this whole netcode change exists to fix: iteration 1 only
+    // moved the camera when a snapshot landed, so walking looked like twenty
+    // frames a second. Asserted through the DOM rather than the canvas — the
+    // client sends input the instant a key is held, and it does so without ever
+    // having been told where it is.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await page.getByTestId('vanyadum-start').click();
+    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+
+    // Deliberately never send a snapshot. A client that could not predict would
+    // have nothing to say.
+    await page.keyboard.down('KeyW');
+    await expect
+      .poll(async () => (await socket.sent()).filter((m) => m.includes('vanyadum_input')).length, {
+        timeout: 4000,
+      })
+      .toBeGreaterThan(0);
+    await page.keyboard.up('KeyW');
+  });
+
   test('the HUD follows the snapshot, not the client', async ({ page }) => {
     const socket = await stubSocket(page);
     await openSplash(page);
@@ -274,10 +305,22 @@ test.describe('«ВАНЯДУМ» play', () => {
     const frames = await socket.sent();
     expect(frames[0]).toContain('vanyadum_hello');
     const input = JSON.parse(frames.find((m) => m.includes('vanyadum_input'))!);
-    // Never a position: the client sends intent and the server owns the world.
+    // Never a position: the client sends intent and the server owns the world,
+    // and that stays true with prediction — a prediction is a guess the client
+    // draws, never a fact it asserts.
     expect(input).not.toHaveProperty('x');
-    expect(input.cmds.length).toBeLessThanOrEqual(CONFIG.sim.max_commands);
+    // One sequence PER COMMAND, so the server can acknowledge partway through a
+    // frame and the client can reconcile against it.
+    expect(input.cmds[0]).toHaveProperty('q');
     expect(input.cmds[0]).toHaveProperty('dt');
+    // The last snapshot tick we drew, echoed so the server can derive our
+    // latency rather than trust a number we chose.
+    expect(input).toHaveProperty('k');
+    // Fresh commands are bounded by the sampling ratio; the rest of the frame
+    // is redundant copies of what has not been acknowledged.
+    expect(input.cmds.length).toBeLessThanOrEqual(
+      CONFIG.sim.max_commands + CONFIG.sim.redundant,
+    );
   });
 
   test('standing still sends nothing at all', async ({ page }) => {

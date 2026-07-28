@@ -801,6 +801,16 @@ export interface VanyadumSimConfig {
   input_hz: number;
   max_commands: number;
   max_step_seconds: number;
+  /** How many already-sent commands may ride along, so a lost packet costs none. */
+  redundant: number;
+  /**
+   * How far in the past a peer is drawn. Served rather than chosen by the
+   * client: lag compensation rewinds by exactly this, so a client picking its
+   * own would be picking its own advantage.
+   */
+  interp_delay_ms: number;
+  /** Collision resolver passes — the client runs the same collision code. */
+  collision_passes: number;
 }
 
 export interface VanyadumConfig {

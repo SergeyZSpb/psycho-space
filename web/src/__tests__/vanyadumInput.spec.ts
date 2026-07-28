@@ -4,11 +4,9 @@ import {
   STICK_DEADZONE,
   applyLook,
   axesFromKeys,
-  coalesce,
-  createSampler,
+  createEmitter,
   stickVector,
   wrapAngle,
-  type VanyadumCommand,
 } from '../lib/vanyadumInput';
 
 describe('stickVector', () => {
@@ -105,123 +103,82 @@ describe('axesFromKeys', () => {
   });
 });
 
-describe('coalesce', () => {
-  const cmd = (dt: number, my: number): VanyadumCommand => ({ dt, mx: 0, my, yaw: 0, pitch: 0 });
+describe('createEmitter', () => {
+  const opts = { hz: 40, maxStepSeconds: 0.2, maxPerWake: 4 };
+  const walking = { mx: 0, my: 1, yaw: 0.5, pitch: 0 };
+  const still = { mx: 0, my: 0, yaw: 0.5, pitch: 0 };
 
-  it('leaves a short list alone', () => {
-    const list = [cmd(0.02, 1), cmd(0.02, 1)];
-    expect(coalesce(list, 4)).toBe(list);
+  it('produces nothing from a single reading, because dt needs two', () => {
+    const e = createEmitter(opts);
+    expect(e.due(1000, walking)).toEqual([]);
   });
 
-  it('preserves total elapsed time when it merges', () => {
-    // The point of merging rather than dropping: a stalled tab produces more
-    // samples than a frame may carry, and dropping the surplus would silently
-    // shorten the player's movement.
-    const list = Array.from({ length: 20 }, () => cmd(0.01, 1));
-    const merged = coalesce(list, 4);
-    expect(merged.length).toBeLessThanOrEqual(4);
-    const total = merged.reduce((s, c) => s + c.dt, 0);
-    expect(total).toBeCloseTo(0.2, 6);
+  it('emits at its own fixed rate, not at the frame rate', () => {
+    // THE reason this replaced a per-frame sampler: whatever is predicted must
+    // be exactly what is sent, so the number of commands in a send window has
+    // to be a property of the emitter rather than of the phone's refresh rate.
+    const fast = createEmitter(opts);
+    fast.due(0, walking);
+    let n = 0;
+    for (let t = 8; t <= 1000; t += 8) n += fast.due(t, walking).length; // 120 Hz
+
+    const slow = createEmitter(opts);
+    slow.due(0, walking);
+    let m = 0;
+    for (let t = 33; t <= 1000; t += 33) m += slow.due(t, walking).length; // 30 Hz
+
+    expect(n).toBeGreaterThan(30);
+    expect(Math.abs(n - m)).toBeLessThanOrEqual(2);
   });
 
-  it('keeps the most recent intent in each bucket', () => {
-    const list = [cmd(0.01, 1), cmd(0.01, -1), cmd(0.01, 1), cmd(0.01, -1)];
-    const merged = coalesce(list, 2);
-    expect(merged[0].my).toBe(-1);
-    expect(merged[1].my).toBe(-1);
+  it('gives every command the same sub-step, so replay is exact', () => {
+    const e = createEmitter(opts);
+    e.due(0, walking);
+    const cmds = e.due(200, walking);
+    expect(cmds.length).toBeGreaterThan(0);
+    for (const c of cmds) expect(c.dt).toBeCloseTo(1 / opts.hz, 9);
   });
 
-  it('answers empty for a zero cap rather than throwing', () => {
-    expect(coalesce([cmd(0.01, 1)], 0)).toEqual([]);
-  });
-});
-
-describe('createSampler', () => {
-  const axes = { mx: 0, my: 1, yaw: 0.5, pitch: 0 };
-  const opts = { maxStepSeconds: 0.2, maxCommands: 4 };
-
-  it('produces nothing from a single sample, because dt needs two', () => {
-    const s = createSampler(opts);
-    s.sample(1000, axes);
-    expect(s.take()).toEqual([]);
+  it('emits nothing at all while nobody is touching anything', () => {
+    // A player at rest costs the network nothing. The naive version ships ten
+    // frames a second of "dt of nothing" forever, to a phone on mobile data.
+    const e = createEmitter(opts);
+    e.due(0, still);
+    let n = 0;
+    for (let t = 25; t <= 2000; t += 25) n += e.due(t, still).length;
+    expect(n).toBe(0);
   });
 
-  it('measures dt between samples in seconds', () => {
-    const s = createSampler(opts);
-    s.sample(1000, axes);
-    s.sample(1025, axes);
-    const [c] = s.take();
-    expect(c.dt).toBeCloseTo(0.025, 6);
-    expect(c.yaw).toBe(0.5);
+  it('but emits a turn, because aim is state the server has to be told about', () => {
+    const e = createEmitter(opts);
+    e.due(0, still);
+    expect(e.due(30, { ...still, yaw: 0.9 }).length).toBe(1);
   });
 
-  it('clamps a huge gap, which is what a backgrounded tab produces', () => {
-    const s = createSampler(opts);
-    s.sample(0, axes);
-    s.sample(60_000, axes);
-    expect(s.take()[0].dt).toBe(opts.maxStepSeconds);
+  it('caps what one wake may produce, so a stalled tab cannot flood', () => {
+    // The server's time budget would refuse the surplus anyway; not creating it
+    // is what keeps the client's own prediction agreeing with that refusal.
+    const e = createEmitter(opts);
+    e.due(0, walking);
+    expect(e.due(60_000, walking).length).toBeLessThanOrEqual(opts.maxPerWake);
   });
 
-  it('never hands out more sub-steps than a frame may carry', () => {
-    const s = createSampler(opts);
-    for (let i = 0; i <= 40; i++) s.sample(i * 5, axes);
-    expect(s.take().length).toBeLessThanOrEqual(opts.maxCommands);
-  });
-
-  it('empties itself when taken, so nothing is sent twice', () => {
-    const s = createSampler(opts);
-    s.sample(0, axes);
-    s.sample(25, axes);
-    expect(s.take()).toHaveLength(1);
-    expect(s.take()).toEqual([]);
+  it('carries fractional leftovers rather than dropping them', () => {
+    // Dropping them makes the client's simulated time drift behind the
+    // server's, which shows up as a correction always in the same direction.
+    const e = createEmitter(opts);
+    e.due(0, walking);
+    let n = 0;
+    for (let t = 30; t <= 3000; t += 30) n += e.due(t, walking).length;
+    // ~3 s at 40 Hz is ~120 commands; a dropped remainder would give ~100.
+    expect(n).toBeGreaterThan(110);
   });
 
   it('forgets everything on reset, so a new run starts clean', () => {
-    const s = createSampler(opts);
-    s.sample(0, axes);
-    s.sample(25, axes);
-    s.reset();
-    expect(s.pendingCount()).toBe(0);
-    s.sample(1000, axes);
-    expect(s.take()).toEqual([]); // the clock restarted too
-  });
-});
-
-describe('createSampler — the idle rule', () => {
-  const opts = { maxStepSeconds: 0.2, maxCommands: 4 };
-  const still = { mx: 0, my: 0, yaw: 0.5, pitch: 0 };
-
-  it('records nothing at all while nobody is touching anything', () => {
-    // Found by the layout suite rather than by reasoning: without this the
-    // client ships ten frames a second of "dt of nothing" forever, to a phone on
-    // mobile data, for a simulation that would do precisely nothing with them.
-    const s = createSampler(opts);
-    for (let i = 0; i <= 60; i++) s.sample(i * 16, still);
-    expect(s.take()).toEqual([]);
-  });
-
-  it('but records a turn, because aim is state the server has to be told about', () => {
-    const s = createSampler(opts);
-    s.sample(0, still);
-    s.sample(16, { ...still, yaw: 0.9 });
-    expect(s.take()).toHaveLength(1);
-  });
-
-  it('and records movement even when the view is perfectly still', () => {
-    const s = createSampler(opts);
-    s.sample(0, still);
-    s.sample(16, { ...still, my: 1 });
-    expect(s.take()).toHaveLength(1);
-  });
-
-  it('stops recording the moment the stick is released', () => {
-    const s = createSampler(opts);
-    s.sample(0, still);
-    s.sample(16, { ...still, my: 1 });
-    s.sample(32, still);
-    s.sample(48, still);
-    // Only the walking sample survives; stopping needs no message, because the
-    // server moves a player only when it drains a command.
-    expect(s.take()).toHaveLength(1);
+    const e = createEmitter(opts);
+    e.due(0, walking);
+    e.due(200, walking);
+    e.reset();
+    expect(e.due(5000, walking)).toEqual([]);
   });
 });

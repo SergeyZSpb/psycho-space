@@ -306,9 +306,15 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 	for i := 0; i < batches; i++ {
 		cmds := make([]map[string]any, 0, perFrame)
 		for j := 0; j < perFrame; j++ {
-			cmds = append(cmds, map[string]any{"dt": 0.05, "my": 1, "yaw": float64(i*perFrame+j) * 0.6})
+			// One sequence per COMMAND, one-based: reconciliation has to hear
+			// "I applied three of your four", and the server drops anything at
+			// or below what it has already folded in.
+			seq := i*perFrame + j + 1
+			cmds = append(cmds, map[string]any{
+				"q": seq, "dt": 0.05, "my": 1, "yaw": float64(seq) * 0.6,
+			})
 		}
-		msg, _ := json.Marshal(map[string]any{"t": "vanyadum_input", "seq": i + 1, "cmds": cmds})
+		msg, _ := json.Marshal(map[string]any{"t": "vanyadum_input", "k": 0, "cmds": cmds})
 		if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
 			t.Fatal(err)
 		}
@@ -338,11 +344,15 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 	if moved == nil {
 		t.Fatalf("thirty-two steps of walking moved nobody from %v/%v", startX, startY)
 	}
-	// The acknowledgement of the last input the server processed. Unused in this
-	// iteration and on the wire from the first day, because adding a field to a
-	// live protocol later is a coordinated deploy.
+	// The acknowledgement client-side prediction reconciles against: the last
+	// COMMAND sequence the server folded in.
 	if ack, _ := moved["ack"].(float64); ack < 1 {
 		t.Fatalf("ack never advanced: %v", moved["ack"])
+	}
+	// The timeline entity interpolation runs on. A snapshot without it cannot
+	// be placed between two others.
+	if tick, _ := moved["k"].(float64); tick < 1 {
+		t.Fatalf("snapshot carries no tick: %v", moved["k"])
 	}
 	if _, ok := moved["hp"]; !ok {
 		t.Fatal("a snapshot with no health in it")
@@ -398,8 +408,9 @@ func TestVanyadumAFinishedRunIsWrittenDown(t *testing.T) {
 			// Stand on whichever pickup is next, then advance one step.
 			for _, p := range arena.Level.Pickups {
 				if !arena.Taken[p.ID] {
-					arena.Player.Pos = p.Pos
-					arena.Player.Sector = p.Sector
+					owner := arena.Owner()
+					owner.State.Pos = p.Pos
+					owner.State.Sector = p.Sector
 					break
 				}
 			}

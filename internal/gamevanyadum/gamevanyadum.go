@@ -98,6 +98,34 @@ const SnapshotInterval = SimStep
 // property rather than loosen it.
 const MaxCommandsPerFrame = 4
 
+// RedundantCommands is how many already-sent commands a client may repeat in a
+// frame so that one lost packet costs no input at all.
+//
+// The pending list prediction already keeps exists for reconciliation, so
+// resending its tail is a loop and a few bytes. The server drops any command
+// whose sequence it has already applied, which is what makes the redundancy
+// free rather than a way to buy extra simulation.
+const RedundantCommands = 6
+
+// InterpolationDelay is how far in the past a peer is drawn.
+//
+// It is a CONSTANT BOTH ENDS AGREE ON, published in the catalogue rather than
+// reported by the client — a client-supplied render delay is a client-supplied
+// advantage, because it is exactly the number lag compensation rewinds by.
+//
+// Two snapshots' worth plus a little: enough that an ordinary late frame still
+// has a bracketing pair to interpolate between, small enough that a peer is not
+// visibly behind where they are.
+const InterpolationDelay = 120 * time.Millisecond
+
+// HistoryWindow is how far back the server can rewind the world.
+//
+// It bounds lag compensation: a shot from a player whose round trip plus
+// interpolation delay exceeds this is resolved against the oldest frame there
+// is, rather than against a fabricated one. Generous enough for a bad mobile
+// connection, short enough that the ring costs nothing.
+const HistoryWindow = 1200 * time.Millisecond
+
 // MaxStepSeconds bounds one command's dt. A client that claims a huge dt is
 // asking to teleport; a client whose tab was backgrounded produces the same
 // claim honestly. Both are answered the same way — clamp, never trust.

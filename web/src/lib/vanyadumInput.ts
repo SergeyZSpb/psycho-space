@@ -4,20 +4,21 @@
  * Pure, and deliberately so: not a listener, not a timer, not a ref. The view
  * feeds this module raw events and clock readings and gets back the exact
  * payload that goes on the wire, which is what lets every rule below — the dead
- * zone, the pitch clamp, the coalescing when a frame is late — be a unit test
- * rather than something you find out about on a phone.
+ * zone, the pitch clamp, the emit rate — be a unit test rather than something
+ * you find out about on a phone.
  *
  * THE SEND RATE IS A PLATFORM BOUND, NOT A PREFERENCE. The socket allows ten
  * frames a second per connection (internal/realtime/conn.go), and that is a
- * security property this game fits inside rather than loosens. So input is
- * SAMPLED at four times the send rate and BATCHED: a frame carries the sub-steps
- * that happened between sends, so a flick that starts and ends inside one
- * hundred-millisecond window still reaches the simulation instead of being
- * rounded away.
+ * security property this game fits inside rather than loosens. So commands are
+ * emitted at four times the send rate and batched: a frame carries the
+ * sub-steps that happened between sends, so a flick that starts and ends inside
+ * one hundred-millisecond window still reaches the simulation.
  */
 
 /** One sub-step, exactly as the server's Command reads it. */
 export interface VanyadumCommand {
+  /** Assigned by the predictor when it applies the command, not here. */
+  seq?: number;
   dt: number;
   mx: number;
   my: number;
@@ -122,122 +123,112 @@ export function wrapAngle(a: number): number {
  * suite can drive it with ordinary key events.
  */
 export function axesFromKeys(held: Set<string>): { mx: number; my: number } {
-  const on = (...keys: string[]) => keys.some((k) => held.has(k)) ? 1 : 0;
+  const on = (...keys: string[]) => (keys.some((k) => held.has(k)) ? 1 : 0);
   const my = on('KeyW', 'ArrowUp') - on('KeyS', 'ArrowDown');
   const mx = on('KeyD', 'ArrowRight') - on('KeyA', 'ArrowLeft');
   if (mx === 0 || my === 0) return { mx, my };
   // Normalised so that holding two keys is not faster than holding one. The
-  // server enforces this too; doing it here as well keeps the client's own
-  // prediction — if it ever gets one — agreeing with the simulation.
+  // server enforces this too, and now so does the client's own prediction —
+  // all three agreeing is the point.
   const inv = 1 / Math.SQRT2;
   return { mx: mx * inv, my: my * inv };
 }
 
-/**
- * Collapses a list of sub-steps into at most `max` of them, preserving the total
- * elapsed time.
- *
- * A tab that stalls — a garbage collection, a phone waking up, a slow frame —
- * produces more samples than a frame is allowed to carry. Dropping the surplus
- * would silently shorten the player's movement; merging preserves it. Each
- * bucket keeps the LAST sample's axes, because the most recent intent is the one
- * worth simulating.
- */
-export function coalesce(cmds: VanyadumCommand[], max: number): VanyadumCommand[] {
-  if (max <= 0) return [];
-  if (cmds.length <= max) return cmds;
-  const out: VanyadumCommand[] = [];
-  const per = Math.ceil(cmds.length / max);
-  for (let i = 0; i < cmds.length; i += per) {
-    const bucket = cmds.slice(i, i + per);
-    const last = bucket[bucket.length - 1];
-    out.push({
-      dt: bucket.reduce((sum, c) => sum + c.dt, 0),
-      mx: last.mx,
-      my: last.my,
-      yaw: last.yaw,
-      pitch: last.pitch,
-    });
-  }
-  return out;
-}
-
-export interface SamplerOptions {
-  /** Longest sub-step the server will simulate. Anything longer is clamped. */
+export interface EmitterOptions {
+  /** Commands a second: the send rate times the commands one frame may carry. */
+  hz: number;
+  /** Longest sub-step the server will simulate. */
   maxStepSeconds: number;
-  /** Most sub-steps one frame may carry. */
-  maxCommands: number;
+  /** Most commands one wake may produce, so a stalled tab cannot flood. */
+  maxPerWake: number;
 }
 
 /**
- * Accumulates sub-steps between sends.
+ * Emits commands at a FIXED RATE, independent of the frame rate.
  *
- * It holds a little state — the time of the last sample and the commands not yet
- * sent — and takes its clock as an argument rather than reading one, so a test
- * drives it through a whole second without waiting for one.
+ * This replaced a sampler that produced one command per animation frame and
+ * merged the surplus before sending. **Merging is fatal once prediction
+ * exists**: the client would predict from the individual commands while the
+ * server simulated the merged ones, so the two would disagree by construction
+ * and the correction would never settle. Whatever is predicted must be exactly
+ * what is sent.
+ *
+ * So the rate is fixed instead — the send rate times the commands one frame may
+ * carry, forty a second against ten frames of four. A send window then holds
+ * exactly the number of commands it is allowed to, on a 144 Hz tablet and a
+ * 30 Hz phone alike, and nothing ever has to be dropped or combined.
+ *
+ * It takes its clock as an argument rather than reading one, so a test drives a
+ * whole second without waiting for one.
  */
-export function createSampler(opts: SamplerOptions) {
-  let lastMs: number | null = null;
-  let pending: VanyadumCommand[] = [];
-  // The last angles actually recorded. Compared against, so that merely LOOKING
-  // somewhere new is worth sending while standing perfectly still is not.
+export function createEmitter(opts: EmitterOptions) {
+  const period = 1000 / opts.hz;
+  let last: number | null = null;
+  // Fractional leftovers are carried rather than discarded: dropping them makes
+  // the client's simulated time drift slowly behind the server's, which shows
+  // up as a correction that is always in the same direction.
+  let owed = 0;
   let lastYaw = Number.NaN;
   let lastPitch = Number.NaN;
 
   return {
     /**
-     * Records the axes held at this instant.
+     * Returns the commands due at this instant — usually none, sometimes one,
+     * more only after a stall.
      *
-     * A SAMPLE IN WHICH NOTHING HAPPENED IS DROPPED. Standing still with the
-     * screen untouched produces no command, so no frame is sent — where the
-     * obvious version records "dt of nothing" sixty times a second and ships
-     * ten frames a second of it forever, to a phone on mobile data, for a
-     * simulation that would have done precisely nothing with them. Turning
-     * counts as something: the aim is the client's own state, and the server
-     * has to be told when it moves even if the feet did not.
+     * A command is emitted only when something HAPPENED: moving, or looking
+     * somewhere new. Standing still with the screen untouched emits nothing, so
+     * no frame is sent, so a player at rest costs the network nothing at all.
+     * Turning counts as something, because aim is state the server must be told
+     * about even when the feet did not move.
      */
-    sample(nowMs: number, axes: VanyadumAxes): void {
-      if (lastMs === null) {
-        lastMs = nowMs;
+    due(nowMs: number, axes: VanyadumAxes): VanyadumCommand[] {
+      if (last === null) {
+        last = nowMs;
         lastYaw = axes.yaw;
         lastPitch = axes.pitch;
-        return;
+        return [];
       }
-      const dt = Math.max(0, Math.min(opts.maxStepSeconds, (nowMs - lastMs) / 1000));
-      lastMs = nowMs;
-      if (dt === 0) return;
-      const idle =
-        axes.mx === 0 && axes.my === 0 && axes.yaw === lastYaw && axes.pitch === lastPitch;
-      if (idle) return;
-      lastYaw = axes.yaw;
-      lastPitch = axes.pitch;
-      pending.push({ dt, mx: axes.mx, my: axes.my, yaw: axes.yaw, pitch: axes.pitch });
-    },
+      owed += nowMs - last;
+      last = nowMs;
 
-    /**
-     * Takes everything accumulated, coalesced to fit one frame. Returns an empty
-     * array when there is nothing to send — and the caller must then send
-     * nothing at all rather than an empty frame, because an empty frame still
-     * spends one of the socket's ten.
-     */
-    take(): VanyadumCommand[] {
-      const out = coalesce(pending, opts.maxCommands);
-      pending = [];
+      const out: VanyadumCommand[] = [];
+      // Bounded so a tab that was backgrounded for a minute does not emit a
+      // minute of commands the moment it wakes. The server's own time budget
+      // would refuse them anyway, and not creating them is what keeps the
+      // client's prediction agreeing with that refusal.
+      let budget = opts.maxPerWake;
+      while (owed >= period && budget > 0) {
+        owed -= period;
+        budget -= 1;
+        const idle =
+          axes.mx === 0 && axes.my === 0 && axes.yaw === lastYaw && axes.pitch === lastPitch;
+        if (idle) continue;
+        lastYaw = axes.yaw;
+        lastPitch = axes.pitch;
+        out.push({
+          dt: Math.min(opts.maxStepSeconds, period / 1000),
+          mx: axes.mx,
+          my: axes.my,
+          yaw: axes.yaw,
+          pitch: axes.pitch,
+        });
+      }
+      // Whatever the wake budget could not cover is dropped rather than owed
+      // forever, so a long stall costs one gap instead of a slow catch-up the
+      // server would refuse anyway.
+      if (owed > period * opts.maxPerWake) owed = 0;
       return out;
     },
 
     /** Drops everything, for when a run ends. */
     reset(): void {
-      lastMs = null;
-      pending = [];
+      last = null;
+      owed = 0;
       lastYaw = Number.NaN;
       lastPitch = Number.NaN;
-    },
-
-    pendingCount(): number {
-      return pending.length;
     },
   };
 }
 
-export type Sampler = ReturnType<typeof createSampler>;
+export type Emitter = ReturnType<typeof createEmitter>;

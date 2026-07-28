@@ -2,6 +2,7 @@ package gamevanyadum
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -39,13 +40,16 @@ func TestParseInboundSanitisesEveryCommand(t *testing.T) {
 	// The edge does not have to remember to sanitise, because it cannot forget:
 	// parsing produces sanitised commands and Step sanitises again. Both, on
 	// purpose — this is the boundary a hostile frame crosses.
-	payload := `{"t":"vanyadum_input","seq":7,"cmds":[{"dt":1000,"mx":50,"my":-50,"yaw":1e18,"pitch":9}]}`
+	payload := `{"t":"vanyadum_input","cmds":[{"q":7,"dt":1000,"mx":50,"my":-50,"yaw":1e18,"pitch":9}]}`
 	got, in := ParseInbound([]byte(payload))
 	if got != TypeInput || in == nil {
 		t.Fatalf("got %q / %+v", got, in)
 	}
-	if in.Seq != 7 {
-		t.Fatalf("seq %d", in.Seq)
+	// The sequence is per COMMAND now, not per frame: reconciliation has to be
+	// able to hear "I applied three of your four", and a frame-level number
+	// cannot say that.
+	if in.Cmds[0].Seq != 7 {
+		t.Fatalf("seq %d", in.Cmds[0].Seq)
 	}
 	c := in.Cmds[0]
 	if c.Dt != MaxStepSeconds || c.MX != 1 || c.MY != -1 || c.Pitch != MaxPitch {
@@ -83,7 +87,7 @@ func TestParseInboundDropsSurplusCommands(t *testing.T) {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString(`{"dt":0.05,"my":1}`)
+		fmt.Fprintf(&b, `{"q":%d,"dt":0.05,"my":1}`, i+1)
 	}
 	b.WriteString(`]}`)
 
@@ -91,8 +95,11 @@ func TestParseInboundDropsSurplusCommands(t *testing.T) {
 	if in == nil {
 		t.Fatal("frame refused outright")
 	}
-	if len(in.Cmds) != MaxCommandsPerFrame {
-		t.Fatalf("kept %d commands, cap is %d", len(in.Cmds), MaxCommandsPerFrame)
+	// The cap is the sampling ratio PLUS the redundancy window, because a frame
+	// legally repeats commands the server has not acknowledged. What bounds
+	// simulation is the arena's time budget, not this number.
+	if want := MaxCommandsPerFrame + RedundantCommands; len(in.Cmds) != want {
+		t.Fatalf("kept %d commands, cap is %d", len(in.Cmds), want)
 	}
 }
 

@@ -158,13 +158,18 @@
  *
  * TWO CLOCKS, ON PURPOSE:
  *
- *   * requestAnimationFrame draws, as fast as the phone will, from the last
- *     snapshot's position. Nothing is interpolated yet: with one player and no
- *     enemies there is nothing on screen that is not the camera.
+ *   * requestAnimationFrame draws, as fast as the phone will, from the
+ *     PREDICTED position — the client runs the same `Step` the server does, so
+ *     movement responds instantly and updates at frame rate rather than at the
+ *     twenty hertz snapshots arrive at.
  *   * a 100 ms timer sends input, because the socket allows ten frames a second
- *     and that is a bound this game fits inside rather than loosens. Input is
- *     SAMPLED on every animation frame and batched into those sends, so a flick
- *     inside one window is not rounded away.
+ *     and that is a bound this game fits inside rather than loosens.
+ *
+ * PREDICTION IS NOT AUTHORITY. Every snapshot resets the client to what the
+ * server says and replays whatever is still unacknowledged on top of it; a
+ * disagreement is eased out over a tenth of a second, or snapped if it is too
+ * large to glide. Peers are the other way round — they cannot be predicted, so
+ * they are drawn interpolated in the recent past. See ADR-052.
  */
 
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
@@ -176,11 +181,13 @@ import { buildRules } from '../lib/vanyadumRules';
 import {
   axesFromKeys,
   applyLook,
-  createSampler,
+  createEmitter,
   stickVector,
-  type Sampler,
+  type Emitter,
   type VanyadumAxes,
 } from '../lib/vanyadumInput';
+import { createPredictor, type Predictor } from '../lib/vanyadumPredict';
+import { createInterpolator, type Interpolator, type PeerState } from '../lib/vanyadumInterp';
 import type { VanyadumScene } from '../render/vanyadumScene';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
 
@@ -216,6 +223,11 @@ const link = ref<'connecting' | 'open' | 'lost'>('connecting');
  */
 const view = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 };
 
+/** What the interpolator says the peers look like this frame. */
+let peers: PeerState[] = [];
+/** The last snapshot tick we drew, echoed so the server can derive our latency. */
+let seenTick = 0;
+
 /**
  * Where the player is AIMING, which is the client's own state rather than the
  * server's.
@@ -232,12 +244,15 @@ const scene = shallowRef<VanyadumScene | null>(null);
 const theme = useTheme();
 
 let run: VanyadumRun | null = null;
-let sampler: Sampler | null = null;
+let emitter: Emitter | null = null;
+let predictor: Predictor | null = null;
+let interp: Interpolator | null = null;
+/** Commands applied locally and not yet sent. */
+let outbox: ReturnType<Predictor['apply']>[] = [];
 let release: (() => void) | null = null;
 let sendTimer: number | undefined;
 let frameHandle = 0;
 let lastFrameMs = 0;
-let seq = 0;
 let resizeObserver: ResizeObserver | null = null;
 const heldKeys = new Set<string>();
 
@@ -414,10 +429,38 @@ async function enterPlay(): Promise<void> {
     sceneFailed.value = true;
   }
 
-  sampler = createSampler({
-    maxStepSeconds: config.value.sim.max_step_seconds,
-    maxCommands: config.value.sim.max_commands,
+  const sim = config.value.sim;
+  emitter = createEmitter({
+    // The send rate times the commands one frame may carry: a window then holds
+    // exactly what it is allowed to, whatever the phone's frame rate is.
+    hz: sim.input_hz * sim.max_commands,
+    maxStepSeconds: sim.max_step_seconds,
+    maxPerWake: sim.max_commands,
   });
+  predictor = createPredictor({
+    level: run.level,
+    eyeHeight: config.value.player.eye_height,
+    constants: {
+      walkSpeed: config.value.player.walk_speed,
+      radius: config.value.player.radius,
+      maxStep: config.value.player.max_step,
+      maxPitch: config.value.player.max_pitch,
+      maxStepSeconds: sim.max_step_seconds,
+      collisionPasses: sim.collision_passes,
+    },
+    start: {
+      x: run.level.spawn.x,
+      y: run.level.spawn.y,
+      sector: run.level.spawn_sector,
+      yaw: run.level.spawn_yaw,
+    },
+  });
+  // The delay is SERVED, not chosen here: lag compensation on the server
+  // rewinds by exactly this number, so a client picking its own would be
+  // picking its own advantage.
+  interp = createInterpolator(sim.interp_delay_ms);
+  outbox = [];
+  seenTick = 0;
 
   // The hello goes out from the status callback rather than here: `send` drops
   // anything written before the socket is OPEN, and subscribing only starts the
@@ -443,8 +486,13 @@ function teardownPlay(): void {
   resizeObserver = null;
   scene.value?.dispose();
   scene.value = null;
-  sampler?.reset();
-  sampler = null;
+  emitter?.reset();
+  emitter = null;
+  interp?.reset();
+  interp = null;
+  predictor = null;
+  outbox = [];
+  peers = [];
   stickPointer = null;
   lookPointer = null;
   stick.value = { active: false, originX: 0, originY: 0, x: 0, y: 0 };
@@ -453,26 +501,70 @@ function teardownPlay(): void {
 
 // --- the two clocks --------------------------------------------------------
 
-/** The draw clock. Samples input on every frame, and renders the last state. */
+/**
+ * The draw clock. Emits and PREDICTS input, decays any correction, and renders.
+ *
+ * The whole difference between this and what shipped in iteration 1: the camera
+ * comes from the predictor rather than from the last snapshot, so it moves at
+ * frame rate and responds to a thumb with no round trip in between.
+ */
 function drawFrame(now: number): void {
   const dt = Math.min(0.1, (now - lastFrameMs) / 1000);
   lastFrameMs = now;
-  sampler?.sample(now, currentAxes());
-  view.yaw = aim.yaw;
-  view.pitch = aim.pitch;
+
+  if (predictor && emitter) {
+    predictor.look(aim.yaw, aim.pitch);
+    for (const cmd of emitter.due(now, currentAxes())) {
+      // Applied locally the instant it exists, and queued for sending
+      // unchanged. Predicting one thing and sending another is the one mistake
+      // this whole arrangement cannot survive.
+      outbox.push(predictor.apply(cmd));
+    }
+    predictor.tick(dt);
+    const v = predictor.view();
+    view.x = v.x;
+    view.y = v.y;
+    view.z = v.z;
+    view.yaw = v.yaw;
+    view.pitch = v.pitch;
+  }
+
+  // Peers are drawn in the recent past, because their intent cannot be
+  // predicted the way our own is. Empty until multiplayer fills it.
+  peers = interp ? interp.sample(now) : [];
+  scene.value?.setPeers(peers);
+
   scene.value?.render(view, moving(), dt);
   frameHandle = requestAnimationFrame(drawFrame);
 }
 
 /** The send clock. One frame per window, carrying everything sampled in it. */
 function sendInput(): void {
-  if (!run || !sampler) return;
-  const cmds = sampler.take();
+  if (!run || !predictor || !config.value) return;
+  const fresh = outbox;
+  outbox = [];
   // An empty frame still spends one of the socket's ten a second, so silence is
   // the right answer when nothing happened.
-  if (cmds.length === 0) return;
-  seq += 1;
-  realtimeClient(run.room).send({ t: 'vanyadum_input', seq, cmds });
+  if (fresh.length === 0) return;
+
+  // Redundancy: the tail of everything still unacknowledged rides along, so one
+  // lost packet costs no input at all. The server drops any sequence it has
+  // already applied, which is what makes a duplicate free — and the pending
+  // list this reads from has to exist for reconciliation anyway.
+  const redundant = predictor.unacknowledged(
+    config.value.sim.redundant + fresh.length,
+  );
+  const seen = new Set(fresh.map((c) => c.seq));
+  const cmds = [...redundant.filter((c) => !seen.has(c.seq)), ...fresh];
+
+  realtimeClient(run.room).send({
+    t: 'vanyadum_input',
+    // The last snapshot tick we drew. The server derives our round trip from
+    // it, and lag compensation rewinds by that — deriving beats trusting a
+    // number a client could choose.
+    k: seenTick,
+    cmds: cmds.map((c) => ({ q: c.seq, dt: c.dt, mx: c.mx, my: c.my, yaw: c.yaw, pitch: c.pitch })),
+  });
 }
 
 // --- the socket ------------------------------------------------------------
@@ -495,9 +587,36 @@ function onFrame(frame: RealtimeFrame): void {
 function applySnapshot(frame: RealtimeFrame): void {
   // Positions arrive as centimetres and angles as thousandths of a radian —
   // integers, because this frame repeats twenty times a second forever.
-  view.x = num(frame.x) / 100;
-  view.y = num(frame.y) / 100;
-  view.z = num(frame.z) / 100;
+  seenTick = num(frame.k);
+
+  // The authoritative position, folded in rather than assigned: the predictor
+  // drops what this acknowledges, resets to it, and replays whatever is still
+  // pending on top. Assigning it directly is what iteration 1 did, and it is
+  // exactly the twenty-hertz camera this change exists to remove.
+  predictor?.reconcile({
+    x: num(frame.x) / 100,
+    y: num(frame.y) / 100,
+    sector: num(frame.s),
+    ack: num(frame.ack),
+  });
+
+  // Peers go into the interpolation buffer stamped with the instant they
+  // arrived, and are read back a fixed delay later.
+  if (interp) {
+    const raw = Array.isArray(frame.p) ? (frame.p as Record<string, number | string>[]) : [];
+    interp.push(
+      performance.now(),
+      raw.map((p) => ({
+        id: String(p.i ?? ''),
+        x: num(p.x) / 100,
+        y: num(p.y) / 100,
+        z: num(p.z) / 100,
+        yaw: num(p.yaw) / 1000,
+        state: num(p.s),
+      })),
+    );
+  }
+
   health.value = num(frame.hp);
   const left = Array.isArray(frame.pk) ? (frame.pk as number[]) : [];
   // Only touch reactivity when the set actually changed: at twenty frames a

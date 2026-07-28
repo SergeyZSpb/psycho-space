@@ -233,6 +233,42 @@ export async function createScene(opts: SceneOptions) {
     renderer.render(scene, camera);
   }
 
+  // --- peers ---------------------------------------------------------------
+  // One capsule per other entity, created on first sight and reused after.
+  // Built here rather than in the level pass because peers come and go with the
+  // interpolation buffer, and rebuilding the world when somebody walks in would
+  // be absurd.
+  const peerMeshes = new Map<string, InstanceType<typeof THREE.Mesh>>();
+  const peerGeometry = new THREE.CapsuleGeometry(0.35, 1.1, 4, 8);
+
+  /**
+   * Places every peer the interpolator produced, and hides the ones it did not.
+   *
+   * Meshes are kept rather than disposed when a peer disappears: the commonest
+   * reason to vanish for a frame is the interpolation buffer running dry, and
+   * rebuilding geometry for somebody about to come back is work done to make the
+   * world worse.
+   */
+  function setPeers(peers: { id: string; x: number; y: number; z: number; yaw: number }[]): void {
+    if (disposed) return;
+    for (const m of peerMeshes.values()) m.visible = false;
+    for (const p of peers) {
+      let mesh = peerMeshes.get(p.id);
+      if (!mesh) {
+        mesh = new THREE.Mesh(
+          peerGeometry,
+          new THREE.MeshBasicMaterial({ color: 0xd05a4a, fog: true }),
+        );
+        scene.add(mesh);
+        peerMeshes.set(p.id, mesh);
+      }
+      // The wire carries an EYE height, so the body hangs below it.
+      mesh.position.set(p.x, p.z - 0.85, -p.y);
+      mesh.rotation.y = -p.yaw;
+      mesh.visible = true;
+    }
+  }
+
   /** Hides everything already collected. The server decides what is left. */
   function setRemaining(ids: number[]): void {
     const left = new Set(ids);
@@ -251,7 +287,7 @@ export async function createScene(opts: SceneOptions) {
     renderer.dispose();
   }
 
-  return { render, resize, setRemaining, dispose };
+  return { render, resize, setRemaining, setPeers, dispose };
 }
 
 /**

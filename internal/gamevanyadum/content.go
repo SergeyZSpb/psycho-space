@@ -203,6 +203,17 @@ type SimConfig struct {
 	InputHz        int     `json:"input_hz"`
 	MaxCommands    int     `json:"max_commands"`
 	MaxStepSeconds float64 `json:"max_step_seconds"`
+	// Redundant is how many already-sent commands may ride along in a frame, so
+	// one lost packet costs no input.
+	Redundant int `json:"redundant"`
+	// InterpDelayMs is how far in the past a peer is drawn. Served rather than
+	// chosen by the client, because lag compensation rewinds by exactly this
+	// number and a client that picked it could pick an advantage.
+	InterpDelayMs int `json:"interp_delay_ms"`
+	// CollisionPasses is how many times the resolver sweeps the wall list. The
+	// client needs it because it runs the SAME collision code — see the
+	// prediction port and its golden-vector conformance test.
+	CollisionPasses int `json:"collision_passes"`
 }
 
 // InputHz is how often the client is expected to send a frame. It is a third of
@@ -227,11 +238,14 @@ func BuildConfig() Config {
 		Pickups:  Pickups,
 		Surfaces: Surfaces,
 		Sim: SimConfig{
-			Hz:             SimHz,
-			SnapshotHz:     int(time.Second / SnapshotInterval),
-			InputHz:        InputHz,
-			MaxCommands:    MaxCommandsPerFrame,
-			MaxStepSeconds: MaxStepSeconds,
+			Hz:              SimHz,
+			SnapshotHz:      int(time.Second / SnapshotInterval),
+			InputHz:         InputHz,
+			MaxCommands:     MaxCommandsPerFrame,
+			MaxStepSeconds:  MaxStepSeconds,
+			Redundant:       RedundantCommands,
+			InterpDelayMs:   int(InterpolationDelay / time.Millisecond),
+			CollisionPasses: collisionPasses,
 		},
 	}
 }

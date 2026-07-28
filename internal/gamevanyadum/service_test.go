@@ -214,7 +214,7 @@ func TestInputMovesThePlayerAndTheSnapshotSaysSo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := a.Player.Pos
+	start := a.Owner().State.Pos
 
 	// Walk in every direction in turn, so the test does not depend on which way
 	// the spawn happens to face or where the nearest wall is.
@@ -245,7 +245,7 @@ func mustInput(t *testing.T, seq int64, yaw float64) []byte {
 		"t":   TypeInput,
 		"seq": seq,
 		"cmds": []map[string]any{
-			{"dt": 0.05, "my": 1, "yaw": yaw},
+			{"q": seq, "dt": 0.05, "my": 1, "yaw": yaw},
 		},
 	})
 	if err != nil {
@@ -303,9 +303,9 @@ func TestAFinishedRunIsAnnouncedAndWritten(t *testing.T) {
 	last := a.Level.Pickups[len(a.Level.Pickups)-1]
 	for _, p := range a.Level.Pickups[:len(a.Level.Pickups)-1] {
 		a.Taken[p.ID] = true
-		a.Player.Counters["beer"]++
+		a.Owner().State.Counters["beer"]++
 	}
-	a.Player.Pos, a.Player.Sector = last.Pos, last.Sector
+	a.Owner().State.Pos, a.Owner().State.Sector = last.Pos, last.Sector
 
 	tick <- time.Unix(1, 0)
 

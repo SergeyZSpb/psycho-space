@@ -35,7 +35,16 @@ const config: VanyadumConfig = {
     },
   ],
   surfaces: [],
-  sim: { hz: 20, snapshot_hz: 20, input_hz: 10, max_commands: 4, max_step_seconds: 0.2 },
+  sim: {
+    hz: 20,
+    snapshot_hz: 20,
+    input_hz: 10,
+    max_commands: 4,
+    max_step_seconds: 0.2,
+    redundant: 6,
+    interp_delay_ms: 120,
+    collision_passes: 3,
+  },
 };
 
 describe('buildRules', () => {

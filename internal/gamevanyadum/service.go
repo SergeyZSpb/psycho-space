@@ -2,7 +2,10 @@ package gamevanyadum
 
 import (
 	"context"
+	"crypto/hmac"
 	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -75,6 +78,25 @@ type Service struct {
 	// the wrong trade, and the log line is what stops the loss being silent.
 	saves chan Run
 	done  chan struct{}
+
+	// pseudonymKey turns an account into the handle other players see. Minted
+	// from crypto/rand at startup and held only in memory, so a pseudonym is
+	// stable for one process and meaningless after a restart — a snapshot is
+	// fanned out to everybody in an arena, so anything in that field is a
+	// handle every other player could record.
+	pseudonymKey []byte
+}
+
+// pseudonymBytes is how much of the HMAC is published. Twelve base64url
+// characters is more than enough to be unique among the handful of people who
+// will ever share an arena, and short enough to cost nothing on a frame.
+const pseudonymBytes = 9
+
+// pseudonym is what other players are told an account is called.
+func (s *Service) pseudonym(accountID string) string {
+	mac := hmac.New(sha256.New, s.pseudonymKey)
+	_, _ = mac.Write([]byte(accountID))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:pseudonymBytes])
 }
 
 const savesBuffer = 64
@@ -90,7 +112,17 @@ func NewService(transport Transport, room string, q db.DBTX, repo Repository) *S
 		lastSeen:  make(map[string]time.Time),
 		saves:     make(chan Run, savesBuffer),
 		done:      make(chan struct{}),
+		// Since Go 1.24 crypto/rand.Read cannot fail — it panics internally
+		// rather than returning an error — so there is no error path here to
+		// thread back to main.
+		pseudonymKey: randomKey(),
 	}
+}
+
+func randomKey() []byte {
+	k := make([]byte, 32)
+	_, _ = crand.Read(k)
+	return k
 }
 
 // Done is closed once Run has returned and the last write has been attempted, so
@@ -145,11 +177,16 @@ func (s *Service) step(ctx context.Context, now time.Time) {
 		a.Advance(SimStep.Seconds(), now)
 
 		if a.Ended {
+			owner := a.Owner()
+			bag := map[string]int{}
+			if owner != nil {
+				bag = owner.State.Counters
+			}
 			over, err := json.Marshal(Over{
 				T:       TypeOver,
 				Success: a.Success,
 				Seconds: a.Elapsed(now),
-				Bag:     a.Player.Counters,
+				Bag:     bag,
 			})
 			if err == nil {
 				for _, c := range here {
@@ -171,7 +208,15 @@ func (s *Service) step(ctx context.Context, now time.Time) {
 			continue
 		}
 
-		msg, err := json.Marshal(a.SnapshotFrame())
+		// One snapshot PER OCCUPANT, not one per arena: a frame names everybody
+		// except its reader, so two people in one arena get two different
+		// frames. With one occupant this is the same single marshal it always
+		// was; with two it is already correct.
+		frame, ok := a.SnapshotFor(account)
+		if !ok {
+			continue
+		}
+		msg, err := json.Marshal(frame)
 		if err != nil {
 			continue
 		}
@@ -210,13 +255,17 @@ func (s *Service) finish(a *Arena, now time.Time) {
 	if err != nil {
 		return
 	}
+	beer := 0
+	if owner := a.Owner(); owner != nil {
+		beer = owner.State.Counters["beer"]
+	}
 	r := Run{
 		ID:        a.RunID,
 		AccountID: accountID,
 		Seed:      a.Level.Seed,
 		Success:   a.Success,
 		Seconds:   a.Elapsed(now),
-		Beer:      a.Player.Counters["beer"],
+		Beer:      beer,
 	}
 	select {
 	case s.saves <- r:
@@ -284,7 +333,7 @@ func (s *Service) StartRun(accountID uuid.UUID, now time.Time) (*Arena, error) {
 	// chat to say "play this level".
 	seed := int64(binary.LittleEndian.Uint64(b[:]) & math.MaxInt64)
 
-	a := NewArena(uuid.New(), key, seed, now)
+	a := NewArena(uuid.New(), key, s.pseudonym(key), seed, now)
 	s.arenas[key] = a
 	s.lastSeen[key] = now
 	return a, nil
@@ -328,7 +377,7 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 	case TypeInput:
 		s.mu.Lock()
 		if a, ok := s.arenas[m.AccountID]; ok {
-			a.Enqueue(in)
+			a.Enqueue(m.AccountID, in)
 		}
 		s.mu.Unlock()
 	default:
