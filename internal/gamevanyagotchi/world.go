@@ -403,22 +403,100 @@ func locationFor(def ObjectKind) string {
 
 // placeFor decides where a freshly spawned object of a kind stands.
 //
-// The catalogue's own pitch for a kind that has one, and one of the location's
-// hotspots for a kind that does not. NO KIND HAS ONE TODAY — the crate carried
-// the last pitch there was and gave it up when the shop started moving — so both
-// singletons come out of `hideIn`, and the two spawns are one path rather than a
-// shop path and a key path. Reading the catalogue here is what keeps even that
-// out of the two places that spawn things: the hello above and the exhausting
-// write in Do neither of them has to know which kinds stand still.
+// Three answers, and which one you get is decided by the kind's own fields
+// rather than by its key: the catalogue's pitch for a kind that names one, a
+// HOTSPOT for a kind that is hidden, and an ordinary patch of ground for a kind
+// that is neither. Reading the catalogue here is what keeps all of it out of the
+// two places that actually spawn things — the hello and the exhausting write in
+// `Do` — neither of which has to know which kinds stand still.
+//
+// A HIDDEN THING GOES WHERE SOMETHING CAN BE LOOKED FOR, and a visible one must
+// NOT. The key hides at a hotspot because a hotspot is the thing a player taps
+// to search; the crate stands anywhere else, and the distinction is not
+// cosmetic. Both singletons came out of `hideIn` for a while after the shop
+// started moving, which put the beer on the same square as a hiding place — so
+// «искать ключи» and «выпить пива» became the same tap, and a deposit left by
+// somebody standing at the crate landed on coordinates a key could later be
+// hidden at. The second of those broke an integration test that forbids anything
+// drawn from standing exactly where the key is, and it was right to: the whole
+// point of hiding it is that nothing on the plane marks the spot.
 //
 // IT TAKES THE LOCATION, which is the shape the four locations after the yard
-// reuse: a thing is hidden among the places in the location it is spawned into,
+// reuse: a thing is placed among the places in the location it is spawned into,
 // and nothing here names one.
 func (s *Service) placeFor(def ObjectKind, locationKey string) Point {
 	if def.At != nil {
 		return *def.At
 	}
-	return hideIn(locationKey)
+	if def.Hidden {
+		return hideIn(locationKey)
+	}
+	return standAbout(locationKey)
+}
+
+// standAbout picks an ordinary patch of walkable ground in a location, clear of
+// everything a player can tap.
+//
+// CLEAR OF THE HOTSPOTS, which is the whole job — see `placeFor` for what
+// happened when it was not. `arriveWithin` is the radius a tap is judged by, so
+// keeping a full one between the two means a player standing at the crate is
+// never also standing at a hiding place, and neither control can be pressed by
+// aiming at the other.
+//
+// The band is the walkable part of the plane rather than the whole of it: the
+// backdrops put the horizon at y = 0.25 and there is nothing to stand on above
+// it. Drawing until it finds a clear point, with a bounded number of tries and
+// the location's entry as the answer if it runs out — an entry point is
+// guaranteed clear by the same content invariant that keeps hotspots apart, so
+// the fallback is a real place rather than a coordinate the column's own CHECK
+// would refuse.
+//
+// crypto/rand rather than math/rand. It is not a secret — anybody can see where
+// the crate is — but this file has one reader and one habit, and a second
+// generator here would be a second thing to reason about for no gain.
+func standAbout(locationKey string) Point {
+	loc, ok := LocationByKey(locationKey)
+	if !ok {
+		return spawn
+	}
+	const (
+		tries  = 24
+		floorY = 0.30
+		ceilY  = 0.92
+		edgeX  = 0.10
+	)
+	for i := 0; i < tries; i++ {
+		at := Point{
+			X: edgeX + unitRand()*(1-2*edgeX),
+			Y: floorY + unitRand()*(ceilY-floorY),
+		}
+		clear := true
+		for _, spot := range loc.Hotspots {
+			if distance(at, spot.At) < arriveWithin {
+				clear = false
+				break
+			}
+		}
+		if clear {
+			return at
+		}
+	}
+	return loc.Entry
+}
+
+// unitRand is a number in 0..1 from crypto/rand, for the placement above.
+//
+// Quantised to a thousand steps, which is far finer than anything on this plane
+// can resolve — a world unit is at most 17% of the width — and which keeps the
+// draw a single bounded integer rather than a float built out of bytes.
+func unitRand() float64 {
+	n, err := rand.Int(rand.Reader, big.NewInt(1000))
+	if err != nil {
+		// Unreachable, exactly as it is in hideIn: crypto/rand's reader does not
+		// fail on any platform this runs on.
+		return 0.5
+	}
+	return float64(n.Int64()) / 1000
 }
 
 // hideIn picks one of a location's hotspots to lose something in.

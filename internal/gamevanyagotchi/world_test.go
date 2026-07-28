@@ -1363,16 +1363,29 @@ func assertSpawned(t *testing.T, got insertedObject, def ObjectKind) {
 		t.Errorf("%q was put at (%v,%v), off the plane; the column itself CHECKs 0..1, so that insert would be refused outright",
 			def.Key, got.at.X, got.at.Y)
 	}
-	// A kind with a pitch stands ON it; a kind without lands at one of its
-	// location's own hotspots, which is where both singletons go now. The second
-	// half is the one with teeth: a key at a point that is no hotspot is a hunt
-	// only `nearestHotspot`'s tolerance keeps winnable, and a crate at one is a
-	// shop standing in the middle of nowhere.
+	// Three answers, decided by the kind's own fields. A kind with a pitch stands
+	// ON it. A HIDDEN kind lands at one of its location's hotspots, because a
+	// hotspot is what a player taps to search and a key anywhere else is a hunt
+	// only `nearestHotspot`'s tolerance keeps winnable. A VISIBLE kind with no
+	// pitch stands clear of all of them — see `placeFor`: the crate on a hiding
+	// place made drinking and searching the same tap, and put deposits on
+	// coordinates a key could later be hidden at.
 	if def.At != nil && !samePoint(got.at, *def.At) {
 		t.Errorf("%q was put at (%v,%v); want the catalogue's own pitch (%v,%v) — a pinned kind that moved would make the walk to it a matter of luck",
 			def.Key, got.at.X, got.at.Y, def.At.X, def.At.Y)
 	}
-	if def.At == nil {
+	if def.At == nil && !def.Hidden {
+		loc, known := LocationByKey(got.locationKey)
+		if known {
+			for _, h := range loc.Hotspots {
+				if distance(got.at, h.At) < arriveWithin {
+					t.Errorf("%q was put at (%v,%v) in %q, within arriveWithin of the hiding place %q; the two controls would be the same tap",
+						def.Key, got.at.X, got.at.Y, got.locationKey, h.Key)
+				}
+			}
+		}
+	}
+	if def.At == nil && def.Hidden {
 		loc, known := LocationByKey(got.locationKey)
 		if known {
 			landed := false
@@ -1380,7 +1393,7 @@ func assertSpawned(t *testing.T, got insertedObject, def ObjectKind) {
 				landed = landed || samePoint(got.at, h.At)
 			}
 			if !landed {
-				t.Errorf("%q was put at (%v,%v) in %q, which is none of its hotspots; nothing the world stands up is supposed to land between the places a player can go and look",
+				t.Errorf("%q was hidden at (%v,%v) in %q, which is none of its hotspots; nobody could ever search there",
 					def.Key, got.at.X, got.at.Y, got.locationKey)
 			}
 		}
@@ -2659,11 +2672,15 @@ func TestTheKeyIsHiddenSomewhereAndTheOtherPlacesAreEmpty(t *testing.T) {
 // tighter claim would be a statistical test in a suite that has to be green every
 // time.
 //
-// And both land ON A HOTSPOT, which is the half `placeFor` decides and the half
-// that would otherwise fail silently: a kind that quietly regained a pitch would
-// still spread across the locations and still pass everything above, while
-// standing in the same corner of each of them for ever.
-func TestAFreshKeyAndAFreshCrateBothGoAnywhereAndBothLandOnAHotspot(t *testing.T) {
+// AND THEY LAND IN DIFFERENT KINDS OF PLACE, which is the half `placeFor`
+// decides and the half that would otherwise fail silently. A hidden thing goes
+// to a HOTSPOT, because a hotspot is the thing a player taps to search; a visible
+// one goes to ordinary ground and must be a full `arriveWithin` clear of every
+// hotspot, or the two controls become the same tap and — worse — a deposit left
+// by somebody standing at the shop lands on coordinates a key can later be hidden
+// at, which is the one thing hiding it is for. Both came out of `hideIn` for a
+// while, and both of those consequences turned up.
+func TestAFreshKeyHidesAtAHotspotAndAFreshCrateStandsWellClearOfOne(t *testing.T) {
 	svc := planeService(&fakeTransport{}, playedFor())
 	for _, def := range []ObjectKind{mustObjectKind(t, KindKey), mustObjectKind(t, KindCrate)} {
 		t.Run(def.Key, func(t *testing.T) {
@@ -2684,19 +2701,36 @@ func TestAFreshKeyAndAFreshCrateBothGoAnywhereAndBothLandOnAHotspot(t *testing.T
 				}
 				seen[where]++
 
-				// And it is stood up at one of that location's own published places,
-				// which for the key is where a search can reach it and for the crate is
-				// where the frame will tell everybody to walk.
 				at := svc.placeFor(def, where)
 				landed := ""
+				nearest := 2.0
 				for _, h := range loc.Hotspots {
 					if h.At == at {
 						landed = h.Key
 					}
+					if d := distance(at, h.At); d < nearest {
+						nearest = d
+					}
 				}
-				if landed == "" {
-					t.Fatalf("a fresh %q was stood up at (%v,%v) in %q, which is none of its hotspots; the key would be unfindable there and the crate would be a shop standing in the middle of nowhere",
-						def.Key, at.X, at.Y, where)
+				if def.Hidden {
+					// ON one of that location's published places, because that is where
+					// a search can reach it. Anywhere else and the key is unfindable.
+					if landed == "" {
+						t.Fatalf("a fresh %q was hidden at (%v,%v) in %q, which is none of its hotspots; nobody could ever search there",
+							def.Key, at.X, at.Y, where)
+					}
+					continue
+				}
+				// CLEAR of every one of them, by the radius a tap is judged at, so
+				// that standing at the shop is never also standing at a hiding place.
+				if nearest < arriveWithin {
+					t.Fatalf("a fresh %q was stood up at (%v,%v) in %q, %v from a hiding place — inside arriveWithin of %v, so the two controls are the same tap",
+						def.Key, at.X, at.Y, where, nearest, arriveWithin)
+				}
+				// And on walkable ground: the backdrops put the horizon at y = 0.25
+				// and there is nothing to stand on above it.
+				if at.Y < 0.25 || at.X <= 0 || at.X >= 1 || at.Y >= 1 {
+					t.Fatalf("a fresh %q was stood up at (%v,%v), which is off the walkable part of the plane", def.Key, at.X, at.Y)
 				}
 			}
 			if len(seen) != len(Content().Locations) {

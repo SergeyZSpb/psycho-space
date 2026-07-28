@@ -2791,17 +2791,22 @@ func TestVanyagotchiTheCrateCannotBeOversold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read where the replacement crate stands: %v", err)
 	}
-	stoodAt := ""
+	// ON WALKABLE GROUND AND CLEAR OF EVERY HIDING PLACE, which is the rule the
+	// two singletons do NOT share. The key hides at a hotspot because a hotspot is
+	// what a player taps to search; the crate is visible and must stand well away
+	// from one, or drinking and searching become the same tap — and a deposit left
+	// by somebody standing at the shop lands on coordinates a key can later be
+	// hidden at, which is the one thing hiding it is for.
+	if pitch.Y < 0.25 || pitch.X <= 0 || pitch.X >= 1 || pitch.Y >= 1 {
+		t.Fatalf("the replacement crate stands at (%v,%v), which is off the walkable part of the plane", pitch.X, pitch.Y)
+	}
 	for _, h := range landedIn.Hotspots {
-		if h.At == pitch {
-			stoodAt = h.Key
+		if d := math.Hypot(pitch.X-h.At.X, pitch.Y-h.At.Y); d < gamevanyagotchi.Content().ArriveWithin {
+			t.Fatalf("the replacement crate stands at (%v,%v) in %q, %v from the hiding place %q — inside the radius a tap is judged at, so the two controls are the same square of screen",
+				pitch.X, pitch.Y, landedIn.Key, d, h.Key)
 		}
 	}
-	if stoodAt == "" {
-		t.Fatalf("the replacement crate stands at (%v,%v) in %q, which is none of its hotspots; a shop in the middle of nowhere is one nobody has a reason to walk past",
-			pitch.X, pitch.Y, landedIn.Key)
-	}
-	t.Logf("the next crate is at %q, in %q", stoodAt, landedIn.Key)
+	t.Logf("the next crate is at (%v,%v), in %q", pitch.X, pitch.Y, landedIn.Key)
 
 	// The winner drank, and it is on his tally.
 	beers := petEffectOn(drink, gamevanyagotchi.StatBeersDrunk)
