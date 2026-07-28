@@ -106,6 +106,60 @@ export function applyLook(
   return { yaw, pitch };
 }
 
+/**
+ * How many radians of turn one pixel of MOUSE movement is worth.
+ *
+ * Deliberately lower than the touch number. A drag has to cross the screen in
+ * one gesture, so it must be coarse; a mouse has as much desk as it needs and a
+ * player aiming at something wants fine control. Roughly a third of a turn per
+ * 400 px of movement, which is the range most shooters land in.
+ */
+export const MOUSE_SENSITIVITY = 0.0022;
+
+/**
+ * The largest per-event movement that is treated as real, in pixels.
+ *
+ * NOT a taste decision. Chromium reports the FIRST `mousemove` after the
+ * pointer is locked as the delta from wherever the cursor happened to be on the
+ * desktop, which on a wide monitor is a couple of thousand pixels — so without
+ * this, clicking to grab the mouse spins the player round before they have
+ * moved it. Two hundred pixels in a single event is already faster than a hand
+ * can flick, so clamping costs nothing real and removes the spin.
+ */
+export const MAX_MOUSE_DELTA = 200;
+
+/**
+ * Applies one locked-pointer mouse movement to the current view angles.
+ *
+ * `movementX`/`movementY` are already deltas — that is the whole point of
+ * pointer lock, and it is why this needs no previous position the way the touch
+ * path does. Everything else is `applyLook`, at the mouse's own sensitivity.
+ */
+export function mouseLook(
+  current: { yaw: number; pitch: number },
+  movementX: number,
+  movementY: number,
+  maxPitch: number,
+  sensitivity = MOUSE_SENSITIVITY,
+): { yaw: number; pitch: number } {
+  return applyLook(current, clampDelta(movementX), clampDelta(movementY), maxPitch, sensitivity);
+}
+
+/**
+ * Bounds one movement delta, and refuses a non-finite one outright.
+ *
+ * The refusal matters more than the bound. A `MouseEvent` built without the
+ * movement fields reports them as `undefined`, which arrives here as `NaN`;
+ * that would poison `yaw` permanently, and `JSON.stringify` turns a NaN into
+ * `null`, so every input frame afterwards is malformed and the server drops all
+ * of them. The run keeps going, nothing moves, and there is nothing on screen
+ * that says why. One guard is cheaper than that failure.
+ */
+function clampDelta(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(-MAX_MOUSE_DELTA, Math.min(MAX_MOUSE_DELTA, v));
+}
+
 /** Wraps an angle into −π..π, so it never grows without bound over a long run. */
 export function wrapAngle(a: number): number {
   const twoPi = Math.PI * 2;

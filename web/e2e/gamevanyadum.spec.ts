@@ -173,6 +173,12 @@ async function stubSocket(page: Page): Promise<{
   };
 }
 
+/** Phone width, where the primary pointer is a thumb rather than a mouse. */
+function isMobile(page: Page): boolean {
+  const vp = page.viewportSize();
+  return !!vp && vp.width <= 600;
+}
+
 async function openSplash(page: Page, opts: StubOptions = {}): Promise<void> {
   await stubBackend(page, opts);
   await seedClient(page, 'dark');
@@ -388,6 +394,98 @@ test.describe('«ВАНЯДУМ» play', () => {
     await stubSocket(page);
     await openSplash(page, { resume: true });
     await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+  });
+});
+
+/**
+ * Counts calls to `requestPointerLock` instead of letting them happen.
+ *
+ * Deliberately a stub rather than the real thing. Whether a headless browser
+ * under N parallel workers actually grants a capture depends on which page has
+ * focus — precisely the sort of thing that made an earlier assertion in this
+ * file fail one run in three for reasons unrelated to what it claimed. What the
+ * view is responsible for is ASKING; whether the browser says yes is the
+ * browser's business, so that is what this measures.
+ */
+async function spyOnPointerLock(page: Page): Promise<() => Promise<number>> {
+  await page.addInitScript(() => {
+    (window as unknown as { __locks: number }).__locks = 0;
+    Element.prototype.requestPointerLock = function () {
+      (window as unknown as { __locks: number }).__locks += 1;
+    } as typeof Element.prototype.requestPointerLock;
+  });
+  return () => page.evaluate(() => (window as unknown as { __locks: number }).__locks);
+}
+
+test.describe('«ВАНЯДУМ» with a mouse', () => {
+  test('a phone is never asked to capture a pointer it has not got', async ({ page }) => {
+    // `(pointer: fine)` is the whole gate. Without it a phone gets a prompt in
+    // the middle of the screen that does nothing when tapped, sitting on top of
+    // the half of the pad that walks.
+    await stubSocket(page);
+    await openSplash(page);
+    await page.getByTestId('vanyadum-start').click();
+    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+
+    await expect(page.getByTestId('vanyadum-lock')).toHaveCount(0);
+  });
+
+  test('the stick still answers a finger', async ({ page }) => {
+    // The mouse path skips the on-screen stick, and it must do so by looking at
+    // the EVENT's pointer type rather than at the device — otherwise a laptop
+    // with a touchscreen would lose its touch controls entirely.
+    await stubSocket(page);
+    await openSplash(page);
+    await page.getByTestId('vanyadum-start').click();
+    const pad = page.getByTestId('vanyadum-pad');
+    await pad.dispatchEvent('pointerdown', {
+      pointerId: 1,
+      pointerType: 'touch',
+      clientX: 70,
+      clientY: 400,
+      isPrimary: true,
+    });
+    await expect(page.locator('.dum-stick')).toBeVisible();
+  });
+
+  test('a desktop is offered the capture and asks for it when clicked', {
+    tag: '@wide',
+  }, async ({ page }) => {
+    // Only meaningful where the primary pointer is a mouse, which at 360 px it
+    // is not — this project exists for exactly that reason.
+    if (isMobile(page)) test.skip();
+    const locks = await spyOnPointerLock(page);
+    await stubSocket(page);
+    await openSplash(page);
+    await page.getByTestId('vanyadum-start').click();
+    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+
+    const prompt = page.getByTestId('vanyadum-lock');
+    await expect(prompt).toBeVisible();
+    await expect(prompt).toContainText('захватить мышь');
+    // Says how to get back out. A capture that hides the cursor with no visible
+    // way to undo it is the thing people find alarming about pointer lock.
+    await expect(prompt).toContainText('Esc');
+
+    expect(await locks()).toBe(0);
+    await prompt.click();
+    expect(await locks()).toBe(1);
+  });
+
+  test('and clicking anywhere on the world asks too, not only the prompt', {
+    tag: '@wide',
+  }, async ({ page }) => {
+    // Reaching for the mouse and clicking the game is what a player does; making
+    // them find a button first would be a worse version of the same thing.
+    if (isMobile(page)) test.skip();
+    const locks = await spyOnPointerLock(page);
+    await stubSocket(page);
+    await openSplash(page);
+    await page.getByTestId('vanyadum-start').click();
+    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+
+    await page.getByTestId('vanyadum-pad').click({ position: { x: 300, y: 300 } });
+    expect(await locks()).toBe(1);
   });
 });
 

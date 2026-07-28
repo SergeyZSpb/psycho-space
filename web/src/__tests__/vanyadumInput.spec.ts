@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   LOOK_SENSITIVITY,
+  MAX_MOUSE_DELTA,
+  MOUSE_SENSITIVITY,
   STICK_DEADZONE,
   applyLook,
   axesFromKeys,
   buildInputFrame,
   createEmitter,
+  mouseLook,
   stickVector,
   wrapAngle,
   type VanyadumCommand,
@@ -71,6 +74,62 @@ describe('applyLook', () => {
     let state = { yaw: 0, pitch: 0 };
     for (let i = 0; i < 500; i++) state = applyLook(state, 100, 0, 1.5);
     expect(Math.abs(state.yaw)).toBeLessThanOrEqual(Math.PI + 1e-9);
+  });
+});
+
+describe('mouseLook', () => {
+  const level = { yaw: 0, pitch: 0 };
+
+  it('turns the same way a drag does, only finer', () => {
+    // Same convention as the thumb — otherwise the two inputs would disagree
+    // about which way right is — at the mouse's own, lower sensitivity.
+    const m = mouseLook(level, 100, 0, 1.5);
+    expect(m.yaw).toBeCloseTo(100 * MOUSE_SENSITIVITY, 9);
+    expect(m.yaw).toBeGreaterThan(0);
+    expect(Math.abs(m.yaw)).toBeLessThan(Math.abs(applyLook(level, 100, 0, 1.5).yaw));
+  });
+
+  it('looks down when the mouse goes down', () => {
+    expect(mouseLook(level, 0, 100, 1.5).pitch).toBeLessThan(0);
+  });
+
+  it('clamps the enormous first delta a lock hands over', () => {
+    // NOT a taste decision. Chromium reports the first movement after a capture
+    // as the delta from wherever the cursor was on the desktop, which on a wide
+    // monitor is thousands of pixels — so without the clamp, clicking to grab
+    // the mouse spins the player round before they have moved it.
+    const spike = mouseLook(level, 4000, 0, 1.5);
+    const capped = mouseLook(level, MAX_MOUSE_DELTA, 0, 1.5);
+    expect(spike.yaw).toBeCloseTo(capped.yaw, 12);
+    expect(mouseLook(level, -4000, 0, 1.5).yaw).toBeCloseTo(-capped.yaw, 12);
+  });
+
+  it('leaves anything below the cap exactly alone', () => {
+    // The clamp must be a ceiling, not a scale — an ordinary movement has to
+    // arrive unchanged or the whole feel is wrong.
+    const d = MAX_MOUSE_DELTA - 1;
+    expect(mouseLook(level, d, 0, 1.5).yaw).toBeCloseTo(d * MOUSE_SENSITIVITY, 9);
+  });
+
+  it('refuses a non-finite delta instead of poisoning the view', () => {
+    // A MouseEvent built without the movement fields reports them as undefined,
+    // which arrives as NaN. That would wreck yaw permanently AND make every
+    // input frame afterwards malformed, because JSON turns a NaN into null and
+    // the server drops the frame — a run that keeps going but cannot move, with
+    // nothing on screen saying why.
+    for (const bad of [Number.NaN, Infinity, -Infinity, undefined as unknown as number]) {
+      const m = mouseLook({ yaw: 0.3, pitch: -0.2 }, bad, bad, 1.5);
+      expect(Number.isFinite(m.yaw)).toBe(true);
+      expect(Number.isFinite(m.pitch)).toBe(true);
+      expect(m.yaw).toBeCloseTo(0.3, 12);
+      expect(m.pitch).toBeCloseTo(-0.2, 12);
+    }
+  });
+
+  it('still clamps pitch, however hard the mouse is thrown', () => {
+    let state = { yaw: 0, pitch: 0 };
+    for (let i = 0; i < 200; i++) state = mouseLook(state, 0, -MAX_MOUSE_DELTA, 1.5);
+    expect(state.pitch).toBe(1.5);
   });
 });
 

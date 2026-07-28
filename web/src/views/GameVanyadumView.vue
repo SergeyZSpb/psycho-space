@@ -81,7 +81,8 @@
       </p>
 
       <!-- The whole play surface is one touch target: the left half moves, the
-           right half looks. Buttons sit on top of it and stop propagation. -->
+           right half looks. Buttons sit on top of it and stop propagation.
+           On a mouse it is also what you click to capture the pointer. -->
       <div
         ref="padEl"
         class="dum-pad"
@@ -90,7 +91,21 @@
         @pointermove="onPointerMove"
         @pointerup="onPointerUp"
         @pointercancel="onPointerUp"
+        @click="grabMouse"
       />
+
+      <!-- Desktop only, and only while the mouse is free. Real DOM like every
+           other control, so the suite can see whether it is offered. -->
+      <button
+        v-if="canPointerLock && !pointerLocked"
+        class="dum-lock"
+        type="button"
+        data-testid="vanyadum-lock"
+        @click.stop="grabMouse"
+      >
+        клик — захватить мышь<br />
+        <span class="dum-lock-sub">Esc — отпустить</span>
+      </button>
 
       <div
         v-if="stick.active"
@@ -151,10 +166,14 @@
  * introspection API may not ship (see ADR-046, and `src/render/vanyadumScene`).
  *
  * WHERE THE TRUTH LIVES. The server simulates; this view draws. It sends the
- * axes the player is pushing and never a position, and it renders whatever the
- * last snapshot said. There is no client-side prediction in this iteration and
- * that is deliberate — rung one of the netcode ladder, deliberately shipped and
- * measured before anything more elaborate is built on top of it.
+ * axes the player is pushing and never a position — a prediction is something
+ * this file draws, never something it asserts.
+ *
+ * TWO SETS OF CONTROLS, AND THE DEVICE PICKS. A phone gets thumbs: a stick that
+ * appears where the left one lands, a drag on the right half to look. A desktop
+ * gets WASD and the mouse, which needs the pointer CAPTURED — otherwise looking
+ * stops at the edge of the window. The split is decided per EVENT rather than
+ * per device, so a laptop with a touchscreen keeps both.
  *
  * TWO CLOCKS, ON PURPOSE:
  *
@@ -183,6 +202,7 @@ import {
   applyLook,
   buildInputFrame,
   createEmitter,
+  mouseLook,
   stickVector,
   type Emitter,
   type VanyadumAxes,
@@ -265,6 +285,21 @@ let stickPointer: number | null = null;
 let lookPointer: number | null = null;
 let lookLast = { x: 0, y: 0 };
 
+// --- the mouse, on a desktop ------------------------------------------------
+
+/**
+ * Whether capturing the mouse is worth offering at all.
+ *
+ * Two conditions, and both are needed. `requestPointerLock` may simply not
+ * exist; and `(pointer: fine)` is what separates a mouse from a thumb — asking a
+ * phone to capture a pointer it does not have would put a dead prompt in the
+ * middle of the screen. Resolved once, on mount, because neither answer changes
+ * while somebody is playing.
+ */
+const canPointerLock = ref(false);
+/** Whether the pointer is captured right now. Driven only by the browser. */
+const pointerLocked = ref(false);
+
 const stickKnobStyle = computed(() => {
   const dx = stick.value.x - stick.value.originX;
   const dy = stick.value.y - stick.value.originY;
@@ -304,6 +339,11 @@ onMounted(async () => {
   const { webglAvailable } = await import('../render/vanyadumScene');
   webgl.value = webglAvailable();
 
+  canPointerLock.value =
+    typeof Element !== 'undefined' &&
+    'requestPointerLock' in Element.prototype &&
+    (window.matchMedia?.('(pointer: fine)').matches ?? false);
+
   try {
     config.value = await gameVanyadumApi.config();
   } catch (e) {
@@ -324,12 +364,19 @@ onMounted(async () => {
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  // On WINDOW rather than on the pad: once the pointer is locked the cursor no
+  // longer exists, so which element a move "is over" stops being a meaningful
+  // question and the browser is free to deliver it to the document.
+  window.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('pointerlockchange', onPointerLockChange);
 });
 
 onBeforeUnmount(() => {
   teardownPlay();
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
+  window.removeEventListener('mousemove', onMouseMove);
+  document.removeEventListener('pointerlockchange', onPointerLockChange);
 });
 
 async function loadRuns(): Promise<void> {
@@ -494,6 +541,9 @@ function teardownPlay(): void {
   predictor = null;
   outbox = [];
   peers = [];
+  // Handing the mouse back is not optional: leaving a page with the pointer
+  // still captured strands the cursor on a screen that no longer uses it.
+  if (pointerLocked.value) document.exitPointerLock?.();
   stickPointer = null;
   lookPointer = null;
   stick.value = { active: false, originX: 0, originY: 0, x: 0, y: 0 };
@@ -664,6 +714,12 @@ function num(v: unknown): number {
 function onPointerDown(e: PointerEvent): void {
   const pad = padEl.value;
   if (!pad) return;
+  // A mouse on a machine that can capture the pointer uses WASD and the mouse,
+  // never the on-screen stick — otherwise the click that grabs the pointer also
+  // starts a step, because it lands on the walking half of the screen. Gated on
+  // the EVENT's pointer type rather than on the device, so a laptop with both a
+  // mouse and a touchscreen keeps both sets of controls.
+  if (e.pointerType === 'mouse' && canPointerLock.value) return;
   const box = pad.getBoundingClientRect();
   const onLeft = e.clientX - box.left < box.width / 2;
   if (onLeft && stickPointer === null) {
@@ -709,6 +765,40 @@ function onPointerUp(e: PointerEvent): void {
   } else if (e.pointerId === lookPointer) {
     lookPointer = null;
   }
+}
+
+// --- the mouse -------------------------------------------------------------
+
+/**
+ * Captures the pointer, which is what makes this playable with a mouse.
+ *
+ * Without the capture a mouse can only look as far as the window is wide, and
+ * then stops at the edge — which is why every first-person game on a desktop
+ * does this. It has to be called from a real click: the browser refuses a
+ * capture that no user gesture asked for, and rightly, since it hides the
+ * cursor and swallows the mouse.
+ */
+function grabMouse(): void {
+  if (!canPointerLock.value || pointerLocked.value) return;
+  padEl.value?.requestPointerLock?.();
+}
+
+/**
+ * The browser is the only writer of the locked flag.
+ *
+ * Escape releases the pointer without telling us, and so does switching tabs or
+ * a full-screen change — so tracking our own idea of the state would be wrong
+ * within seconds. Ask the document what it actually did.
+ */
+function onPointerLockChange(): void {
+  pointerLocked.value = !!padEl.value && document.pointerLockElement === padEl.value;
+}
+
+function onMouseMove(e: MouseEvent): void {
+  if (!pointerLocked.value || phase.value !== 'playing') return;
+  const next = mouseLook(aim, e.movementX, e.movementY, config.value?.player.max_pitch ?? 1.5);
+  aim.yaw = next.yaw;
+  aim.pitch = next.pitch;
 }
 
 // --- keyboard, so the game is developable and drivable without a thumb ------
@@ -917,6 +1007,32 @@ watch(
   color: #ffd28a;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
   pointer-events: none;
+}
+
+/* The desktop prompt. Centred rather than tucked in a corner because it is the
+   one thing on screen that has to be found before the game is playable with a
+   mouse — and it is a real button, so it is reachable by keyboard too. */
+.dum-lock {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  min-height: 48px;
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.dum-lock-sub {
+  font-size: 0.78rem;
+  font-weight: 400;
+  opacity: 0.7;
 }
 
 .dum-stick {
