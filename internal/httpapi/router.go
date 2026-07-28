@@ -10,6 +10,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
+	"github.com/SergeyZSpb/psycho-space/internal/gamekaren"
 	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
 	"github.com/SergeyZSpb/psycho-space/internal/gamevanyadum"
 	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
@@ -49,6 +50,11 @@ type Deps struct {
 	// socket for the twenty-hertz simulation, which is where every input and
 	// every snapshot travels.
 	GameVanyadum *gamevanyadum.Service
+	// GameKaren is the fourth game — «СИМУЛЯТОР КАРЕНА». Two surfaces again:
+	// HTTP for the edges of a shift, and the socket for the twenty-hertz office
+	// every occupant shares. Unlike the shooter there is one office rather than
+	// one world per shift, which is why nothing here is keyed by a run id.
+	GameKaren *gamekaren.Service
 	// GameAssets is the shared art blob store — infrastructure, not a game, so
 	// every game's art is served through this one dependency. nil disables the
 	// asset route, which is the correct behaviour before anything is uploaded.
@@ -209,6 +215,28 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/runs/current", s.handleGameVanyadumCurrent)
 			r.Delete("/runs/current", s.handleGameVanyadumAbandon)
 			r.Get("/runs/me", s.handleGameVanyadumMyRuns)
+		})
+
+		// Game «СИМУЛЯТОР КАРЕНА» — approved users only, and again only the
+		// EDGES of a shift: clocking in, resuming after a reload, walking out,
+		// and reading the two boards the splash screen is built from. Playing
+		// happens entirely on the socket.
+		//
+		// Starting a shift returns no level, because there is nothing per-shift
+		// to send: the office is static and already in the catalogue, which is
+		// this game's one real simplification over the shooter above.
+		//
+		// No LLM on any path here either — that rule is written into the game's
+		// package doc, so the blanket 240/min limiter above is the whole guard
+		// and no endpoint below needs a tighter one.
+		r.Route("/game-karen", func(r chi.Router) {
+			r.Use(s.requireAuth)
+			r.Get("/config", s.handleGameKarenConfig)
+			r.Post("/shifts", s.handleGameKarenStart)
+			r.Get("/shifts/current", s.handleGameKarenCurrent)
+			r.Delete("/shifts/current", s.handleGameKarenLeave)
+			r.Get("/shifts/me", s.handleGameKarenMyShifts)
+			r.Get("/shifts/top", s.handleGameKarenTopShifts)
 		})
 
 		// Game art — shared infrastructure, NOT a game. The blob store has

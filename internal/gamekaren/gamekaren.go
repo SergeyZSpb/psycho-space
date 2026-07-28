@@ -1,0 +1,175 @@
+// Package gamekaren is «СИМУЛЯТОР КАРЕНА» — the fourth game, and the first one
+// whose whole point is standing still.
+//
+// You are Карен. The job is not to work and to be paid for it: the salary
+// accrues only while you are standing perfectly still, and the longer you have
+// stood there the faster it accrues, up to three times the base rate. Walking
+// stops it and, after a short grace window, resets the ramp you were protecting.
+// Meanwhile a smiling bald man crosses the office towards you, and the moment he
+// reaches you the shift is over — he is very glad to see you, and that is the
+// worst thing that can happen to anybody.
+//
+// The dash is the whole skill ceiling: it is fast, it is short, it earns nothing
+// — and it does NOT reset the ramp. Moving out of his way costs you the seconds
+// you spend doing it and nothing else, so the game is about how late you are
+// willing to leave it.
+//
+// # It shares nothing with any other game
+//
+// Per ADR-028 and ADR-030 this package imports no other game and no other game
+// imports it, even where the code would be identical. It borrows patterns from
+// «ВАНЯДУМ» — the pure Step, the injected tick, the one persistence goroutine,
+// the narrow transport seam — by RE-IMPLEMENTING them. Deleting this game means
+// deleting this package, its migration, its routes and its views, and nothing
+// else.
+//
+// # No LLM on any path, ever
+//
+// ADR-016 forbids a realtime message reaching a paid model, and every line the
+// bald man says is a catalogue string in content.go. Nothing in this package may
+// import internal/gamekhimki or grow an HTTP client.
+//
+// # Why this package has a loop
+//
+// The rest of this project computes time-varying state on read and never ticks
+// it (ADR-038), and «Ванягоччи» can do that because everything it draws is
+// closed form: a position is pattern(params, now−epoch). PURSUIT destroys closed
+// form. Where the bald man is at t depends on where every player was at every
+// instant before t, so it has to be integrated step by step — which is why this
+// package runs a fixed-step simulation at SimHz, exactly as «ВАНЯДУМ» does for
+// collision.
+//
+// That does not reopen ADR-038, because ADR-038 is about DURABLE state. This
+// loop touches memory only:
+//
+//   - The office lives in one struct in this package and nowhere else.
+//   - Postgres is written exactly ONCE per shift — when it ends — and never on a
+//     tick. Nothing is read from Postgres to start one.
+//   - The office is deliberately ephemeral. A restart loses shifts in flight, in
+//     the same way and for the same reason the hub loses presence.
+//   - The ticker is injected (ADR-034), so every test drives it by hand and no
+//     test sleeps.
+//
+// # One office, not one arena per run
+//
+// «ВАНЯДУМ» builds an arena per run because a run is a freshly generated
+// заброшка. This game has ONE office that is always the same office (the layout
+// is a catalogue constant, not a generator), so there is one process-wide Office
+// with a slot per account, torn down when the last person leaves. Iteration 1
+// ships solo gameplay on multiplayer plumbing on purpose: the alternative is a
+// rewrite disguised as a later iteration.
+//
+// # Authority
+//
+// The client sends intent and never a fact: a direction, and a request to dash.
+// Never a position, never a salary, never a claim to have dodged anything. The
+// server owns the simulation and publishes idempotent full-state snapshots, so a
+// dropped frame costs nothing and the next one is the truth again.
+//
+// Step is a pure function of (desks, player, command) — no clock, no RNG, no map
+// iteration — which is what lets it be ported to TypeScript for client-side
+// prediction and pinned by the golden vectors in testdata/. Do not give it
+// anything ambient.
+package gamekaren
+
+import "time"
+
+// Room is the realtime room this game listens in.
+//
+// It lives here rather than in internal/httpapi because a room name is a game's
+// property, not the platform's: the upgrade handler holds a map of registered
+// rooms and learns this string from the composition root, so nothing in an
+// unprefixed package ever spells out the name of a game (ADR-033).
+const Room = "karen"
+
+const (
+	// SimHz is the simulation rate: twenty fixed steps a second. Everything
+	// about movement and the money ramp is defined against this number, so
+	// changing it changes how the game PLAYS and not merely how often it is
+	// drawn.
+	SimHz = 20
+
+	// SimStep is one simulation step. Derived rather than typed out, so the two
+	// can never disagree.
+	SimStep = time.Second / SimHz
+
+	// SnapshotEvery is how many simulation steps pass between snapshots: every
+	// second tick, so the wire runs at 10 Hz while the simulation runs at 20.
+	//
+	// «ВАНЯДУМ» sends one per step and can afford to, because a run has one
+	// occupant. This office is shared, so the cost is per viewer per tick and
+	// halving it is free: the client predicts its own position between frames
+	// and the boss is interpolated, so nobody can see the difference.
+	SnapshotEvery = 2
+
+	// InputHz is how often the client sends. It is published in the catalogue
+	// rather than chosen by the client, because it is half of the ratio below.
+	InputHz = 10
+
+	// MaxCommandsPerFrame bounds the FRESH sub-steps one input frame may carry.
+	//
+	// The client samples at SimHz and sends at InputHz, so an honest frame
+	// carries SimHz/InputHz = 2 sub-steps. The cap is four rather than two: a
+	// client whose timer drifted, or whose page was briefly throttled, produces
+	// three or four honestly, and refusing them would make an ordinary phone
+	// stutter. What actually bounds how much SIMULATION a frame can buy is the
+	// per-occupant time budget (TimeBudgetCap), not this number — this one only
+	// stops a frame being unboundedly large.
+	MaxCommandsPerFrame = 4
+
+	// RedundantCommands is how many already-sent commands a client may repeat in
+	// a frame so that one lost packet costs no input at all.
+	//
+	// The pending list prediction already keeps exists for reconciliation, so
+	// resending its tail is a loop and a few bytes. The office drops any command
+	// whose sequence it has already applied, which is what makes the redundancy
+	// free rather than a way to buy extra simulation.
+	RedundantCommands = 6
+
+	// MaxStepSeconds bounds one command's dt. A client that claims a huge dt is
+	// asking to teleport; a client whose tab was backgrounded produces the same
+	// claim honestly. Both are answered the same way — clamp, never trust.
+	MaxStepSeconds = 0.2
+
+	// TimeBudgetCap is how much CLIENT-CLAIMED simulated time one occupant may
+	// spend in a single tick.
+	//
+	// THIS IS THE SPEED-HACK GUARD. An occupant accrues budget at exactly real
+	// time and spends it on the commands they send, so a client that filled
+	// every frame with the largest legal dt cannot run faster than everybody
+	// else — it merely queues.
+	//
+	// In steady operation the budget cannot bank across ticks, because any part
+	// of a tick no command claimed is simulated as standing still (see
+	// Office.Advance) and that consumes the remainder. The cap therefore binds
+	// in exactly the case it is there for: a tick that delivers far more time
+	// than a tick should — a stalled loop, a suspended process, a test driving
+	// the office with a five-second step — where a client with a full queue
+	// would otherwise buy seconds of movement in one step.
+	TimeBudgetCap = 0.5
+
+	// MaxOccupants is how many people may be in the office at once. Owner-
+	// directed, and deliberately small: this is a joke about one open-plan floor
+	// and a handful of friends, not a lobby.
+	MaxOccupants = 3
+
+	// AbandonGrace is how long an occupant survives with no connection before
+	// the shift is ended for them.
+	//
+	// It is not a disconnect timeout: a page reload, a tunnel, a phone locking
+	// and unlocking all take a few seconds, and ending the shift for any of them
+	// would make the game unplayable on a bus. What it protects against is the
+	// occupant nobody comes back to, who would otherwise stand in the office
+	// earning money until the process restarted.
+	//
+	// Unlike «ВАНЯДУМ», an abandoned shift IS written (if it lasted long
+	// enough). A забег somebody walked away from is not a result; a shift
+	// somebody walked away from is exactly what this game is about.
+	AbandonGrace = 90 * time.Second
+
+	// MinShiftSeconds is the shortest shift worth a row. Below it the shift is
+	// dropped rather than written: an accidental tap that starts and ends a
+	// shift in a second is not a result, and a leaderboard full of them is
+	// noise.
+	MinShiftSeconds = 3.0
+)

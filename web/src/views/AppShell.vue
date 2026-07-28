@@ -15,6 +15,12 @@
           value="game-vanyadum"
         />
         <v-list-item
+          :to="{ name: 'game-karen' }"
+          prepend-icon="mdi-briefcase-remove-outline"
+          title="СИМУЛЯТОР КАРЕНА"
+          value="game-karen"
+        />
+        <v-list-item
           :to="{ name: 'game-khimki' }"
           prepend-icon="mdi-controller-classic-outline"
           title="Смолтолк в Химках"

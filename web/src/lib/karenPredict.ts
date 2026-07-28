@@ -1,0 +1,398 @@
+/**
+ * «СИМУЛЯТОР КАРЕНА» — client-side prediction, and the commands that feed it.
+ *
+ * THE PROBLEM. Snapshots arrive ten times a second. Without prediction the man
+ * on the screen only moves when one lands, so the world updates at ten hertz
+ * while the phone redraws at sixty — which looks exactly like ten frames a
+ * second — and every push of the stick waits out a round trip before anything
+ * happens. «ВАНЯДУМ» already paid for that lesson; this game inherits the
+ * answer rather than rediscovering it.
+ *
+ * THE MECHANISM. Every command is stamped with a sequence number, applied
+ * locally through the same `step` the server runs, and kept pending. The server
+ * echoes the last sequence it folded in. On each snapshot the client drops
+ * everything acknowledged, resets to the server's authoritative position, and
+ * replays what is still pending on top of it. Movement then responds in zero
+ * milliseconds and updates at frame rate, and the server still decides
+ * everything.
+ *
+ * WHAT IS PREDICTED AND WHAT IS NOT. Position, and the dash timers that decide
+ * how fast the position moves. **The money is not predicted** — the salary, the
+ * multiplier and the streak are read straight off the snapshot, because they are
+ * the score and a score that flickered between a guess and the truth would be
+ * worse than one that is simply ten hertz. The predictor keeps its own salary
+ * only because `step` computes one; nothing reads it.
+ *
+ * WHAT THIS IS NOT. It is not authority. A prediction is a guess that is usually
+ * right; when the server disagrees, the server wins, without negotiation.
+ */
+
+import { step, type StepCommand, type StepConstants, type StepPlayer } from './karenStep';
+import type { KarenRect } from '../api/types';
+
+/**
+ * How many already-sent commands ride along on each frame.
+ *
+ * Also mirrored rather than served. The server drops any sequence it has already
+ * applied, so a repeat costs a few bytes and buys immunity to a single lost
+ * packet — and the pending list this reads from has to exist for reconciliation
+ * anyway, so the redundancy is very nearly free.
+ */
+export const REDUNDANT_COMMANDS = 6;
+
+/**
+ * A disagreement smaller than this is applied silently, in metres.
+ *
+ * Positions cross the wire quantised to the centimetre and the two runtimes'
+ * arithmetic is never bit-identical, so without a floor every single snapshot
+ * would start a correction and the figure would shiver permanently.
+ */
+export const SILENT_CORRECTION = 0.01;
+
+/**
+ * A disagreement larger than this is snapped rather than eased, in metres.
+ *
+ * Beyond a couple of metres the client is not slightly wrong, it is somewhere
+ * else — a refused move, a resync after a stall — and gliding somebody across
+ * the office to arrive at the truth is both slower and stranger than putting
+ * them there.
+ */
+export const SNAP_CORRECTION = 2;
+
+/** How long a correction takes to disappear, in seconds. */
+export const CORRECTION_SECONDS = 0.12;
+
+export interface PredictorOptions {
+  desks: readonly KarenRect[];
+  constants: StepConstants;
+  /** Where the player starts, in metres. */
+  start: { x: number; y: number };
+}
+
+/** Where the player is authoritatively, as a snapshot reports it. */
+export interface Authoritative {
+  /** Metres — the caller converts from the wire's centimetres. */
+  x: number;
+  y: number;
+  /** The last command sequence the server folded in. */
+  ack: number;
+}
+
+/**
+ * Builds the predictor.
+ *
+ * It owns the pending list, the predicted state and the correction offset, and
+ * takes its clock as an argument everywhere — so a test drives a whole second of
+ * prediction, reconciliation and smoothing without waiting for one.
+ */
+export function createPredictor(opts: PredictorOptions) {
+  const { desks, constants } = opts;
+
+  let seq = 0;
+  let pending: StepCommand[] = [];
+  let predicted: StepPlayer = {
+    x: opts.start.x,
+    y: opts.start.y,
+    salary: 0,
+    streak: 0,
+    moveGrace: 0,
+    dashLeft: 0,
+    dashCooldown: 0,
+  };
+  // The offset being eased out, in metres. Added to the predicted position when
+  // drawing, and decayed towards zero every frame.
+  let errX = 0;
+  let errY = 0;
+
+  return {
+    /**
+     * Applies one command locally and returns it, stamped with its sequence.
+     *
+     * The caller sends what comes back. Nothing is predicted that is not also
+     * sent, and nothing is sent that is not also predicted — the two lists being
+     * the same list is what makes reconciliation exact, and it is why the
+     * emitter below produces commands at a fixed rate instead of merging them.
+     */
+    apply(cmd: Omit<StepCommand, 'seq'>): StepCommand {
+      seq += 1;
+      const stamped: StepCommand = { ...cmd, seq };
+      predicted = step(desks, predicted, stamped, constants);
+      pending.push(stamped);
+      return stamped;
+    },
+
+    /**
+     * Folds in an authoritative position: drop what it acknowledges, reset to
+     * it, replay the rest.
+     *
+     * The replay is the part that is easy to get wrong by omitting: without it
+     * the client snaps back to where the server was a round trip ago and then
+     * re-runs forwards from there on the next frame, which is the classic
+     * rubber-band.
+     */
+    reconcile(a: Authoritative): void {
+      pending = pending.filter((c) => (c.seq ?? 0) > a.ack);
+
+      // Where the figure is being DRAWN right now — predicted plus whatever
+      // correction is still easing out. Measured against this rather than
+      // against the raw prediction, which is what stops a second correction
+      // arriving mid-glide from jumping.
+      const drawnX = predicted.x + errX;
+      const drawnY = predicted.y + errY;
+
+      let replayed: StepPlayer = { ...predicted, x: a.x, y: a.y };
+      for (const c of pending) replayed = step(desks, replayed, c, constants);
+      predicted = replayed;
+
+      const dx = drawnX - predicted.x;
+      const dy = drawnY - predicted.y;
+      const off = Math.hypot(dx, dy);
+      if (off < SILENT_CORRECTION || off > SNAP_CORRECTION) {
+        // Too small to see, or too big to glide. Both end with the figure
+        // exactly where the server says, which is the only outcome that matters.
+        errX = 0;
+        errY = 0;
+      } else {
+        errX = dx;
+        errY = dy;
+      }
+    },
+
+    /** Decays the correction. Called once per drawn frame with its own dt. */
+    tick(dt: number): void {
+      if (errX === 0 && errY === 0) return;
+      // Exponential, not linear: it lands smoothly rather than stopping dead,
+      // and it cannot overshoot however long or short the frame was.
+      const k = Math.exp(-dt / CORRECTION_SECONDS);
+      errX *= k;
+      errY *= k;
+      if (Math.hypot(errX, errY) < 1e-4) {
+        errX = 0;
+        errY = 0;
+      }
+    },
+
+    /** Where to draw the player this frame, in metres. */
+    view(): { x: number; y: number } {
+      return { x: predicted.x + errX, y: predicted.y + errY };
+    },
+
+    /**
+     * The commands the server has not acknowledged, newest last.
+     *
+     * Sent again in each frame up to `max`; see REDUNDANT_COMMANDS.
+     */
+    unacknowledged(max: number): StepCommand[] {
+      return max <= 0 ? [] : pending.slice(-max);
+    },
+
+    /** For tests and for the shift ending. */
+    pendingCount(): number {
+      return pending.length;
+    },
+    /** The raw prediction, without the correction offset. For tests. */
+    raw(): StepPlayer {
+      return { ...predicted };
+    },
+    /** How far the drawn position currently is from the predicted one. */
+    correction(): number {
+      return Math.hypot(errX, errY);
+    },
+  };
+}
+
+export type Predictor = ReturnType<typeof createPredictor>;
+
+// ---------------------------------------------------------------------------
+// The emitter: turning a thumb and a clock into the commands that get predicted
+// and sent.
+// ---------------------------------------------------------------------------
+
+export interface EmitterOptions {
+  /** Commands a second: the send rate times the commands one frame may carry. */
+  hz: number;
+  /** Longest sub-step the server will simulate. */
+  maxStepSeconds: number;
+  /** Most commands one wake may produce, so a stalled tab cannot flood. */
+  maxPerWake: number;
+  /** Below this magnitude of push, nothing happened. Mirrors the simulation. */
+  idleThreshold: number;
+}
+
+/** Where the player is pushing, right now. */
+export interface KarenAxes {
+  mx: number;
+  my: number;
+}
+
+/**
+ * Emits commands at a FIXED RATE, independent of the frame rate.
+ *
+ * **Merging is fatal once prediction exists**: the client would predict from the
+ * individual commands while the server simulated the merged ones, so the two
+ * would disagree by construction and the correction would never settle. So the
+ * rate is fixed instead — the send rate times the commands one frame may carry,
+ * forty a second against ten frames of four. A send window then holds exactly
+ * the number of commands it is allowed to, on a 144 Hz tablet and a 30 Hz phone
+ * alike, and nothing ever has to be dropped or combined.
+ *
+ * A COMMAND IS EMITTED ONLY WHEN SOMETHING HAPPENED — a push past the idle
+ * threshold, or a dash. Standing perfectly still with the screen untouched emits
+ * nothing, so no frame is sent, so a player who is doing the thing this game is
+ * about costs the network nothing at all. The salary keeps climbing because the
+ * SERVER advances the shift; a client that had to send ten frames a second in
+ * order to be paid would be the exact defect «ВАНЯДУМ» shipped once.
+ *
+ * It takes its clock as an argument rather than reading one, so a test drives a
+ * whole second without waiting for one.
+ */
+export function createEmitter(opts: EmitterOptions) {
+  const period = 1000 / opts.hz;
+  let last: number | null = null;
+  // Fractional leftovers are carried rather than discarded: dropping them makes
+  // the client's simulated time drift slowly behind the server's, which shows up
+  // as a correction that is always in the same direction.
+  let owed = 0;
+
+  return {
+    /**
+     * The commands due at this instant — usually none, sometimes one, more only
+     * after a stall.
+     *
+     * `dash` is consumed by the FIRST command this call emits. The caller keeps
+     * asking until one comes back carrying it, so a tap during a frame that
+     * produced no command is not silently lost.
+     */
+    due(nowMs: number, axes: KarenAxes, dash: boolean): StepCommand[] {
+      if (last === null) {
+        last = nowMs;
+        return [];
+      }
+      owed += nowMs - last;
+      last = nowMs;
+
+      const out: StepCommand[] = [];
+      // Bounded so a tab that was backgrounded for a minute does not emit a
+      // minute of commands the moment it wakes. The server's own time budget
+      // would refuse them anyway, and not creating them is what keeps the
+      // client's prediction agreeing with that refusal.
+      let budget = opts.maxPerWake;
+      let dashLeft = dash;
+      while (owed >= period && budget > 0) {
+        owed -= period;
+        budget -= 1;
+        const pushing = Math.hypot(axes.mx, axes.my) > opts.idleThreshold;
+        if (!pushing && !dashLeft) continue;
+        const cmd: StepCommand = {
+          dt: Math.min(opts.maxStepSeconds, period / 1000),
+          mx: axes.mx,
+          my: axes.my,
+        };
+        if (dashLeft) {
+          cmd.dash = true;
+          dashLeft = false;
+        }
+        out.push(cmd);
+      }
+      // Whatever the wake budget could not cover is dropped rather than owed
+      // forever, so a long stall costs one gap instead of a slow catch-up the
+      // server would refuse anyway.
+      if (owed > period * opts.maxPerWake) owed = 0;
+      return out;
+    },
+
+    /** Drops everything, for when a shift ends. */
+    reset(): void {
+      last = null;
+      owed = 0;
+    },
+  };
+}
+
+export type Emitter = ReturnType<typeof createEmitter>;
+
+/**
+ * How far from the stick's centre counts as nothing.
+ *
+ * A thumb resting on glass is never perfectly still, and in this game that is
+ * not a cosmetic problem: drifting a hair while you believe you are standing
+ * still is the difference between the multiplier climbing to ×3 and being
+ * silently reset, with nothing on screen to explain it. Comfortably above the
+ * simulation's own idle threshold for that reason — the stick refuses to report
+ * a push the server would count as movement.
+ */
+export const STICK_DEADZONE = 0.16;
+
+/**
+ * Turns a drag on the stick into movement axes.
+ *
+ * Screen coordinates have +y downwards and so does the office (origin top-left),
+ * so — unlike a first-person game — there is no flip: dragging down walks down
+ * the screen, which is what a plan view means.
+ *
+ * Clamped rather than normalised past full push: a half-pushed stick stays half
+ * speed, which the server also relies on.
+ */
+export function stickVector(
+  origin: { x: number; y: number },
+  point: { x: number; y: number },
+  radius: number,
+): KarenAxes {
+  if (!(radius > 0)) return { mx: 0, my: 0 };
+  const dx = (point.x - origin.x) / radius;
+  const dy = (point.y - origin.y) / radius;
+  const mag = Math.hypot(dx, dy);
+  if (!Number.isFinite(mag) || mag < STICK_DEADZONE) return { mx: 0, my: 0 };
+  const scale = mag > 1 ? 1 / mag : 1;
+  return { mx: dx * scale, my: dy * scale };
+}
+
+/** One command exactly as it goes on the wire — short keys, `d` omitted. */
+export interface WireCommand {
+  q?: number;
+  dt: number;
+  mx: number;
+  my: number;
+  d?: true;
+}
+
+/** One input frame, exactly as it goes on the wire. */
+export interface InputFrame {
+  t: 'karen_input';
+  /** The last snapshot tick this client drew — the server derives RTT from it. */
+  k: number;
+  cmds: WireCommand[];
+}
+
+/**
+ * Builds an input frame: the commands just applied, preceded by the tail of
+ * whatever is still unacknowledged.
+ *
+ * PURE, AND TESTED HERE RATHER THAN IN PLAYWRIGHT. Input is emitted from the
+ * render loop, and a browser pauses `requestAnimationFrame` outright for a
+ * backgrounded page — under several parallel workers only one page is ever
+ * visible, which made the equivalent assertion in «ВАНЯДУМ» fail about one run
+ * in three for reasons that had nothing to do with the payload.
+ *
+ * Redundant commands come FIRST and are de-duplicated against the fresh ones:
+ * the server applies them in order and drops any sequence it has already seen.
+ * `d` is omitted rather than sent false, because this frame repeats ten times a
+ * second for as long as somebody is walking.
+ */
+export function buildInputFrame(
+  seenTick: number,
+  fresh: readonly StepCommand[],
+  unacknowledged: readonly StepCommand[],
+): InputFrame {
+  const seen = new Set(fresh.map((c) => c.seq));
+  const cmds = [...unacknowledged.filter((c) => !seen.has(c.seq)), ...fresh];
+  return {
+    t: 'karen_input',
+    k: seenTick,
+    cmds: cmds.map((c) => {
+      const wire: WireCommand = { q: c.seq, dt: c.dt, mx: c.mx, my: c.my };
+      if (c.dash) wire.d = true;
+      return wire;
+    }),
+  };
+}

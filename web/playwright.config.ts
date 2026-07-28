@@ -48,6 +48,34 @@ export default defineConfig({
   // default (cores/2) is already right.
   workers: process.env.CI ? 2 : undefined,
   reporter: [['list']],
+  // THE DEFAULT PER-TEST TIMEOUT IS THIRTY SECONDS, and the thing that exceeds
+  // it is never an assertion — it is `page.goto` plus the first paint of a lazy
+  // route, queued behind every other worker doing the same.
+  //
+  // The mechanism is worth writing down because it is invisible from any single
+  // test: `vite preview` is ONE Node process serving the whole suite, and every
+  // view here is a separate chunk fetched over it. Locally Playwright runs
+  // cores/2 workers — eight on a sixteen-core workstation, against CI's two — so
+  // the workstation is the harsher environment for exactly this, which is why
+  // the failure showed up in the commit hook rather than in the pipeline. A
+  // fourth game's worth of route loads was enough to push one over.
+  //
+  // Raising it is not a retry and hides nothing: a test that genuinely hangs
+  // still fails, and a passing one is unaffected, because a test ends when it
+  // ends rather than when its ceiling allows.
+  timeout: 60_000,
+  // THE DEFAULT ASSERTION TIMEOUT IS FIVE SECONDS, and it is too short for the
+  // same reason. Almost everything here is a synchronous DOM measurement that
+  // resolves instantly, but a handful open a view and wait for it to appear —
+  // `enterYard` is `goto` + a click + `expect(plane).toBeVisible()`. Under a
+  // saturated machine one of those measured FOURTEEN seconds.
+  //
+  // That is the runbook's third known flake, and the sibling stack config
+  // already answered it the same way for the same reason. It is a floor, not a
+  // licence to wait: an assertion resolves the instant it is true, so a higher
+  // ceiling costs nothing on a green run and only changes how long a genuinely
+  // broken one takes to report itself.
+  expect: { timeout: 15_000 },
   use: {
     baseURL: BASE_URL,
     // Kept for every test, pass or fail: a recording is the fastest way to see

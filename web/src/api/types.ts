@@ -853,3 +853,116 @@ export interface VanyadumRunRow {
   beer: number;
   created_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// «СИМУЛЯТОР КАРЕНА» — game four, the office.
+//
+// The catalogue carries the whole office, and that is the load-bearing
+// simplification against «ВАНЯДУМ»: there is one office, it is always the same
+// office, and it is not generated, not per-shift and not sent when a shift
+// starts. So `POST /shifts` answers with an id and a room and nothing else, and
+// everything the plane draws comes from here — fetched once, cached by the
+// browser, and derived from for the splash's rules cheatsheet.
+//
+// Nothing is withheld in iteration 1: the boss is a speed and a radius, both of
+// which the client draws and the server enforces, so publishing them costs
+// nothing and lets the cheatsheet be generated rather than typed.
+// ---------------------------------------------------------------------------
+
+/** An axis-aligned rectangle in office metres. Origin top-left, +Y downward. */
+export interface KarenRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** The room itself: its size in metres, its furniture, and who fits through it. */
+export interface KarenOfficeConfig {
+  w: number;
+  h: number;
+  desks: KarenRect[];
+  player_radius: number;
+  boss_radius: number;
+}
+
+/** The money ramp — the core feel of the game, and the whole reason to stand still. */
+export interface KarenMoneyConfig {
+  base_per_second: number;
+  ramp_seconds: number;
+  max_multiplier: number;
+  /** How long you may move before the streak resets, in milliseconds. */
+  grace_ms: number;
+}
+
+/**
+ * Movement, and the rates the client has to match.
+ *
+ * `input_hz` and `max_commands` are not advice: the socket rate-limits a client
+ * that sends faster, and the server drops sub-steps beyond the cap.
+ */
+export interface KarenMoveConfig {
+  walk_speed: number;
+  dash_speed: number;
+  dash_ms: number;
+  dash_cooldown_ms: number;
+  input_hz: number;
+  max_commands: number;
+}
+
+/** The bald man. He walks at you and smiles wider as he closes. */
+export interface KarenBossConfig {
+  speed: number;
+  catch_radius: number;
+  /** Metres over which the grin ramps from nothing to everything. */
+  grin_range: number;
+}
+
+export interface KarenSimConfig {
+  hz: number;
+  snapshot_hz: number;
+}
+
+/** How a shift can end. The client shows the title and sub; it never writes one. */
+export interface KarenEnding {
+  key: string;
+  title: string;
+  sub: string;
+}
+
+export interface KarenConfig {
+  game_key: string;
+  title: string;
+  office: KarenOfficeConfig;
+  money: KarenMoneyConfig;
+  move: KarenMoveConfig;
+  boss: KarenBossConfig;
+  sim: KarenSimConfig;
+  endings: KarenEnding[];
+  /** What he says. Carried from iteration 1 so the shape is right; drawn later. */
+  boss_lines: string[];
+  max_occupants: number;
+}
+
+/** A started or resumed shift. No level — the office is in the catalogue. */
+export interface KarenShift {
+  shift_id: string;
+  /** The realtime room to open the socket in. Taken from here, never hardcoded. */
+  room: string;
+}
+
+/** One of your own finished shifts, as the splash lists them. */
+export interface KarenShiftRow {
+  cause: string;
+  salary: number;
+  seconds: number;
+  created_at: string;
+}
+
+/** One row of the leaderboard: the best shift per account, never the best rows. */
+export interface KarenTopRow {
+  name: string;
+  salary: number;
+  seconds: number;
+  cause: string;
+}

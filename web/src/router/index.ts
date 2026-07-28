@@ -107,6 +107,15 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/GameVanyadumView.vue'),
       },
       {
+        // «СИМУЛЯТОР КАРЕНА». A child of the /app shell, which already carries
+        // `meta.requiresApproved` — so the game route needs no meta and no
+        // guard of its own. Lazy like every route, though this one pulls in
+        // nothing heavier than the rest of the SPA: the office is DOM and CSS.
+        path: 'game-karen',
+        name: 'game-karen',
+        component: () => import('../views/GameKarenView.vue'),
+      },
+      {
         path: 'admin',
         name: 'admin',
         component: () => import('../views/AdminView.vue'),
