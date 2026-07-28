@@ -743,3 +743,86 @@ export interface VanyagotchiState {
    */
   server_now: string;
 }
+
+// ---------------------------------------------------------------------------
+// «ВАНЯДУМ» — game three, the shooter.
+//
+// The catalogue is small on purpose: everything about how the world LOOKS is a
+// handful of numbers the client generates geometry and textures from, and
+// everything about how it BEHAVES is decided by the server's simulation and
+// arrives as a snapshot. There is no art, no sprite sheet and no asset key
+// anywhere in this game.
+// ---------------------------------------------------------------------------
+
+/** Something that can be lying on the floor. */
+export interface VanyadumPickupKind {
+  key: string;
+  title: string;
+  /** One emoji, for the HUD and the cheatsheet. The HUD is real text. */
+  icon: string;
+  /** Which counter it fills, and by how much. Read generically. */
+  grants: string;
+  amount: number;
+  /** Ceiling for that counter; 0 means uncapped. */
+  max: number;
+  tint: string;
+  /** One line of Russian for the rules cheatsheet. */
+  blurb: string;
+}
+
+/** How a wall, floor or ceiling is textured — the client generates the pixels. */
+export interface VanyadumSurfaceKind {
+  key: string;
+  base: string;
+  accent: string;
+  noise: number;
+  roughness: number;
+  pattern: string;
+}
+
+export interface VanyadumPlayerConfig {
+  radius: number;
+  eye_height: number;
+  walk_speed: number;
+  max_step: number;
+  max_pitch: number;
+  max_health: number;
+  start_health: number;
+}
+
+/**
+ * The rates the client has to match. `input_hz` and `max_commands` are not
+ * advice: the socket rate-limits a client that sends faster, and the server
+ * drops sub-steps beyond the cap.
+ */
+export interface VanyadumSimConfig {
+  hz: number;
+  snapshot_hz: number;
+  input_hz: number;
+  max_commands: number;
+  max_step_seconds: number;
+}
+
+export interface VanyadumConfig {
+  player: VanyadumPlayerConfig;
+  pickups: VanyadumPickupKind[];
+  surfaces: VanyadumSurfaceKind[];
+  sim: VanyadumSimConfig;
+}
+
+/** A started or resumed run: which one it is, and the level to build. */
+export interface VanyadumRun {
+  run_id: string;
+  /** The whole sector graph. Sent once per run and never on a snapshot. */
+  level: import('../lib/vanyadumLevel').VanyadumLevel;
+  /** The realtime room to open the socket in. */
+  room: string;
+}
+
+/** One finished run, as the splash screen lists it. */
+export interface VanyadumRunRow {
+  success: boolean;
+  seconds: number;
+  beer: number;
+  created_at: string;
+}

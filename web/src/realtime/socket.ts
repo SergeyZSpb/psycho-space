@@ -364,16 +364,27 @@ export type RealtimeClient = ReturnType<typeof createRealtimeClient>;
 /** The room «Ванягоччи» shares. One room per game, never one per location. */
 export const YARD_ROOM = 'yard';
 
-let shared: RealtimeClient | undefined;
+/**
+ * One client per room, built lazily.
+ *
+ * A MAP rather than a single client, because there is more than one realtime
+ * game now and they live in different rooms. Each room gets its own socket and
+ * its own reconnect state — which is what the server's per-account connection
+ * cap is counted against, so a player with two games open spends two of his
+ * three. That is the honest cost of a second realtime game and it is why the
+ * idle grace above matters: a room nobody is subscribed to closes.
+ */
+const shared = new Map<string, RealtimeClient>();
 
 /**
- * The app's one client, built lazily so that merely importing this module does
+ * The client for a room, built lazily so that merely importing this module does
  * not touch `window` — which matters for the unit tests and for any future
  * server-side render.
  */
-export function realtimeClient(): RealtimeClient {
-  if (!shared) {
-    shared = createRealtimeClient(YARD_ROOM, {
+export function realtimeClient(room: string = YARD_ROOM): RealtimeClient {
+  const existing = shared.get(room);
+  if (existing) return existing;
+  const client = createRealtimeClient(room, {
       open: (url) => new WebSocket(url),
       origin: () => window.location.origin,
       setTimeout: (fn, ms) => window.setTimeout(fn, ms),
@@ -399,7 +410,7 @@ export function realtimeClient(): RealtimeClient {
           window.removeEventListener('pageshow', fn);
         };
       },
-    });
-  }
-  return shared;
+  });
+  shared.set(room, client);
+  return client;
 }

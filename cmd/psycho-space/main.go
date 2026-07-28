@@ -19,6 +19,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
 	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
+	"github.com/SergeyZSpb/psycho-space/internal/gamevanyadum"
 	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/logging"
@@ -125,6 +126,20 @@ func main() {
 	vanyaTicker := time.NewTicker(gamevanyagotchi.BroadcastInterval)
 	defer vanyaTicker.Stop()
 	go gameVanyagotchiSvc.Run(hubCtx, vanyaTicker.C)
+
+	// «ВАНЯДУМ» — the third game, and the only thing in this process that runs a
+	// SIMULATION rather than a render tick. It advances positions and collisions
+	// twenty times a second, which is why the package doc spends a screen
+	// explaining that it still does not tick durable state: every arena lives in
+	// memory and Postgres is touched twice per run, at its start and at its end.
+	//
+	// Its ticker is injected for the same reason the yard's is — the tests drive
+	// the loop from a channel and never sleep.
+	gameVanyadumSvc := gamevanyadum.NewService(hub, gamevanyadum.Room, pool, gamevanyadum.NewPostgresRepository())
+	vanyadumTicker := time.NewTicker(gamevanyadum.SimStep)
+	defer vanyadumTicker.Stop()
+	go gameVanyadumSvc.Run(hubCtx, vanyadumTicker.C)
+
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
 
 	var vkVerifier *vk.IDTokenVerifier
@@ -147,15 +162,23 @@ func main() {
 		Wishlist:   wishlistSvc,
 		GameKhimki: gameKhimkiSvc,
 		// One service, two surfaces: the pet over HTTP here, the plane over the
-		// socket via RealtimeHandler below.
+		// socket via RealtimeHandlers below.
 		GameVanyagotchi: gameVanyagotchiSvc,
+		GameVanyadum:    gameVanyadumSvc,
 		GameAssets:      gameAssetsSvc,
 		Settings:        settingsSvc,
 		VKVerifier:      vkVerifier,
 
-		Realtime:        hub,
-		RealtimeCtx:     hubCtx,
-		RealtimeHandler: gameVanyagotchiSvc,
+		Realtime:    hub,
+		RealtimeCtx: hubCtx,
+		// The room registry, and the only place in the process where a room name
+		// is tied to a game. httpapi holds the map and knows nothing about what
+		// is in it; each game exports its own room name, so adding a fourth game
+		// is a line here and no change to any unprefixed package.
+		RealtimeHandlers: map[string]realtime.Handler{
+			httpapi.DefaultRoom: gameVanyagotchiSvc,
+			gamevanyadum.Room:   gameVanyadumSvc,
+		},
 	})
 	httpServer := httpapi.NewHTTPServer(cfg.HTTPAddr, srv.Handler(), httpapi.DefaultTimeouts())
 
@@ -194,6 +217,16 @@ func main() {
 	case <-gameVanyagotchiSvc.Done():
 	case <-time.After(5 * time.Second):
 		slog.Warn("gamevanyagotchi did not finish saving positions in time")
+	}
+
+	// And the shooter, for the same reason in a different shape: its writer
+	// goroutine drains any finished run still queued before it returns, so a
+	// deploy landing on somebody's last beer still records the run instead of
+	// dropping it on the floor.
+	select {
+	case <-gameVanyadumSvc.Done():
+	case <-time.After(5 * time.Second):
+		slog.Warn("gamevanyadum did not finish saving runs in time")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

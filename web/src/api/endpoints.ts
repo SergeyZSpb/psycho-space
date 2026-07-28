@@ -14,6 +14,9 @@ import type {
   GameKhimkiStats,
   GameKhimkiTurnResult,
   LoginResult,
+  VanyadumConfig,
+  VanyadumRun,
+  VanyadumRunRow,
   VanyagotchiConfig,
   VanyagotchiState,
   WishlistComment,
@@ -138,6 +141,33 @@ export const gameVanyagotchiApi = {
   // There is no `act` here on purpose: a verb travels over the SOCKET now, as
   // one frame carrying a list, and the server answers with state rather than a
   // response body. See GameVanyagotchiView's act().
+};
+
+// «ВАНЯДУМ». Its own block, like every game — and deliberately only the EDGES
+// of a run: nothing a player touches while playing is here, because input and
+// the world both travel on the socket at twenty frames a second.
+export const gameVanyadumApi = {
+  // The catalogue: the player's dimensions, the pickups, the surfaces the client
+  // generates textures from, and the rates it has to match. The splash screen's
+  // rules cheatsheet is built from this, so retuning a constant on the server
+  // changes what the player is told with no frontend deploy.
+  config: () => apiFetch<VanyadumConfig>('/api/game-vanyadum/config'),
+
+  // Starts a run and returns the whole level. 409 `run_in_progress` when one is
+  // already going — a refusal rather than a silent replacement, because
+  // dropping the old arena would throw away a run open on another tab.
+  start: () => apiFetch<VanyadumRun>('/api/game-vanyadum/runs', { method: 'POST' }),
+
+  // The run already in progress, or 404 `no_run`. This is what a page reload
+  // needs: after a refresh the browser has a session, a socket and no geometry.
+  current: () => apiFetch<VanyadumRun>('/api/game-vanyadum/runs/current'),
+
+  // Gives up. Nothing is written — a run somebody walked out of is not a result.
+  abandon: () => apiFetch<void>('/api/game-vanyadum/runs/current', { method: 'DELETE' }),
+
+  // The caller's own recent runs. It exists so that "the run was written" is
+  // something a person can check without opening a database.
+  myRuns: () => apiFetch<{ runs: VanyadumRunRow[] }>('/api/game-vanyadum/runs/me'),
 };
 
 export const adminApi = {

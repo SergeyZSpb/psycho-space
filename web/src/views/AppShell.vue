@@ -9,6 +9,12 @@
           value="game-vanyagotchi"
         />
         <v-list-item
+          :to="{ name: 'game-vanyadum' }"
+          prepend-icon="mdi-pistol"
+          title="ВАНЯДУМ"
+          value="game-vanyadum"
+        />
+        <v-list-item
           :to="{ name: 'game-khimki' }"
           prepend-icon="mdi-controller-classic-outline"
           title="Смолтолк в Химках"

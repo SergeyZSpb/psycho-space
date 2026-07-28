@@ -57,6 +57,14 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/GameVanyagotchiView.vue'),
       },
       {
+        // «ВАНЯДУМ». Lazy like every route, and it matters more here than
+        // anywhere else in the app: this view is the only thing that pulls
+        // three.js in, so nobody who never opens it pays for the engine.
+        path: 'game-vanyadum',
+        name: 'game-vanyadum',
+        component: () => import('../views/GameVanyadumView.vue'),
+      },
+      {
         path: 'admin',
         name: 'admin',
         component: () => import('../views/AdminView.vue'),

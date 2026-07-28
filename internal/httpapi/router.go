@@ -11,6 +11,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
 	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
+	"github.com/SergeyZSpb/psycho-space/internal/gamevanyadum"
 	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
 	"github.com/SergeyZSpb/psycho-space/internal/realtime"
 	"github.com/SergeyZSpb/psycho-space/internal/session"
@@ -38,6 +39,11 @@ type Deps struct {
 	// RealtimeHandler below — one game, two surfaces: an HTTP one for the pet
 	// that outlives the process and a socket one for the plane that does not.
 	GameVanyagotchi *gamevanyagotchi.Service
+	// GameVanyadum is the third game — «ВАНЯДУМ», the shooter. Like the game
+	// above it has two surfaces: HTTP for starting and ending a run, and the
+	// socket for the twenty-hertz simulation, which is where every input and
+	// every snapshot travels.
+	GameVanyadum *gamevanyadum.Service
 	// GameAssets is the shared art blob store — infrastructure, not a game, so
 	// every game's art is served through this one dependency. nil disables the
 	// asset route, which is the correct behaviour before anything is uploaded.
@@ -49,11 +55,12 @@ type Deps struct {
 	// the upgrade handler returns.
 	Realtime    *realtime.Hub
 	RealtimeCtx context.Context
-	// RealtimeHandler receives inbound socket frames. It is an interface, not a
-	// game, so this file names no game and the upgrade path stays game-agnostic;
-	// main decides which service is behind it. nil means frames are read for
-	// their bounds and discarded.
-	RealtimeHandler realtime.Handler
+	// RealtimeHandlers maps a room name to whatever reads its inbound frames.
+	// They are interfaces, not games, so this file names no game and the upgrade
+	// path stays game-agnostic; main decides which service sits behind which
+	// room, and the keys of this map ARE the set of rooms a client may ask for
+	// (see isKnownRoom). An empty map disables the socket for every room.
+	RealtimeHandlers map[string]realtime.Handler
 }
 
 // rateLimit builds a per-client-IP rate limiter that renders the canonical JSON
@@ -173,6 +180,25 @@ func (s *Server) Handler() http.Handler {
 			// roster already published. A redirect or a 404, and the 404 is the
 			// ordinary answer for every NPC.
 			r.Get("/avatar/{peer}", s.handleGameVanyagotchiAvatar)
+		})
+
+		// Game «ВАНЯДУМ» — approved users only, and only the EDGES of a run.
+		// Starting one, resuming it after a reload, giving up, and reading what
+		// you have already done. Playing happens entirely on the socket: input
+		// arrives as a frame and the world goes back as a snapshot twenty times
+		// a second, so there is deliberately no endpoint here that a player
+		// touches while playing.
+		//
+		// No LLM on any path here either — that rule is written into the game's
+		// package doc, and it matters more here than it did in the yard because
+		// this game would otherwise want a generated line every trigger pull.
+		r.Route("/game-vanyadum", func(r chi.Router) {
+			r.Use(s.requireAuth)
+			r.Get("/config", s.handleGameVanyadumConfig)
+			r.Post("/runs", s.handleGameVanyadumStart)
+			r.Get("/runs/current", s.handleGameVanyadumCurrent)
+			r.Delete("/runs/current", s.handleGameVanyadumAbandon)
+			r.Get("/runs/me", s.handleGameVanyadumMyRuns)
 		})
 
 		// Game art — shared infrastructure, NOT a game. The blob store has

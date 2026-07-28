@@ -301,7 +301,10 @@ func buildAppRealtimeFull(t *testing.T, vkBaseURL string) (http.Handler, *realti
 		Settings:        settings.NewService(pool),
 		Realtime:        hub,
 		RealtimeCtx:     ctx,
-		RealtimeHandler: vanya,
+		// One entry, because this harness is «Ванягоччи»'s. A game gets its own
+		// harness rather than a share of this one — the same rule that keeps the
+		// games' packages apart, applied to their tests.
+		RealtimeHandlers: map[string]realtime.Handler{httpapi.DefaultRoom: vanya},
 	}).Handler()
 	return observability.WrapHandler(h, "http.server"), hub, cancel, tick, sweep, vanya
 }

@@ -5,10 +5,10 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** psycho-space at two altitudes — the structural view (§1–7: logical containers, runtime flows, package layout, data model, API map, security) and, in §8, a one-paragraph summary of every decision that produced that shape, each linking to its full record in `docs/adrs/`. `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
-- **status:** a current-state snapshot, deliberately not a history — `git log` holds how it got here. **One Go binary** (embedded Vue SPA + `/api` + a WebSocket) behind nginx on one Ubuntu box, PostgreSQL 16 local, no Redis and no scheduler of any kind. Login is VK ID, access is allowlist-gated. Live sections: **wishlist** (items + threaded comments, both upvotable), **admin/settings**, and **two games**. **«Смолтолк в Химках»** (`internal/gamekhimki/`) is LLM-judged dialogue and the only paid path. **«Ванягоччи»** (`internal/gamevanyagotchi/`) is realtime with **no LLM on any path**: a shared plane broadcast at 5 Hz over the hub, a Postgres-backed **pet** whose stats decay lazily from `(value, as_of)`, **seven regulars** — at least one in every place — whose POSITIONS are closed-form though their speech is not, walking with server-decided tiredness, absent players drawn asleep where they stood, and speech balloons. The yard is drawn **2.5D**: painted backdrops, cut-out figures anchored at the feet, four depth bands, the hashed identity colour as a ground shadow and the player's VK photograph as a badge beside the head. Its controls are **on the plane** rather than under it — the crate is what you tap to drink, a death screen is the only way back up, and one floating button carries whatever verb has nowhere better to be. The yard also holds **world objects** — relief deposits with a TTL, a lost key exactly one player wins, and a crate of beer drawn down one at a time — contested by two disciplines the catalogue routes between, both settled by a conditional `UPDATE` in PostgreSQL rather than by hub ordering. **Both singletons wander**: a fresh key hides at a hotspot, a fresh crate stands on ordinary ground clear of them, each in a location drawn at random — and **nothing may be placed in the plane's two bottom corners**, which are interface and swallow the taps that land on them. There are **five places** — двор, лес, лифт, кусты, заброшка — and none of them is a realtime room: one room carries the whole game and the client filters on each entity's location, so **a position is a triple** (a place plus `x`,`y` within it) and adding a place costs nothing at the transport layer (ADR-045). Two verbs are **gated on where a Ваня is standing**: drinking, on arrival at the crate, and finding the key, which is a **search** — the key is never drawn, its hiding place is stored and unpublished, and a claim must name a catalogue hotspot the player has actually walked to. **A verb travels over the socket, not over HTTP**, and is followed by state rather than answered by a body — the pet's whole HTTP surface is two reads (ADR-043). Its splash screen is a **rules cheatsheet generated from the served catalogue**. The realtime transport carries a `bye` frame, exposes three game seams (`Handler`, `Hub.Members`, `Hub.PublishTo`), and revalidates sessions every 30 s so a socket cannot outlive its own.
-- **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only, immutable once shipped). For the yard: `internal/gamevanyagotchi/service.go` (the verbs and the tick), `message.go` (the wire contract in §5), `content.go` (every tuning constant, character and phrase), and on the client `web/src/views/GameVanyagotchiView.vue` + `web/src/lib/vanyagotchi{Plane,Pet,Rules}.ts` + `web/src/realtime/socket.ts`.
+- **status:** a current-state snapshot, deliberately not a history — `git log` holds how it got here. **One Go binary** (embedded Vue SPA + `/api` + a WebSocket) behind nginx on one Ubuntu box, PostgreSQL 16 local, no Redis, no cron, no worker and no queue. Login is VK ID, access is allowlist-gated. Live sections: **wishlist** (items + threaded comments, both upvotable), **admin/settings**, and **three games**. **«Смолтолк в Химках»** (`internal/gamekhimki/`) is LLM-judged dialogue and the only paid path. **«Ванягоччи»** (`internal/gamevanyagotchi/`) is realtime with **no LLM on any path**: a shared plane broadcast at 5 Hz over the hub, a Postgres-backed **pet** whose stats decay lazily from `(value, as_of)`, **seven regulars** — at least one in every place — whose POSITIONS are closed-form though their speech is not, walking with server-decided tiredness, absent players drawn asleep where they stood, and speech balloons. The yard is drawn **2.5D**: painted backdrops, cut-out figures anchored at the feet, four depth bands, the hashed identity colour as a ground shadow and the player's VK photograph as a badge beside the head. Its controls are **on the plane** rather than under it — the crate is what you tap to drink, a death screen is the only way back up, and one floating button carries whatever verb has nowhere better to be. The yard also holds **world objects** — relief deposits with a TTL, a lost key exactly one player wins, and a crate of beer drawn down one at a time — contested by two disciplines the catalogue routes between, both settled by a conditional `UPDATE` in PostgreSQL rather than by hub ordering. **Both singletons wander**: a fresh key hides at a hotspot, a fresh crate stands on ordinary ground clear of them, each in a location drawn at random — and **nothing may be placed in the plane's two bottom corners**, which are interface and swallow the taps that land on them. There are **five places** — двор, лес, лифт, кусты, заброшка — and none of them is a realtime room: one room carries the whole game and the client filters on each entity's location, so **a position is a triple** (a place plus `x`,`y` within it) and adding a place costs nothing at the transport layer (ADR-045). Two verbs are **gated on where a Ваня is standing**: drinking, on arrival at the crate, and finding the key, which is a **search** — the key is never drawn, its hiding place is stored and unpublished, and a claim must name a catalogue hotspot the player has actually walked to. **A verb travels over the socket, not over HTTP**, and is followed by state rather than answered by a body — the pet's whole HTTP surface is two reads (ADR-043). Its splash screen is a **rules cheatsheet generated from the served catalogue**. The realtime transport carries a `bye` frame, exposes three game seams (`Handler`, `Hub.Members`, `Hub.PublishTo`), and revalidates sessions every 30 s so a socket cannot outlive its own. **«ВАНЯДУМ»** (`internal/gamevanyadum/`) is game three and the first in 3D: a first-person shooter on a generated заброшка, rendered with **three.js in a canvas that holds the world and nothing else** — every readout and control stays DOM, which is what keeps both Playwright suites alive (ADR-047). It is also the first thing in this project that **simulates**: collision destroys the closed-form motion model everything else uses, so a **20 Hz fixed-step loop** advances in-memory **arenas** — one per run, unicast through `PublishTo` because an arena is not a room — while Postgres is touched exactly twice per run and never on a tick, which is what keeps it on the right side of ADR-038 (ADR-048). Input is **batched to ten frames a second carrying four sub-steps**, fitting inside the socket's existing rate limit rather than loosening it, and a per-arena **real-time budget** is what stops a client filling every frame with legal values and running eight times faster than everybody else (ADR-049). The **level** is a Doom-style sector graph generated in Go from a seed and sent once (ADR-050); the game **stores no art at all** — geometry, textures and props are generated from that seed, with textures as pure typed-array functions specifically so they are testable (ADR-051). Netcode is **rung one** of the Gambetta ladder — no prediction, no interpolation — shipped deliberately so the feel can be measured; `seq`/`ack` are already on the wire, unused, for the rung above it.
+- **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only, immutable once shipped). For the shooter: `internal/gamevanyadum/{sim,level,arena,service}.go` and on the client `web/src/views/GameVanyadumView.vue` + `web/src/lib/vanyadum{Level,Texture,Input,Rules}.ts` + `web/src/render/vanyadumScene.ts` (the only module importing three.js). For the yard: `internal/gamevanyagotchi/service.go` (the verbs and the tick), `message.go` (the wire contract in §5), `content.go` (every tuning constant, character and phrase), and on the client `web/src/views/GameVanyagotchiView.vue` + `web/src/lib/vanyagotchi{Plane,Pet,Rules}.ts` + `web/src/realtime/socket.ts`.
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `ls docs/adrs/` lists every decision record; `grep -n 'TypeHello\|TypeMove\|TypeDo\|TypeRoster\|TypeYou\|TypeStateFrame' internal/gamevanyagotchi/message.go` re-finds the wire types if §5 drifts.
-- **adr:** §8 is a **summary layer**; the records themselves are one file each in `docs/adrs/ADR-0NN-<slug>.md`. **A record states the decision as it stands TODAY and is rewritten in place when it changes** — there is no append-only rule any more, no `Superseded by`, and no amendment chains. The history of a decision lives in `git log -p docs/adrs/ADR-0NN-*.md`, which is a better record of how the thinking moved than a status line was. Adding one: create the file, add a one-paragraph summary + link under the right `### 8.x` group, take the **next global number** wherever the group. **Numbers are never reused and gaps are permanent**, so existing references never shift. Status vocabulary is `Accepted` and nothing else. **The bar is architecture** — deployment, data, a component boundary, or the cost of a whole class of change; a tuning constant, a UI behaviour or a test-harness fix gets a comment beside the code instead. Highest record: **ADR-046** — confirm with `ls docs/adrs/ | tail -1`. The unused numbers are **020, 032, 035, 036**, all permanent gaps left by records withdrawn for failing the architecture bar. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id, a summary with no file, a file with no summary, and a dead link.
+- **adr:** §8 is a **summary layer**; the records themselves are one file each in `docs/adrs/ADR-0NN-<slug>.md`. **A record states the decision as it stands TODAY and is rewritten in place when it changes** — there is no append-only rule any more, no `Superseded by`, and no amendment chains. The history of a decision lives in `git log -p docs/adrs/ADR-0NN-*.md`, which is a better record of how the thinking moved than a status line was. Adding one: create the file, add a one-paragraph summary + link under the right `### 8.x` group, take the **next global number** wherever the group. **Numbers are never reused and gaps are permanent**, so existing references never shift. Status vocabulary is `Accepted` and nothing else. **The bar is architecture** — deployment, data, a component boundary, or the cost of a whole class of change; a tuning constant, a UI behaviour or a test-harness fix gets a comment beside the code instead. Highest record: **ADR-051** — confirm with `ls docs/adrs/ | tail -1`. The unused numbers are **020, 032, 035, 036**, all permanent gaps left by records withdrawn for failing the architecture bar. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id, a summary with no file, a file with no summary, and a dead link.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff gets a record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
 - **related:** `../CLAUDE.md` (rules), `RUNBOOK.md` (operations, and the owner of measurements and operational economics — notably the game's per-turn cost, which is re-measured rather than recorded here), `adrs/` (the records), the owner's local living doc (roadmap, TODO, private operational detail).
 - **decisions / constraints:** SPA embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; **migrations are immutable once shipped**; no test-only code in production paths; **nothing runs on a timer** — time-varying state is computed on read (ADR-038) and everything that moves is a function of absolute time (ADR-042); the 5 Hz tick renders from an in-memory cache and never touches Postgres (ADR-041); **each game is a self-contained module** sharing no DB or service code with any other, named `Game<Name>` at every layer, with shared *capabilities* unprefixed (ADR-028/030/031). Each has a record carrying its reasoning — read it before arguing with the rule.
@@ -32,7 +32,7 @@ flowchart TB
             EMBED["embedded SPA<br/>go:embed internal/web/dist"]
             API["chi router /api<br/>middleware · handlers"]
             HUB["realtime hub<br/>in-memory · game-agnostic<br/>carries bytes, decides nothing"]
-            DOM["domain services<br/>account · session · wishlist · settings<br/>gamekhimki · gamevanyagotchi — the two games<br/>gameassets (shared art blobs)"]
+            DOM["domain services<br/>account · session · wishlist · settings<br/>gamekhimki · gamevanyagotchi · gamevanyadum — the three games<br/>gameassets (shared art blobs)"]
             REPO["repositories (pgx)"]
         end
         PG[("PostgreSQL 16<br/>localhost")]
@@ -47,14 +47,14 @@ flowchart TB
     NGINX -- "127.0.0.1:8080" --> API
     NGINX -- "101 Upgrade, 127.0.0.1:8080" --> HUB
     API --> DOM --> REPO --> PG
-    DOM -- "5 Hz roster out<br/>presence in" --> HUB
+    DOM -- "5 Hz roster out<br/>20 Hz snapshots out<br/>presence in" --> HUB
     DOM -- "code exchange<br/>+ user_info" --> VK
     DOM -- "one completion<br/>per turn (paid)" --> LLM
 ```
 
 **Why one binary.** The SPA is compiled into the executable, so a deploy is a single file plus a restart, and nginx never needs to know about static asset paths. See [§8 → ADR-001](#adr-001--the-spa-is-embedded-in-the-go-binary) for why, and for what it costs.
 
-**There are two ways in, and only one of them is a request.** Everything except the yard is request/response over `/api`. «Ванягоччи» additionally holds a WebSocket, which nginx must be told about explicitly — an upgrade is not a proxied request and the `Upgrade`/`Connection` headers do not survive a default `proxy_pass`. Inside the binary the hub is deliberately **not** a domain service: it is transport, it knows no game's vocabulary, and a game reaches it through two narrow seams — publish out, query presence in ([§8 → ADR-033](#adr-033--a-game-reads-the-socket-through-a-game-agnostic-handler-and-pulls-presence)). Note also what is **not** in the diagram: nothing runs on a schedule. There is no cron, no worker, no queue and no Redis. The one recurring thing in the process is the game's 5 Hz broadcast tick, and it reads memory rather than the database ([§2.6](#26-one-tick-of-the-yard)).
+**There are two ways in, and only one of them is a request.** Everything except the yard is request/response over `/api`. «Ванягоччи» additionally holds a WebSocket, which nginx must be told about explicitly — an upgrade is not a proxied request and the `Upgrade`/`Connection` headers do not survive a default `proxy_pass`. Inside the binary the hub is deliberately **not** a domain service: it is transport, it knows no game's vocabulary, and a game reaches it through two narrow seams — publish out, query presence in ([§8 → ADR-033](#adr-033--a-game-reads-the-socket-through-a-game-agnostic-handler-and-pulls-presence)). Note also what is **not** in the diagram: no cron, no worker, no queue and no Redis. Two loops do recur, and **neither of them ticks anything durable** — which is the rule, rather than "nothing recurs". The yard's 5 Hz broadcast reads an in-memory cache and never the database ([§2.6](#26-one-tick-of-the-yard)), and «ВАНЯДУМ» runs a 20 Hz simulation over arenas that live only in memory and touch Postgres exactly twice per run ([§2.7](#27-one-step-of-ванядум--the-first-thing-in-this-system-that-simulates)).
 
 ## 2. Runtime views
 
@@ -285,7 +285,56 @@ sequenceDiagram
 
 **Position is in memory, written down only on the way out.** A place survives a page reload because absence is not departure — it is held for a `PositionGrace` of two minutes after the last socket closes — and survives a *deploy* because the last disconnect (and shutdown, for everyone at once) writes it to `pets.x` / `pets.y`. A crash still loses whatever had not been written, and that is accepted rather than fixed. The reward for making it durable is that an absent player can be drawn asleep where he stood instead of vanishing, which is what keeps the yard from being an empty field when only one person is online.
 
-### 2.7 Deploy
+### 2.7 One step of «ВАНЯДУМ» — the first thing in this system that simulates
+
+**This flow is «ВАНЯДУМ»**, the shooter, and it is the one place in this project where a loop advances state because time passed. It is here rather than folded into the yard's tick because it is a different KIND of thing: [§2.6](#26-one-tick-of-the-yard) renders a world that is a closed-form function of the clock, and this one integrates a world that is not.
+
+**Collision is why.** Every other moving thing in this system is `pattern(params, now − epoch)`, so a tick that is late, early, skipped or duplicated still produces the right answer ([ADR-042](#adr-042--everything-that-moves-is-a-function-of-absolute-time)). Where a player is after walking into a wall depends on every wall he slid along getting there — a path, not an expression — so it has to be stepped at a fixed rate.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant H as hub
+    participant G as gamevanyadum
+    participant P as PostgreSQL
+
+    Note over B,P: START — one of the two times a run touches the database
+    B->>G: POST /api/game-vanyadum/runs
+    G->>G: Generate(seed) — sectors, portals, walls, pickups
+    G->>G: arena created IN MEMORY, keyed by account
+    G-->>B: run_id + the whole level, once — never on a snapshot
+
+    Note over B,P: INPUT — ten frames a second, four sub-steps in each
+    loop while playing
+        B->>G: vanyadum_input {seq, cmds:[{dt,mx,my,yaw,pitch}]}
+        G->>G: clamp every field, drop the surplus, QUEUE — never simulate here
+    end
+
+    Note over B,P: SIMULATION — 20 Hz, memory only, no query of any kind
+    loop injected ticker, 20 Hz
+        G->>G: budget += one tick of REAL time, capped — the speed-hack guard
+        G->>G: drain queued commands while the budget lasts, Step() each
+        G->>G: push the disc out of every wall it overlaps, a few passes
+        G->>G: collect whatever he is standing on — there is no use button
+        G->>H: PublishTo(conn, snapshot) — quantised, idempotent full state
+        H-->>B: vanyadum_snap {k, ack, x, y, z, yaw, s, hp, pk, c?, ev?}
+    end
+
+    Note over B,P: END — the other database touch, and the only write
+    G->>H: vanyadum_over {success, secs, c}
+    G->>P: INSERT game_vanyadum_runs — on a separate writer goroutine
+```
+
+**Nothing about this ticks durable state**, which is what keeps it on the right side of [ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked). An arena lives in a map in one package, Postgres is touched twice per run and never on a tick, and an arena is deliberately lost on restart in the same way the hub's presence is. A run is a few minutes long and a lost one costs a replay.
+
+**An arena is not a room.** Every player has his own world, but the platform knows only that this game listens in the room `vanyadum` and each snapshot is addressed to a **connection**. A room per run was refused for the reason [ADR-045](#adr-045--a-location-is-not-a-room--the-roster-is-filtered-not-split) refused a room per location: it would teach an unprefixed platform file what a run is. What did change is one line's worth — `httpapi` holds a **map of room name to handler**, so the set of valid rooms is exactly what `main` registered, and each game exports its own room name.
+
+**Simulated time is spent, not claimed.** This is the security property that a per-field clamp cannot provide. The socket allows ten frames a second, each carrying four sub-steps of up to 0.2 s, so a client filling every frame asks for eight seconds of simulation per real second — with **every individual field in range**. So each arena accrues a budget at exactly real time and spends it, with a half-second cap so that an honest burst from a phone that was backgrounded can still catch up ([ADR-048](#adr-048--the-simulation-is-a-server-owned-fixed-step-tick-over-in-memory-arenas), [ADR-049](#adr-049--input-is-batched-to-fit-the-sockets-bound-never-to-loosen-it)).
+
+**And `Step` is pure** — a function of `(level, player, command)` with no clock, no randomness and no query. That is what makes the whole of movement table-testable, and it is written that way against a future that has not arrived: if the feel gate fails and the netcode climbs to client-side prediction, this exact function has to run in the browser too, pinned to the Go original by golden vectors.
+
+### 2.8 Deploy
 
 ```mermaid
 sequenceDiagram
@@ -333,17 +382,18 @@ flowchart LR
         subgraph games["games — self-contained, share nothing with each other"]
             GAME["gamekhimki<br/>«Смолтолк в Химках»"]
             VANYA["gamevanyagotchi<br/>«Ванягоччи» — shared plane + the pet"]
+            DUM["gamevanyadum<br/>«ВАНЯДУМ» — 20 Hz simulation + the level"]
         end
     end
 
     WEB["web<br/>go:embed of the built SPA"]
     MIG["migrations<br/>NNN_*.sql, embedded"]
 
-    MAIN --> CFG & DB & LOG & OBS & HTTP & WEB & MIG & RT & VANYA
-    HTTP --> ACC & SESS & WISH & GAME & VANYA & SET & VKP & RT
-    ACC & SESS & WISH & GAME & VANYA & SET --> DB
+    MAIN --> CFG & DB & LOG & OBS & HTTP & WEB & MIG & RT & VANYA & DUM
+    HTTP --> ACC & SESS & WISH & GAME & VANYA & DUM & SET & VKP & RT
+    ACC & SESS & WISH & GAME & VANYA & DUM & SET --> DB
     ACC & SESS --> CRY
-    VANYA -- "publishes through / reads from" --> RT
+    VANYA & DUM -- "publishes through / reads from" --> RT
     SEED -.reuses.-> ACC & SESS & CRY & DB
 ```
 
@@ -351,7 +401,9 @@ flowchart LR
 
 **Games are the exception to the usual instinct to factor things out.** Each game is a self-contained module: its own package, its own `game_<name>_*` tables, its own routes and views, its own leaderboard code — and **no game imports another, even where the code would be identical.** A game may depend on platform packages (`realtime`, `session`, `account`, `crypto`, `db`, and the `httpapi` plumbing); none of those may know a game exists, which is why the socket is addressed as the game-agnostic `/api/realtime?room=…` and game-specific message types live in the game's own package. The test for the boundary: deleting a game must mean deleting its package, its migration, its routes and its views — and nothing else. See [§8 → ADR-028](#adr-028--games-are-self-contained-modules) for why, and `CLAUDE.md` → *Games are self-contained modules* for the same rule stated as a working rule.
 
-**And each game's name is spelled out at every layer**, which is what makes that boundary test executable rather than a judgement call: package `internal/game<name>/`, tables `game_<name>_*`, routes `/api/game-<name>/*`, view `Game<Name>View.vue` at `/app/game-<name>` — so `git grep -il game<name>` enumerates the whole module. «Смолтолк в Химках» is `gamekhimki`; «Ванягоччи» is `gamevanyagotchi`. Platform packages stay unprefixed on purpose, because the missing prefix is the signal that they are game-agnostic. See [§8 → ADR-030](#adr-030--game-modules-are-named-gamename).
+**`gamevanyadum` is the third module, and the only one with a loop that integrates.** Its files split by what they know, in the same idiom as the game above: `content.go` is the catalogue (movement constants, pickups, surfaces, generation parameters, and the whole of what `/config` serves); `level.go` generates the sector graph and derives the walls from it; `sim.go` is `Step`, a pure function of `(level, player, command)` with no clock and no query; `arena.go` is one run's world plus the real-time budget that stops a client buying extra simulation; `service.go` owns the arena map, the 20 Hz tick and the single writer goroutine that makes this game's only two database statements. It shares nothing with «Ванягоччи» — not the display cache, not the tick, not the message envelope — and the duplication is the point ([ADR-028](#adr-028--games-are-self-contained-modules)).
+
+**And each game's name is spelled out at every layer**, which is what makes that boundary test executable rather than a judgement call: package `internal/game<name>/`, tables `game_<name>_*`, routes `/api/game-<name>/*`, view `Game<Name>View.vue` at `/app/game-<name>` — so `git grep -il game<name>` enumerates the whole module. «Смолтолк в Химках» is `gamekhimki`; «Ванягоччи» is `gamevanyagotchi`; «ВАНЯДУМ» is `gamevanyadum`. Platform packages stay unprefixed on purpose, because the missing prefix is the signal that they are game-agnostic — and the one place a game's name now reaches the platform is a **map key**: `httpapi` holds `map[string]realtime.Handler` and each game exports its own room name, so the composition root is the only file that pairs the two. See [§8 → ADR-030](#adr-030--game-modules-are-named-gamename).
 
 **Its files split by what they know.** `content.go` is the catalogue (stats, actions, skins, locations, NPCs, every tuning constant); `decay.go` is the time arithmetic for stats and `motion.go` the time arithmetic for space — both pure, both closed-form, neither storing anything; `display.go` is the in-memory cache the broadcast draws from; `service.go` holds the verbs and the tick. A new character is a `content.go` entry. A new *way of moving* is one function and one map entry in `motion.go`. Neither is a migration and neither is a client change.
 
@@ -369,6 +421,7 @@ flowchart TB
         SHELL["AppShell.vue — /app/*"]
         OTHER["LandingView · PendingView · Privacy · Consent<br/>WishlistView · AdminView · GameKhimkiView"]
         V["GameVanyagotchiView.vue<br/>«Ванягоччи» — plane + panel"]
+        D["GameVanyadumView.vue<br/>«ВАНЯДУМ» — canvas + DOM HUD"]
     end
 
     subgraph net["transport — the yard has TWO sources on one screen"]
@@ -390,18 +443,24 @@ flowchart TB
 
     GLOBAL["auth · error · theme stores"]
 
-    ROUTER --> SHELL --> OTHER & V
+    ROUTER --> SHELL --> OTHER & V & D
     ROUTER --> GLOBAL
     OTHER --> HTTPC
     V -- "the pet, on demand" --> HTTPC --> PET
     V -- "the plane, 5 Hz" --> SOCK --> BACK
     V -- "membership and looks" --> LOOKS --> YARD
     V -- "x and y only" --> POS
+    D -- "run + level, twice" --> HTTPC
+    D -- "input out, snapshots in" --> SOCK
+    D -- "geometry · textures · input maths — PURE" --> PURE["lib/vanyadum{Level,Texture,Input,Rules}.ts"]
+    D -- "the world, and only the world" --> GL["render/vanyadumScene.ts<br/>the ONLY module importing three.js"]
 ```
 
 **The socket is owned at module scope, not by a component.** The yard is a lazy child route, so a component-owned socket would re-handshake on every navigation and spend another of the three connections a server allows per account. Its lifetime is a subscription refcount with a ten-second idle grace, so leaving the yard and coming back reuses the connection.
 
 **In the yard, membership is reactive and positions are not.** This is the load-bearing rule of the client and it is enforced structurally rather than by convention, in three places at once: the store has no field a coordinate could go in, the `PeerAppearance` shape that enters reactivity has no `x`/`y`, and the function that writes a position takes an interface narrowed to `style.setProperty` alone — so the position path *cannot* read layout, measure a box, or touch an attribute. Who is present, what they look like and what they are saying go through pinia and a keyed list, behind an equality guard so a frame that changed nothing re-renders nothing. Where they are is written straight to CSS custom properties on the element, and the mapping from `0..1` to pixels happens in the stylesheet against the plane's own container box. The reason is arithmetic: at 5 Hz, binding positions to reactivity costs a scheduler pass and a vdom patch per entity per frame to produce a transform the compositor could have been handed directly — and it would cache a measured size that mobile browser chrome invalidates every time it slides.
+
+**The third game inverts the yard's rendering decision and keeps its testing one.** «ВАНЯДУМ» draws in WebGL through three.js, because it is a first-person shooter with a camera over a world larger than the viewport — every trigger [ADR-046](#adr-046--the-shared-plane-is-dom-and-css-never-a-game-engine) named for re-asking the question, hit at once. What it does **not** do is put anything else on the canvas: the HUD, the movement stick, the fire button, the splash, the rules cheatsheet and the result screen are ordinary DOM, and the engine is reachable from exactly one module (`render/vanyadumScene.ts`), imported dynamically so nobody who never opens the game pays its 176.7 kB gzip. Everything a test needs is therefore moved out of the canvas in two directions — sideways into the DOM, and downwards into `lib/vanyadum*.ts`, where the level's geometry is plain arrays and a texture is a pure `(surface, size, seed) → Uint8Array` rather than something drawn into a 2D context ([ADR-047](#adr-047--ванядум-renders-in-webgl-and-only-the-world-does), [ADR-051](#adr-051--ванядум-stores-no-art-at-all)). The same rule the yard follows about reactivity applies here in a sharper form: the camera is a **plain object**, written by snapshots twenty times a second and read by the render loop sixty, because putting it through Vue would buy a scheduler pass per frame to produce a number only the renderer reads.
 
 **Everything the client knows about a game's content, it was told.** Stats, actions, skins, locations and characters all arrive from `GET /api/game-<name>/config` and are iterated generically, which is what makes a new stat or a new NPC a backend deploy. The clearest payoff is the splash screen, which is a **rules cheatsheet generated from that catalogue** rather than written out — so retuning a constant in the game's `content.go` changes what the player is told with no client change, and the rules cannot drift from the game the way a hand-typed list would. Only what the server does not publish — walking speed, tiredness, the muttering, who else is in the yard — is hardcoded prose, and it is marked in the source as the part a rules change must come back and edit. What is deliberately still hardcoded is *presentation*: the splash copy, the RU status strings, the pose vocabulary the stylesheet has rules for, and the plane's 3:4 aspect ratio — that last one being a genuine rule of the game rather than a style, because normalised coordinates only mean the same thing on two phones if both draw the same shape.
 
@@ -417,6 +476,7 @@ erDiagram
     accounts ||--o{ wishlist_comments : "authors"
     accounts ||--o{ wishlist_comment_votes : "casts"
     accounts ||--o{ game_khimki_runs : "plays"
+    accounts ||--o{ game_vanyadum_runs : "runs"
     accounts ||--|| game_vanyagotchi_pets : "keeps"
     accounts ||--o{ game_vanyagotchi_world_objects : "leaves behind"
     game_vanyagotchi_pets ||--o{ game_vanyagotchi_pet_stats : "has"
@@ -474,6 +534,14 @@ erDiagram
         boolean success
         integer steps
     }
+    game_vanyadum_runs {
+        uuid id PK
+        uuid account_id FK
+        bigint seed "the level is a pure function of this — never stored"
+        boolean success
+        integer seconds
+        integer beer
+    }
     game_vanyagotchi_pets {
         uuid id PK
         uuid account_id FK "one living pet per account (partial UK)"
@@ -522,6 +590,8 @@ The three `game_vanyagotchi_*` tables are **«Ванягоччи»**, and they a
 
 **There are two contest disciplines and the catalogue routes between them**, which is the shape that arrived with the beer store rather than a hierarchy: a verb names the kind it races for, the kind names its discipline (`Contest`), and the service switches on that alone — so a third contested verb is two catalogue entries and no code. `SingleWinner` is the key, above. **`Stock` is the crate**: `UPDATE … SET remaining = remaining − 1 WHERE remaining > 0 RETURNING remaining` **cannot oversell under any concurrency**, and not by being careful — the guard is inside the statement's own `WHERE`, so a second player's statement blocks on the row the first is holding and then re-evaluates that guard against the value the first *committed* rather than the one it read on the way in. Six players pressing in the same millisecond against a crate of two get two beers and four refusals, decided by PostgreSQL. The decrement that reaches nought sets `exhausted_at` **in the same statement**, which is what takes the row out of the partial unique index and lets the replacement crate be inserted inside the same transaction; splitting those would leave a window in which the index still held the empty crate, the insert silently did nothing, and the yard was left with a crate nobody can draw from and nothing that would ever replace it. Both disciplines share the rule that **losing costs nothing**: the refusal rolls the batch back, so no stat moves and nothing is written at all. The crate stands at a fixed pitch from the catalogue (`ObjectKind.At`) while the key is hidden at random — that `nil` is the whole difference between a shop and a lost key — and the vendor beside it is a **stateless NPC with no row**, because everything mutable about a beer store belongs to the thing with a count.
 
+**`game_vanyadum_runs` is the ENTIRE durable footprint of «ВАНЯДУМ»** — one summary row per finished run, and nothing else in the database at all. Everything the game is made of lives for the few minutes it takes to play: the **level** is a pure function of `seed`, so eight bytes reproduce the geometry exactly and storing it would freeze a generator that changes every iteration ([ADR-050](#adr-050--the-level-is-generated-on-the-server-and-sent-once)); the **arena** — where the player is, what he has picked up, which tick it is — is deliberately ephemeral and is lost on restart in the same way the hub's presence is ([ADR-048](#adr-048--the-simulation-is-a-server-owned-fixed-step-tick-over-in-memory-arenas)). `seed` is kept so that two people can compare times over the same заброшка, which is the only thing that would make a leaderboard worth looking at. `beer` is a plain column rather than a bag of counters: there is one pickup today and a JSONB column added in advance of a second would be complexity bought against a requirement that does not exist. There is no `game_key` discriminator (the table name carries the identity), no enum for anything (pickups and surfaces are a Go catalogue), no per-event rows, and **no art table** — this game stores no art at all ([ADR-051](#adr-051--ванядум-stores-no-art-at-all)). An **abandoned** run is dropped without being written: a run somebody walked out of is not a result.
+
 `game_khimki_runs` and `game_assets` belong to **«Смолтолк в Химках»**, and now say so — they were `game_runs` and `game_assets` until `migrations/007_game_khimki_rename.sql`. A second game gets its own `game_<name>_*` tables rather than rows in these — see [§8 → ADR-028](#adr-028--games-are-self-contained-modules) and [ADR-030](#adr-030--game-modules-are-named-gamename). Their `game_key` **values** did not move with the tables: the column still reads `smalltalk_khimki`, because it is data rather than a name and the art blobs are keyed on it.
 
 ## 5. API map
@@ -535,11 +605,12 @@ Everything is under `/api`, authenticated by the session cookie. `GET /healthz` 
 | `game-khimki` | `GET assets/{game}/{key}` | **public** (art, cacheable) |
 | `game-khimki` | `GET config` · `POST attempt` (5/min per IP — paid) · `POST runs` · `GET runs/leaderboard` · `GET runs/me` | approved |
 | `game-vanyagotchi` | `GET config` (catalogue: stats · actions — including each one's gates and its `fail_chance` · skins · NPCs · object kinds · locations **with their hotspots** · `arrive_within`) · `GET state` · `GET avatar/{peer}` — reads only; **a verb is not HTTP**. The catalogue serves only what is CONSTANT about the beer store — its picture and its name — because where it stands stopped being one. | approved |
+| `game-vanyadum` | `GET config` (catalogue: the player's dimensions · pickups · surfaces the client generates textures from · the rates it must match) · `POST runs` (starts one, returns the **whole level**) · `GET runs/current` (resume after a reload, or 404) · `DELETE runs/current` (give up — writes nothing) · `GET runs/me` | approved |
 | `admin` | `GET accounts?status=` · `POST accounts/{id}/approve` · `POST accounts/{id}/block` · `GET settings` | admin+ |
 | `admin` | `POST accounts/{id}/promote` · `POST accounts/{id}/demote` · `PUT settings/open-registration` | superadmin only |
-| `realtime` | `GET realtime?room=` — WebSocket upgrade | approved |
+| `realtime` | `GET realtime?room=` — WebSocket upgrade. The rooms are exactly those the composition root registered a handler for (`yard`, `vanyadum`); an unregistered name is refused with 400 rather than opened and ignored. | approved |
 
-The two `game-khimki` rows are **«Смолтолк в Химках»** and the `game-vanyagotchi` row is **«Ванягоччи»**; a third game gets its own `/api/game-<name>/*` group rather than new keys in either, while `realtime` is game-agnostic by design ([§8 → ADR-028](#adr-028--games-are-self-contained-modules), [ADR-030](#adr-030--game-modules-are-named-gamename)).
+The two `game-khimki` rows are **«Смолтолк в Химках»**, the `game-vanyagotchi` row is **«Ванягоччи»** and the `game-vanyadum` row is **«ВАНЯДУМ»**; a fourth game gets its own `/api/game-<name>/*` group rather than new keys in any of them, while `realtime` is game-agnostic by design ([§8 → ADR-028](#adr-028--games-are-self-contained-modules), [ADR-030](#adr-030--game-modules-are-named-gamename)).
 
 Two things about the `game-vanyagotchi` row read oddly and are deliberate. **`GET state` writes** — it creates the pet on first sight and records a death the first time one is observed; both are idempotent, and the alternative to writing on read is a background job this system does not have ([§8 → ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked)). And **the group has no write endpoint at all**: a verb arrives as a `vanyagotchi_do` frame on the socket, listed in the wire contract below, because it owes no reply and the 5 Hz roster already reconciles the yard ([§8 → ADR-043](#adr-043--a-verb-travels-over-the-socket-and-is-answered-with-state)). What the catalogue-as-allowlist bought survives the move: the verb is a key checked against the content catalogue rather than a case in a handler, so a new stat-restoring action is still a catalogue entry and nothing else.
 
@@ -549,7 +620,7 @@ Anything not matching `/api` or `/healthz` is served the embedded SPA, so client
 
 ### The realtime wire contract
 
-The table above is HTTP. `GET /api/realtime?room=yard` is the other half of the surface, and it is a **protocol rather than an endpoint**, so it is written out here. Everything in both directions is a JSON **text** frame with a string `t` discriminator, and **both ends ignore an unknown `t`** — that is what lets either side learn a message type without a coordinated deploy.
+The table above is HTTP. `GET /api/realtime?room=…` is the other half of the surface, and it is a **protocol rather than an endpoint**, so it is written out here. There are two rooms and therefore two protocols — `yard` for «Ванягоччи» below, and `vanyadum` for «ВАНЯДУМ» after it. They share the transport and nothing else: no message type, no field name and no convention crosses between them, which is [ADR-028](#adr-028--games-are-self-contained-modules) applied to the wire. Everything in both directions is a JSON **text** frame with a string `t` discriminator, and **both ends ignore an unknown `t`** — that is what lets either side learn a message type without a coordinated deploy.
 
 | Direction | `t` | Payload | Notes |
 |---|---|---|---|
@@ -573,6 +644,25 @@ Six properties of it are load-bearing, and each one is a decision rather than an
 
 The `bye` codes are `1001` planned restart (reconnect promptly), `1013` evicted, rate-limited or over a cap (back off), and `4001` session revoked (terminal — stop, and do not reconnect). Reason strings are constants because the client branches on the exact text, so changing one is a wire change.
 
+#### «ВАНЯДУМ» — `room=vanyadum`
+
+A different protocol in the same transport. Where the yard broadcasts one roster to everybody, this game **unicasts each player his own world**: an arena is not a room, so every frame below is addressed to a connection through `PublishTo`.
+
+| Direction | `t` | Payload | Notes |
+|---|---|---|---|
+| → server | `vanyadum_hello` | none | Attaches this connection to whatever run the account already started over HTTP. No fields at all — identity is the connection. Sent on **every** open, including reconnects: an arena outlives a dropped socket, so a reconnecting client has to say hello again to be re-attached to the run it is already in. |
+| → server | `vanyadum_input` | `seq` · `cmds[]` of `{dt, mx, my, yaw, pitch}` | A batch of sub-steps, at most four. `mx`/`my` are the axes in the player's own frame; `yaw`/`pitch` are **absolute** angles, because aim is an input the server clamps rather than a quantity it simulates. Ten frames a second, which is a third of the socket's allowance — see [ADR-049](#adr-049--input-is-batched-to-fit-the-sockets-bound-never-to-loosen-it). Every field is clamped rather than refused; a frame carrying more than four sub-steps has the surplus dropped. **`seq` is unused in this iteration** and on the wire from the first day, because adding a field to a live protocol later is a coordinated deploy and reserving one costs four bytes. |
+| ← client | `vanyadum_ready` | `run_id` | Which run this socket is now watching. A hello with no run gets **silence** — not an error state, just a socket that opened before the run did. |
+| ← client | `vanyadum_snap` | `k` tick · `ack` · `x`,`y`,`z` · `yaw` · `s` sector · `hp` · `pk[]` · `c?` · `ev?` | The idempotent full-state frame, 20 Hz. **Positions are centimetres and angles are thousandths of a radian, as integers** — this frame repeats twenty times a second forever, and a float64 metre serialises to seventeen characters of noise nobody can see. `pk` is which pickups are still lying about; `c` is the counters bag, iterated generically so a second pickup needs no client change; `ev` carries the things that HAPPENED rather than the things that are true (a beer collected), because those drive a sound and cannot be expressed as state. Self is flattened rather than nested — peers arrive with multiplayer as their own array. **The level is never here**: it is sent once over HTTP and referenced by index. |
+| ← client | `vanyadum_over` | `success` · `secs` · `c?` | The run ended. Sent once; the client stops sending input. |
+| ← client | `bye` | `code`, `reason` | Transport-owned, shared with every room ([ADR-018](#adr-018--the-close-reason-travels-as-a-frame-not-as-a-close-code)). |
+
+Three properties are load-bearing and each is a decision rather than an accident:
+
+- **The client sends intent and never a fact.** No position, no health, no hit claim, and no account field anywhere inbound — the account is bound at the upgrade and travels as a `realtime.Member`.
+- **A snapshot is idempotent full state**, so a dropped frame costs nothing and the hub may discard a slow client's backlog. An *event* cannot be expressed that way, which is why `ev` rides the snapshot rather than travelling as its own frame: a missed one costs a sound effect and never a divergence.
+- **Nothing is sent when nothing happened.** A player standing still with the screen untouched produces no input frame at all. The naive version ships ten frames a second of "dt of nothing" forever, to a phone on mobile data.
+
 ## 6. Security view
 
 | Concern | Mechanism | Where |
@@ -595,6 +685,10 @@ The `bye` codes are `1001` planned restart (reconnect promptly), `1013` evicted,
 | Identity on the wire | A broadcast roster carries a **per-process pseudonym**, never `accounts.id` — a durable cross-session handle must not be published to every other player ([ADR-037](#adr-037--one-account-is-one-entity-and-the-wire-carries-a-pseudonym-and-a-face)) | `internal/gamevanyagotchi` — `pseudonym` |
 | Inbound payloads | Text frames only, ≤4 KiB, parsed by the owning game; anything malformed, unknown or non-finite is dropped without a reply and without a log line (a log per bad frame would be a flood lever at 10/s) | `internal/gamevanyagotchi/message.go` |
 | Connection caps | 3 per account, 200 per process | `internal/realtime/hub.go` |
+| Realtime rooms | A closed set, and it is exactly the rooms the composition root registered a handler for — an unknown name is refused at the handshake with 400 rather than opening a socket nothing reads | `internal/httpapi/realtime.go` — `isKnownRoom` |
+| Simulated time («ВАНЯДУМ») | Per-arena **real-time budget**, capped at 0.5 s. Every field of an input frame can be in range while the total asks for eight seconds of simulation per real second; a per-field clamp cannot see that, and this does ([ADR-048](#adr-048--the-simulation-is-a-server-owned-fixed-step-tick-over-in-memory-arenas)) | `internal/gamevanyadum/arena.go` — `TimeBudgetCap` |
+| Simulation inputs | Every field clamped, never refused: `dt`, the movement axes and pitch to their ranges, a non-finite yaw to zero, and any sub-step beyond the fourth dropped. Applied inside `Step` rather than at the edge, so no path into the simulation skips it | `internal/gamevanyadum/sim.go` — `Command.Sanitise` |
+| Arena capacity | 32 concurrent runs per process, and an arena with nobody connected is dropped after 2 minutes without being recorded | `internal/gamevanyadum/service.go` |
 | Revocation on a live socket | Two paths, deliberately. Blocking through the admin API kicks in process — instant and deterministic. A **30 s revalidation sweep** is the backstop for the two cases that produce no in-process signal at all: a session reaching its `expires_at`, and a block applied straight in the database. Both close with `bye` code 4001, which the client treats as terminal. A socket is judged on **its own session**, not merely its account, because an expired session is exactly the case an account-level check cannot see. | `internal/realtime/revalidate.go` · `internal/httpapi/admin.go` → `Hub.KickAccount` |
 | …and an error is not a revocation | If the check cannot answer — a database blip — the sweep closes **nobody** and tries again next tick. Failing closed here would turn a moment of database trouble into disconnecting every player at once, which is a worse outcome than a revoked session surviving 30 seconds longer. | `internal/realtime/revalidate.go` — `Authorizer` |
 
@@ -813,6 +907,38 @@ _Accepted · 2026-07-27_
 
 [Full record → `docs/adrs/ADR-046-the-shared-plane-is-dom-and-css-never-a.md`](adrs/ADR-046-the-shared-plane-is-dom-and-css-never-a.md)
 
+#### ADR-047 · «ВАНЯДУМ» renders in WebGL, and only the world does
+
+_Accepted · 2026-07-28_
+
+The third game is a first-person shooter and draws with **three.js over WebGL2**, in a canvas, behind a lazy route. That does not reverse [ADR-046](#adr-046--the-shared-plane-is-dom-and-css-never-a-game-engine) — it is the escape hatch that record names, and every trigger it wrote down is hit at once: a camera over a world larger than the viewport, per-frame motion rather than 5 Hz plus CSS transitions, and a real scene graph. **The canvas holds the world and nothing else**: the HUD, the stick, the fire button, the splash, the rules cheatsheet and the result screen are all DOM, because nothing inside a canvas can be asserted on without pixel comparison and a test-only introspection API may not ship. What a test needs is therefore moved out of it in two directions — down into pure functions (geometry and textures are arrays built in node-testable code) and sideways into the DOM. Measured: three.js is 176.7 kB gzip in its own chunk, 185.4 kB with the view and the scene, against a 200 kB budget, paid once by whoever opens the game and by nobody else.
+
+[Full record → `docs/adrs/ADR-047-vanyadum-renders-in-webgl-and-only-the.md`](adrs/ADR-047-vanyadum-renders-in-webgl-and-only-the.md)
+
+#### ADR-048 · The simulation is a server-owned fixed-step tick over in-memory arenas
+
+_Accepted · 2026-07-28_
+
+«ВАНЯДУМ» runs a **20 Hz fixed-step simulation** in the server — the first thing in this project that ticks — because **collision destroys the closed form** everything else relies on: where a player is depends on every wall he slid along, so there is no `position(t)` to write down ([ADR-042](#adr-042--everything-that-moves-is-a-function-of-absolute-time)). It does not reopen [ADR-038](#adr-038--time-varying-state-is-computed-on-read-never-ticked), which forbids ticking **durable** state: the loop touches memory only, Postgres is read and written exactly twice per run, an arena is ephemeral and lost on restart like the hub's presence, and the ticker is injected so no test sleeps. An arena is **not a room** — snapshots are unicast through `PublishTo`, and `httpapi` gained only a map of room name to handler, so no unprefixed package names a game. `Step` is pure, deliberately, against the day prediction needs it in the browser too. And simulated time is **spent, not claimed**: a per-arena real-time budget is what stops a client filling every frame with legal values and running eight times faster than everybody else.
+
+[Full record → `docs/adrs/ADR-048-the-simulation-is-a-server-owned-fixed-step.md`](adrs/ADR-048-the-simulation-is-a-server-owned-fixed-step.md)
+
+#### ADR-050 · The level is generated on the server and sent once
+
+_Accepted · 2026-07-28_
+
+A level is generated in Go when a run starts and sent whole — a few kilobytes, once, never on a snapshot — and the client only ever builds meshes from it. Shipping the **seed** instead and generating it a second time in TypeScript is smaller on the wire and is the trap: two implementations of a floating-point generator diverge on one seed in a hundred, at one wall, by a centimetre, and the first symptom is somebody walking through geometry another player can see. The model is Doom's — rectangular sectors with their own floor and ceiling heights, joined by portals — which gives steps, doorways and later a locked door while collision stays a circle against axis-aligned segments. Its invariants are tested as properties over 300 seeds, because a hand-picked case proves nothing about a generator.
+
+[Full record → `docs/adrs/ADR-050-the-level-is-generated-on-the-server-and-sent.md`](adrs/ADR-050-the-level-is-generated-on-the-server-and-sent.md)
+
+#### ADR-051 · «ВАНЯДУМ» stores no art at all
+
+_Accepted · 2026-07-28_
+
+This game uses neither the blob store ([ADR-026](#adr-026--game-art-lives-in-postgres-not-in-git-or-the-binary)) nor the shared asset route ([ADR-031](#adr-031--game-asset-storage-is-shared-infrastructure-not-a-games-property)), because it has no authored art: geometry is extruded from the sector graph, textures are generated from five catalogue entries, the shotgun and the bottle are boxes and cylinders, and the lighting is four multipliers baked into vertex colours. The whole appearance of a заброшка costs **zero art bytes**. The load-bearing detail is that a texture is a pure `(surface, size, seed) → Uint8Array` rather than something drawn into a 2D canvas — same pixels, but testable in node, where a canvas is not. This says this game does not need the store, not that it may not have it; the enemies next iteration are the first real test.
+
+[Full record → `docs/adrs/ADR-051-vanyadum-stores-no-art-at-all.md`](adrs/ADR-051-vanyadum-stores-no-art-at-all.md)
+
 ### 8.5 Realtime
 
 #### ADR-015 · WebSocket, in the same binary, with an in-memory hub
@@ -886,6 +1012,14 @@ _Accepted · 2026-07-26_
 A «Ванягоччи» verb arrives as one `vanyagotchi_do` frame and is interpreted only by `Service.Do` — the same function a replay folds over a history ([ADR-044](#adr-044--a-pets-history-is-an-append-only-event-log-and-one-function-interprets-it)) — and **nothing is sent back in reply**. The 5 Hz roster is already the reconciliation channel and is full state rather than a delta ([ADR-034](#adr-034--the-broadcast-tick-is-injected-and-belongs-to-the-game)), so a verb answered with a body would give one fact two ways of being reported, and the two can disagree; the HTTP route that did so is deleted, leaving the group two reads. What the player is owed arrives as **state** instead: a `vanyagotchi_state` push to every connection that account has open, and a line over their own Ваня that the whole yard reads. A refusal is that same line rather than an error, which is what lets it have an expiry instead of a delivery — and **it outranks being dead**, learned the expensive way, because the moment a player most needs «он не встаёт» is the moment his Ваня is a corpse. The **movement gate** this record reserved a place for has arrived with the beer store: `Action.NeedsNear` names a world-object kind, and `Do` checks it against the in-memory placement at the instant the batch is folded — never inside `apply`, which must stay a pure function of `(Snapshot, Event)`, and immediately after it per verb, so being dead outranks being far away.
 
 [Full record → `docs/adrs/ADR-043-a-verb-travels-over-the-socket-and-is.md`](adrs/ADR-043-a-verb-travels-over-the-socket-and-is.md)
+
+#### ADR-049 · Input is batched to fit the socket's bound, never to loosen it
+
+_Accepted · 2026-07-28_
+
+The socket allows ten messages a second per connection and the check runs before a game sees the frame ([ADR-033](#adr-033--a-game-reads-the-socket-through-a-game-agnostic-handler-and-pulls-presence)). A shooter wants input far more often, and **the bound is a security property, so the game fits inside it rather than asking for an exemption**: the client samples on every animation frame and sends one frame per 100 ms carrying up to four sub-steps, each with its own `dt`. Three rules fell out, each a real defect first — a frame that says nothing is not sent (the naive version ships ten frames a second of "dt of nothing" forever), a stall is coalesced rather than truncated so the elapsed time survives, and a surplus is dropped server-side rather than refusing the frame, because the arena's time budget is what actually decides how much simulation anybody gets. The accepted cost is up to 100 ms of input latency on top of the round trip; the answer to that, if it is felt, is client-side prediction — the `seq`/`ack` pair is already on the wire, unused — and never a faster send rate.
+
+[Full record → `docs/adrs/ADR-049-input-is-batched-to-fit-the-sockets-bound.md`](adrs/ADR-049-input-is-batched-to-fit-the-sockets-bound.md)
 
 ### 8.6 Testing
 

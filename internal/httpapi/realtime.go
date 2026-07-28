@@ -42,7 +42,7 @@ func (s *Server) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	if room == "" {
 		room = DefaultRoom
 	}
-	if !isKnownRoom(room) {
+	if !s.isKnownRoom(room) {
 		writeError(w, r, http.StatusBadRequest, "unknown_room")
 		return
 	}
@@ -74,7 +74,7 @@ func (s *Server) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := realtime.NewConn(uuid.NewString(), acc.ID, sessionID, room, ws, s.d.RealtimeHandler)
+	conn := realtime.NewConn(uuid.NewString(), acc.ID, sessionID, room, ws, s.d.RealtimeHandlers[room])
 	if err := s.d.Realtime.Register(r.Context(), conn, room); err != nil {
 		// Registration runs after the 101, so a refusal cannot be an HTTP status
 		// — it has to go out on the socket, and Refuse is what delivers it since
@@ -119,12 +119,30 @@ func originHost(baseURL string) string {
 // Rooms are a closed set: an open-ended room name would let any client create
 // unbounded rooms, and there is no reason to allow it.
 //
+// The set is not a list here, though — it is exactly the rooms the composition
+// root registered a handler for, which is what keeps this file free of any
+// game's vocabulary while still refusing an unknown name. Adding a game is a
+// line in main and nothing here.
+//
 // DefaultRoom is exported so the composition root can hand the same name to
 // whichever service publishes into it, instead of that service spelling the
-// string out a second time. One room serves a whole game — locations inside a
-// game are a field in its own messages, deliberately not rooms, because a room
-// per location would both make this platform file learn a game's vocabulary and
-// scatter a handful of players across empty rooms.
+// string out a second time. It is also what a client that names no room gets,
+// which is why it stays a constant rather than becoming "the first registered
+// one" — that would silently move every existing client the day a second game
+// was wired in ahead of the first.
+//
+// ONE ROOM SERVES A WHOLE GAME. Locations inside a game are a field in its own
+// messages, deliberately not rooms (ADR-045), and so are arenas: «ВАНЯДУМ»
+// unicasts each player his own world through PublishTo rather than asking for a
+// room per run, because a room per run would make this platform file learn what
+// a run is.
 const DefaultRoom = "yard"
 
-func isKnownRoom(room string) bool { return room == DefaultRoom }
+// isKnownRoom reports whether anything is listening to a room. A room with no
+// handler is refused at the handshake rather than opened and ignored: a socket
+// nothing reads is a connection spent against the account's cap for nothing, and
+// the client cannot tell the difference from the inside.
+func (s *Server) isKnownRoom(room string) bool {
+	_, ok := s.d.RealtimeHandlers[room]
+	return ok
+}

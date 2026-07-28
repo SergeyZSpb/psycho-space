@@ -12,12 +12,12 @@ Working rules for this repository — the *what*. The reasoning behind the shape
 
 ## What this is
 
-A Russian-language landing page + allowlist-gated web app for a small community. The landing is deliberately cringe; login is via **VK ID** only. The app is several sections behind one shell, and an approved user lands in **«Ванягоччи»** — the front door, named once as `HOME_ROUTE_NAME` in `web/src/constants.ts` because the `/app` index, the router's guard redirects and the post-login push all have to agree on it. The other sections are «Смолтолк в Химках» and the **Wishlist with upvotes**, which was the first one built (the UI still says more are coming). Access is allowlist-gated: the owner is promoted to admin, then approves everyone else; unapproved users are told to ask to be allowlisted. RU region, single environment (prod), under personal-data law (152-ФЗ).
+A Russian-language landing page + allowlist-gated web app for a small community. The landing is deliberately cringe; login is via **VK ID** only. The app is several sections behind one shell, and an approved user lands in **«Ванягоччи»** — the front door, named once as `HOME_ROUTE_NAME` in `web/src/constants.ts` because the `/app` index, the router's guard redirects and the post-login push all have to agree on it. The other sections are «Смолтолк в Химках», **«ВАНЯДУМ»** — the first 3D game, a first-person shooter on a generated заброшка — and the **Wishlist with upvotes**, which was the first one built (the UI still says more are coming). Access is allowlist-gated: the owner is promoted to admin, then approves everyone else; unapproved users are told to ask to be allowlisted. RU region, single environment (prod), under personal-data law (152-ФЗ).
 
 ## Stack & layout
 
 - **Backend:** Go 1.26 (via mise) · chi router · pgx/v5 · slog. No ORM, no Redis — all state in PostgreSQL with `expires_at` TTLs.
-- **Frontend:** Vue 3 · Vite · TypeScript · Vuetify (Material) · vue-router · pinia. Built and **embedded into the Go binary** (`go:embed internal/web/dist`).
+- **Frontend:** Vue 3 · Vite · TypeScript · Vuetify (Material) · vue-router · pinia, plus **three.js** for «ВАНЯДУМ» alone — reachable from one module, loaded as an async chunk behind that route, so nobody who never opens the game pays its ~177 kB gzip. Built and **embedded into the Go binary** (`go:embed internal/web/dist`).
 - **Infra:** one Ubuntu 24.04 box · PostgreSQL 16 · nginx (TLS via certbot) · systemd. Deployed over SSH by GitHub Actions.
 
 ```
@@ -37,6 +37,15 @@ internal/
   vk/        VK ID client (ExchangeCode + UserInfo) + optional id_token verifier
   wishlist/  items, comments, votes (upvote toggle on both)
   gamekhimki/  «Смолтолк в Химках» — LLM-judged dialogue: content/persona, judge, runs, art blobs
+  gamevanyadum/  «ВАНЯДУМ» — the first 3D game, and the only thing here that
+                    SIMULATES: collision destroys closed-form motion, so a 20 Hz
+                    fixed-step loop advances in-memory arenas (one per run) and
+                    Postgres is touched exactly twice per run — never on a tick.
+                    content.go  the catalogue — movement, pickups, surfaces
+                    level.go    the seeded Doom-style sector graph + derived walls
+                    sim.go      Step: pure (level, player, command) → player
+                    arena.go    one run's world + the real-time budget
+                    service.go  the arena map, the tick, the one writer
   gamevanyagotchi/  «Ванягоччи» — the shared plane (in memory) + the pet (Postgres):
                     content.go  the catalogue — stats, actions, skins, NPCs, every constant
                     decay.go    time arithmetic for stats · motion.go the same for space
@@ -49,7 +58,10 @@ internal/
 migrations/  NNN_*.sql, embedded, auto-applied, immutable once shipped
 web/         Vue SPA source (built to internal/web/dist, embedded at compile time)
   src/realtime/  module-scoped WebSocket client + reconnect policy (refcounted)
-  src/lib/       pure per-feature logic (vanyagotchiPlane/Pet, gameKhimki*) — unit-tested
+  src/lib/       pure per-feature logic (vanyagotchiPlane/Pet, gameKhimki*,
+                 vanyadum{Level,Texture,Input,Rules}) — unit-tested, no WebGL
+  src/render/    the impure half: vanyadumScene.ts, the ONLY module importing
+                 three.js, loaded as an async chunk behind its own route
   e2e/       Playwright: 360px layout (+ @wide at desktop), /api stubbed
   e2e-stack/ Playwright: full-stack, real binary + real Postgres
 test/integration/  //go:build integration — testcontainers-go + fake VK server
@@ -83,6 +95,7 @@ Each game is its own module: its own package, tables, routes and views. **No gam
 |---|---|---|---|---|
 | «Смолтолк в Химках» | `internal/gamekhimki/` | `game_khimki_runs` | `/api/game-khimki/*` | `GameKhimkiView.vue` at `/app/game-khimki` |
 | «Ванягоччи» | `internal/gamevanyagotchi/` | `game_vanyagotchi_*` | `/api/game-vanyagotchi/*` | `GameVanyagotchiView.vue` at `/app/game-vanyagotchi` |
+| «ВАНЯДУМ» | `internal/gamevanyadum/` | `game_vanyadum_runs` | `/api/game-vanyadum/*` | `GameVanyadumView.vue` at `/app/game-vanyadum` |
 
 - **Shared infrastructure is never prefixed** — `realtime`, `gameassets`, `session`, `account`, `crypto`, `db`, `logging`, `observability`, `httpapi`. A game may depend on these; none of them may know a game exists.
 - **Inside a game's own package, types keep plain names** (`gamekhimki.Service`, never `gamekhimki.GameKhimkiService` — the linter rejects the stutter).
@@ -90,7 +103,10 @@ Each game is its own module: its own package, tables, routes and views. **No gam
 - **Where the line falls:** does it encode a rule of *this* game, or is it a capability any game would want? Rules are per-game (runs, scores, pets, tuning constants); capabilities are shared (the art blob store, the realtime transport).
 - **`game_key` column *values* are data, not names** — they do not move with a rename.
 
-**Reasoning for all of the above lives in the records — [ADR-028](docs/adrs/) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared), summarised in `docs/ARCHITECTURE.md` §8.** Read those before arguing with this rule. They are settled: rewriting one to mean something else is how a decision changes, so do it deliberately and in a commit that says why — not as a side effect of disagreeing with it.
+- **A game may make its own rendering decision, and «ВАНЯДУМ» did.** The yard is DOM and CSS (ADR-046); the shooter is WebGL. That is not a contradiction — it is two modules choosing for themselves, which is what ADR-028 is for. What does NOT vary is where the line falls inside a 3D game: **the canvas holds the world and nothing else.** Every readout, control and word of text stays real DOM, because nothing inside a canvas can be asserted on without pixel comparison and a test-only introspection API may not ship. A change that moves the HUD onto the canvas because it would look nicer is deleting a test surface, not tidying a view.
+- **A realtime game's room name lives in the game's own package**, and `httpapi` holds only a map from room name to handler. Adding a game is a line in `main.go` and no change to any unprefixed package.
+
+**Reasoning for all of the above lives in the records — [ADR-028](docs/adrs/) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared), ADR-046/047 (each game's rendering decision, and where the canvas line falls), summarised in `docs/ARCHITECTURE.md` §8.** Read those before arguing with this rule. They are settled: rewriting one to mean something else is how a decision changes, so do it deliberately and in a commit that says why — not as a side effect of disagreeing with it.
 
 ### A game states its rules on its own splash screen
 
