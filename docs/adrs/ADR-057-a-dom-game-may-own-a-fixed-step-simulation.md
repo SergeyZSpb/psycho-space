@@ -1,0 +1,36 @@
+# ADR-057 · A DOM game may own a fixed-step simulation
+
+## LLM Continuation Context
+
+_Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
+
+- **topic:** A DOM game may own a fixed-step simulation
+- **status:** Accepted · 2026-07-29
+- **summary:** one paragraph in [ARCHITECTURE.md §8.4](../ARCHITECTURE.md#adr-057--a-dom-game-may-own-a-fixed-step-simulation) — this file is the detail behind it.
+- **related:** [ADR-038](./ADR-038-time-varying-state-is-computed-on-read-never.md) · [ADR-042](./ADR-042-everything-that-moves-is-a-function-of.md) · [ADR-046](./ADR-046-the-shared-plane-is-dom-and-css-never-a.md) · [ADR-047](./ADR-047-vanyadum-renders-in-webgl-and-only-the.md) · [ADR-048](./ADR-048-the-simulation-is-a-server-owned-fixed-step.md) · [ADR-052](./ADR-052-the-netcode-is-built-multiplayer-complete.md) · [ADR-056](./ADR-056-the-office-is-one-process-wide-arena-not-one.md)
+- **code:** `internal/gamekaren/sim.go` — the pure `Step` · `boss.go` — `StepBoss`, the pursuit that is not closed form · `service.go` — the 20 Hz loop · `web/src/views/GameKarenView.vue` — the plane, in real elements · `web/src/lib/karenStep.ts` — the same `Step` in the browser, pinned by golden vectors
+- **re-examine when:** somebody proposes a `<canvas>` for this game, or argues that owning a tick obliges a game to abandon DOM — and when the DOM element budget is finally measured on a real phone.
+
+---
+
+«СИМУЛЯТОР КАРЕНА» is drawn in **DOM and CSS** and simulated by a **server-owned fixed-step tick at 20 Hz**. It is the first thing in this project to combine those two, and this record exists because the combination looks like a contradiction of two records that both still stand.
+
+_The two records it appears to break, and why it breaks neither._ [ADR-046](./ADR-046-the-shared-plane-is-dom-and-css-never-a.md) says the shared plane is DOM and CSS, never a game engine, and names its own flip triggers. [ADR-048](./ADR-048-the-simulation-is-a-server-owned-fixed-step.md) says a simulation is server-owned and fixed-step, and buys that exception with collision. What the pair had accidentally implied — because «ВАНЯДУМ» flipped both at once — is that **rendering technology and update model are one decision**. They are not. They are independent axes, and this game picks the yard's answer on one and the shooter's on the other.
+
+_Why the tick is earned here, and the argument is smaller than «ВАНЯДУМ»'s._ The house rule is that everything which moves is `pattern(params, now − epoch)`, so a tick that is late, early, duplicated or skipped still yields the correct world ([ADR-042](./ADR-042-everything-that-moves-is-a-function-of.md)). «ВАНЯДУМ» bought its exception with **collision**: where you are at *t* depends on every wall you slid along getting there. This game buys the same exception with **pursuit**.
+
+- **Pursuit is not closed form.** Лысый's position at *t* is a function of every position the player occupied before *t*. There is no expression for "walks toward whoever is nearest" — only an integration.
+- **The money streak is an accumulation, not an evaluation.** The multiplier ramps while you are still and resets when you move past the grace window, so what you have earned at *t* depends on the *history* of your input, not on elapsed time. A closed form would have to be given the whole input trace, which is the definition of not being one.
+- **The predicates are geometric and continuous.** "Standing still", "caught", "how wide is he grinning" are evaluated against positions every step, and two of them terminate the shift.
+
+So a fixed step it is — and every clause of [ADR-038](./ADR-038-time-varying-state-is-computed-on-read-never.md) survives untouched, exactly as it does for the shooter: the loop touches **memory only**, Postgres is touched **once per shift** and never on a tick, the office is ephemeral and lost on restart ([ADR-056](./ADR-056-the-office-is-one-process-wide-arena-not-one.md)), and the ticker is **injected** so no test sleeps.
+
+_Why the canvas stays shut._ [ADR-046](./ADR-046-the-shared-plane-is-dom-and-css-never-a.md) named three triggers for re-asking the rendering question, and «ВАНЯДУМ» hit all three at once, which is what [ADR-047](./ADR-047-vanyadum-renders-in-webgl-and-only-the.md) is. This game hits **none** of them: the whole office fits the viewport, so there is no camera over a world larger than the screen; the moving population is a handful of figures rather than a scene graph; and the third trigger — smooth motion rather than 5 Hz frames plus transitions — is answered by *how* the DOM is driven rather than by replacing it, since a CSS transform written from an animation frame is on the compositor either way.
+
+And the strongest argument ADR-046 ever made applies here at full force: **everything in the DOM can be asserted by Playwright, and nothing inside a canvas can be** without pixel comparison, because a test-only introspection API may not ship into a production path. «ВАНЯДУМ» accepted losing several hundred assertions because it had no choice. This game would be paying that price for nothing — so the plane, the desks, the figures, the HUD, the stick and every word of Russian are real elements with test ids, and the layout suite reads the game the way a player does.
+
+_What does change, relative to the yard._ The yard repaints on a **5 Hz** frame and lets CSS transitions do the smoothing, which is right for a place where people amble. Dodging at 5 Hz is not dodging, so here the client renders from its **own animation frame** and predicts its player through the server's own `Step`, ported to TypeScript and pinned by golden vectors — the same discipline [ADR-052](./ADR-052-the-netcode-is-built-multiplayer-complete.md) settled for the shooter, adopted from day one rather than after a failed feel gate. The rule the yard enforces structurally is kept: **membership is reactive, positions are not** — a coordinate is written straight to a CSS custom property and never through Vue, because at animation-frame rate a scheduler pass per entity buys nothing the compositor was not already going to do.
+
+_The rule this establishes for the next game._ Ask the two questions separately. *Does this world's state have a closed form?* If no, it owns a tick. *Does this world need a camera, a scene graph, or 60 Hz motion of many things?* If no, it stays in the DOM. A game that answers "no, no" is this one; "no, yes" is «ВАНЯДУМ»; "yes, no" is the yard. What does not vary in any of the three is where the line falls when a canvas *is* used — it holds the world and nothing else ([ADR-047](./ADR-047-vanyadum-renders-in-webgl-and-only-the.md)) — and here that line is free, because there is no canvas to draw it in.
+
+_The one measurement this defers._ DOM placement is cheap at this population and is not obviously cheap at the population the later iterations plan (tasks in flight, chairs, smoke). The count of simultaneously-moving elements that holds a frame rate on a real mid-range phone is a **measurement gate**, taken before the iteration that adds the third moving kind rather than after the last one. If it comes back below the design's worst case, the *content* shrinks — the caps on tasks and chairs — rather than this decision changing.

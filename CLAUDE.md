@@ -12,7 +12,7 @@ Working rules for this repository — the *what*. The reasoning behind the shape
 
 ## What this is
 
-A Russian-language landing page + allowlist-gated web app for a small community. The landing is deliberately cringe; login is via **VK ID** or **Яндекс ID** — two doors, one identity model behind them (`(provider, blind index)`, ADR-054), and no linking between them. The app is several sections behind one shell, and an approved user lands in **«Ванягоччи»** — the front door, named once as `HOME_ROUTE_NAME` in `web/src/constants.ts` because the `/app` index, the router's guard redirects and the post-login push all have to agree on it. The other sections are «Смолтолк в Химках», **«ВАНЯДУМ»** — the first 3D game, a first-person shooter on a generated заброшка — and the **Wishlist with upvotes**, which was the first one built (the UI still says more are coming). Access is allowlist-gated: the owner is promoted to admin, then approves everyone else; unapproved users are told to ask to be allowlisted. RU region, single environment (prod), under personal-data law (152-ФЗ).
+A Russian-language landing page + allowlist-gated web app for a small community. The landing is deliberately cringe; login is via **VK ID** or **Яндекс ID** — two doors, one identity model behind them (`(provider, blind index)`, ADR-054), and no linking between them. The app is several sections behind one shell, and an approved user lands in **«Ванягоччи»** — the front door, named once as `HOME_ROUTE_NAME` in `web/src/constants.ts` because the `/app` index, the router's guard redirects and the post-login push all have to agree on it. The other sections are «Смолтолк в Химках», **«ВАНЯДУМ»** — the first 3D game, a first-person shooter on a generated заброшка — **«СИМУЛЯТОР КАРЕНА»**, a top-down office arena where your salary accrues only while you stand perfectly still, and the **Wishlist with upvotes**, which was the first one built (the UI still says more are coming). Access is allowlist-gated: the owner is promoted to admin, then approves everyone else; unapproved users are told to ask to be allowlisted. RU region, single environment (prod), under personal-data law (152-ФЗ).
 
 ## Stack & layout
 
@@ -39,7 +39,7 @@ internal/
              the authorize URL, so the client id lives only in config (ADR-055)
   wishlist/  items, comments, votes (upvote toggle on both)
   gamekhimki/  «Смолтолк в Химках» — LLM-judged dialogue: content/persona, judge, runs, art blobs
-  gamevanyadum/  «ВАНЯДУМ» — the first 3D game, and the only thing here that
+  gamevanyadum/  «ВАНЯДУМ» — the first 3D game, and the first thing here that
                     SIMULATES: collision destroys closed-form motion, so a 20 Hz
                     fixed-step loop advances in-memory arenas (one per run) and
                     Postgres is touched exactly twice per run — never on a tick.
@@ -55,6 +55,15 @@ internal/
                     display.go  the in-memory cache the 5 Hz broadcast draws from
                     world.go    what is lying about in the yard — same cache rule
                     message.go  the wire types · service.go the verbs and the tick
+  gamekaren/  «СИМУЛЯТОР КАРЕНА» — the second thing that SIMULATES and the first
+                    to do it in DOM: pursuit is not closed form, so a 20 Hz loop
+                    advances ONE process-wide office (not one arena per run) and
+                    Postgres is touched once per shift — never on a tick.
+                    content.go  the catalogue — the STATIC office, every constant
+                    sim.go      Step: pure (desks, player, command) → player
+                    boss.go     the man who walks at the nearest Карен, and grins
+                    office.go   the one shared world + the per-occupant budget
+                    message.go  the wire types · service.go the office and the tick
   settings/  app_settings key/value (open registration)
   web/       go:embed of the built SPA (dir gitignored except the tracked .gitkeep,
              which is what keeps `go build` working before the SPA is built)
@@ -62,7 +71,8 @@ migrations/  NNN_*.sql, embedded, auto-applied, immutable once shipped
 web/         Vue SPA source (built to internal/web/dist, embedded at compile time)
   src/realtime/  module-scoped WebSocket client + reconnect policy (refcounted)
   src/lib/       pure per-feature logic (vanyagotchiPlane/Pet, gameKhimki*,
-                 vanyadum{Level,Texture,Input,Rules,Step,Predict,Interp}) — unit-tested, no WebGL
+                 vanyadum{Level,Texture,Input,Rules,Step,Predict,Interp},
+                 karen{Step,Predict,Plane,Rules}) — unit-tested, no WebGL
   src/render/    the impure half: vanyadumScene.ts, the ONLY module importing
                  three.js, loaded as an async chunk behind its own route
   e2e/       Playwright: 360px layout (+ @wide at desktop), /api stubbed
@@ -99,6 +109,7 @@ Each game is its own module: its own package, tables, routes and views. **No gam
 | «Смолтолк в Химках» | `internal/gamekhimki/` | `game_khimki_runs` | `/api/game-khimki/*` | `GameKhimkiView.vue` at `/app/game-khimki` |
 | «Ванягоччи» | `internal/gamevanyagotchi/` | `game_vanyagotchi_*` | `/api/game-vanyagotchi/*` | `GameVanyagotchiView.vue` at `/app/game-vanyagotchi` |
 | «ВАНЯДУМ» | `internal/gamevanyadum/` | `game_vanyadum_runs` | `/api/game-vanyadum/*` | `GameVanyadumView.vue` at `/app/game-vanyadum` |
+| «СИМУЛЯТОР КАРЕНА» | `internal/gamekaren/` | `game_karen_shifts` | `/api/game-karen/*` | `GameKarenView.vue` at `/app/game-karen` |
 
 - **Shared infrastructure is never prefixed** — `realtime`, `gameassets`, `session`, `account`, `crypto`, `db`, `logging`, `observability`, `httpapi`. A game may depend on these; none of them may know a game exists.
 - **Inside a game's own package, types keep plain names** (`gamekhimki.Service`, never `gamekhimki.GameKhimkiService` — the linter rejects the stutter).
@@ -106,10 +117,10 @@ Each game is its own module: its own package, tables, routes and views. **No gam
 - **Where the line falls:** does it encode a rule of *this* game, or is it a capability any game would want? Rules are per-game (runs, scores, pets, tuning constants); capabilities are shared (the art blob store, the realtime transport).
 - **`game_key` column *values* are data, not names** — they do not move with a rename.
 
-- **A game may make its own rendering decision, and «ВАНЯДУМ» did.** The yard is DOM and CSS (ADR-046); the shooter is WebGL. That is not a contradiction — it is two modules choosing for themselves, which is what ADR-028 is for. What does NOT vary is where the line falls inside a 3D game: **the canvas holds the world and nothing else.** Every readout, control and word of text stays real DOM, because nothing inside a canvas can be asserted on without pixel comparison and a test-only introspection API may not ship. A change that moves the HUD onto the canvas because it would look nicer is deleting a test surface, not tidying a view.
+- **A game makes two decisions, not one: how it renders, and whether it owns a tick.** They are independent axes, and each game answers both for itself — which is what ADR-028 is for. The yard is DOM and CSS with no simulation at all (ADR-046, ADR-042); the shooter is WebGL over a 20 Hz server tick, because collision destroys closed form (ADR-047, ADR-048); «СИМУЛЯТОР КАРЕНА» is **DOM over a 20 Hz server tick** — it simulates because pursuit is not closed form, and it stays in the DOM because none of ADR-046's flip triggers fire (ADR-057). None of that is a contradiction. What does NOT vary is where the line falls when a canvas *is* used: **the canvas holds the world and nothing else.** Every readout, control and word of text stays real DOM, because nothing inside a canvas can be asserted on without pixel comparison and a test-only introspection API may not ship. A change that moves the HUD onto the canvas because it would look nicer is deleting a test surface, not tidying a view.
 - **A realtime game's room name lives in the game's own package**, and `httpapi` holds only a map from room name to handler. Adding a game is a line in `main.go` and no change to any unprefixed package.
 
-**Reasoning for all of the above lives in the records — [ADR-028](docs/adrs/) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared), ADR-046/047 (each game's rendering decision, and where the canvas line falls), summarised in `docs/ARCHITECTURE.md` §8.** Read those before arguing with this rule. They are settled: rewriting one to mean something else is how a decision changes, so do it deliberately and in a commit that says why — not as a side effect of disagreeing with it.
+**Reasoning for all of the above lives in the records — [ADR-028](docs/adrs/) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared), ADR-046/047/057 (each game's rendering decision, where the canvas line falls, and why owning a tick does not oblige a game to leave the DOM), ADR-056 (one shared office against one arena per run), summarised in `docs/ARCHITECTURE.md` §8.** Read those before arguing with this rule. They are settled: rewriting one to mean something else is how a decision changes, so do it deliberately and in a commit that says why — not as a side effect of disagreeing with it.
 
 ### A game states its rules on its own splash screen
 

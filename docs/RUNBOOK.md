@@ -11,6 +11,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/gamekhimki/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
 - **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*` — **two reads (`config`, `state`) and nothing that writes**, because a verb travels over the socket as a `vanyagotchi_do` frame and cannot be curl'd (ADR-043) — view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and every phrase pool are in `content.go`, not the database — so retuning, renaming, adding a regular or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from **five disjoint pools** (a test enforces the disjointness, so a line can only ever mean one thing) and they say different things about him: `tiredSays` — he gave up on a walk; `idleSays` — he is just standing about; `shySays` — he lost his nerve and the verb did nothing; `reekSays` — **somebody else** relieved himself near him; `enviousSays` — **somebody else** found the keys. The last two are the only lines another player's action puts in your mouth, and the regulars get them too. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep; the two reactions are held in memory with an expiry and dropped by the tick that finds them stale.
+- **game 4 («Симулятор Карена»):** package `internal/gamekaren/`, table `game_karen_shifts` (`migrations/013_game_karen.sql`), routes `/api/game-karen/*`, realtime room `karen`, view `GameKarenView.vue` at `/app/game-karen`. **No LLM on any path.** Debugging it is unlike every game above in one way that dominates: **almost nothing is stored.** The office, the positions, the boss, the streak and the salary live in process memory and are lost on any restart; Postgres gets **one summary row when a shift ends** and nothing else, so there is no table to look at while somebody is playing. A shift shorter than `MinShiftSeconds` is deliberately **dropped rather than written**, which is the first thing to check when somebody swears they played and there is no row. `cause` is `promoted` (the лысый reached you) or `left` (you walked out, or your socket was gone past the abandon grace) — plain `text`, so a later ending is not a migration. Every rule — the static office and its desks, the walk and dash speeds, the base rate, the ×1→×3 ramp, the grace window, the boss's speed and catch radius, the ending titles — is in `content.go`, **served** at `GET /api/game-karen/config`, and the splash screen's cheatsheet is generated from that same payload, so the rules on screen cannot drift from the rules enforced. Playing happens entirely on the socket (`karen_input` up, `karen_snap` down at 10 Hz) and cannot be curl'd; the HTTP surface is only the edges of a shift. See "Working on «Симулятор Карена» (the office)" below.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
 - **login:** two providers, VK ID and Яндекс ID, sharing everything after the exchange. Redirect URLs are SPA **pages**, never API endpoints: `/auth/redirect` (VK) and `/auth/yandex/redirect` (Yandex). VK needs **three** copies of its URL to match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app list); Yandex needs only **two** because the server builds its authorize URL (ADR-055). A **405 on either `/api/auth/*/callback`** means something points at the API again. See "Login — the redirect URL, and what a 405 means".
@@ -374,6 +375,78 @@ and that is by design rather than a bug. The *pose* is not cached — it is deri
 from the cached pairs on every tick, so a Ваня visibly deteriorates without
 anything being refreshed.
 
+### Working on «Симулятор Карена» (the office)
+
+**Almost nothing about this game is in the database, and that is the property to
+hold in your head before debugging it.** The office, where everybody is standing,
+the boss, the streak, the multiplier and the salary you are watching climb all
+live in process memory and survive nothing — not a restart, not a deploy. What
+reaches Postgres is **one summary row per shift, written once, when the shift
+ends**. So there is no table to inspect while somebody is playing, and a shift in
+flight during a deploy is simply lost, exactly as an in-flight «ВАНЯДУМ» run is.
+
+```bash
+# Every shift somebody has finished, most recent first.
+ssh psycho "sudo -u postgres psql psychospace -c \"
+  SELECT id, account_id, cause, round(salary::numeric) AS pay,
+         round(seconds::numeric, 1) AS secs, created_at
+    FROM game_karen_shifts WHERE deleted_at IS NULL
+   ORDER BY created_at DESC LIMIT 20\""
+```
+
+**`cause` tells you how it ended**, and iteration 1 has exactly two: `promoted`
+(лысый reached you — the loss) and `left` (you pressed УЙТИ, or your socket was
+gone long enough to be given up on). It is `text` rather than an enum on purpose,
+so a later iteration's third ending is a catalogue change and not a migration.
+
+**A very short shift is not a bug — it was deliberately dropped.** Anything under
+`MinShiftSeconds` is discarded instead of written, so a stray tap on НАЧАТЬ СМЕНУ
+never becomes a leaderboard row. If somebody swears they played and there is no
+row, that is the first thing to check.
+
+**The leaderboard is best-shift-per-account, not best rows**, so one very good
+shift does not fill the whole board. That is in the SQL, not in the client:
+
+```sql
+-- what /shifts/top is actually computing
+SELECT DISTINCT ON (account_id) account_id, salary, seconds, cause
+  FROM game_karen_shifts WHERE deleted_at IS NULL
+ ORDER BY account_id, salary DESC;
+```
+
+**Every rule of the game is in `internal/gamekaren/content.go`, not in the
+database and not in the client.** The office layout, the desks, the walk and dash
+speeds, the base rate, the ramp, the grace window, the boss's speed and catch
+radius, and the ending titles all ship with the binary and are **served** at
+`GET /api/game-karen/config` — which is also what the splash screen's rules
+cheatsheet is generated from. So retuning the game is a backend deploy with no
+migration and no frontend change, and the rules on the splash screen cannot drift
+from the rules the server enforces. If the cheatsheet says something the game does
+not do, the bug is in `karenRules.ts` deriving it, never in a number typed twice.
+
+**To see what a player is told:**
+
+```bash
+curl -fsS -b "psycho_session=<token>" https://psycho-space.ru/api/game-karen/config | jq .
+```
+
+**The office is static.** There is no generator, no seed and no per-shift level —
+unlike «ВАНЯДУМ», every shift is the same room, and the geometry is in the
+catalogue above rather than on any frame or in any start response. So "the desks
+moved" is not a thing that can happen.
+
+**Nothing about a shift can be curl'd while it is running.** Movement travels over
+the socket as `karen_input` frames and the world comes back as `karen_snap` ten
+times a second — the HTTP surface is only the *edges* of a shift (start, resume,
+walk out) plus the two reads. That is deliberate and matches the yard's rule that
+a verb is not an endpoint.
+
+**A player stuck at «смена уже идёт» (409) has a shift the office still thinks is
+live.** The honest fix is the one the client already does — `GET /shifts/current`
+and reconnect — and the blunt one is to wait out the abandon grace, after which
+the occupant is ended as `left`, written, and dropped. Restarting the service
+clears every office instantly and loses every shift in flight.
+
 ### Tests
 
 ```bash
@@ -602,7 +675,8 @@ SELECT id, left(encode(identity_ref, 'hex'), 8) AS handle, role, status,
 SELECT (SELECT count(*) FROM wishlist_items    WHERE account_id = '<uuid>') AS ideas,
        (SELECT count(*) FROM wishlist_comments WHERE account_id = '<uuid>') AS comments,
        (SELECT count(*) FROM game_khimki_runs  WHERE account_id = '<uuid>') AS khimki_runs,
-       (SELECT count(*) FROM game_vanyadum_runs WHERE account_id = '<uuid>') AS dum_runs;
+       (SELECT count(*) FROM game_vanyadum_runs WHERE account_id = '<uuid>') AS dum_runs,
+       (SELECT count(*) FROM game_karen_shifts  WHERE account_id = '<uuid>') AS karen_shifts;
 ```
 
 Confirm it worked:
@@ -620,7 +694,7 @@ nobody can act on is noise on that screen — so the SQL above is how you look a
 it afterwards.
 
 **If you need the row genuinely gone** — a legal demand rather than somebody
-leaving — this is not that operation. Nine of the ten foreign keys to
+leaving — this is not that operation. Nine of the eleven foreign keys to
 `accounts` lack `ON DELETE CASCADE`, so a hard delete is an explicit
 child-first transaction, and it removes other people's comments and votes along
 with the ideas they were left on. Ask before doing it by hand.
