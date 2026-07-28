@@ -11,6 +11,13 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   llm_unparsable:
     'ИИ выдал ответ, который игра не смогла разобрать — бывает. ' +
     'Попробуй выбрать другой вариант ответа, а этот код отправь Сергею, чтобы он проверил.',
+
+  // The three refusals the admin screen can produce, spelled out because the
+  // generic wording ("что-то пошло не так") reads as a bug when in fact the
+  // server is refusing on purpose and the admin can act on the reason.
+  already_forgotten: 'Этот пользователь уже забыт — обезличивать второй раз нечего.',
+  cannot_modify_self: 'Себя нельзя — ни заблокировать, ни забыть.',
+  cannot_modify_superadmin: 'Суперадмина трогать нельзя: это единственный аккаунт, который нельзя потерять.',
 };
 
 // Drives the single global error modal mounted at the app root. Any unexpected

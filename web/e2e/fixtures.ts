@@ -234,7 +234,7 @@ export async function stubBackend(page: Page, role: StubRole = 'user'): Promise<
       const status = url.searchParams.get('status') ?? 'pending';
       return json(200, { accounts: accountsByStatus(status) });
     }
-    if (/^\/api\/admin\/accounts\/[^/]+\/(approve|block|promote|demote)$/.test(path)) return noContent();
+    if (/^\/api\/admin\/accounts\/[^/]+\/(approve|block|promote|demote|forget)$/.test(path)) return noContent();
     if (path === '/api/admin/settings' && method === 'GET') {
       return json(200, { open_registration: false });
     }

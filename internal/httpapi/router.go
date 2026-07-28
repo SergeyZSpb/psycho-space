@@ -213,7 +213,8 @@ func (s *Server) Handler() http.Handler {
 		// socket bounds itself thereafter (there is no request left to count).
 		r.With(s.requireAuth).Get("/realtime", s.handleRealtime)
 
-		// Admin — approve/block for admins; promote + settings for superadmin only.
+		// Admin — approve/block for admins; promote, forget + settings for
+		// superadmin only.
 		r.Route("/admin", func(r chi.Router) {
 			r.Use(s.requireAuth)
 			r.Use(s.requireAdmin)
@@ -222,6 +223,11 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/accounts/{id}/block", s.handleAdminBlock)
 			r.With(s.requireSuperadmin).Post("/accounts/{id}/promote", s.handleAdminPromote)
 			r.With(s.requireSuperadmin).Post("/accounts/{id}/demote", s.handleAdminDemote)
+			// Anonymise a person while keeping what they wrote. Superadmin only
+			// and irreversible: it destroys the identity in place and frees the
+			// blind index, so the same VK account logging in afterwards is a
+			// brand-new pending one. See handleAdminForget.
+			r.With(s.requireSuperadmin).Post("/accounts/{id}/forget", s.handleAdminForget)
 			r.Get("/settings", s.handleSettingsGet)
 			r.With(s.requireSuperadmin).Put("/settings/open-registration", s.handleSetOpenRegistration)
 		})

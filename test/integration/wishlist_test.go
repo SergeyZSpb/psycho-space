@@ -89,25 +89,25 @@ func TestWishlistFlow(t *testing.T) {
 	if s, _ := doJSON(t, cli, http.MethodPost, app.URL+"/api/wishlist/items/"+itemID+"/vote", nil); s != http.StatusNoContent {
 		t.Fatalf("vote status %d", s)
 	}
-	items := listItems(t, cli, app.URL)
-	if items[0]["votes"].(float64) != 1 || items[0]["voted_by_me"] != true {
-		t.Fatalf("after vote: %v", items[0])
+	mine := findItem(t, listItems(t, cli, app.URL), itemID)
+	if mine["votes"].(float64) != 1 || mine["voted_by_me"] != true {
+		t.Fatalf("after vote: %v", mine)
 	}
 
 	// Voting again is idempotent (still 1).
 	_, _ = doJSON(t, cli, http.MethodPost, app.URL+"/api/wishlist/items/"+itemID+"/vote", nil)
-	items = listItems(t, cli, app.URL)
-	if items[0]["votes"].(float64) != 1 {
-		t.Fatalf("double vote changed count: %v", items[0])
+	mine = findItem(t, listItems(t, cli, app.URL), itemID)
+	if mine["votes"].(float64) != 1 {
+		t.Fatalf("double vote changed count: %v", mine)
 	}
 
 	// Unvote → count 0.
 	if s, _ := doJSON(t, cli, http.MethodDelete, app.URL+"/api/wishlist/items/"+itemID+"/vote", nil); s != http.StatusNoContent {
 		t.Fatalf("unvote status %d", s)
 	}
-	items = listItems(t, cli, app.URL)
-	if items[0]["votes"].(float64) != 0 || items[0]["voted_by_me"] != false {
-		t.Fatalf("after unvote: %v", items[0])
+	mine = findItem(t, listItems(t, cli, app.URL), itemID)
+	if mine["votes"].(float64) != 0 || mine["voted_by_me"] != false {
+		t.Fatalf("after unvote: %v", mine)
 	}
 
 	// Empty title rejected.
@@ -410,4 +410,21 @@ func TestAdminRoles(t *testing.T) {
 	if s, _ := doJSON(t, wClient, http.MethodGet, app.URL+"/api/wishlist/items", nil); s != http.StatusUnauthorized && s != http.StatusForbidden {
 		t.Fatalf("blocked W wishlist access: want 401/403, got %d", s)
 	}
+}
+
+// findItem picks THIS test's item out of the shared wishlist by id.
+//
+// The assertions below used to read items[0] — whichever idea happens to sort
+// first across the whole database. That is only this test's item when no other
+// test has left one behind, which held until one did, and then this test failed
+// with a confusing message about somebody else's votes.
+func findItem(t *testing.T, items []map[string]any, id string) map[string]any {
+	t.Helper()
+	for _, it := range items {
+		if it["id"] == id {
+			return it
+		}
+	}
+	t.Fatalf("item %s is not in the list of %d", id, len(items))
+	return nil
 }

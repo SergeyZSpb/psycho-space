@@ -46,4 +46,13 @@ type Repository interface {
 	SetStatus(ctx context.Context, q db.DBTX, id, status string) error
 	Promote(ctx context.Context, q db.DBTX, id string) error
 	Demote(ctx context.Context, q db.DBTX, id string) error
+	// Forget anonymises an account in place: the blind index is replaced with
+	// the caller-supplied random reference, every encrypted field is emptied,
+	// consent is withdrawn and `forgotten_at` is stamped. What the account
+	// WROTE is untouched — see migrations/011 for why this is not a delete.
+	//
+	// The new reference and the empty ciphertext are passed in rather than
+	// generated here, because only the service holds the encryptor and only
+	// crypto/rand should be minting the reference.
+	Forget(ctx context.Context, q db.DBTX, id string, newRef, emptyEnc []byte) error
 }

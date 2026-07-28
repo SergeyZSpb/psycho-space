@@ -108,9 +108,79 @@
               суперадмин
             </v-chip>
           </template>
+
+          <!-- Irreversible, so it is superadmin-only, never offered for a
+               superadmin, and goes through a confirmation. -->
+          <v-btn
+            v-if="auth.isSuperadmin && acc.role !== 'superadmin'"
+            color="error"
+            variant="text"
+            size="small"
+            prepend-icon="mdi-account-off-outline"
+            data-testid="admin-forget"
+            :loading="busyId === acc.id"
+            @click="askForget(acc)"
+          >
+            Забыть
+          </v-btn>
         </div>
       </div>
     </v-card>
+
+    <!-- Forget confirmation. Spells out both halves — what goes and what stays
+         — because "забыть" sounds gentler than it is and the half that stays is
+         the half people do not expect. -->
+    <v-dialog v-model="confirmForgetOpen" max-width="460">
+      <v-card data-testid="admin-forget-dialog">
+        <v-card-title>Забыть пользователя?</v-card-title>
+        <v-card-text class="ps-wrap">
+          <p class="mb-2">
+            «{{ pendingForget?.display_name }}» будет обезличен: имя, фото и связь
+            с VK стираются навсегда. Отменить нельзя.
+          </p>
+          <p class="mb-2">
+            Всё, что он написал, останется — идеи, комментарии, голоса и рекорды.
+            Автором станет анонимный «psycho-…».
+          </p>
+          <p class="text-caption">
+            Если он войдёт через VK снова — это будет совершенно новый аккаунт,
+            который придётся одобрять заново.
+          </p>
+        </v-card-text>
+        <!-- Both buttons carry an inline min-height: Vuetify's default in a
+             dialog is 41 px, under the 44 px floor the layout suite enforces.
+             INLINE rather than a scoped class, because a v-dialog teleports its
+             content to the body and scoped CSS never reaches it — and the
+             `height` prop is overridden by the component's own density. The
+             cancel button gets it too: on an irreversible action the easy
+             target should be the way out.
+
+             48 rather than exactly 44: Vuetify's own borders and rounding shave
+             a pixel or two off the measured box, so asking for the floor lands
+             just under it. A destructive action deserves the bigger target
+             anyway. -->
+        <v-card-actions>
+          <v-spacer />
+          <v-btn
+            variant="text"
+            :style="{ minHeight: '48px' }"
+            @click="confirmForgetOpen = false"
+          >
+            Отмена
+          </v-btn>
+          <v-btn
+            color="error"
+            variant="tonal"
+            :style="{ minHeight: '48px' }"
+            data-testid="admin-forget-confirm"
+            :loading="forgetting"
+            @click="confirmForget"
+          >
+            Забыть
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -191,6 +261,40 @@ async function load() {
     errorStore.report(err);
   } finally {
     loading.value = false;
+  }
+}
+
+const confirmForgetOpen = ref(false);
+const pendingForget = ref<AdminAccount | null>(null);
+const forgetting = ref(false);
+
+function askForget(acc: AdminAccount) {
+  pendingForget.value = acc;
+  confirmForgetOpen.value = true;
+}
+
+/**
+ * Anonymises the person and keeps their contributions.
+ *
+ * The dialog stays open when this fails — the global error modal surfaces the
+ * code and the trace id, and closing would hide the fact that nothing happened.
+ * It closes only on success, which is the same shape the wishlist's delete
+ * confirmation uses.
+ */
+async function confirmForget() {
+  const acc = pendingForget.value;
+  if (!acc) return;
+  forgetting.value = true;
+  try {
+    await adminApi.forget(acc.id);
+    confirmForgetOpen.value = false;
+    pendingForget.value = null;
+    await load();
+  } catch (err) {
+    // 403 cannot_modify_self / cannot_modify_superadmin, 409 already_forgotten.
+    errorStore.report(err);
+  } finally {
+    forgetting.value = false;
   }
 }
 

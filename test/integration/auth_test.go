@@ -76,13 +76,19 @@ func TestVKLoginFlow(t *testing.T) {
 		t.Fatalf("pending /me: status=%d body=%v; want 200 pending", ms, me)
 	}
 
-	// Approve the pending account.
+	// Approve THIS test's account, found by its own VK id.
+	//
+	// It used to approve `pending[0]` — the oldest pending account in the whole
+	// database — which is only this test's account when no other test has left
+	// one behind. That held until the first test that does, and then this one
+	// failed somewhere else entirely with a confusing message about a login not
+	// being approved.
 	svc := newAccountService()
 	pending, err := svc.ListByStatus(context.Background(), "pending")
 	if err != nil || len(pending) == 0 {
 		t.Fatalf("list pending: err=%v n=%d", err, len(pending))
 	}
-	if err := svc.Approve(context.Background(), pending[0].ID); err != nil {
+	if err := svc.Approve(context.Background(), accountIDByUID(t, "777")); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 

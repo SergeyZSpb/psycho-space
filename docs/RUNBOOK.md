@@ -460,9 +460,61 @@ psql "postgres://psychospace:<POSTGRES_PASSWORD>@127.0.0.1:5433/psychospace?sslm
 
 Treat everything you pull this way as confidential; profile columns are ciphertext regardless.
 
+## Forgetting a user (irreversible)
+
+**Админка → «Забыть»**, superadmin only. It anonymises the person and keeps
+everything they contributed. Use it when somebody asks to be removed, or to get
+a clean first-login flow out of an account you control.
+
+What it does, in one statement: overwrites `vk_user_ref` with random bytes,
+empties every encrypted profile field, clears the consent record, sets the row
+to `blocked`/`user`, and stamps `forgotten_at`. What it does **not** do is
+delete anything — their wishlist ideas, the comments other people left on them,
+the votes and the leaderboard times all stay, now authored by an anonymous
+`psycho-…` that links nowhere. Reasoning: [ADR-053](adrs/ADR-053-forgetting-a-person-is-anonymisation-not.md).
+
+The consequence to know before pressing it: **that VK account logging in again
+becomes a brand-new pending account** with a new id, which somebody then has to
+approve. That is the point, not a side effect.
+
+Check what you are about to erase:
+
+```sql
+-- who this is, without decrypting anything
+SELECT id, left(encode(vk_user_ref, 'hex'), 8) AS handle, role, status,
+       created_at, last_login_at
+  FROM accounts WHERE id = '<uuid>';
+
+-- what would survive it
+SELECT (SELECT count(*) FROM wishlist_items    WHERE account_id = '<uuid>') AS ideas,
+       (SELECT count(*) FROM wishlist_comments WHERE account_id = '<uuid>') AS comments,
+       (SELECT count(*) FROM game_khimki_runs  WHERE account_id = '<uuid>') AS khimki_runs,
+       (SELECT count(*) FROM game_vanyadum_runs WHERE account_id = '<uuid>') AS dum_runs;
+```
+
+Confirm it worked:
+
+```sql
+SELECT forgotten_at, status, role,
+       first_name_enc IS NULL AS name_gone,
+       consent_version IS NULL AS consent_gone
+  FROM accounts WHERE id = '<uuid>';
+```
+
+All three should be true and `forgotten_at` non-NULL. The account disappears
+from every admin tab at the same moment — that is deliberate, an anonymous row
+nobody can act on is noise on that screen — so the SQL above is how you look at
+it afterwards.
+
+**If you need the row genuinely gone** — a legal demand rather than somebody
+leaving — this is not that operation. Nine of the ten foreign keys to
+`accounts` lack `ON DELETE CASCADE`, so a hard delete is an explicit
+child-first transaction, and it removes other people's comments and votes along
+with the ideas they were left on. Ask before doing it by hand.
+
 ## Superadmin bootstrap (first login)
 
-The **superadmin** is created once via script; only the superadmin can promote other users to **admin** in-app (admins can approve/revoke but not mint admins).
+The **superadmin** is created once via script; only the superadmin can promote (and only they can «forget» a user — see above) other users to **admin** in-app (admins can approve/revoke but not mint admins).
 
 1. Owner logs in via VK once → sees a **pending** screen with a short code (the first 8 hex of their `vk_user_ref`).
 2. Promote that account to superadmin + approved:

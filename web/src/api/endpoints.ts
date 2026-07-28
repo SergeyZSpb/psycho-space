@@ -187,6 +187,16 @@ export const adminApi = {
   // superadmin-only; 403 otherwise.
   demote: (id: string) => apiFetch<void>(`/api/admin/accounts/${id}/demote`, { method: 'POST' }),
 
+  // superadmin-only; 403 otherwise. IRREVERSIBLE.
+  //
+  // Anonymises the person and keeps what they wrote: their ideas, the comments
+  // other people replied to, their votes and their leaderboard times all stay,
+  // authored by an anonymous `psycho-…` that links nowhere. The same VK account
+  // logging in again becomes a brand-new pending account, because the blind
+  // index that used to match it is gone. 409 `already_forgotten` if it has
+  // already happened.
+  forget: (id: string) => apiFetch<void>(`/api/admin/accounts/${id}/forget`, { method: 'POST' }),
+
   // superadmin-only; 403 otherwise. Returns the applied state.
   setOpenRegistration: (enabled: boolean) =>
     apiFetch<AdminSettings>('/api/admin/settings/open-registration', {

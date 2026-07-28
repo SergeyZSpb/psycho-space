@@ -43,6 +43,48 @@ func (PostgresRepository) Upsert(ctx context.Context, q db.DBTX, p UpsertParams)
 		p.Ref, p.VKUserIDEnc, p.FirstNameEnc, p.LastNameEnc, p.AvatarEnc, p.SexEnc, p.BirthdayEnc, p.ConsentVersion, p.DefaultStatus))
 }
 
+// Forget anonymises an account in place. See migrations/011 for the reasoning;
+// this is the statement that carries it out.
+//
+// One UPDATE, because every part of it has to happen or none of it does: an
+// account whose blind index was freed but whose name survived would be a person
+// still in the database that nothing can find, and one whose name was cleared
+// but whose index was not would be a person who can never log in again.
+//
+// `deleted_at` is deliberately left alone. Author lookup filters on it, so
+// setting it here would blank the author of every comment this account wrote
+// instead of anonymising it.
+func (PostgresRepository) Forget(ctx context.Context, q db.DBTX, id string, newRef, emptyEnc []byte) error {
+	tag, err := q.Exec(ctx,
+		`UPDATE accounts SET
+		     vk_user_ref     = $2,
+		     vk_user_id_enc  = $3,
+		     first_name_enc  = NULL,
+		     last_name_enc   = NULL,
+		     avatar_url_enc  = NULL,
+		     sex_enc         = NULL,
+		     birthday_enc    = NULL,
+		     consent_at      = NULL,
+		     consent_version = NULL,
+		     last_login_at   = NULL,
+		     role            = 'user',
+		     status          = 'blocked',
+		     forgotten_at    = now(),
+		     updated_at      = now()
+		 WHERE id = $1::uuid AND deleted_at IS NULL AND forgotten_at IS NULL`,
+		id, newRef, emptyEnc)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Either it is not there or it has already been forgotten. The caller
+		// has just read it, so the second is much the likelier and is the more
+		// useful thing to say.
+		return ErrAlreadyForgotten
+	}
+	return nil
+}
+
 func (PostgresRepository) GetByID(ctx context.Context, q db.DBTX, id string) (encRow, error) {
 	r, err := scanRow(q.QueryRow(ctx,
 		`SELECT `+selectCols+` FROM accounts WHERE id = $1::uuid AND deleted_at IS NULL`, id))
@@ -54,7 +96,12 @@ func (PostgresRepository) GetByID(ctx context.Context, q db.DBTX, id string) (en
 
 func (PostgresRepository) ListByStatus(ctx context.Context, q db.DBTX, status string) ([]encRow, error) {
 	rows, err := q.Query(ctx,
-		`SELECT `+selectCols+` FROM accounts WHERE status = $1 AND deleted_at IS NULL ORDER BY created_at`, status)
+		// Forgotten accounts are excluded: they are anonymous rows kept only so
+		// that what they wrote still has an author to point at, and an admin
+		// screen full of `psycho-…` placeholders nobody can act on is noise.
+		`SELECT `+selectCols+` FROM accounts
+		  WHERE status = $1 AND deleted_at IS NULL AND forgotten_at IS NULL
+		  ORDER BY created_at`, status)
 	if err != nil {
 		return nil, err
 	}

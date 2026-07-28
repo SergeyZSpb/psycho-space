@@ -8,6 +8,7 @@ import (
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 // handleSettingsGet returns global settings (admins can read).
@@ -132,6 +133,104 @@ func (s *Server) adminSetStatus(w http.ResponseWriter, r *http.Request, status s
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminForget anonymises an account: the person goes, what they wrote
+// stays. Route is gated to superadmin only.
+//
+// After it the same VK account logging in again is a genuinely NEW account —
+// new id, `pending`, the whole first-login flow — because the blind index that
+// used to match has been overwritten. Their wishlist ideas, the comments other
+// people replied to, the votes and the leaderboard times all remain, now
+// authored by an anonymous `psycho-…` that links nowhere. See
+// migrations/011_account_forgotten.sql for why this is neither a hard delete
+// nor a plain soft one.
+//
+// THE ORDER BELOW IS LOAD-BEARING and is stricter than the block path's, because
+// this one races with writes that would recreate what it is removing:
+//
+//  1. Kick the sockets FIRST. While one is open, a «Ванягоччи» frame can reach
+//     `EnsurePet` and insert a row, and a «ВАНЯДУМ» run can end and queue an
+//     insert. The kick is asynchronous, so it narrows the window rather than
+//     closing it — which is survivable here only because this operation does
+//     not delete rows, so the worst case is a stray row belonging to an
+//     anonymous account.
+//  2. Drop the in-memory state, or the yard goes on drawing them by name.
+//  3. Then anonymise, which is the one statement that matters.
+//  4. Then purge again, because a tick between 2 and 3 can re-create a
+//     provisional placement from a connection still closing.
+func (s *Server) handleAdminForget(w http.ResponseWriter, r *http.Request) {
+	actor, _ := accountFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	if !validUUID(id) {
+		writeError(w, r, http.StatusBadRequest, "bad_request")
+		return
+	}
+	// Nobody erases themselves. It is irreversible and it would take the
+	// superadmin — the one unrevokable account — with it.
+	if id == actor.ID {
+		writeError(w, r, http.StatusForbidden, "cannot_modify_self")
+		return
+	}
+	target, err := s.d.Accounts.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, account.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "not_found")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+	if target.IsSuperadmin() {
+		writeError(w, r, http.StatusForbidden, "cannot_modify_superadmin")
+		return
+	}
+
+	// 1 — cut every live connection before anything else.
+	if s.d.Realtime != nil {
+		s.d.Realtime.KickAccount(id)
+	}
+	if err := s.d.Sessions.RevokeAllForAccount(r.Context(), id); err != nil {
+		slog.ErrorContext(r.Context(), "revoke sessions on forget failed", "err", err)
+	}
+
+	// 2 — drop what the games remember about them.
+	s.forgetInGames(id)
+
+	// 3 — the statement this whole handler exists for.
+	if err := s.d.Accounts.Forget(r.Context(), id); err != nil {
+		if errors.Is(err, account.ErrAlreadyForgotten) {
+			writeError(w, r, http.StatusConflict, "already_forgotten")
+			return
+		}
+		slog.ErrorContext(r.Context(), "forget account failed", "err", err, "account_id", id)
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+
+	// 4 — and again, in case a tick re-created a placement in between.
+	s.forgetInGames(id)
+
+	slog.InfoContext(r.Context(), "account forgotten", "account_id", id, "actor_id", actor.ID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// forgetInGames drops an account from every game's in-memory state.
+//
+// Each game is asked separately and neither knows about the other — this
+// function is the whole of what "an account went away" means to them, and a
+// fourth game adds a line here and nothing else.
+func (s *Server) forgetInGames(id string) {
+	if s.d.GameVanyagotchi != nil {
+		s.d.GameVanyagotchi.Forget(id)
+	}
+	if s.d.GameVanyadum != nil {
+		if uid, err := uuid.Parse(id); err == nil {
+			// Drops the arena without recording the run — a run belonging to
+			// somebody who is being erased is not a result.
+			s.d.GameVanyadum.AbandonRun(uid)
+		}
+	}
 }
 
 // handleAdminPromote makes a user an admin. Route is gated to superadmin only.

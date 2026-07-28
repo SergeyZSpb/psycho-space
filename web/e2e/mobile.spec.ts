@@ -247,6 +247,52 @@ for (const theme of THEMES) {
       }
     });
 
+    test('admin: forgetting a user is superadmin-only, confirmed, and says what stays', async ({
+      page,
+    }) => {
+      // Irreversible, so the dialog has to be honest about BOTH halves — what
+      // is destroyed and what survives. The half that survives is the one
+      // people do not expect, and "забыть" sounds gentler than it is.
+      await seedClient(page, theme);
+      await stubBackend(page, 'superadmin');
+      await page.goto('/app/admin');
+
+      const forget = page.getByTestId('admin-forget').first();
+      await expect(forget).toBeVisible();
+      if (isMobile(page)) await expectTapTarget(forget, 'forget button');
+
+      await forget.click();
+      const dialog = page.getByTestId('admin-forget-dialog');
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toContainText('обезличен');
+      await expect(dialog).toContainText('останется'); // the content is kept
+      await expect(dialog).toContainText('новый аккаунт'); // and a re-login is a new one
+      await expectNoOverflow(page, `admin forget dialog ${theme}`);
+      if (isMobile(page)) {
+        await expectTapTarget(page.getByTestId('admin-forget-confirm'), 'forget confirm');
+        // The way OUT of an irreversible dialog deserves a real target too.
+        await expectTapTarget(page.getByRole('button', { name: 'Отмена' }), 'forget cancel');
+      }
+
+      // Cancelling leaves everything alone, which is the whole point of asking.
+      await page.getByRole('button', { name: 'Отмена' }).click();
+      await expect(dialog).toBeHidden();
+
+      await page.getByTestId('admin-forget').first().click();
+      await page.getByTestId('admin-forget-confirm').click();
+      await expect(page.getByTestId('admin-forget-dialog')).toBeHidden();
+    });
+
+    test('admin: an ordinary admin is never offered the forget button', async ({ page }) => {
+      // The route is superadmin-only and answers 403, but a button that only
+      // ever fails is a worse way to learn that than not having one.
+      await seedClient(page, theme);
+      await stubBackend(page, 'user');
+      await page.goto('/app/admin');
+      // A plain user is bounced out of the admin section entirely.
+      await expect(page).not.toHaveURL(/\/app\/admin$/);
+    });
+
     test('app shell: nav drawer + app-bar actions', async ({ page }) => {
       await recordDrawerStates(page);
       await seedClient(page, theme);

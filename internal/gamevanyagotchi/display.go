@@ -293,3 +293,24 @@ func (s *Service) ensureSleepers(ctx context.Context) {
 	s.sleepersLoaded = true
 	s.mu.Unlock()
 }
+
+// Forget drops everything this service remembers about one account.
+//
+// Called when an account is removed from the system. Without it the yard keeps
+// drawing them: a placement that is not provisional is deliberately never
+// expired — it becomes a SLEEPER, drawn where they last stood — and the display
+// cache still holds their name and the URL of their photograph. So a person who
+// had been erased from the database would go on standing in the yard, labelled,
+// for the life of the process.
+//
+// It is safe to call for an account that was never here, and safe to call twice.
+// Both matter: the caller is an admin action that also kicks the socket, and
+// the tick may briefly re-create a provisional entry from a connection that has
+// not finished closing — which self-heals, because provisional entries are
+// exactly the ones the grace period does remove.
+func (s *Service) Forget(accountID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pos, accountID)
+	delete(s.display, accountID)
+}

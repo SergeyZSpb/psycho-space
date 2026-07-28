@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
@@ -134,6 +135,45 @@ func (s *Service) Approve(ctx context.Context, id string) error {
 func (s *Service) Block(ctx context.Context, id string) error {
 	return s.repo.SetStatus(ctx, s.q, id, StatusBlocked)
 }
+
+// Forget anonymises an account: the person is removed from the system and
+// everything they contributed stays where it is.
+//
+// After it, the same VK account logging in again is a genuinely NEW account —
+// new id, `pending`, the whole first-login flow — because the blind index that
+// used to match it has been overwritten with random bytes. That is the entire
+// mechanism, and it is why this is not a soft delete: `vk_user_ref` is a plain
+// UNIQUE and the login upsert conflicts on it, so a row that merely carried a
+// `deleted_at` would still capture the next login and hand back a session for
+// an account every read refuses to find.
+//
+// What survives is what other people are also part of — a wishlist idea with
+// replies on it, a comment somebody upvoted, a leaderboard time. Those keep
+// rendering, through display fallbacks the code already had: an account with no
+// name shows as `psycho-<handle>` and one with no VK id links nowhere.
+//
+// The reference comes from crypto/rand, not from a hash of anything: a
+// derivable replacement would let somebody who knew the input recognise the
+// person it replaced, which is most of what anonymising is meant to prevent.
+func (s *Service) Forget(ctx context.Context, id string) error {
+	ref := make([]byte, refBytes)
+	// Since Go 1.24 crypto/rand.Read cannot fail — it panics internally rather
+	// than returning an error — so there is no error path to thread out.
+	_, _ = rand.Read(ref)
+
+	// The column is NOT NULL, so the VK id is overwritten with the ciphertext of
+	// an empty string rather than cleared. Decrypting it yields "", which
+	// VKURL() already turns into no link at all.
+	empty, err := s.enc.EncryptString("")
+	if err != nil {
+		return err
+	}
+	return s.repo.Forget(ctx, s.q, id, ref, empty)
+}
+
+// refBytes is the width of a blind index — HMAC-SHA256 — so a replacement is
+// indistinguishable in shape from the value it replaced.
+const refBytes = 32
 
 // Promote makes an account an approved admin.
 func (s *Service) Promote(ctx context.Context, id string) error {
