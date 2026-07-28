@@ -3,6 +3,14 @@
 // VK ID application id (public). Matches the backend's PSYCHOSPACE_VK_APP_ID.
 export const VK_APP_ID = 54691267;
 
+// Where VK sends the browser back to. Three copies of this string must agree or
+// no login works at all: this one (sent at authorize), the redirect URL
+// registered on the VK app, and PSYCHOSPACE_VK_REDIRECT_URI (echoed by the
+// backend at the token exchange, which VK matches exactly). It is a SPA route —
+// see the header of composables/useVkLogin.ts for why it must never be an API
+// endpoint.
+export const VK_REDIRECT_PATH = '/auth/redirect';
+
 // Consent version recorded on login (152-ФЗ). Bump when the consent text changes.
 // v2: disclose the full vkid.personal_info set (added пол + дата рождения).
 export const CONSENT_VERSION = 'v2';

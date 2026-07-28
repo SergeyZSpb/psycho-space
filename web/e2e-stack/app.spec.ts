@@ -43,6 +43,20 @@ test.describe('anonymous', () => {
     expect((await page.request.get('/api/wishlist/items')).status()).toBe(401);
     expect((await page.request.get('/api/admin/accounts')).status()).toBe(401);
   });
+
+  // The VK redirect target must answer a plain browser navigation with the SPA.
+  // It once pointed at /api/auth/vk/callback, which is POST-only, so every login
+  // that fell back to a redirect got a bare 405 — this is that regression, and
+  // the real binary is the only place it shows, because it is the router's
+  // method matching that decides it.
+  test('the VK redirect target is a page, and the API endpoint is not', async ({ page }) => {
+    const landed = await page.request.get('/auth/redirect?code=x&device_id=y&state=z');
+    expect(landed.status()).toBe(200);
+    expect(landed.headers()['content-type']).toContain('text/html');
+
+    // And the exchange endpoint stays an API: no browser is ever sent there.
+    expect((await page.request.get('/api/auth/vk/callback?code=x')).status()).toBe(405);
+  });
 });
 
 test.describe('approved user', () => {

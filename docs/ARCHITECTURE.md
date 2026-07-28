@@ -62,6 +62,8 @@ flowchart TB
 
 The authorization code is exchanged **on the server**, so the VK service token never reaches the browser. A session cookie is issued even for `pending` and `blocked` accounts: it identifies without authorizing, because `requireAuth` still demands `status == approved`. See [§8 → ADR-007](#adr-007--a-session-cookie-is-issued-even-for-pending-and-blocked-accounts) for why.
 
+**The redirect URL is a page, and the exchange endpoint is not.** VK's `redirect_uri` is `https://psycho-space.ru/auth/redirect` — a route of the SPA (`AuthRedirectView.vue`). In the ordinary flow nothing is ever navigated there: the OneTap widget finishes inside a VK-hosted frame and hands `{code, device_id}` to JavaScript, which POSTs to `/api/auth/vk/callback` from the page it is already on. But when the widget cannot finish in place — VK's own in-app WebView, a blocked popup, partitioned third-party storage, or the "войти другим способом" path — VK navigates the whole browser to `redirect_uri?code=…` with **GET**, and that landing must be a page. It used to be `/api/auth/vk/callback`, which is POST-only, so those browsers got a bare **405** and could never log in; `TestVKRedirectTargetIsServedAsAPage` and a full-stack case now pin both halves. Three copies of the string must agree exactly or every login fails: `VK_REDIRECT_PATH` in `web/src/constants.ts` (sent at authorize), `PSYCHOSPACE_VK_REDIRECT_URI` (echoed by the backend at the token exchange, which VK matches byte for byte), and the redirect URL registered on the VK app.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -73,8 +75,13 @@ sequenceDiagram
     B->>A: GET /api/auth/vk/state
     A-->>B: state (+ httpOnly state cookie)
     Note over B: consent checkbox must be ticked<br/>before the VK widget is mounted (152-ФЗ)
-    B->>V: OneTap + PKCE
-    V-->>B: code, device_id
+    B->>V: OneTap + PKCE (redirect_uri = /auth/redirect)
+    alt widget finishes in place (the usual)
+        V-->>B: code, device_id (postMessage — no navigation)
+    else browser cannot host the widget (WebView, blocked popup, "другим способом")
+        V-->>B: 302 /auth/redirect?code=…&device_id=…&state=…
+        Note over B: AuthRedirectView reads the query,<br/>PKCE verifier + state from sessionStorage
+    end
     B->>A: POST /api/auth/vk/callback {code, device_id, state, code_verifier, consent_version}
     A->>V: POST /oauth2/auth (code + service_token + code_verifier)
     V-->>A: access_token (+ id_token)

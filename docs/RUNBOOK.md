@@ -13,6 +13,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*` — **two reads (`config`, `state`) and nothing that writes**, because a verb travels over the socket as a `vanyagotchi_do` frame and cannot be curl'd (ADR-043) — view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and every phrase pool are in `content.go`, not the database — so retuning, renaming, adding a regular or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from **five disjoint pools** (a test enforces the disjointness, so a line can only ever mean one thing) and they say different things about him: `tiredSays` — he gave up on a walk; `idleSays` — he is just standing about; `shySays` — he lost his nerve and the verb did nothing; `reekSays` — **somebody else** relieved himself near him; `enviousSays` — **somebody else** found the keys. The last two are the only lines another player's action puts in your mouth, and the regulars get them too. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep; the two reactions are held in memory with an expiry and dropped by the tick that finds them stale.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
+- **vk-login:** the redirect URL is `https://psycho-space.ru/auth/redirect` — a SPA page, never the API endpoint. Three copies must match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app's registered list); a **405 on `/api/auth/vk/callback`** means one of them points at the API again. See "VK login — the redirect URL, and what a 405 means".
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
 - **constraints:** never commit the host/IP/port or any secret; never paste real personal data into shared places. The app log is PII-free by design; the DB and nginx access log are not — treat their contents as confidential.
 
@@ -471,6 +472,45 @@ ssh psycho "sudo -u postgres psql psychospace -c \
 ```
 
 3. Reload the app — the owner now has the admin page to approve people and promote admins.
+
+## VK login — the redirect URL, and what a 405 means
+
+Three copies of one string must agree exactly, or logins fail in ways that look
+unrelated to each other:
+
+| Copy | Where |
+|---|---|
+| sent at authorize | `VK_REDIRECT_PATH` in `web/src/constants.ts` (baked into the SPA) |
+| echoed at the token exchange | `PSYCHOSPACE_VK_REDIRECT_URI` ← GitHub `prod` secret `VK_REDIRECT_URI` |
+| allowed by VK | the redirect URL list on the VK app (id 54691267) |
+
+Current value: `https://psycho-space.ru/auth/redirect` — a **page** of the SPA. It
+must never be an API endpoint: VK navigates a browser there with GET whenever the
+widget cannot finish in place (its in-app WebView, a blocked popup, partitioned
+third-party storage, "войти другим способом"). While it pointed at the POST-only
+`/api/auth/vk/callback`, exactly those people got a bare **405** and everyone else
+was unaffected, which is what made it look like one person's broken browser.
+
+Symptoms and what they mean:
+
+- **405 on `/api/auth/vk/callback`** — something is using the API endpoint as a
+  redirect URL again. Check the SPA constant and the VK app list.
+- **`vk_exchange_failed` for everyone, right after a deploy** — the SPA copy and
+  the secret disagree. They are only ever changed together, in one deploy.
+- **`bad_state` / a 400 after a redirect login** — the state cookie or the PKCE
+  verifier did not survive the round trip; the verifier lives in `sessionStorage`,
+  which is per-tab, so a login finished in a *different tab* cannot complete.
+
+Ask VK which URLs it accepts (public app id, no secrets involved — a `302` means
+registered, a `200` HTML page means rejected):
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' -G https://id.vk.com/authorize \
+  --data-urlencode response_type=code --data-urlencode client_id=54691267 \
+  --data-urlencode redirect_uri=https://psycho-space.ru/auth/redirect \
+  --data-urlencode code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM \
+  --data-urlencode code_challenge_method=S256 --data-urlencode state=probe1234567890
+```
 
 ## nginx & TLS
 

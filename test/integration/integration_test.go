@@ -192,7 +192,10 @@ func startFakeLLM() *httptest.Server {
 	}))
 }
 
-const vkRedirect = "https://psycho-space.ru/api/auth/vk/callback"
+// The URL VK returns the browser to — a page of the SPA, not the API endpoint
+// the exchange is POSTed to. VK matches this string exactly between authorize
+// and token exchange, so it is configuration, not a route.
+const vkRedirect = "https://psycho-space.ru/auth/redirect"
 
 func newAccountService() *account.Service {
 	enc, _ := crypto.NewEncryptor(key(1))

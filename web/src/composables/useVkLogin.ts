@@ -10,6 +10,19 @@
 //      the code + verifier to our confidential backend, which does the exchange.
 //   5. Route on the result: approved -> /app, pending|blocked -> /pending.
 //
+// THE REDIRECT URL IS A PAGE, NOT THE API ENDPOINT — and it has to be.
+//   `redirectUrl` below is what VK validates at authorize and what the backend
+//   must echo, byte for byte, at the token exchange (PSYCHOSPACE_VK_REDIRECT_URI
+//   — the two must always be changed together, or every login fails). In Callback
+//   mode nothing navigates to it, which is how it went unnoticed that it used to
+//   point at POST-only /api/auth/vk/callback: any browser that fell back to
+//   redirect mode — VK's own in-app WebView, a blocked popup, partitioned
+//   third-party storage, "войти другим способом" — was navigated there with GET
+//   and got a bare 405. A redirect URL is by definition somewhere a browser is
+//   sent, so it points at the SPA page /auth/redirect, which reads the query and
+//   POSTs the exchange the same way the widget does. The API endpoint stays a
+//   POST-only API and is never a navigation target.
+//
 // !!! LIVE-VERIFICATION NOTE (only testable against the real VK app + domain) !!!
 //   - The SDK's Config type accepts `codeChallenge` and derives
 //     code_challenge_method=S256 itself; it does NOT accept a `codeChallengeMethod`
@@ -23,19 +36,21 @@ import * as VKID from '@vkid/sdk';
 import { useRouter } from 'vue-router';
 import type { LocationQuery } from 'vue-router';
 import { createPkce } from '../lib/pkce';
+import { parseVkRedirect } from '../lib/vkRedirect';
 import { authApi } from '../api/endpoints';
 import { useAuthStore } from '../stores/auth';
-import { CONSENT_VERSION, SS_PKCE_VERIFIER, SS_VK_STATE, VK_APP_ID } from '../constants';
+import {
+  CONSENT_VERSION,
+  SS_PKCE_VERIFIER,
+  SS_VK_STATE,
+  VK_APP_ID,
+  VK_REDIRECT_PATH,
+} from '../constants';
 
 // Minimal shape we read off the OneTap LOGIN_SUCCESS payload (VKID.RedirectPayload).
 interface OneTapSuccessPayload {
   code: string;
   device_id: string;
-}
-
-function firstQueryValue(v: LocationQuery[string]): string {
-  if (Array.isArray(v)) return v[0] ?? '';
-  return v ?? '';
 }
 
 export function useVkLogin() {
@@ -84,7 +99,7 @@ export function useVkLogin() {
 
     VKID.Config.init({
       app: VK_APP_ID,
-      redirectUrl: `${window.location.origin}/api/auth/vk/callback`,
+      redirectUrl: `${window.location.origin}${VK_REDIRECT_PATH}`,
       responseMode: VKID.ConfigResponseMode.Callback,
       source: VKID.ConfigSource.LOWCODE,
       scope: '',
@@ -110,14 +125,22 @@ export function useVkLogin() {
     };
   }
 
-  // Redirect-mode fallback: VK bounced back with the code in the URL query.
-  // The verifier + state were stashed in sessionStorage when we started the flow.
-  async function completeRedirect(query: LocationQuery): Promise<void> {
-    const code = firstQueryValue(query.code);
-    const deviceId = firstQueryValue(query.device_id);
-    const state = firstQueryValue(query.state) || sessionStorage.getItem(SS_VK_STATE) || '';
-    const codeVerifier = sessionStorage.getItem(SS_PKCE_VERIFIER) ?? '';
-    await exchange(code, deviceId, state, codeVerifier);
+  // Redirect-mode return trip: VK navigated the browser to /auth/redirect with
+  // the result in the query. The verifier + state were stashed in sessionStorage
+  // when the flow started, and survive the full-page round trip in that tab.
+  //
+  // Returns null once the exchange has happened and the router has moved on, or
+  // the sentence to show when the trip cannot be completed at all — a cancelled
+  // login and a verifier left in another tab are both ordinary outcomes, not
+  // errors worth a trace id.
+  async function completeRedirect(query: LocationQuery): Promise<string | null> {
+    const trip = parseVkRedirect(query, {
+      state: sessionStorage.getItem(SS_VK_STATE),
+      codeVerifier: sessionStorage.getItem(SS_PKCE_VERIFIER),
+    });
+    if (trip.kind === 'failed') return trip.message;
+    await exchange(trip.code, trip.deviceId, trip.state, trip.codeVerifier);
+    return null;
   }
 
   return { mountOneTap, exchange, completeRedirect };

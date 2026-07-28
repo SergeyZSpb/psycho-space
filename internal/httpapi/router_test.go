@@ -52,6 +52,22 @@ func TestSPAServesRealAsset(t *testing.T) {
 	}
 }
 
+// The VK redirect target is a page. VK navigates a browser to it with GET and a
+// query string, so it must reach the SPA — the API endpoint that used to be
+// registered as the redirect URL is POST-only and answered 405, which is exactly
+// what a person saw when their browser fell back to redirect mode.
+func TestVKRedirectTargetIsServedAsAPage(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/auth/redirect?code=c&device_id=d&state=s", nil)
+	newTestHandler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a browser cannot finish a VK login here", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "psycho") {
+		t.Fatalf("did not serve index.html: %q", rr.Body.String())
+	}
+}
+
 func TestSPAFallbackToIndex(t *testing.T) {
 	rr := httptest.NewRecorder()
 	newTestHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/wishlist", nil))
