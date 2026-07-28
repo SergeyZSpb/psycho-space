@@ -798,6 +798,14 @@ _Accepted · 2026-07-27_
 
 [Full record → `docs/adrs/ADR-045-a-location-is-not-a-room-the-roster-is.md`](adrs/ADR-045-a-location-is-not-a-room-the-roster-is.md)
 
+#### ADR-046 · The shared plane is DOM and CSS, never a game engine
+
+_Accepted · 2026-07-27_
+
+«Ванягоччи» draws its shared world in ordinary DOM positioned by CSS — no PixiJS, no Phaser, no `<canvas>` and no render loop. An entity is a `<div>` whose `--x`/`--y`/`--band`/`--depth` are written when a frame arrives, and `container-type: size` maps them to pixels entirely in CSS, so nothing caches a measured box that mobile chrome could invalidate. Originally decided on bundle size, on an engine's scale manager fighting the never-scroll layout, and on 10–20 animated nodes being nowhere near the crossover. **Re-examined once the yard was actually built** — cut-outs, a depth ramp, sprite art, confetti, a death screen — and re-affirmed for stronger reasons than the first ones. Nothing hard about building it was the renderer. Several hundred e2e assertions describe this plane through real layout — stacking via `elementFromPoint`, feet on the ground through every pose, tap targets, reduced motion actually applying — and on a canvas they become pixel comparisons, because a test-only introspection API may not ship ([ADR-021](#adr-021--two-playwright-suites-on-purpose)). Reduced motion, real text and `object-fit: contain` are free here and bespoke there. And the constraint this game actually has is **bytes on the wire, not draw calls** ([ADR-037](#adr-037--one-account-is-one-entity-and-the-wire-carries-a-pseudonym-and-a-face)), which an engine does not touch and whose bundle makes worse. The record names the triggers that would flip it — the sharpest being `vanyagotchiPlane.ts` growing a scene graph, rather than any entity count.
+
+[Full record → `docs/adrs/ADR-046-the-shared-plane-is-dom-and-css-never-a.md`](adrs/ADR-046-the-shared-plane-is-dom-and-css-never-a.md)
+
 ### 8.5 Realtime
 
 #### ADR-015 · WebSocket, in the same binary, with an in-memory hub
