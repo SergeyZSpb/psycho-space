@@ -1,6 +1,14 @@
 // Package web embeds the built Vue SPA (web/dist, copied to dist/ here at build
-// time) into the binary. A tracked placeholder dist/index.html keeps this
-// compiling on a fresh clone that hasn't built the frontend yet.
+// time) into the binary.
+//
+// dist/.gitkeep is tracked, and that is load-bearing rather than tidiness: the
+// directive below is `all:dist`, whose `all:` prefix is what makes a dotfile
+// count, so the tracked .gitkeep is the one thing that lets `go build ./...`
+// succeed on a checkout where the frontend has never been built. Without it the
+// Go toolchain fails at compile time with "pattern all:dist: no matching files
+// found", which is what a fresh clone and every CI job that does not build the
+// SPA first would hit. Serving is unaffected: spaHandler finds no index.html and
+// serves its built-in placeholder page instead.
 package web
 
 import (
