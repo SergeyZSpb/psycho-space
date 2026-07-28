@@ -9,6 +9,11 @@
 // found", which is what a fresh clone and every CI job that does not build the
 // SPA first would hit. Serving is unaffected: spaHandler finds no index.html and
 // serves its built-in placeholder page instead.
+//
+// The file is deleted by every SPA build (Vite empties this directory) and put
+// back by the keepEmbedPlaceholder plugin in web/vite.config.ts, which is where
+// the reasoning lives. If it ever goes missing from git, `go build` breaks
+// before any test runs.
 package web
 
 import (
