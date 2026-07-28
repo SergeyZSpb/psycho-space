@@ -9,25 +9,30 @@ import (
 
 // encRow is the raw, still-encrypted representation of an account row.
 type encRow struct {
-	ID           string
-	Ref          []byte
-	VKUserIDEnc  []byte
-	FirstNameEnc []byte
-	LastNameEnc  []byte
-	AvatarEnc    []byte
-	SexEnc       []byte
-	BirthdayEnc  []byte
-	Role         string
-	Status       string
-	CreatedAt    time.Time
+	ID            string
+	Provider      string
+	Ref           []byte
+	IdentityIDEnc []byte
+	FirstNameEnc  []byte
+	LastNameEnc   []byte
+	AvatarEnc     []byte
+	SexEnc        []byte
+	BirthdayEnc   []byte
+	Role          string
+	Status        string
+	CreatedAt     time.Time
 }
 
 // UpsertParams carries the encrypted fields to insert/update on login.
 // DefaultStatus is applied only on INSERT (new account); an existing account's
 // status is never changed by login.
+//
+// Provider and Ref together are the identity, and the upsert conflicts on the
+// pair — see migrations/012 for why the blind index alone is not enough.
 type UpsertParams struct {
+	Provider       string
 	Ref            []byte
-	VKUserIDEnc    []byte
+	IdentityIDEnc  []byte
 	FirstNameEnc   []byte
 	LastNameEnc    []byte
 	AvatarEnc      []byte

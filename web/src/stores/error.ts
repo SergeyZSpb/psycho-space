@@ -15,6 +15,13 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   // The three refusals the admin screen can produce, spelled out because the
   // generic wording ("что-то пошло не так") reads as a bug when in fact the
   // server is refusing on purpose and the admin can act on the reason.
+  // A login provider with no credentials configured on the server. Nothing the
+  // user can do, and nothing wrong with their account — the other provider
+  // still works, so say that rather than leaving them retrying this one.
+  oauth_not_configured:
+    'Этот способ входа сейчас недоступен — на сервере не настроен провайдер. ' +
+    'Попробуй войти другим способом, а этот код отправь Сергею.',
+
   already_forgotten: 'Этот пользователь уже забыт — обезличивать второй раз нечего.',
   cannot_modify_self: 'Себя нельзя — ни заблокировать, ни забыть.',
   cannot_modify_superadmin: 'Суперадмина трогать нельзя: это единственный аккаунт, который нельзя потерять.',

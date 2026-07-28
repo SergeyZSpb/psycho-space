@@ -6,11 +6,19 @@ export type WishlistSort = 'top' | 'new';
 
 // The public account shape returned by /api/auth/me and the login result.
 // `handle` (first 8 hex of the blind index) is shown on the pending screen.
+//
+// `profile_url` replaced `vk_url` when a second login provider arrived: it is
+// the account's page at whichever provider it came from, and '' when there is
+// no such page — which is EVERY Yandex account (Yandex has no public profile
+// URL) and every forgotten account. Anything rendering it must treat '' as "no
+// link", not as a broken one.
 export interface Account {
   id: string;
   display_name: string;
   avatar_url: string;
-  vk_url: string;
+  profile_url: string;
+  /** Which provider this identity came from: 'vk' | 'yandex'. */
+  provider: string;
   role: Role;
   status: AccountStatus;
   handle: string;
@@ -22,16 +30,24 @@ export interface AdminAccount {
   handle: string;
   display_name: string;
   avatar_url: string;
-  vk_url: string;
+  profile_url: string;
+  /** Which provider this identity came from — the admin list shows it. */
+  provider: string;
   role: Role;
   status: AccountStatus;
   created_at: string;
 }
 
+// The author/player blob embedded in wishlist items, comments and leaderboards.
+//
+// Deliberately WITHOUT `provider`: the backend does not send one here, and it
+// would be a fact about a person published to everyone who can see their name
+// for no purpose any screen has. The profile URL is enough — it is either a
+// link or it is empty.
 export interface ItemAuthor {
   display_name: string;
   avatar_url: string;
-  vk_url: string;
+  profile_url: string;
 }
 
 export interface WishlistItem {
@@ -63,7 +79,7 @@ export interface AdminSettings {
   open_registration: boolean;
 }
 
-// /api/auth/vk/callback now ALWAYS returns the account (and sets a session
+// /api/auth/<provider>/callback ALWAYS returns the account (and sets a session
 // cookie) regardless of status; the client routes by account.status.
 export interface LoginResult {
   status: AccountStatus;
@@ -165,7 +181,8 @@ export interface GameKhimkiRun {
 export interface GameKhimkiPlayer {
   display_name: string;
   avatar_url: string;
-  vk_url: string;
+  /** '' for a Yandex account and for a forgotten one — see ItemAuthor. */
+  profile_url: string;
 }
 
 // The leaderboard is four record boards, each ranking players by their best (or

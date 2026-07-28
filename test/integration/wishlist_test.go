@@ -81,7 +81,7 @@ func TestWishlistFlow(t *testing.T) {
 		t.Fatalf("no item id: %v", created)
 	}
 	author := created["author"].(map[string]any)
-	if author["display_name"] != "User 1001" || author["vk_url"] != "https://vk.com/id1001" {
+	if author["display_name"] != "User 1001" || author["profile_url"] != "https://vk.com/id1001" {
 		t.Fatalf("author = %v", author)
 	}
 

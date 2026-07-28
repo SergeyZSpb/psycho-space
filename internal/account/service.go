@@ -23,11 +23,16 @@ func NewService(q db.DBTX, repo Repository, enc *crypto.Encryptor, bi *crypto.Bl
 	return &Service{q: q, repo: repo, enc: enc, bi: bi}
 }
 
-// LoginInput is the profile pulled from VK plus the consent version.
-// AutoApprove (open-registration mode) approves a NEW account immediately with
-// the standard user role; it never affects an existing account.
+// LoginInput is the profile pulled from the login provider plus the consent
+// version. AutoApprove (open-registration mode) approves a NEW account
+// immediately with the standard user role; it never affects an existing account.
+//
+// Sex and Birthday arrive already normalised — "male"/"female"/"" and ISO
+// "YYYY-MM-DD"/"" — because agreeing on that vocabulary is the provider
+// clients' job, not this package's.
 type LoginInput struct {
-	VKUserID       string
+	Provider       string
+	ProviderUserID string
 	FirstName      string
 	LastName       string
 	Avatar         string
@@ -37,9 +42,15 @@ type LoginInput struct {
 	AutoApprove    bool
 }
 
-// UpsertOnLogin creates or refreshes the account for a VK user and records consent.
+// UpsertOnLogin creates or refreshes the account for one provider identity and
+// records consent.
+//
+// The blind index is taken over the provider's RAW user id, never a namespaced
+// string: the provider is carried in its own column instead. Changing what goes
+// into the index would orphan every account that already exists, and the HMAC
+// key cannot be rotated to repair it — see migrations/012.
 func (s *Service) UpsertOnLogin(ctx context.Context, in LoginInput) (*Account, error) {
-	vkEnc, err := s.enc.EncryptString(in.VKUserID)
+	idEnc, err := s.enc.EncryptString(in.ProviderUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +80,9 @@ func (s *Service) UpsertOnLogin(ctx context.Context, in LoginInput) (*Account, e
 		defaultStatus = StatusApproved
 	}
 	row, err := s.repo.Upsert(ctx, s.q, UpsertParams{
-		Ref:            s.bi.Index(in.VKUserID),
-		VKUserIDEnc:    vkEnc,
+		Provider:       in.Provider,
+		Ref:            s.bi.Index(in.ProviderUserID),
+		IdentityIDEnc:  idEnc,
 		FirstNameEnc:   fnEnc,
 		LastNameEnc:    lnEnc,
 		AvatarEnc:      avEnc,
@@ -139,12 +151,12 @@ func (s *Service) Block(ctx context.Context, id string) error {
 // Forget anonymises an account: the person is removed from the system and
 // everything they contributed stays where it is.
 //
-// After it, the same VK account logging in again is a genuinely NEW account —
-// new id, `pending`, the whole first-login flow — because the blind index that
-// used to match it has been overwritten with random bytes. That is the entire
-// mechanism, and it is why this is not a soft delete: `vk_user_ref` is a plain
-// UNIQUE and the login upsert conflicts on it, so a row that merely carried a
-// `deleted_at` would still capture the next login and hand back a session for
+// After it, the same provider account logging in again is a genuinely NEW
+// account — new id, `pending`, the whole first-login flow — because the blind
+// index that used to match it has been overwritten with random bytes. That is
+// the entire mechanism, and it is why this is not a soft delete: the login
+// upsert conflicts on `(provider, identity_ref)`, so a row that merely carried
+// a `deleted_at` would still capture the next login and hand back a session for
 // an account every read refuses to find.
 //
 // What survives is what other people are also part of — a wishlist idea with
@@ -161,9 +173,9 @@ func (s *Service) Forget(ctx context.Context, id string) error {
 	// than returning an error — so there is no error path to thread out.
 	_, _ = rand.Read(ref)
 
-	// The column is NOT NULL, so the VK id is overwritten with the ciphertext of
-	// an empty string rather than cleared. Decrypting it yields "", which
-	// VKURL() already turns into no link at all.
+	// The column is NOT NULL, so the provider's user id is overwritten with the
+	// ciphertext of an empty string rather than cleared. Decrypting it yields
+	// "", which ProfileURL() already turns into no link at all.
 	empty, err := s.enc.EncryptString("")
 	if err != nil {
 		return err
@@ -200,7 +212,7 @@ func (s *Service) decOptional(blob []byte) (string, error) {
 }
 
 func (s *Service) toAccount(r encRow) (*Account, error) {
-	vkID, err := s.enc.DecryptString(r.VKUserIDEnc)
+	providerUserID, err := s.enc.DecryptString(r.IdentityIDEnc)
 	if err != nil {
 		return nil, err
 	}
@@ -229,16 +241,17 @@ func (s *Service) toAccount(r encRow) (*Account, error) {
 		handle = handle[:8]
 	}
 	return &Account{
-		ID:        r.ID,
-		Role:      r.Role,
-		Status:    r.Status,
-		VKUserID:  vkID,
-		FirstName: fn,
-		LastName:  ln,
-		AvatarURL: av,
-		Sex:       sex,
-		Birthday:  bd,
-		Handle:    handle,
-		CreatedAt: r.CreatedAt,
+		ID:             r.ID,
+		Role:           r.Role,
+		Status:         r.Status,
+		Provider:       r.Provider,
+		ProviderUserID: providerUserID,
+		FirstName:      fn,
+		LastName:       ln,
+		AvatarURL:      av,
+		Sex:            sex,
+		Birthday:       bd,
+		Handle:         handle,
+		CreatedAt:      r.CreatedAt,
 	}, nil
 }

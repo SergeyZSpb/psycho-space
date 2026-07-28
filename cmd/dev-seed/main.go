@@ -32,7 +32,8 @@ import (
 
 func main() {
 	name := flag.String("name", "Локальный Разработчик", "display name for the seeded account")
-	vkID := flag.String("vk-id", "1", "fake VK user id (used for the blind index)")
+	provider := flag.String("provider", account.ProviderVK, "login provider to seed against: vk | yandex")
+	providerID := flag.String("provider-id", "1", "fake user id at that provider (used for the blind index)")
 	role := flag.String("role", account.RoleSuperadmin, "role: user | admin | superadmin")
 	status := flag.String("status", "", "override status: pending | approved | blocked (default approved)")
 	asJSON := flag.Bool("json", false, "print one JSON object instead of the human recipe (for scripts)")
@@ -47,6 +48,13 @@ func main() {
 	case "", account.StatusPending, account.StatusApproved, account.StatusBlocked:
 	default:
 		log.Fatalf("dev-seed: invalid -status %q (want pending|approved|blocked)", *status)
+	}
+	// The database CHECK would reject an unknown provider anyway; catching it
+	// here says so in one line instead of as a constraint violation.
+	switch *provider {
+	case account.ProviderVK, account.ProviderYandex:
+	default:
+		log.Fatalf("dev-seed: invalid -provider %q (want vk|yandex)", *provider)
 	}
 
 	cfg := config.MustLoad()
@@ -77,7 +85,8 @@ func main() {
 
 	// Upsert an already-approved account (the open-registration path).
 	acc, err := accounts.UpsertOnLogin(ctx, account.LoginInput{
-		VKUserID:       *vkID,
+		Provider:       *provider,
+		ProviderUserID: *providerID,
 		FirstName:      *name,
 		ConsentVersion: "dev-seed",
 		AutoApprove:    true,
@@ -111,7 +120,8 @@ func main() {
 			"display_name": acc.DisplayName(),
 			"role":         *role,
 			"status":       want,
-			"vk_id":        *vkID,
+			"provider":     *provider,
+			"provider_id":  *providerID,
 			"cookie_name":  session.CookieName,
 			"cookie_value": raw,
 		}
@@ -123,10 +133,10 @@ func main() {
 
 	fmt.Fprintf(os.Stdout, `
 ✅ Seeded local account
-   id:    %s
-   name:  %s
-   role:  %s (approved)
-   vk id: %s
+   id:       %s
+   name:     %s
+   role:     %s (approved)
+   identity: %s user %s
 
 Open http://localhost:5173, then in DevTools → Application → Cookies add this
 cookie for the origin you use (localhost:5173 dev server, or localhost:8080):
@@ -138,5 +148,5 @@ cookie for the origin you use (localhost:5173 dev server, or localhost:8080):
 
    curl -b '%s=%s' http://localhost:8080/api/auth/me
 
-`, acc.ID, acc.DisplayName(), *role, *vkID, session.CookieName, raw, session.CookieName, raw)
+`, acc.ID, acc.DisplayName(), *role, *provider, *providerID, session.CookieName, raw, session.CookieName, raw)
 }

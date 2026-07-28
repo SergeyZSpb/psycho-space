@@ -12,7 +12,7 @@ Working rules for this repository — the *what*. The reasoning behind the shape
 
 ## What this is
 
-A Russian-language landing page + allowlist-gated web app for a small community. The landing is deliberately cringe; login is via **VK ID** only. The app is several sections behind one shell, and an approved user lands in **«Ванягоччи»** — the front door, named once as `HOME_ROUTE_NAME` in `web/src/constants.ts` because the `/app` index, the router's guard redirects and the post-login push all have to agree on it. The other sections are «Смолтолк в Химках», **«ВАНЯДУМ»** — the first 3D game, a first-person shooter on a generated заброшка — and the **Wishlist with upvotes**, which was the first one built (the UI still says more are coming). Access is allowlist-gated: the owner is promoted to admin, then approves everyone else; unapproved users are told to ask to be allowlisted. RU region, single environment (prod), under personal-data law (152-ФЗ).
+A Russian-language landing page + allowlist-gated web app for a small community. The landing is deliberately cringe; login is via **VK ID** or **Яндекс ID** — two doors, one identity model behind them (`(provider, blind index)`, ADR-054), and no linking between them. The app is several sections behind one shell, and an approved user lands in **«Ванягоччи»** — the front door, named once as `HOME_ROUTE_NAME` in `web/src/constants.ts` because the `/app` index, the router's guard redirects and the post-login push all have to agree on it. The other sections are «Смолтолк в Химках», **«ВАНЯДУМ»** — the first 3D game, a first-person shooter on a generated заброшка — and the **Wishlist with upvotes**, which was the first one built (the UI still says more are coming). Access is allowlist-gated: the owner is promoted to admin, then approves everyone else; unapproved users are told to ask to be allowlisted. RU region, single environment (prod), under personal-data law (152-ФЗ).
 
 ## Stack & layout
 
@@ -35,6 +35,8 @@ internal/
   session/   server-side opaque sessions
   account/   accounts: upsert-by-blind-index, allowlist status + role tier
   vk/        VK ID client (ExchangeCode + UserInfo) + optional id_token verifier
+  yandex/    Яндекс ID client — plain OAuth 2.0, no SDK, no id_token; also builds
+             the authorize URL, so the client id lives only in config (ADR-055)
   wishlist/  items, comments, votes (upvote toggle on both)
   gamekhimki/  «Смолтолк в Химках» — LLM-judged dialogue: content/persona, judge, runs, art blobs
   gamevanyadum/  «ВАНЯДУМ» — the first 3D game, and the only thing here that
@@ -144,7 +146,7 @@ This exists because the audience is a handful of friends who will open the thing
 - Minimise stored personal data; **encrypt at rest** what we store (AES-256-GCM, per-row nonce; keys from env, base64 32-byte, validated at startup).
 - Equality lookups on personal identifiers use the **HMAC-SHA256 blind index**, never plaintext.
 - Session tokens are random (`crypto/rand`), stored only as `HMAC-SHA256`; the raw token lives only in an `httpOnly; Secure; SameSite=Lax` cookie.
-- All security randomness via `crypto/rand`. Never log personal data or tokens (log the `vk_user_ref` hex if you must correlate).
+- All security randomness via `crypto/rand`. Never log personal data or tokens (log the `identity_ref` hex if you must correlate).
 - **Secrets never enter the repo.** They live only in GitHub Actions `prod` environment secrets and, on the server, in `/etc/psycho-space/app.env` (chmod 600). `.env` is gitignored.
 - **No test/dev-only code in production paths** — no test endpoints, mock handlers, or debug backdoors. Tests use real flows or direct DB setup.
 - Consent (152-ФЗ) is captured before any PD processing: the VK widget is gated behind an explicit consent checkbox; `consent_at`/`consent_version` are recorded.
@@ -240,7 +242,7 @@ Nothing secret is in the repository, so a fresh clone cannot run the whole thing
 
 - `PSYCHOSPACE_ENV=dev`, `PSYCHOSPACE_HTTP_ADDR`, `PSYCHOSPACE_BASE_URL`, `PSYCHOSPACE_DATABASE_URL` — point at the compose Postgres (`./dev.sh db-up`).
 - `PSYCHOSPACE_ENC_KEY`, `PSYCHOSPACE_HMAC_KEY`, `PSYCHOSPACE_SESSION_KEY` — three **different** base64 32-byte values (`openssl rand -base64 32`). Startup fails fast if any is missing or the wrong length; there are no defaults on purpose. Local values are throwaway — they are not the production keys and must never be.
-- `PSYCHOSPACE_VK_*` — optional locally. VK ID is IP-allowlisted to the production host and its redirect URI is the production domain, so **the real login cannot run on a workstation**. Use `./dev.sh seed` instead; it mints an approved account and prints its session cookie.
+- `PSYCHOSPACE_VK_*` and `PSYCHOSPACE_YANDEX_*` — optional locally, and **neither real login can run on a workstation**: VK ID is IP-allowlisted to the production host and both providers' redirect URIs are the production domain. Use `./dev.sh seed` instead; it mints an approved account and prints its session cookie, and takes `-provider yandex` when you need the second provider's shape. The Yandex trio is all-or-none — set all three or none, since one alone fails at startup by design.
 - `PSYCHOSPACE_LLM_BASE_URL` / `_API_KEY` / `_MODEL` — needed only to play the game locally. **Every turn costs real money**, so leave them blank unless you are working on the game; unset, `/api/game-khimki/attempt` answers 503 and everything else works.
 - `PSYCHOSPACE_LOG_DIR`, `PSYCHOSPACE_SESSION_TTL`, `PSYCHOSPACE_OTLP_ENDPOINT` — optional.
 
@@ -248,7 +250,7 @@ The full-stack e2e suite needs none of this: `scripts/e2e-stack.sh` generates th
 
 **GitHub Actions `prod` environment secrets** (Settings → Environments → prod). The deploy workflow reads these names verbatim and renders `/etc/psycho-space/app.env` from them:
 
-`DEPLOY_SSH_KEY` · `DEPLOY_SSH_HOST` · `DEPLOY_SSH_PORT` · `DEPLOY_SSH_USER` · `POSTGRES_PASSWORD` · `APP_ENC_KEY` · `APP_HMAC_KEY` · `APP_SESSION_KEY` · `VK_APP_ID` · `VK_SERVICE_TOKEN` · `VK_REDIRECT_URI` · `LLM_BASE_URL` · `LLM_API_KEY` · `LLM_MODEL` · optional `VK_VERIFY_IDTOKEN` / `VK_JWKS_URL` / `VK_ISSUER`.
+`DEPLOY_SSH_KEY` · `DEPLOY_SSH_HOST` · `DEPLOY_SSH_PORT` · `DEPLOY_SSH_USER` · `POSTGRES_PASSWORD` · `APP_ENC_KEY` · `APP_HMAC_KEY` · `APP_SESSION_KEY` · `VK_APP_ID` · `VK_SERVICE_TOKEN` · `VK_REDIRECT_URI` · `YANDEX_CLIENT_ID` · `YANDEX_CLIENT_SECRET` · `YANDEX_REDIRECT_URI` · `LLM_BASE_URL` · `LLM_API_KEY` · `LLM_MODEL` · optional `VK_VERIFY_IDTOKEN` / `VK_JWKS_URL` / `VK_ISSUER`.
 
 **Handle with care.** `APP_ENC_KEY` and `APP_HMAC_KEY` are not rotatable in place: losing the encryption key makes stored profiles unrecoverable, and changing the HMAC key breaks every blind index, which orphans every account. The server host and hardened SSH port are secret too — they live in these secrets, in the operator's `~/.ssh/config`, and in the local living doc, and must never appear in the repository.
 

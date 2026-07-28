@@ -394,12 +394,17 @@ func fakeVKDynamic() *httptest.Server {
 }
 
 // accountIDByUID looks up an account's id by its VK user id (via blind index).
+//
+// The provider is part of the lookup, not decoration: the blind index is taken
+// over the provider's raw id, so a VK user and a Yandex user with the same
+// numeric id share one — which is exactly the collision migrations/012 makes
+// harmless, and exactly what would make this helper return the wrong row.
 func accountIDByUID(t *testing.T, uid string) string {
 	t.Helper()
 	bi, _ := crypto.NewBlindIndexer(key(2))
 	var id string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT id::text FROM accounts WHERE vk_user_ref = $1`, bi.Index(uid)).Scan(&id); err != nil {
+		`SELECT id::text FROM accounts WHERE provider = 'vk' AND identity_ref = $1`, bi.Index(uid)).Scan(&id); err != nil {
 		t.Fatalf("accountIDByUID(%s): %v", uid, err)
 	}
 	return id

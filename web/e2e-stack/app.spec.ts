@@ -57,6 +57,20 @@ test.describe('anonymous', () => {
     // And the exchange endpoint stays an API: no browser is ever sent there.
     expect((await page.request.get('/api/auth/vk/callback?code=x')).status()).toBe(405);
   });
+
+  // The identical trap, one provider over — and a live one rather than a
+  // hypothetical: the Яндекс application had /api/auth/yandex/callback
+  // registered as its Redirect URI until today. Яндекс has no in-page SDK, so
+  // unlike VK there is no callback mode to mask it: EVERY login would have
+  // navigated a browser at a POST-only endpoint and collected a bare 405.
+  test('the Яндекс redirect target is a page, and the API endpoint is not', async ({ page }) => {
+    // No device_id in this URL, because Яндекс has no such concept.
+    const landed = await page.request.get('/auth/yandex/redirect?code=x&state=y');
+    expect(landed.status()).toBe(200);
+    expect(landed.headers()['content-type']).toContain('text/html');
+
+    expect((await page.request.get('/api/auth/yandex/callback?code=x')).status()).toBe(405);
+  });
 });
 
 test.describe('approved user', () => {
@@ -145,6 +159,37 @@ test.describe('approved user', () => {
     });
     expect(res.status()).toBe(503);
     expect(await res.json()).toHaveProperty('trace_id');
+  });
+});
+
+test.describe('two providers', () => {
+  // The seeded `yandex` account carries THE SAME provider id as `user` (900001)
+  // at the other provider. That is the whole point of it: identity is the PAIR
+  // (provider, id), never the id alone, and two providers both handing out
+  // small numeric user ids makes a collision a matter of time rather than of
+  // bad luck. Only the real database can assert this — it is a UNIQUE
+  // constraint, and a stub would happily agree with whatever it was told.
+  test('the same provider id at the other provider is a different person', async ({
+    context,
+    page,
+  }) => {
+    const vk = (await stack()).user;
+    const ya = await loginAs(context, 'yandex');
+
+    expect(ya.provider).toBe('yandex');
+    expect(ya.provider_id).toBe(vk.provider_id); // the same id at the provider…
+    expect(ya.account_id).not.toBe(vk.account_id); // …and a different account here
+
+    const me = await page.request.get('/api/auth/me');
+    expect(me.status()).toBe(200);
+    const body = (await me.json()) as {
+      account: { id: string; provider: string; profile_url: string };
+    };
+    expect(body.account.id).toBe(ya.account_id);
+    expect(body.account.provider).toBe('yandex');
+    // Яндекс has no public profile page, so there is nothing to link a name to.
+    // Every surface that renders an author has to survive this being empty.
+    expect(body.account.profile_url).toBe('');
   });
 });
 

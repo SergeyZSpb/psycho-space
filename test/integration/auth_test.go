@@ -116,8 +116,8 @@ func TestVKLoginFlow(t *testing.T) {
 	if acc["display_name"] != "Иван Петров" {
 		t.Fatalf("display_name = %v", acc["display_name"])
 	}
-	if acc["vk_url"] != "https://vk.com/id777" {
-		t.Fatalf("vk_url = %v", acc["vk_url"])
+	if acc["profile_url"] != "https://vk.com/id777" {
+		t.Fatalf("profile_url = %v", acc["profile_url"])
 	}
 
 	// The full vkid.personal_info set is stored: sex + birthday decrypt back.
@@ -125,14 +125,17 @@ func TestVKLoginFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
-	if stored.Sex != "2" || stored.Birthday != "15.5.1990" {
-		t.Fatalf("sex/birthday = %q / %q; want \"2\" / \"15.5.1990\"", stored.Sex, stored.Birthday)
+	// Stored in the shared vocabulary, not VK's: the fake VK server sends sex=2
+	// and an unpadded "15.5.1990", and both are normalised at the provider
+	// boundary so a VK row and a Yandex row are indistinguishable here.
+	if stored.Sex != "male" || stored.Birthday != "1990-05-15" {
+		t.Fatalf("sex/birthday = %q / %q; want \"male\" / \"1990-05-15\"", stored.Sex, stored.Birthday)
 	}
 
 	// Personal data is encrypted at rest — the plaintext name / birth year must not appear.
 	var enc, bdEnc []byte
 	if err := pool.QueryRow(context.Background(),
-		`SELECT first_name_enc, birthday_enc FROM accounts WHERE encode(vk_user_ref,'hex') LIKE $1`, handle+"%",
+		`SELECT first_name_enc, birthday_enc FROM accounts WHERE encode(identity_ref,'hex') LIKE $1`, handle+"%",
 	).Scan(&enc, &bdEnc); err != nil {
 		t.Fatalf("read enc: %v", err)
 	}
@@ -208,5 +211,13 @@ func TestConfigNotConfigured(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	// The code is provider-neutral: which provider failed goes to the log and
+	// the trace, never to the client (ADR-024). Pinned because the SPA's
+	// KnownErrorCode list has to agree with it.
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["error"] != "oauth_not_configured" {
+		t.Fatalf("error = %v, want oauth_not_configured", body["error"])
 	}
 }

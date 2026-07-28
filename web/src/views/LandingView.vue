@@ -13,12 +13,16 @@
       <v-row justify="center">
         <v-col cols="12" sm="9" md="6" lg="5">
           <v-card class="pa-6">
-            <h2 class="text-h6 mb-2">вход через VK ID</h2>
+            <h2 class="text-h6 mb-2">вход через VK ID или Яндекс ID</h2>
             <p class="text-body-2 text-medium-emphasis mb-4">
-              Логинимся через VK ID. Передается только базовая инфа (картинка, имя, фамилия, пол, дата рождения - то же, что видно в вк)
+              Логинимся через VK ID или Яндекс ID — как удобнее. Передается только базовая инфа
+              (картинка, имя, фамилия, пол, дата рождения). Почту не запрашиваем и не храним.
             </p>
 
-            <!-- Consent gate: the VK widget mounts ONLY after this is ticked. -->
+            <!-- CONSENT GATE. Neither provider is reachable until this is ticked:
+                 consent has to precede any processing of personal data, and both
+                 login paths start that processing. The VK widget is not even
+                 mounted, and the Яндекс button is not on screen. -->
             <v-checkbox v-model="consented" density="comfortable" hide-details class="mb-2">
               <template #label>
                 <span class="text-body-2">
@@ -32,17 +36,41 @@
               </template>
             </v-checkbox>
 
-            <!-- VK OneTap mounts here once consent is given. -->
             <div v-show="consented" class="mt-4">
-              <div ref="vkContainer" class="vk-container" />
-              <div v-if="mounting" class="d-flex align-center ga-2 mt-2 text-medium-emphasis">
-                <v-progress-circular indeterminate size="20" width="2" />
-                <span class="text-caption">грузим VK ID…</span>
+              <!-- VK OneTap mounts here once consent is given. -->
+              <div data-testid="login-vk">
+                <div ref="vkContainer" class="vk-container" />
+                <div v-if="mounting" class="d-flex align-center ga-2 mt-2 text-medium-emphasis">
+                  <v-progress-circular indeterminate size="20" width="2" />
+                  <span class="text-caption">грузим VK ID…</span>
+                </div>
               </div>
+
+              <!-- Two providers, so they need separating rather than stacking. -->
+              <div class="or-divider my-4" aria-hidden="true">
+                <span class="or-divider__word text-caption text-medium-emphasis">или</span>
+              </div>
+
+              <!-- Яндекс needs no SDK and no widget: one button, one navigation.
+                   No logo mark is drawn — a hand-made imitation of somebody's
+                   trademark is worse than a neutral icon. -->
+              <v-btn
+                data-testid="login-yandex"
+                block
+                size="large"
+                color="primary"
+                variant="tonal"
+                class="yandex-btn"
+                prepend-icon="mdi-login-variant"
+                :loading="yandexBusy"
+                @click="startYandex"
+              >
+                Войти с Яндекс ID
+              </v-btn>
             </div>
 
             <p v-show="!consented" class="text-caption text-disabled mt-2">
-              поставь галочку выше, чтобы появилась кнопка входа
+              поставь галочку выше, чтобы появились кнопки входа
             </p>
           </v-card>
         </v-col>
@@ -55,15 +83,18 @@
 import { ref, watch, onBeforeUnmount } from 'vue';
 import PublicLayout from '../components/layout/PublicLayout.vue';
 import { useVkLogin } from '../composables/useVkLogin';
+import { useYandexLogin } from '../composables/useYandexLogin';
 import { useErrorStore } from '../stores/error';
 
 const consented = ref(false);
 const vkContainer = ref<HTMLElement | null>(null);
 const mounting = ref(false);
+const yandexBusy = ref(false);
 let mounted = false;
 let cleanup: (() => void) | null = null;
 
 const { mountOneTap } = useVkLogin();
+const { start: startYandexLogin } = useYandexLogin();
 const errorStore = useErrorStore();
 
 // Mount the VK widget the first time consent is granted (and the container exists).
@@ -99,6 +130,22 @@ watch(consented, async (yes) => {
   }
 });
 
+// Яндекс: no widget to mount, so nothing happens until the button is pressed.
+// A failure here is a real one — an unconfigured provider (503) or a refused
+// state mint — and the user cannot proceed, so it gets the modal.
+async function startYandex() {
+  yandexBusy.value = true;
+  try {
+    await startYandexLogin();
+    // Deliberately NOT clearing yandexBusy on success: the browser is on its
+    // way to Яндекс, and a button that springs back to life mid-navigation
+    // invites a second click and a second state cookie.
+  } catch (err) {
+    yandexBusy.value = false;
+    errorStore.report(err);
+  }
+}
+
 onBeforeUnmount(() => cleanup?.());
 </script>
 
@@ -119,5 +166,29 @@ onBeforeUnmount(() => cleanup?.());
 }
 .vk-container {
   min-height: 44px;
+}
+/* A rule with the word «или» sitting in it. Flex rather than a pseudo-element
+   trick so it cannot overflow: the lines shrink, the word does not. */
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.or-divider::before,
+.or-divider::after {
+  content: '';
+  flex: 1 1 0;
+  min-width: 0;
+  height: 1px;
+  background: rgba(var(--v-border-color), var(--v-border-opacity));
+}
+.or-divider__word {
+  flex: 0 0 auto;
+}
+/* The layout suite enforces a 44px tap target at 360px; Vuetify's `large` is
+   44px on the nose, so this is the margin that keeps a rounding error from
+   failing the gate. */
+.yandex-btn {
+  min-height: 48px;
 }
 </style>

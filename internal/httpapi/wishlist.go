@@ -136,9 +136,9 @@ func (s *Server) itemsResponse(r *http.Request, viewer *account.Account, items [
 }
 
 func (s *Server) oneItemResponse(viewer *account.Account, it wishlist.Item, authors map[string]*account.Account) map[string]any {
-	author := map[string]any{"display_name": "", "avatar_url": "", "vk_url": ""}
+	author := map[string]any{"display_name": "", "avatar_url": "", "profile_url": ""}
 	if a := authors[it.AuthorID]; a != nil {
-		author = map[string]any{"display_name": a.DisplayName(), "avatar_url": a.AvatarURL, "vk_url": a.VKURL()}
+		author = map[string]any{"display_name": a.DisplayName(), "avatar_url": a.AvatarURL, "profile_url": a.ProfileURL()}
 	}
 	return map[string]any{
 		"id":            it.ID,
@@ -249,9 +249,9 @@ func (s *Server) commentsResponse(r *http.Request, viewer *account.Account, comm
 }
 
 func (s *Server) oneCommentResponse(viewer *account.Account, c wishlist.Comment, authors map[string]*account.Account) map[string]any {
-	author := map[string]any{"display_name": "", "avatar_url": "", "vk_url": ""}
+	author := map[string]any{"display_name": "", "avatar_url": "", "profile_url": ""}
 	if a := authors[c.AuthorID]; a != nil {
-		author = map[string]any{"display_name": a.DisplayName(), "avatar_url": a.AvatarURL, "vk_url": a.VKURL()}
+		author = map[string]any{"display_name": a.DisplayName(), "avatar_url": a.AvatarURL, "profile_url": a.ProfileURL()}
 	}
 	return map[string]any{
 		"id":          c.ID,

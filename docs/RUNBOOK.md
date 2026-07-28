@@ -13,7 +13,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*` — **two reads (`config`, `state`) and nothing that writes**, because a verb travels over the socket as a `vanyagotchi_do` frame and cannot be curl'd (ADR-043) — view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and every phrase pool are in `content.go`, not the database — so retuning, renaming, adding a regular or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from **five disjoint pools** (a test enforces the disjointness, so a line can only ever mean one thing) and they say different things about him: `tiredSays` — he gave up on a walk; `idleSays` — he is just standing about; `shySays` — he lost his nerve and the verb did nothing; `reekSays` — **somebody else** relieved himself near him; `enviousSays` — **somebody else** found the keys. The last two are the only lines another player's action puts in your mouth, and the regulars get them too. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep; the two reactions are held in memory with an expiry and dropped by the tick that finds them stale.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
-- **vk-login:** the redirect URL is `https://psycho-space.ru/auth/redirect` — a SPA page, never the API endpoint. Three copies must match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app's registered list); a **405 on `/api/auth/vk/callback`** means one of them points at the API again. See "VK login — the redirect URL, and what a 405 means".
+- **login:** two providers, VK ID and Яндекс ID, sharing everything after the exchange. Redirect URLs are SPA **pages**, never API endpoints: `/auth/redirect` (VK) and `/auth/yandex/redirect` (Yandex). VK needs **three** copies of its URL to match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app list); Yandex needs only **two** because the server builds its authorize URL (ADR-055). A **405 on either `/api/auth/*/callback`** means something points at the API again. See "Login — the redirect URL, and what a 405 means".
 - **flaky-tests:** see "A test that passes on its own and fails in CI". Every flake found so far was a defect in the *test*, of exactly four kinds — a loop bounded by an attempt count rather than a deadline; two round trips reading one 4-second speech balloon; an implicit 5 s `expect` shorter than that balloon plus a round trip; and a fixture that *plays the game* to reach its starting position (walking to a randomly-placed crate ate most of a 120 s budget, and surfaced as a bare `Test timeout exceeded`). Reproduce by saturating the CPU (`nproc − 1` spinners) and running the one spec; CI's only difference is that it is slower. **Never** fix one with `retries`, and never with an env flag that disables a game's random rolls — that is test-only machinery in a production path. Determinism comes from direct DB setup (`web/e2e-stack/vanyagotchi-db.ts`).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
 - **constraints:** never commit the host/IP/port or any secret; never paste real personal data into shared places. The app log is PII-free by design; the DB and nginx access log are not — treat their contents as confidential.
@@ -51,14 +51,17 @@ cd web && mise exec -- npm run dev   # Vite on :5173, proxies /api + /healthz to
 
 Open <http://localhost:5173>.
 
-### Get into the gated app without VK
+### Get into the gated app without a real login
 
-VK ID is IP-allowlisted to prod and its redirect URI is the prod domain, so the real login can't run locally. Seed an approved account + session instead:
+Neither provider can be driven from a workstation: VK ID is IP-allowlisted to prod, and both redirect URIs are the prod domain. Seed an approved account + session instead:
 
 ```bash
 ./dev.sh seed                          # superadmin "Локальный Разработчик"
 ./dev.sh seed -role user -name Гость   # a plain approved user
+./dev.sh seed -provider yandex -provider-id 42   # a Yandex identity, for the two-provider paths
 ```
+
+The identity is `(provider, provider-id)`, so seeding the same `-provider-id` under each provider gives you two distinct accounts — which is the state worth having locally when touching anything in the account package.
 
 It prints a `psycho_session` cookie value. In the browser (DevTools → Application → Cookies) add `psycho_session=<value>` for the origin you use (`http://localhost:5173`) and reload — you land in `/app`. Or hit the API directly: `curl -b 'psycho_session=<value>' http://localhost:8080/api/auth/me`.
 
@@ -477,7 +480,7 @@ The app writes structured JSON to `/var/log/psycho-space/app.log` (rotated by si
 ```bash
 ssh psycho 'tail -f /var/log/psycho-space/app.log' | jq .
 ssh psycho 'grep http_request /var/log/psycho-space/app.log | tail -50' | jq .
-# Correlate a specific account without exposing PII (we log vk_user_ref hex, never names):
+# Correlate a specific account without exposing PII (we log identity_ref hex, never names):
 ssh psycho 'grep <ref-hex-prefix> /var/log/psycho-space/app.log'
 ```
 
@@ -492,7 +495,7 @@ ssh psycho "sudo -u postgres psql psychospace -c 'SELECT status, count(*) FROM a
 
 # Pending accounts (to approve) — note the short handle shown to the user on the pending screen:
 ssh psycho "sudo -u postgres psql psychospace -c \
-  \"SELECT left(encode(vk_user_ref,'hex'),8) AS handle, role, status, created_at FROM accounts WHERE status='pending' ORDER BY created_at;\""
+  \"SELECT left(encode(identity_ref,'hex'),8) AS handle, role, status, created_at FROM accounts WHERE status='pending' ORDER BY created_at;\""
 
 # Wishlist vote counts:
 ssh psycho "sudo -u postgres psql psychospace -c \
@@ -576,14 +579,14 @@ demand, and a test written there passed just as happily with the bug in place.
 everything they contributed. Use it when somebody asks to be removed, or to get
 a clean first-login flow out of an account you control.
 
-What it does, in one statement: overwrites `vk_user_ref` with random bytes,
+What it does, in one statement: overwrites `identity_ref` with random bytes,
 empties every encrypted profile field, clears the consent record, sets the row
 to `blocked`/`user`, and stamps `forgotten_at`. What it does **not** do is
 delete anything — their wishlist ideas, the comments other people left on them,
 the votes and the leaderboard times all stay, now authored by an anonymous
 `psycho-…` that links nowhere. Reasoning: [ADR-053](adrs/ADR-053-forgetting-a-person-is-anonymisation-not.md).
 
-The consequence to know before pressing it: **that VK account logging in again
+The consequence to know before pressing it: **that provider account logging in again
 becomes a brand-new pending account** with a new id, which somebody then has to
 approve. That is the point, not a side effect.
 
@@ -591,7 +594,7 @@ Check what you are about to erase:
 
 ```sql
 -- who this is, without decrypting anything
-SELECT id, left(encode(vk_user_ref, 'hex'), 8) AS handle, role, status,
+SELECT id, left(encode(identity_ref, 'hex'), 8) AS handle, role, status,
        created_at, last_login_at
   FROM accounts WHERE id = '<uuid>';
 
@@ -626,28 +629,45 @@ with the ideas they were left on. Ask before doing it by hand.
 
 The **superadmin** is created once via script; only the superadmin can promote (and only they can «forget» a user — see above) other users to **admin** in-app (admins can approve/revoke but not mint admins).
 
-1. Owner logs in via VK once → sees a **pending** screen with a short code (the first 8 hex of their `vk_user_ref`).
+1. Owner logs in via VK **or Яндекс** once → sees a **pending** screen with a short code (the first 8 hex of their `identity_ref`).
 2. Promote that account to superadmin + approved:
 
 ```bash
 ssh psycho 'sudo /usr/local/bin/make-superadmin <handle>'   # deployed helper, or the SQL directly:
 ssh psycho "sudo -u postgres psql psychospace -c \
   \"UPDATE accounts SET role='superadmin', status='approved', updated_at=now() \
-    WHERE encode(vk_user_ref,'hex') LIKE '<handle>%';\""
+    WHERE encode(identity_ref,'hex') LIKE '<handle>%';\""
 ```
 
 3. Reload the app — the owner now has the admin page to approve people and promote admins.
 
-## VK login — the redirect URL, and what a 405 means
+## Login — the redirect URL, and what a 405 means
 
-Three copies of one string must agree exactly, or logins fail in ways that look
-unrelated to each other:
+There are two providers and the trap is the same for both, but they have a
+different number of copies to keep in step.
+
+**VK — three copies of one string must agree exactly**, or logins fail in ways
+that look unrelated to each other:
 
 | Copy | Where |
 |---|---|
 | sent at authorize | `VK_REDIRECT_PATH` in `web/src/constants.ts` (baked into the SPA) |
 | echoed at the token exchange | `PSYCHOSPACE_VK_REDIRECT_URI` ← GitHub `prod` secret `VK_REDIRECT_URI` |
 | allowed by VK | the redirect URL list on the VK app (id 54691267) |
+
+**Yandex — only two**, because the SPA never sees the value: the server builds
+the whole authorize URL (ADR-055).
+
+| Copy | Where |
+|---|---|
+| sent at authorize *and* echoed at the token exchange | `PSYCHOSPACE_YANDEX_REDIRECT_URI` ← GitHub `prod` secret `YANDEX_REDIRECT_URI` |
+| allowed by Yandex | the Redirect URI list on the Yandex app |
+
+Current Yandex value: `https://psycho-space.ru/auth/yandex/redirect`, and it must
+be the **only** entry in that list. `https://psycho-space.ru/api/auth/yandex/callback`
+was registered once and removed: it is POST-only, so a browser sent there gets the
+same bare 405 described below. Unlike VK, Yandex has no widget, so the navigation
+is the *only* path — a wrong entry there breaks every login rather than some.
 
 Current value: `https://psycho-space.ru/auth/redirect` — a **page** of the SPA. It
 must never be an API endpoint: VK navigates a browser there with GET whenever the
@@ -658,10 +678,18 @@ was unaffected, which is what made it look like one person's broken browser.
 
 Symptoms and what they mean:
 
-- **405 on `/api/auth/vk/callback`** — something is using the API endpoint as a
-  redirect URL again. Check the SPA constant and the VK app list.
-- **`vk_exchange_failed` for everyone, right after a deploy** — the SPA copy and
-  the secret disagree. They are only ever changed together, in one deploy.
+- **405 on `/api/auth/<provider>/callback`** — something is using the API endpoint
+  as a redirect URL again. Check the SPA constant and the provider's app list.
+  Both callbacks are POST-only by design and both have a test pinning it
+  (`TestVKRedirectTargetIsServedAsAPage`, `TestYandexCallbackRejectsGET`).
+- **`oauth_exchange_failed` for everyone, right after a deploy** — a redirect URI
+  the provider echoes back does not match what we sent. For VK that is the SPA
+  copy and the secret disagreeing, and they are only ever changed together in one
+  deploy. For Yandex there is no SPA copy, so it is the app dashboard.
+- **`oauth_not_configured` (503)** — the provider's credentials are absent from
+  `/etc/psycho-space/app.env`. Yandex is all-or-none: one or two of the three set
+  fails at startup instead, so a 503 means all three are missing rather than
+  half-supplied.
 - **`bad_state` / a 400 after a redirect login** — the state cookie or the PKCE
   verifier did not survive the round trip; the verifier lives in `sessionStorage`,
   which is per-tab, so a login finished in a *different tab* cannot complete.

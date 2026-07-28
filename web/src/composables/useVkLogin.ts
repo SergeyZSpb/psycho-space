@@ -1,4 +1,5 @@
-// VK ID login (confidential backend exchange with PKCE).
+// VK ID login — the head of the flow. The tail it shares with Yandex (post the
+// code, set the account, route by status) is in useOAuthLogin.
 //
 // Flow:
 //   1. Generate a PKCE pair in the browser (Web Crypto).
@@ -9,6 +10,12 @@
 //      VKID.Auth.exchangeCode (that's the public/frontend flow). Instead we POST
 //      the code + verifier to our confidential backend, which does the exchange.
 //   5. Route on the result: approved -> /app, pending|blocked -> /pending.
+//
+// THIS IS THE PROVIDER THAT NEEDS A CLIENT ID IN THE BROWSER, and the only one.
+//   The SDK builds the authorize URL here, so `VK_APP_ID` and `VK_REDIRECT_PATH`
+//   must both be in the SPA. Yandex needs no SDK, so its backend builds that URL
+//   instead and the SPA holds neither its client id nor its redirect URI — see
+//   useYandexLogin.
 //
 // THE REDIRECT URL IS A PAGE, NOT THE API ENDPOINT — and it has to be.
 //   `redirectUrl` below is what VK validates at authorize and what the backend
@@ -33,20 +40,10 @@
 //     production domain (VK rejects unregistered redirect URLs / origins).
 
 import * as VKID from '@vkid/sdk';
-import { useRouter } from 'vue-router';
-import type { LocationQuery } from 'vue-router';
 import { createPkce } from '../lib/pkce';
-import { parseVkRedirect } from '../lib/vkRedirect';
 import { authApi } from '../api/endpoints';
-import { useAuthStore } from '../stores/auth';
-import {
-  CONSENT_VERSION,
-  HOME_ROUTE_NAME,
-  SS_PKCE_VERIFIER,
-  SS_VK_STATE,
-  VK_APP_ID,
-  VK_REDIRECT_PATH,
-} from '../constants';
+import { useOAuthLogin } from './useOAuthLogin';
+import { ssStateKey, ssVerifierKey, VK_APP_ID, VK_REDIRECT_PATH } from '../constants';
 
 // Minimal shape we read off the OneTap LOGIN_SUCCESS payload (VKID.RedirectPayload).
 interface OneTapSuccessPayload {
@@ -55,34 +52,7 @@ interface OneTapSuccessPayload {
 }
 
 export function useVkLogin() {
-  const auth = useAuthStore();
-  const router = useRouter();
-
-  // POST the authorization code to the confidential backend and route on the result.
-  async function exchange(
-    code: string,
-    deviceId: string,
-    state: string,
-    codeVerifier: string,
-  ): Promise<void> {
-    const result = await authApi.vkCallback({
-      code,
-      device_id: deviceId,
-      state,
-      code_verifier: codeVerifier,
-      consent_version: CONSENT_VERSION,
-    });
-
-    // The backend always returns the account + sets a session cookie now; route
-    // by status. Pending/blocked users have a session and read their handle from
-    // /me on the pending screen.
-    auth.setAccount(result.account);
-    if (result.account.status === 'approved') {
-      await router.push({ name: HOME_ROUTE_NAME });
-    } else {
-      await router.push({ name: 'pending' });
-    }
-  }
+  const { finishLogin } = useOAuthLogin('vk');
 
   /**
    * Mount the OneTap widget into `container`. Returns a cleanup function.
@@ -115,11 +85,12 @@ export function useVkLogin() {
   ): Promise<() => void> {
     const { codeVerifier, codeChallenge } = await createPkce();
     // Persist for the redirect-mode fallback (survives a full-page round trip).
-    sessionStorage.setItem(SS_PKCE_VERIFIER, codeVerifier);
+    // Keyed to VK alone, so a Yandex login open in another tab is untouched.
+    sessionStorage.setItem(ssVerifierKey('vk'), codeVerifier);
 
     // Obtain + set the backend CSRF state cookie; echo THIS state to VK.
     const { state } = await authApi.vkState();
-    sessionStorage.setItem(SS_VK_STATE, state);
+    sessionStorage.setItem(ssStateKey('vk'), state);
 
     VKID.Config.init({
       app: VK_APP_ID,
@@ -137,7 +108,9 @@ export function useVkLogin() {
 
     oneTap.on(VKID.WidgetEvents.ERROR, (err: unknown) => handlers.onWidgetError(err));
     oneTap.on(VKID.OneTapInternalEvents.LOGIN_SUCCESS, (payload: OneTapSuccessPayload) => {
-      exchange(payload.code, payload.device_id, state, codeVerifier).catch(handlers.onExchangeError);
+      finishLogin(payload.code, payload.device_id, state, codeVerifier).catch(
+        handlers.onExchangeError,
+      );
     });
 
     return () => {
@@ -149,23 +122,5 @@ export function useVkLogin() {
     };
   }
 
-  // Redirect-mode return trip: VK navigated the browser to /auth/redirect with
-  // the result in the query. The verifier + state were stashed in sessionStorage
-  // when the flow started, and survive the full-page round trip in that tab.
-  //
-  // Returns null once the exchange has happened and the router has moved on, or
-  // the sentence to show when the trip cannot be completed at all — a cancelled
-  // login and a verifier left in another tab are both ordinary outcomes, not
-  // errors worth a trace id.
-  async function completeRedirect(query: LocationQuery): Promise<string | null> {
-    const trip = parseVkRedirect(query, {
-      state: sessionStorage.getItem(SS_VK_STATE),
-      codeVerifier: sessionStorage.getItem(SS_PKCE_VERIFIER),
-    });
-    if (trip.kind === 'failed') return trip.message;
-    await exchange(trip.code, trip.deviceId, trip.state, trip.codeVerifier);
-    return null;
-  }
-
-  return { mountOneTap, exchange, completeRedirect };
+  return { mountOneTap };
 }

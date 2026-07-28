@@ -23,6 +23,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * layout suite cannot make the real widget fail on demand — a Playwright test
  * of this passed just as happily with the bug still in place, which is worse
  * than no test.
+ *
+ * The composable was later split — the shared tail (post the code, set the
+ * account, route by status) moved to useOAuthLogin when Яндекс arrived — and
+ * these assertions are deliberately unchanged, because the split must not have
+ * moved the widget/exchange line by so much as an inch.
  */
 
 const events: Record<string, (payload: unknown) => void> = {};

@@ -127,7 +127,7 @@
             <span class="d-flex align-center ga-2">
               <span class="text-caption text-medium-emphasis">автор:</span>
               <a
-                :href="item.author.vk_url || undefined"
+                :href="item.author.profile_url || undefined"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="author-link d-flex align-center ga-2"

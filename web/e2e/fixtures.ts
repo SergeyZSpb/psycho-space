@@ -16,7 +16,9 @@ const AVATAR =
 const LONG_UNBROKEN = 'этооооченьдлинноесловобезпробеловкотороедолжнопереноситьсяаненевызыватьгоризонтальныйскролл';
 
 // The /me (and login) account for a given stub kind. Now always carries `handle`
-// and a status matching the kind (pending/blocked users have sessions too).
+// and a status matching the kind (pending/blocked users have sessions too), plus
+// `provider` + `profile_url` — the pair that replaced `vk_url` when Яндекс ID
+// became a second way in.
 function account(kind: Exclude<StubRole, 'anon'>) {
   const role = kind === 'superadmin' ? 'superadmin' : 'user';
   const status = kind === 'pending' ? 'pending' : kind === 'blocked' ? 'blocked' : 'approved';
@@ -24,17 +26,21 @@ function account(kind: Exclude<StubRole, 'anon'>) {
     id: 'me-1',
     display_name: kind === 'superadmin' ? 'Сергей Зобнин' : 'Тест Пользователь',
     avatar_url: AVATAR,
-    vk_url: 'https://vk.com/id1',
+    provider: 'vk',
+    profile_url: 'https://vk.com/id1',
     role,
     status,
     handle: 'ab12cd34',
   };
 }
 
+// An author/player blob. No `provider` — the backend does not send one on these,
+// only on an account. A '' url is the Яндекс (and forgotten-account) case, and
+// every surface that renders one has to survive it.
 const author = (id: string, name: string) => ({
   display_name: name,
   avatar_url: AVATAR,
-  vk_url: `https://vk.com/id${id}`,
+  profile_url: id ? `https://vk.com/id${id}` : '',
 });
 
 const ITEMS = [
@@ -78,7 +84,10 @@ const ITEMS = [
     votes: 0,
     voted_by_me: false,
     created_at: '2026-07-23T09:00:00Z',
-    author: author('103', 'Маша К'),
+    // A Яндекс author: no profile page anywhere, so no link and no handle. In
+    // the fixtures on purpose — the layout has to hold for an author whose name
+    // links nowhere, and that is now an ordinary user rather than an edge case.
+    author: author('', 'Маша К'),
     mine: false,
     comment_count: 0,
   },
@@ -112,7 +121,8 @@ const COMMENTS = [
     votes: 0,
     voted_by_me: false,
     created_at: '2026-07-20T13:30:00Z',
-    author: author('202', 'Лена'),
+    author: author('', 'Лена'), // Яндекс: byline falls back to the name alone
+
     mine: false,
   },
 ];
@@ -124,7 +134,8 @@ function accountsByStatus(status: string) {
       handle: 'ab12cd34',
       display_name: 'Обычный Юзер',
       avatar_url: AVATAR,
-      vk_url: 'https://vk.com/id1001',
+      provider: 'vk',
+      profile_url: 'https://vk.com/id1001',
       role: 'user',
       status,
       created_at: '2026-07-19T10:00:00Z',
@@ -134,7 +145,10 @@ function accountsByStatus(status: string) {
       handle: 'ff00aa11',
       display_name: LONG_UNBROKEN,
       avatar_url: AVATAR,
-      vk_url: 'https://vk.com/id1002',
+      // A Яндекс account: the admin list has to render a name that links
+      // nowhere without collapsing, and half the accounts will look like this.
+      provider: 'yandex',
+      profile_url: '',
       role: 'user',
       status,
       created_at: '2026-07-18T10:00:00Z',
@@ -144,7 +158,8 @@ function accountsByStatus(status: string) {
       handle: '99887766',
       display_name: 'Другой Админ',
       avatar_url: AVATAR,
-      vk_url: 'https://vk.com/id1003',
+      provider: 'vk',
+      profile_url: 'https://vk.com/id1003',
       role: 'admin',
       status,
       created_at: '2026-07-17T10:00:00Z',
@@ -154,7 +169,8 @@ function accountsByStatus(status: string) {
       handle: '55554444',
       display_name: 'Сам Суперадмин',
       avatar_url: AVATAR,
-      vk_url: 'https://vk.com/id1004',
+      provider: 'yandex',
+      profile_url: '',
       role: 'superadmin',
       status,
       created_at: '2026-07-16T10:00:00Z',
@@ -186,6 +202,22 @@ export async function stubBackend(page: Page, role: StubRole = 'user'): Promise<
     }
     if (path === '/api/auth/vk/state' && method === 'GET') return json(200, { state: 'x' });
     if (path === '/api/auth/vk/callback' && method === 'POST') {
+      const acc = account(role === 'anon' ? 'user' : role);
+      return json(200, { status: acc.status, account: acc });
+    }
+    // Яндекс: the server builds the authorize URL, so the stub has to return one
+    // too. It points at a page of THIS origin (`/`, the landing) rather than at
+    // oauth.yandex.ru: a test that navigated to the real provider would be a
+    // test of the internet. What is being asserted is that the browser goes
+    // exactly where the server said, and a same-origin URL proves that without
+    // leaving the fixture's control.
+    if (path === '/api/auth/yandex/state' && method === 'GET') {
+      return json(200, {
+        state: 'yx',
+        authorize_url: `${url.origin}/?stub-yandex-authorize=1`,
+      });
+    }
+    if (path === '/api/auth/yandex/callback' && method === 'POST') {
       const acc = account(role === 'anon' ? 'user' : role);
       return json(200, { status: acc.status, account: acc });
     }

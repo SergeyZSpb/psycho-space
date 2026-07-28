@@ -1,7 +1,28 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import type { RouteRecordRaw } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
-import { HOME_ROUTE_NAME } from '../constants';
+import {
+  HOME_ROUTE_NAME,
+  VK_REDIRECT_PATH,
+  YANDEX_REDIRECT_PATH,
+  type OAuthProvider,
+} from '../constants';
+
+/**
+ * What a route may carry in `meta`.
+ *
+ * Declared rather than left implicit because `provider` is read to decide which
+ * backend endpoint an authorization code is posted to: a value typed `unknown`
+ * would be one cast away from being whatever a caller felt like.
+ */
+declare module 'vue-router' {
+  interface RouteMeta {
+    requiresApproved?: boolean;
+    requiresAdmin?: boolean;
+    /** Set on the two OAuth landing pages; the provider they finish a login for. */
+    provider?: OAuthProvider;
+  }
+}
 
 const routes: RouteRecordRaw[] = [
   {
@@ -12,9 +33,30 @@ const routes: RouteRecordRaw[] = [
   {
     // VK redirect-mode fallback. The primary flow is the OneTap Callback (no
     // navigation); this route only matters if VK falls back to a redirect.
-    path: '/auth/redirect',
+    //
+    // The path cannot move: it is registered on the VK application, and the
+    // backend echoes it byte for byte at the token exchange. Which is why the
+    // SECOND provider got the explicit path rather than this one.
+    path: VK_REDIRECT_PATH,
     name: 'auth-redirect',
     component: () => import('../views/AuthRedirectView.vue'),
+    meta: { provider: 'vk' },
+  },
+  {
+    // Yandex's landing page. Not a fallback — it is how EVERY Yandex login
+    // finishes, because there is no in-page SDK callback for one to fall back
+    // from.
+    //
+    // THE PROVIDER COMES FROM THE ROUTE AND NEVER FROM THE QUERY. A
+    // `?provider=` parameter would be attacker-controlled, and this page's
+    // whole job is to post an authorization code to a backend endpoint —
+    // choosing that endpoint from the same string the code arrived in is
+    // choosing it from the attacker. Two routes, one view, and the provider is
+    // a fact about which URL was matched.
+    path: YANDEX_REDIRECT_PATH,
+    name: 'auth-redirect-yandex',
+    component: () => import('../views/AuthRedirectView.vue'),
+    meta: { provider: 'yandex' },
   },
   {
     path: '/pending',

@@ -14,22 +14,25 @@ type PostgresRepository struct{}
 // NewPostgresRepository builds the repository.
 func NewPostgresRepository() *PostgresRepository { return &PostgresRepository{} }
 
-const selectCols = `id::text, vk_user_ref, vk_user_id_enc, first_name_enc, last_name_enc, avatar_url_enc, sex_enc, birthday_enc, role, status, created_at`
+const selectCols = `id::text, provider, identity_ref, identity_id_enc, first_name_enc, last_name_enc, avatar_url_enc, sex_enc, birthday_enc, role, status, created_at`
 
 func scanRow(row pgx.Row) (encRow, error) {
 	var r encRow
-	err := row.Scan(&r.ID, &r.Ref, &r.VKUserIDEnc, &r.FirstNameEnc, &r.LastNameEnc, &r.AvatarEnc, &r.SexEnc, &r.BirthdayEnc, &r.Role, &r.Status, &r.CreatedAt)
+	err := row.Scan(&r.ID, &r.Provider, &r.Ref, &r.IdentityIDEnc, &r.FirstNameEnc, &r.LastNameEnc, &r.AvatarEnc, &r.SexEnc, &r.BirthdayEnc, &r.Role, &r.Status, &r.CreatedAt)
 	return r, err
 }
 
+// Upsert conflicts on (provider, identity_ref) — the whole identity. Conflicting
+// on the blind index alone would make VK user 12345 and Yandex user 12345 the
+// same account; migrations/012 has the reasoning.
 func (PostgresRepository) Upsert(ctx context.Context, q db.DBTX, p UpsertParams) (encRow, error) {
 	return scanRow(q.QueryRow(ctx, `
 		INSERT INTO accounts
-			(vk_user_ref, vk_user_id_enc, first_name_enc, last_name_enc, avatar_url_enc,
+			(provider, identity_ref, identity_id_enc, first_name_enc, last_name_enc, avatar_url_enc,
 			 sex_enc, birthday_enc, status, last_login_at, consent_at, consent_version)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $9, now(), now(), $8)
-		ON CONFLICT (vk_user_ref) DO UPDATE SET
-			vk_user_id_enc  = EXCLUDED.vk_user_id_enc,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, now(), now(), $9)
+		ON CONFLICT (provider, identity_ref) DO UPDATE SET
+			identity_id_enc = EXCLUDED.identity_id_enc,
 			first_name_enc  = EXCLUDED.first_name_enc,
 			last_name_enc   = EXCLUDED.last_name_enc,
 			avatar_url_enc  = EXCLUDED.avatar_url_enc,
@@ -40,7 +43,7 @@ func (PostgresRepository) Upsert(ctx context.Context, q db.DBTX, p UpsertParams)
 			consent_at      = now(),
 			consent_version = EXCLUDED.consent_version
 		RETURNING `+selectCols,
-		p.Ref, p.VKUserIDEnc, p.FirstNameEnc, p.LastNameEnc, p.AvatarEnc, p.SexEnc, p.BirthdayEnc, p.ConsentVersion, p.DefaultStatus))
+		p.Provider, p.Ref, p.IdentityIDEnc, p.FirstNameEnc, p.LastNameEnc, p.AvatarEnc, p.SexEnc, p.BirthdayEnc, p.ConsentVersion, p.DefaultStatus))
 }
 
 // Forget anonymises an account in place. See migrations/011 for the reasoning;
@@ -57,8 +60,8 @@ func (PostgresRepository) Upsert(ctx context.Context, q db.DBTX, p UpsertParams)
 func (PostgresRepository) Forget(ctx context.Context, q db.DBTX, id string, newRef, emptyEnc []byte) error {
 	tag, err := q.Exec(ctx,
 		`UPDATE accounts SET
-		     vk_user_ref     = $2,
-		     vk_user_id_enc  = $3,
+		     identity_ref    = $2,
+		     identity_id_enc = $3,
 		     first_name_enc  = NULL,
 		     last_name_enc   = NULL,
 		     avatar_url_enc  = NULL,

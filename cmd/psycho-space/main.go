@@ -30,13 +30,15 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
 	"github.com/SergeyZSpb/psycho-space/internal/web"
 	"github.com/SergeyZSpb/psycho-space/internal/wishlist"
+	"github.com/SergeyZSpb/psycho-space/internal/yandex"
 	"github.com/SergeyZSpb/psycho-space/migrations"
 )
 
 func main() {
 	cfg := config.MustLoad()
 	logging.Setup(cfg.LogDir, slog.LevelInfo)
-	slog.Info("starting psycho-space", "env", cfg.Env, "addr", cfg.HTTPAddr, "vk_configured", cfg.VK.Configured())
+	slog.Info("starting psycho-space", "env", cfg.Env, "addr", cfg.HTTPAddr,
+		"vk_configured", cfg.VK.Configured(), "yandex_configured", cfg.Yandex.Configured())
 
 	ctx := context.Background()
 
@@ -141,6 +143,8 @@ func main() {
 	go gameVanyadumSvc.Run(hubCtx, vanyadumTicker.C)
 
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
+	yandexClient := yandex.New(cfg.Yandex.OAuthBaseURL, cfg.Yandex.InfoURL,
+		cfg.Yandex.ClientID, cfg.Yandex.ClientSecret, cfg.Yandex.RedirectURI)
 
 	var vkVerifier *vk.IDTokenVerifier
 	if cfg.VK.VerifyIDToken {
@@ -157,6 +161,7 @@ func main() {
 		Pool:       pool,
 		WebFS:      web.DistFS(),
 		VK:         vkClient,
+		Yandex:     yandexClient,
 		Accounts:   accounts,
 		Sessions:   sessions,
 		Wishlist:   wishlistSvc,

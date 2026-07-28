@@ -26,7 +26,7 @@ func forgottenState(t *testing.T, id string) (ref []byte, forgotten bool, status
 	t.Helper()
 	var forgottenAt *string
 	err := pool.QueryRow(context.Background(),
-		`SELECT vk_user_ref, forgotten_at::text, status, role, consent_version
+		`SELECT identity_ref, forgotten_at::text, status, role, consent_version
 		   FROM accounts WHERE id = $1::uuid`, id).
 		Scan(&ref, &forgottenAt, &status, &role, &consent)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestForgetAnonymisesThePersonAndKeepsTheContent(t *testing.T) {
 	if len(name) < 7 || name[:7] != "psycho-" {
 		t.Fatalf("author is %q, expected the psycho-<handle> fallback", name)
 	}
-	if url, _ := author["vk_url"].(string); url != "" {
+	if url, _ := author["profile_url"].(string); url != "" {
 		t.Fatalf("the author still links to a VK profile: %q", url)
 	}
 	if votes, _ := found["votes"].(float64); votes < 1 {

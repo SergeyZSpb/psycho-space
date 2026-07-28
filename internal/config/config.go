@@ -28,6 +28,8 @@ type Config struct {
 
 	VK VK
 
+	Yandex Yandex
+
 	LLM LLM
 
 	// Base64-encoded 32-byte keys (required, no defaults).
@@ -62,6 +64,46 @@ type VK struct {
 // Configured reports whether the VK integration has the secrets it needs.
 func (v VK) Configured() bool {
 	return v.AppID != "" && v.ServiceToken != "" && v.RedirectURI != ""
+}
+
+// Yandex holds Yandex ID (oauth.yandex.ru) integration settings. Like VK's,
+// they are intentionally NOT required — an unconfigured provider simply has no
+// button and no working endpoint, so the code can deploy before the secrets do.
+//
+// There is no `AppID`-style public identifier here that the SPA also needs:
+// unlike VK, Yandex needs no browser SDK, so the client id and the redirect URI
+// live only in this struct and the authorize URL is built on the server. That
+// is one fewer copy of a string that must agree byte for byte with the
+// provider's dashboard.
+type Yandex struct {
+	ClientID     string `env:"PSYCHOSPACE_YANDEX_CLIENT_ID" envDefault:""`
+	ClientSecret string `env:"PSYCHOSPACE_YANDEX_CLIENT_SECRET" envDefault:""`
+	RedirectURI  string `env:"PSYCHOSPACE_YANDEX_REDIRECT_URI" envDefault:""`
+
+	// OAuthBaseURL and InfoURL are overridable in tests. Empty -> production.
+	// They are two settings rather than one because Yandex serves authorize and
+	// token from oauth.yandex.ru but the profile from login.yandex.ru.
+	OAuthBaseURL string `env:"PSYCHOSPACE_YANDEX_OAUTH_BASE_URL" envDefault:"https://oauth.yandex.ru"`
+	InfoURL      string `env:"PSYCHOSPACE_YANDEX_INFO_URL" envDefault:"https://login.yandex.ru/info"`
+}
+
+// Configured reports whether the Yandex integration has the secrets it needs.
+func (y Yandex) Configured() bool {
+	return y.ClientID != "" && y.ClientSecret != "" && y.RedirectURI != ""
+}
+
+// PartiallyConfigured reports credentials that were half-supplied — one or two
+// of the three set. That is always a mistake rather than a choice, and it is
+// worth failing at startup over: the alternative is a login button that appears
+// and then answers 503, which is harder to diagnose than a refusal to boot.
+func (y Yandex) PartiallyConfigured() bool {
+	set := 0
+	for _, v := range []string{y.ClientID, y.ClientSecret, y.RedirectURI} {
+		if v != "" {
+			set++
+		}
+	}
+	return set > 0 && set < 3
 }
 
 // LLM holds the OpenAI-compatible chat API used to drive AI game characters.
@@ -105,6 +147,9 @@ func Load() (Config, error) {
 	}
 	if cfg.VK.VerifyIDToken && cfg.VK.JWKSURL == "" {
 		return Config{}, fmt.Errorf("config: PSYCHOSPACE_VK_VERIFY_IDTOKEN is on but PSYCHOSPACE_VK_JWKS_URL is empty")
+	}
+	if cfg.Yandex.PartiallyConfigured() {
+		return Config{}, fmt.Errorf("config: Yandex ID is half-configured — set all of PSYCHOSPACE_YANDEX_CLIENT_ID, PSYCHOSPACE_YANDEX_CLIENT_SECRET and PSYCHOSPACE_YANDEX_REDIRECT_URI, or none of them")
 	}
 	return cfg, nil
 }

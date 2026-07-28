@@ -18,6 +18,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/settings"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
 	"github.com/SergeyZSpb/psycho-space/internal/wishlist"
+	"github.com/SergeyZSpb/psycho-space/internal/yandex"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httprate"
@@ -27,10 +28,14 @@ import (
 // Deps bundles everything the handlers need. Fields may be nil in tests that
 // don't exercise the corresponding routes.
 type Deps struct {
-	Config     config.Config
-	Pool       *pgxpool.Pool
-	WebFS      fs.FS
-	VK         *vk.Client
+	Config config.Config
+	Pool   *pgxpool.Pool
+	WebFS  fs.FS
+	VK     *vk.Client
+	// Yandex is the second login provider. Both are always constructed; an
+	// unconfigured one simply answers 503 rather than being absent, so there is
+	// no nil check scattered through the auth path.
+	Yandex     *yandex.Client
 	Accounts   *account.Service
 	Sessions   *session.Manager
 	Wishlist   *wishlist.Service
@@ -108,7 +113,12 @@ func (s *Server) Handler() http.Handler {
 			// Tighter limit on the abuse-sensitive login endpoints.
 			authLimit := s.rateLimit(30, time.Minute)
 			r.With(authLimit).Get("/vk/state", s.handleVKState)
-			r.With(authLimit).Post("/vk/callback", s.handleVKCallback)
+			r.With(authLimit).Post("/vk/callback", s.handleOAuthCallback(s.vk()))
+			// Yandex's state endpoint also returns the authorize URL, so the
+			// client id and redirect URI never leave the server — see
+			// handleYandexState.
+			r.With(authLimit).Get("/yandex/state", s.handleYandexState)
+			r.With(authLimit).Post("/yandex/callback", s.handleOAuthCallback(s.yandex()))
 			r.Get("/me", s.handleMe)
 			r.Post("/logout", s.handleLogout)
 		})

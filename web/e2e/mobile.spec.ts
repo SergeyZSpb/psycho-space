@@ -32,6 +32,22 @@ async function expectTapTarget(loc: Locator, label: string): Promise<void> {
 const themeToggle = (page: Page) =>
   page.locator('button[aria-label="Тёмная тема"], button[aria-label="Светлая тема"]').first();
 
+/**
+ * Refuse every request to a login provider's own hosts.
+ *
+ * Ticking consent mounts the real VK OneTap widget, which reaches out to VK to
+ * personalise its button. A test that let it would be a test of somebody else's
+ * uptime; aborting instead makes the run deterministic and offline. Nothing
+ * breaks — a widget that cannot personalise itself is not an error, it fires
+ * its ERROR event and the composable deliberately swallows it (commit b6d4632,
+ * pinned by src/__tests__/vkLoginErrors.spec.ts).
+ */
+async function blockProviderOrigins(page: Page): Promise<void> {
+  await page.route(/https?:\/\/([^/]*\.)?(vk\.com|vk\.ru|vkid\.ru|userapi\.com|yandex\.[a-z]+)\//, (route) =>
+    route.abort(),
+  );
+}
+
 // --- the nav drawer -----------------------------------------------------------
 
 // Vuetify's own open/closed signal. A closed drawer stays in the DOM, merely
@@ -148,6 +164,41 @@ for (const theme of THEMES) {
       await expectNoOverflow(page, `landing ${theme}`);
       if (isMobile(page)) {
         await expectTapTarget(themeToggle(page), 'landing theme toggle');
+      }
+    });
+
+    test('landing: BOTH login affordances are behind the consent gate', async ({ page }) => {
+      // 152-ФЗ: consent precedes any processing of personal data, and both ways
+      // in start that processing. So the gate is a legal requirement rather
+      // than a nicety, and adding a second provider is exactly the change that
+      // could have let one slip out from behind it.
+      //
+      // The layout claim rides along: two affordances plus a divider have to
+      // fit 360px without overflowing, and the Яндекс button is a real tap
+      // target rather than a text link.
+      await blockProviderOrigins(page);
+      await seedClient(page, theme);
+      await stubBackend(page, 'anon');
+      await page.goto('/');
+
+      const vkLogin = page.getByTestId('login-vk');
+      const yandexLogin = page.getByTestId('login-yandex');
+
+      await expect(vkLogin).toBeHidden();
+      await expect(yandexLogin).toBeHidden();
+      await expect(page.getByText(/поставь галочку выше/)).toBeVisible();
+
+      await page.getByRole('checkbox').check();
+
+      await expect(vkLogin).toBeVisible();
+      await expect(yandexLogin).toBeVisible();
+      await expect(yandexLogin).toHaveText(/Войти с Яндекс ID/);
+      // The «или» between them, so the two do not read as one stacked control.
+      await expect(page.getByText('или', { exact: true })).toBeVisible();
+
+      await expectNoOverflow(page, `landing both logins ${theme}`);
+      if (isMobile(page)) {
+        await expectTapTarget(yandexLogin, 'Яндекс login button');
       }
     });
 

@@ -56,8 +56,10 @@ func TestExchangeCodeAndUserInfo(t *testing.T) {
 	if info.UserID != "777" || info.FirstName != "Иван" || info.LastName != "Петров" || info.Avatar == "" {
 		t.Fatalf("info = %+v", info)
 	}
-	if info.Sex != "2" || info.Birthday != "15.5.1990" {
-		t.Fatalf("sex/birthday = %q / %q; want \"2\" / \"15.5.1990\"", info.Sex, info.Birthday)
+	// VK sends sex=2 and an unpadded "15.5.1990"; both are normalised into the
+	// vocabulary shared with the other provider before they leave this package.
+	if info.Sex != "male" || info.Birthday != "1990-05-15" {
+		t.Fatalf("sex/birthday = %q / %q; want \"male\" / \"1990-05-15\"", info.Sex, info.Birthday)
 	}
 	if !gotExchange || !gotUserInfo {
 		t.Fatalf("endpoints not hit: exchange=%v userinfo=%v", gotExchange, gotUserInfo)

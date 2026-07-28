@@ -8,14 +8,26 @@ import type { BrowserContext } from '@playwright/test';
 // what lets a test be "logged in" without the VK flow, which only works against
 // the registered production domain.
 
-export type SeededKind = 'user' | 'superadmin' | 'pending' | 'pending2' | 'blocked';
+/**
+ * The seeded accounts, by key in .stack.json.
+ *
+ * `yandex` is an approved user at the OTHER provider carrying THE SAME provider
+ * id as `user` (900001). It exists because uniqueness is over the pair
+ * `(provider, identity_ref)` rather than the id alone: if that constraint is
+ * ever weakened back to a single column, seeding the stack fails before a
+ * single test runs.
+ */
+export type SeededKind = 'user' | 'superadmin' | 'pending' | 'pending2' | 'blocked' | 'yandex';
 
 export interface SeededAccount {
   account_id: string;
   display_name: string;
   role: string;
   status: string;
-  vk_id: string;
+  /** Which login provider this identity belongs to: 'vk' | 'yandex'. */
+  provider: string;
+  /** The user id AT that provider. Unique only together with `provider`. */
+  provider_id: string;
   cookie_name: string;
   cookie_value: string;
 }

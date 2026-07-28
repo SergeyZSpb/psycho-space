@@ -6,7 +6,6 @@ import {
   computeCodeChallenge,
   createPkce,
   generateCodeVerifier,
-  generateState,
 } from '../lib/pkce';
 
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
@@ -38,9 +37,4 @@ describe('pkce', () => {
     expect(codeChallenge).toBe(await computeCodeChallenge(codeVerifier));
   });
 
-  it('generateState returns a non-empty base64url token', () => {
-    const s = generateState();
-    expect(s).toMatch(BASE64URL);
-    expect(s.length).toBeGreaterThan(10);
-  });
 });

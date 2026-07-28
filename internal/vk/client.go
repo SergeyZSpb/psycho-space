@@ -50,8 +50,13 @@ type Tokens struct {
 
 // UserInfo is the subset of the VK profile we use. Sex and Birthday are part of
 // VK's base right (vkid.personal_info) and arrive on every login; we store them
-// encrypted alongside the rest. Sex is VK's raw code ("1" female, "2" male,
-// "" unspecified); Birthday is VK's "DD.MM.YYYY" string. Either may be empty.
+// encrypted alongside the rest.
+//
+// Both are NORMALISED here rather than passed through raw, because there is now
+// more than one provider and nothing downstream should have to ask which one a
+// value came from before it can read it. Sex is "male", "female" or "";
+// Birthday is ISO "YYYY-MM-DD" or "". Yandex already speaks both, so VK is the
+// one that translates.
 type UserInfo struct {
 	UserID    string
 	FirstName string
@@ -59,6 +64,55 @@ type UserInfo struct {
 	Avatar    string
 	Sex       string
 	Birthday  string
+}
+
+// normaliseSex maps VK's numeric sex code onto the shared vocabulary. VK sends
+// 1 for female and 2 for male; anything else means unspecified.
+func normaliseSex(vkCode string) string {
+	switch vkCode {
+	case "1":
+		return "female"
+	case "2":
+		return "male"
+	default:
+		return ""
+	}
+}
+
+// normaliseBirthday maps VK's "D.M.YYYY" onto ISO "YYYY-MM-DD".
+//
+// VK does not zero-pad — "15.5.1990" is a real answer from the live API, and the
+// integration fixture uses exactly that — so the parts are padded here. A value
+// that is not three numeric parts is dropped rather than guessed at: a
+// half-understood date stored as if it were understood is worse than no date,
+// and nothing in this application reads the field closely enough to be worth a
+// riskier parse.
+func normaliseBirthday(vkDate string) string {
+	parts := strings.Split(vkDate, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	day, month, year := parts[0], parts[1], parts[2]
+	if len(year) != 4 || !allDigits(day) || !allDigits(month) || !allDigits(year) {
+		return ""
+	}
+	if len(day) == 1 {
+		day = "0" + day
+	}
+	if len(month) == 1 {
+		month = "0" + month
+	}
+	if len(day) != 2 || len(month) != 2 {
+		return ""
+	}
+	return year + "-" + month + "-" + day
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	return strings.IndexFunc(s, func(r rune) bool { return r < '0' || r > '9' }) == -1
 }
 
 // flexID unmarshals a JSON value that may be either a number or a string, and
@@ -156,8 +210,8 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 		FirstName: f.FirstName,
 		LastName:  f.LastName,
 		Avatar:    f.Avatar,
-		Sex:       string(f.Sex),
-		Birthday:  f.Birthday,
+		Sex:       normaliseSex(string(f.Sex)),
+		Birthday:  normaliseBirthday(f.Birthday),
 	}, nil
 }
 

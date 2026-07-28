@@ -2,7 +2,11 @@
 //
 // The confidential code exchange happens on the Go backend, but the SPA still
 // generates the PKCE pair so the code_verifier never leaves the browser until it
-// is posted (over same-origin HTTPS) to /api/auth/vk/callback.
+// is posted (over same-origin HTTPS) to /api/auth/<provider>/callback.
+//
+// Provider-neutral, and it costs nothing to be: PKCE is RFC 7636 rather than
+// anybody's dialect of it, so VK and Яндекс take the identical pair. Both login
+// composables use this module unchanged.
 
 // base64url-encode raw bytes, without '=' padding — the encoding both the
 // code_verifier charset ([A-Za-z0-9-_]) and the S256 code_challenge require.
@@ -31,12 +35,6 @@ export async function computeCodeChallenge(verifier: string): Promise<string> {
   const data = new TextEncoder().encode(verifier);
   const digest = await crypto.subtle.digest('SHA-256', data);
   return base64url(new Uint8Array(digest));
-}
-
-// A random opaque state value (used as a local fallback; the value actually sent
-// to VK comes from the backend's /api/auth/vk/state so its cookie can validate it).
-export function generateState(): string {
-  return base64url(randomBytes(16));
 }
 
 export interface Pkce {

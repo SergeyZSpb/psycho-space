@@ -165,8 +165,8 @@ start_server
 wait_healthy || exit 1
 
 log "seeding accounts"
-seed() { # $1 role, $2 status, $3 vk-id, $4 name
-  go run ./cmd/dev-seed -json -role "$1" -status "$2" -vk-id "$3" -name "$4"
+seed() { # $1 role, $2 status, $3 provider-id, $4 name, $5 provider (default vk)
+  go run ./cmd/dev-seed -json -role "$1" -status "$2" -provider "${5:-vk}" -provider-id "$3" -name "$4"
 }
 # Written to a temporary file and renamed into place, never redirected straight
 # at $SEED_FILE. Playwright's readiness signal is the health endpoint above, so
@@ -186,7 +186,12 @@ tmp_seed="$(mktemp "${SEED_FILE}.XXXXXX")" # same directory, so the rename is at
   printf '  "blocked": %s,\n'   "$(seed user       blocked  900004 'Заблокированный'  | tr -d '\n')"
   # A second pending account so the "approve it" test and the "pending screen"
   # test never fight over the same row, whatever order they run in.
-  printf '  "pending2": %s\n'   "$(seed user       pending  900005 'Ждун Второй'      | tr -d '\n')"
+  printf '  "pending2": %s,\n'  "$(seed user       pending  900005 'Ждун Второй'      | tr -d '\n')"
+  # Deliberately the SAME provider id as "user" above, at the other provider: a
+  # full-stack account that only exists because uniqueness is over the PAIR. If
+  # migrations/012 is ever weakened back to a single-column UNIQUE, seeding the
+  # stack itself fails, before any test runs.
+  printf '  "yandex": %s\n'     "$(seed user       approved 900001 'Яндекс Пользователь' yandex | tr -d '\n')"
   echo '}'
 } > "$tmp_seed"
 mv -f "$tmp_seed" "$SEED_FILE"

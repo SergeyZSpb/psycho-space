@@ -5,13 +5,13 @@
 _Machine-oriented recap for an LLM continuing this work. Written for agents, not humans — optimise for hand-off, not prose. Keep current with the doc._
 
 - **topic:** psycho-space at two altitudes — the structural view (§1–7: logical containers, runtime flows, package layout, data model, API map, security) and, in §8, a one-paragraph summary of every decision that produced that shape, each linking to its full record in `docs/adrs/`. `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
-- **status:** a current-state snapshot, deliberately not a history — `git log` holds how it got here. **One Go binary** (embedded Vue SPA + `/api` + a WebSocket) behind nginx on one Ubuntu box, PostgreSQL 16 local, no Redis, no cron, no worker and no queue. Login is VK ID, access is allowlist-gated. Live sections: **wishlist** (items + threaded comments, both upvotable), **admin/settings**, and **three games**. **«Смолтолк в Химках»** (`internal/gamekhimki/`) is LLM-judged dialogue and the only paid path. **«Ванягоччи»** (`internal/gamevanyagotchi/`) is realtime with **no LLM on any path**: a shared plane broadcast at 5 Hz over the hub, a Postgres-backed **pet** whose stats decay lazily from `(value, as_of)`, **seven regulars** — at least one in every place — whose POSITIONS are closed-form though their speech is not, walking with server-decided tiredness, absent players drawn asleep where they stood, and speech balloons. The yard is drawn **2.5D**: painted backdrops, cut-out figures anchored at the feet, four depth bands, the hashed identity colour as a ground shadow and the player's VK photograph as a badge beside the head. Its controls are **on the plane** rather than under it — the crate is what you tap to drink, a death screen is the only way back up, and one floating button carries whatever verb has nowhere better to be. The yard also holds **world objects** — relief deposits with a TTL, a lost key exactly one player wins, and a crate of beer drawn down one at a time — contested by two disciplines the catalogue routes between, both settled by a conditional `UPDATE` in PostgreSQL rather than by hub ordering. **Both singletons wander**: a fresh key hides at a hotspot, a fresh crate stands on ordinary ground clear of them, each in a location drawn at random — and **nothing may be placed in the plane's two bottom corners**, which are interface and swallow the taps that land on them. There are **five places** — двор, лес, лифт, кусты, заброшка — and none of them is a realtime room: one room carries the whole game and the client filters on each entity's location, so **a position is a triple** (a place plus `x`,`y` within it) and adding a place costs nothing at the transport layer (ADR-045). Two verbs are **gated on where a Ваня is standing**: drinking, on arrival at the crate, and finding the key, which is a **search** — the key is never drawn, its hiding place is stored and unpublished, and a claim must name a catalogue hotspot the player has actually walked to. **A verb travels over the socket, not over HTTP**, and is followed by state rather than answered by a body — the pet's whole HTTP surface is two reads (ADR-043). Its splash screen is a **rules cheatsheet generated from the served catalogue**. The realtime transport carries a `bye` frame, exposes three game seams (`Handler`, `Hub.Members`, `Hub.PublishTo`), and revalidates sessions every 30 s so a socket cannot outlive its own. **«ВАНЯДУМ»** (`internal/gamevanyadum/`) is game three and the first in 3D: a first-person shooter on a generated заброшка, rendered with **three.js in a canvas that holds the world and nothing else** — every readout and control stays DOM, which is what keeps both Playwright suites alive (ADR-047). It is also the first thing in this project that **simulates**: collision destroys the closed-form motion model everything else uses, so a **20 Hz fixed-step loop** advances in-memory **arenas** — one per run, unicast through `PublishTo` because an arena is not a room — while Postgres is touched exactly twice per run and never on a tick, which is what keeps it on the right side of ADR-038 (ADR-048). Input is **batched to ten frames a second carrying four sub-steps**, fitting inside the socket's existing rate limit rather than loosening it, and a per-arena **real-time budget** is what stops a client filling every frame with legal values and running eight times faster than everybody else (ADR-049). The **level** is a Doom-style sector graph generated in Go from a seed and sent once (ADR-050); the game **stores no art at all** — geometry, textures and props are generated from that seed, with textures as pure typed-array functions specifically so they are testable (ADR-051). Netcode is **all four Gambetta rungs** — client-side prediction, server reconciliation, entity interpolation and lag compensation — built together after the feel gate came back "looks like low fps"; the client runs the server's own `Step`, pinned to it by golden vectors, and authority never moves (ADR-052). Controls are thumbs on glass, and on a desktop a click captures the pointer so the mouse can look.
+- **status:** a current-state snapshot, deliberately not a history — `git log` holds how it got here. **One Go binary** (embedded Vue SPA + `/api` + a WebSocket) behind nginx on one Ubuntu box, PostgreSQL 16 local, no Redis, no cron, no worker and no queue. Login is **VK ID or Яндекс ID** — two providers behind one identity model, where an identity is the pair `(provider, blind index)` and a second provider means a second account rather than a link (ADR-054); access is allowlist-gated. Live sections: **wishlist** (items + threaded comments, both upvotable), **admin/settings**, and **three games**. **«Смолтолк в Химках»** (`internal/gamekhimki/`) is LLM-judged dialogue and the only paid path. **«Ванягоччи»** (`internal/gamevanyagotchi/`) is realtime with **no LLM on any path**: a shared plane broadcast at 5 Hz over the hub, a Postgres-backed **pet** whose stats decay lazily from `(value, as_of)`, **seven regulars** — at least one in every place — whose POSITIONS are closed-form though their speech is not, walking with server-decided tiredness, absent players drawn asleep where they stood, and speech balloons. The yard is drawn **2.5D**: painted backdrops, cut-out figures anchored at the feet, four depth bands, the hashed identity colour as a ground shadow and the player's VK photograph as a badge beside the head. Its controls are **on the plane** rather than under it — the crate is what you tap to drink, a death screen is the only way back up, and one floating button carries whatever verb has nowhere better to be. The yard also holds **world objects** — relief deposits with a TTL, a lost key exactly one player wins, and a crate of beer drawn down one at a time — contested by two disciplines the catalogue routes between, both settled by a conditional `UPDATE` in PostgreSQL rather than by hub ordering. **Both singletons wander**: a fresh key hides at a hotspot, a fresh crate stands on ordinary ground clear of them, each in a location drawn at random — and **nothing may be placed in the plane's two bottom corners**, which are interface and swallow the taps that land on them. There are **five places** — двор, лес, лифт, кусты, заброшка — and none of them is a realtime room: one room carries the whole game and the client filters on each entity's location, so **a position is a triple** (a place plus `x`,`y` within it) and adding a place costs nothing at the transport layer (ADR-045). Two verbs are **gated on where a Ваня is standing**: drinking, on arrival at the crate, and finding the key, which is a **search** — the key is never drawn, its hiding place is stored and unpublished, and a claim must name a catalogue hotspot the player has actually walked to. **A verb travels over the socket, not over HTTP**, and is followed by state rather than answered by a body — the pet's whole HTTP surface is two reads (ADR-043). Its splash screen is a **rules cheatsheet generated from the served catalogue**. The realtime transport carries a `bye` frame, exposes three game seams (`Handler`, `Hub.Members`, `Hub.PublishTo`), and revalidates sessions every 30 s so a socket cannot outlive its own. **«ВАНЯДУМ»** (`internal/gamevanyadum/`) is game three and the first in 3D: a first-person shooter on a generated заброшка, rendered with **three.js in a canvas that holds the world and nothing else** — every readout and control stays DOM, which is what keeps both Playwright suites alive (ADR-047). It is also the first thing in this project that **simulates**: collision destroys the closed-form motion model everything else uses, so a **20 Hz fixed-step loop** advances in-memory **arenas** — one per run, unicast through `PublishTo` because an arena is not a room — while Postgres is touched exactly twice per run and never on a tick, which is what keeps it on the right side of ADR-038 (ADR-048). Input is **batched to ten frames a second carrying four sub-steps**, fitting inside the socket's existing rate limit rather than loosening it, and a per-arena **real-time budget** is what stops a client filling every frame with legal values and running eight times faster than everybody else (ADR-049). The **level** is a Doom-style sector graph generated in Go from a seed and sent once (ADR-050); the game **stores no art at all** — geometry, textures and props are generated from that seed, with textures as pure typed-array functions specifically so they are testable (ADR-051). Netcode is **all four Gambetta rungs** — client-side prediction, server reconciliation, entity interpolation and lag compensation — built together after the feel gate came back "looks like low fps"; the client runs the server's own `Step`, pinned to it by golden vectors, and authority never moves (ADR-052). Controls are thumbs on glass, and on a desktop a click captures the pointer so the mouse can look.
 - **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only, immutable once shipped). For the shooter: `internal/gamevanyadum/{sim,level,arena,service}.go` and on the client `web/src/views/GameVanyadumView.vue` + `web/src/lib/vanyadum{Level,Texture,Input,Rules,Step,Predict,Interp}.ts` + `web/src/render/vanyadumScene.ts` (the only module importing three.js). For the yard: `internal/gamevanyagotchi/service.go` (the verbs and the tick), `message.go` (the wire contract in §5), `content.go` (every tuning constant, character and phrase), and on the client `web/src/views/GameVanyagotchiView.vue` + `web/src/lib/vanyagotchi{Plane,Pet,Rules}.ts` + `web/src/realtime/socket.ts`.
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `ls docs/adrs/` lists every decision record; `grep -n 'TypeHello\|TypeMove\|TypeDo\|TypeRoster\|TypeYou\|TypeStateFrame' internal/gamevanyagotchi/message.go` re-finds the wire types if §5 drifts.
 - **adr:** §8 is a **summary layer**; the records themselves are one file each in `docs/adrs/ADR-0NN-<slug>.md`. **A record states the decision as it stands TODAY and is rewritten in place when it changes** — there is no append-only rule any more, no `Superseded by`, and no amendment chains. The history of a decision lives in `git log -p docs/adrs/ADR-0NN-*.md`, which is a better record of how the thinking moved than a status line was. Adding one: create the file, add a one-paragraph summary + link under the right `### 8.x` group, take the **next global number** wherever the group. **Numbers are never reused and gaps are permanent**, so existing references never shift. Status vocabulary is `Accepted` and nothing else. **The bar is architecture** — deployment, data, a component boundary, or the cost of a whole class of change; a tuning constant, a UI behaviour or a test-harness fix gets a comment beside the code instead. Highest record: **ADR-053** — confirm with `ls docs/adrs/ | tail -1`. The unused numbers are **020, 032, 035, 036**, all permanent gaps left by records withdrawn for failing the architecture bar. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id, a summary with no file, a file with no summary, and a dead link.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff gets a record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
 - **related:** `../CLAUDE.md` (rules), `RUNBOOK.md` (operations, and the owner of measurements and operational economics — notably the game's per-turn cost, which is re-measured rather than recorded here), `adrs/` (the records), the owner's local living doc (roadmap, TODO, private operational detail).
-- **decisions / constraints:** SPA embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext; **migrations are immutable once shipped**; no test-only code in production paths; **nothing runs on a timer** — time-varying state is computed on read (ADR-038) and everything that moves is a function of absolute time (ADR-042); the 5 Hz tick renders from an in-memory cache and never touches Postgres (ADR-041); **each game is a self-contained module** sharing no DB or service code with any other, named `Game<Name>` at every layer, with shared *capabilities* unprefixed (ADR-028/030/031). Each has a record carrying its reasoning — read it before arguing with the rule.
+- **decisions / constraints:** SPA embedded in the binary, not separately hosted; sessions are server-side opaque tokens, never JWT; personal data is encrypted at rest and looked up through a blind index, never plaintext, and **what is fed to that index never changes** — it is as unrotatable as the key (ADR-005/054); **migrations are immutable once shipped**; no test-only code in production paths; **nothing runs on a timer** — time-varying state is computed on read (ADR-038) and everything that moves is a function of absolute time (ADR-042); the 5 Hz tick renders from an in-memory cache and never touches Postgres (ADR-041); **each game is a self-contained module** sharing no DB or service code with any other, named `Game<Name>` at every layer, with shared *capabilities* unprefixed (ADR-028/030/031). Each has a record carrying its reasoning — read it before arguing with the rule.
 - **diagram authoring constraint:** the Mermaid blocks here must parse on GitHub, and a `;` anywhere in sequence-diagram message or note text is a **statement separator**, not punctuation — it silently breaks the whole diagram (`Parse error … got 'NEWLINE'`). Use `<br/>` or an em dash instead. Quotes, braces, `=`, and parentheses (including in a `participant X as Name (alias)`) are all safe. Validate a diagram change by rendering it, not by eye: extract each mermaid fence to its own `.mmd` file and run `npx -y @mermaid-js/mermaid-cli@latest -p pconf.json -i b.mmd -o b.svg`, where `pconf.json` is `{"args":["--no-sandbox"]}` (Chrome cannot sandbox in this environment).
 
 ---
@@ -39,6 +39,7 @@ flowchart TB
     end
 
     VK["VK ID<br/>id.vk.ru"]
+    YA["Яндекс ID<br/>oauth.yandex.ru + login.yandex.ru"]
     LLM["LLM judge — «Смолтолк в Химках» only<br/>OpenAI-compatible endpoint"]
 
     SPA -- HTTPS --> NGINX
@@ -49,6 +50,7 @@ flowchart TB
     API --> DOM --> REPO --> PG
     DOM -- "5 Hz roster out<br/>20 Hz snapshots out<br/>presence in" --> HUB
     DOM -- "code exchange<br/>+ user_info" --> VK
+    DOM -- "code exchange<br/>+ profile" --> YA
     DOM -- "one completion<br/>per turn (paid)" --> LLM
 ```
 
@@ -58,11 +60,21 @@ flowchart TB
 
 ## 2. Runtime views
 
-### 2.1 Login — VK ID confidential backend exchange
+### 2.1 Login — a confidential backend exchange, at either of two providers
 
-The authorization code is exchanged **on the server**, so the VK service token never reaches the browser. A session cookie is issued even for `pending` and `blocked` accounts: it identifies without authorizing, because `requireAuth` still demands `status == approved`. See [§8 → ADR-007](#adr-007--a-session-cookie-is-issued-even-for-pending-and-blocked-accounts) for why.
+There are two doors, **VK ID** and **Яндекс ID**, and everything behind the moment an identity is established is shared: the consent gate, the CSRF check, the account upsert, the session, the allowlist. Only the exchange differs, which is why `internal/httpapi` holds a narrow `oauthProvider` seam and the two provider packages know nothing of each other ([§8 → ADR-054](#adr-054--an-identity-is-a-provider-and-a-blind-index-and-a-second-provider-is-a-second-account)).
 
-**The redirect URL is a page, and the exchange endpoint is not.** VK's `redirect_uri` is `https://psycho-space.ru/auth/redirect` — a route of the SPA (`AuthRedirectView.vue`). In the ordinary flow nothing is ever navigated there: the OneTap widget finishes inside a VK-hosted frame and hands `{code, device_id}` to JavaScript, which POSTs to `/api/auth/vk/callback` from the page it is already on. But when the widget cannot finish in place — VK's own in-app WebView, a blocked popup, partitioned third-party storage, or the "войти другим способом" path — VK navigates the whole browser to `redirect_uri?code=…` with **GET**, and that landing must be a page. It used to be `/api/auth/vk/callback`, which is POST-only, so those browsers got a bare **405** and could never log in; `TestVKRedirectTargetIsServedAsAPage` and a full-stack case now pin both halves. Three copies of the string must agree exactly or every login fails: `VK_REDIRECT_PATH` in `web/src/constants.ts` (sent at authorize), `PSYCHOSPACE_VK_REDIRECT_URI` (echoed by the backend at the token exchange, which VK matches byte for byte), and the redirect URL registered on the VK app.
+The authorization code is exchanged **on the server**, so no confidential credential — VK's service token, Yandex's client secret — ever reaches the browser. A session cookie is issued even for `pending` and `blocked` accounts: it identifies without authorizing, because `requireAuth` still demands `status == approved`. See [§8 → ADR-007](#adr-007--a-session-cookie-is-issued-even-for-pending-and-blocked-accounts) for why.
+
+**A login is an identity at a provider, not a person.** `accounts` is unique on `(provider, identity_ref)`, so the same numeric user id arriving from both providers is two accounts rather than one — which it must be, since both hand out small integers and the blind index is taken over the raw id. Logging in with Yandex having previously used VK therefore produces a **new** account: there is no linking, deliberately ([ADR-054](#adr-054--an-identity-is-a-provider-and-a-blind-index-and-a-second-provider-is-a-second-account)).
+
+**Yandex's authorize URL is built by the server; VK's cannot be.** VK's SDK constructs its URL in the browser, so the app id and the redirect path must also exist in `web/src/constants.ts` — three copies of a string that must agree byte for byte, and the source of the 405 incident below. Yandex needs no SDK, so `GET /api/auth/yandex/state?code_challenge=…` returns the state **and** the finished `authorize_url`, and the client id and redirect URI live only in the server's environment. Two copies instead of three, and the SPA can never be the stale one ([ADR-055](#adr-055--the-authorize-url-is-built-by-the-server-wherever-the-provider-allows-it)).
+
+**The redirect URL is a page, and the exchange endpoint is not — for both providers.** VK's `redirect_uri` is `https://psycho-space.ru/auth/redirect` and Yandex's is `https://psycho-space.ru/auth/yandex/redirect`; both are routes of the SPA (`AuthRedirectView.vue` serves both, taking the provider from the route rather than from a query parameter, which would be attacker-controlled).
+
+For VK, in the ordinary flow nothing is ever navigated there: the OneTap widget finishes inside a VK-hosted frame and hands `{code, device_id}` to JavaScript, which POSTs to `/api/auth/vk/callback` from the page it is already on. But when the widget cannot finish in place — VK's own in-app WebView, a blocked popup, partitioned third-party storage, or the "войти другим способом" path — VK navigates the whole browser to `redirect_uri?code=…` with **GET**, and that landing must be a page. It used to be `/api/auth/vk/callback`, which is POST-only, so those browsers got a bare **405** and could never log in; `TestVKRedirectTargetIsServedAsAPage` and a full-stack case pin both halves. **For Yandex the navigation is the only path** — there is no widget — so the same trap is pinned again by `TestYandexCallbackRejectsGET` and its full-stack twin, and the Yandex app must carry only the page in its Redirect URI list.
+
+Copies that must agree exactly or every login fails: for **VK**, three — `VK_REDIRECT_PATH` in `web/src/constants.ts` (sent at authorize), `PSYCHOSPACE_VK_REDIRECT_URI` (echoed by the backend at the token exchange, which VK matches byte for byte), and the redirect URL registered on the VK app. For **Yandex**, two — `PSYCHOSPACE_YANDEX_REDIRECT_URI` and the Redirect URI registered on the Yandex app — because the SPA never sees it.
 
 ```mermaid
 sequenceDiagram
@@ -70,27 +82,42 @@ sequenceDiagram
     participant B as Browser (SPA)
     participant A as psycho-space
     participant V as id.vk.ru
+    participant Y as oauth/login.yandex.ru
     participant P as PostgreSQL
 
-    B->>A: GET /api/auth/vk/state
-    A-->>B: state (+ httpOnly state cookie)
-    Note over B: consent checkbox must be ticked<br/>before the VK widget is mounted (152-ФЗ)
-    B->>V: OneTap + PKCE (redirect_uri = /auth/redirect)
-    alt widget finishes in place (the usual)
-        V-->>B: code, device_id (postMessage — no navigation)
-    else browser cannot host the widget (WebView, blocked popup, "другим способом")
-        V-->>B: 302 /auth/redirect?code=…&device_id=…&state=…
-        Note over B: AuthRedirectView reads the query,<br/>PKCE verifier + state from sessionStorage
+    Note over B: consent checkbox must be ticked before<br/>EITHER provider is reachable (152-ФЗ)
+    alt VK ID — the SDK builds the authorize URL in the browser
+        B->>A: GET /api/auth/vk/state
+        A-->>B: state (+ httpOnly psycho_oauth_state_vk)
+        B->>V: OneTap + PKCE (redirect_uri = /auth/redirect)
+        alt widget finishes in place (the usual)
+            V-->>B: code, device_id (postMessage — no navigation)
+        else browser cannot host the widget (WebView, blocked popup, "другим способом")
+            V-->>B: 302 /auth/redirect?code=…&device_id=…&state=…
+            Note over B: AuthRedirectView reads the query,<br/>PKCE verifier + state from sessionStorage
+        end
+        B->>A: POST /api/auth/vk/callback {code, device_id, state, code_verifier, consent_version}
+        A->>V: POST /oauth2/auth (code + service_token + code_verifier)
+        V-->>A: access_token (+ id_token)
+        A->>V: GET /oauth2/user_info
+        V-->>A: profile (name, sex code, DD.MM.YYYY birthday, avatar, user_id)
+    else Яндекс ID — the SERVER builds the authorize URL
+        B->>A: GET /api/auth/yandex/state?code_challenge=…
+        A-->>B: state + authorize_url (+ httpOnly psycho_oauth_state_yandex)
+        Note over B: client_id and redirect_uri never reach the SPA
+        B->>Y: 302 to authorize_url (no SDK, no widget)
+        Y-->>B: 302 /auth/yandex/redirect?code=…&state=…
+        B->>A: POST /api/auth/yandex/callback {code, state, code_verifier, consent_version}
+        A->>Y: POST /token (code + client_secret + code_verifier)
+        Y-->>A: access_token
+        A->>Y: GET /info (Authorization: OAuth …, never Bearer)
+        Y-->>A: profile (name, male/female, ISO birthday, avatar id, id)
     end
-    B->>A: POST /api/auth/vk/callback {code, device_id, state, code_verifier, consent_version}
-    A->>V: POST /oauth2/auth (code + service_token + code_verifier)
-    V-->>A: access_token (+ id_token)
-    A->>V: GET /oauth2/user_info
-    V-->>A: profile (name, sex, birthday, avatar, user_id)
-    A->>P: upsert by blind index HMAC-SHA256(vk_user_id)<br/>profile fields AES-256-GCM encrypted
+    Note over A: sex and birthday are normalised at the provider<br/>boundary — nothing downstream asks who sent them
+    A->>P: upsert on (provider, HMAC-SHA256(raw provider user id))<br/>profile fields AES-256-GCM encrypted
     A->>P: INSERT session (token_hash = HMAC(token))
     A-->>B: Set-Cookie httpOnly<br/>Secure<br/>SameSite=Strict<br/>+ {status, account}
-    Note over A: VK tokens are discarded here — never stored
+    Note over A: provider tokens are discarded here — never stored
 ```
 
 ### 2.2 A wishlist upvote (the shape every gated request has)
@@ -382,6 +409,7 @@ flowchart LR
         WISH["wishlist"]
         SET["settings"]
         VKP["vk (client + id_token verifier)"]
+        YAP["yandex (client — plain OAuth 2.0)"]
         subgraph games["games — self-contained, share nothing with each other"]
             GAME["gamekhimki<br/>«Смолтолк в Химках»"]
             VANYA["gamevanyagotchi<br/>«Ванягоччи» — shared plane + the pet"]
@@ -489,8 +517,9 @@ erDiagram
 
     accounts {
         uuid id PK
-        bytea vk_user_ref UK "blind index HMAC-SHA256(vk_user_id)"
-        bytea vk_user_id_enc "AES-256-GCM"
+        text provider UK "vk | yandex — half of the identity"
+        bytea identity_ref UK "blind index HMAC-SHA256(raw provider user id)"
+        bytea identity_id_enc "AES-256-GCM"
         bytea first_name_enc
         bytea last_name_enc
         bytea avatar_url_enc
@@ -604,7 +633,7 @@ Everything is under `/api`, authenticated by the session cookie. `GET /healthz` 
 
 | Group | Endpoints | Access |
 |---|---|---|
-| `auth` | `GET vk/state` · `POST vk/callback` · `GET me` · `POST logout` | public (30/min per IP on the VK pair) |
+| `auth` | `GET vk/state` · `POST vk/callback` · `GET yandex/state` (returns the authorize URL too) · `POST yandex/callback` · `GET me` · `POST logout` | public (30/min per IP on the four login endpoints) |
 | `wishlist` | `GET/POST items` · `DELETE items/{id}` · `POST/DELETE items/{id}/vote` · `GET/POST items/{id}/comments` · `DELETE comments/{id}` · `POST/DELETE comments/{id}/vote` | approved |
 | `game-khimki` | `GET assets/{game}/{key}` | **public** (art, cacheable) |
 | `game-khimki` | `GET config` · `POST attempt` (5/min per IP — paid) · `POST runs` · `GET runs/leaderboard` · `GET runs/me` | approved |
@@ -672,7 +701,7 @@ Three properties are load-bearing and each is a decision rather than an accident
 | Concern | Mechanism | Where |
 |---|---|---|
 | Personal data at rest | AES-256-GCM per field, per-row nonce; key from env, validated at startup | `internal/crypto`, `*_enc` columns |
-| Lookup without plaintext | Deterministic `HMAC-SHA256(vk_user_id)` blind index | `accounts.vk_user_ref` |
+| Lookup without plaintext | Deterministic `HMAC-SHA256(raw provider user id)` blind index, scoped by provider — the pair is the identity, because two providers both hand out small integers | `accounts.provider` + `accounts.identity_ref` |
 | Sessions | 32-byte `crypto/rand` token; only its HMAC is stored; `httpOnly; Secure; SameSite=Strict` | `internal/session` |
 | Authorization | `requireAuth` (status must be `approved`) → `requireAdmin` → `requireSuperadmin` | `internal/httpapi/router.go` |
 | Revocation | Blocking an account deletes its sessions immediately | `internal/account`, `internal/session` |
@@ -681,7 +710,9 @@ Three properties are load-bearing and each is a decision rather than an accident
 | Request size | 1 MiB body cap on every route | `bodyLimit` |
 | Error disclosure | Stable codes + trace id; `err.Error()` never reaches a client | `internal/httpapi/respond.go` |
 | Asset content type | Allowlisted image types + `nosniff` | `internal/httpapi/gamekhimki.go` — `imageContentType` |
-| Consent (152-ФЗ) | Checkbox gates the VK widget; `consent_at` + `consent_version` persisted | SPA + `accounts` |
+| Consent (152-ФЗ) | Checkbox gates **both** providers — neither the VK widget nor the Yandex button is reachable until it is ticked; `consent_at` + `consent_version` persisted. Adding a second source bumped the version to `v3` | SPA + `accounts` |
+| Data minimisation | Yandex's `default_email`, `emails`, `default_phone`, `psuid` and `display_name` are **not decoded**, let alone stored: the allowlist is not keyed by email, so collecting one would be personal data taken for no purpose | `internal/yandex` — `UserInfo` |
+| Login CSRF | Per-provider `state` cookie (`psycho_oauth_state_<provider>`), httpOnly, 10 min, compared in constant time. Per provider so two half-finished logins in two tabs cannot invalidate each other | `internal/httpapi/auth.go` |
 | Erasure (152-ФЗ) | `POST /api/admin/accounts/{id}/forget` — superadmin only, irreversible. Overwrites the blind index with `crypto/rand`, empties every `*_enc` field, clears consent, blocks the row and stamps `forgotten_at`, so the person is gone while what they wrote survives with an anonymous author ([ADR-053](#adr-053--forgetting-a-person-is-anonymisation-not-deletion)) | `internal/account` — `Forget` · `internal/httpapi/admin.go` |
 | WebSocket origin | Validated at upgrade (library default; never `InsecureSkipVerify`) — the same-origin policy does **not** apply to WebSocket | `internal/httpapi/realtime.go` |
 | WebSocket frame size | `SetReadLimit(4096)` — the 1 MiB `bodyLimit` wraps `r.Body` and the hijack bypasses it | `internal/realtime/conn.go` |
@@ -782,15 +813,15 @@ A 32-byte `crypto/rand` token in an `httpOnly; Secure; SameSite=Strict` cookie, 
 
 _Accepted · 2026-07-25_
 
-Profile fields are AES-256-GCM with a per-row nonce, and every equality lookup goes through a deterministic `HMAC-SHA256(vk_user_id)` blind index rather than plaintext. 152-ФЗ minimisation, and its practical form: a database dump on its own should not be a list of who uses the site. The keys are load-bearing — rotating the HMAC key orphans every account and losing the encryption key makes stored profiles unrecoverable.
+Profile fields are AES-256-GCM with a per-row nonce, and every equality lookup goes through a deterministic `HMAC-SHA256` blind index over the provider's raw user id rather than plaintext — scoped by provider, since the pair is the identity ([ADR-054](#adr-054--an-identity-is-a-provider-and-a-blind-index-and-a-second-provider-is-a-second-account)). 152-ФЗ minimisation, and its practical form: a database dump on its own should not be a list of who uses the site. The keys are load-bearing — rotating the HMAC key orphans every account and losing the encryption key makes stored profiles unrecoverable — and so is the **input**, which is why adding a second provider did not renamespace it.
 
 [Full record → `docs/adrs/ADR-005-personal-data-is-encrypted-at-rest-and-looked.md`](adrs/ADR-005-personal-data-is-encrypted-at-rest-and-looked.md)
 
-#### ADR-006 · VK tokens are discarded after the profile fetch
+#### ADR-006 · Provider tokens are discarded after the profile fetch
 
 _Accepted · 2026-07-25_
 
-The code exchange happens on the server, and the resulting VK access and refresh tokens are used once to read the profile and then dropped. We never act on the user's behalf at VK, so storing a credential that would let us is pure liability.
+The code exchange happens on the server — with VK's service token or Yandex's client secret, neither of which reaches the browser — and the resulting access and refresh tokens are used once to read the profile and then dropped. We never act on a user's behalf at their provider, so storing a credential that would let us is pure liability.
 
 [Full record → `docs/adrs/ADR-006-vk-tokens-are-discarded-after-the-profile.md`](adrs/ADR-006-vk-tokens-are-discarded-after-the-profile.md)
 
@@ -806,7 +837,7 @@ A cookie is issued even to `pending` and `blocked` accounts, because the SPA nee
 
 _Accepted · 2026-07-25_
 
-The VK widget is not mounted until the consent box is ticked, and `consent_at` / `consent_version` are recorded server-side. Consent has to precede processing to mean anything; mounting the widget first and recording consent afterwards would reverse that order.
+Neither login affordance is reachable until the consent box is ticked — the VK widget is not mounted and the Yandex button does nothing — and `consent_at` / `consent_version` are recorded server-side. Consent has to precede processing to mean anything; mounting the widget first and recording consent afterwards would reverse that order. The version bumps when the disclosed set changes **or when its source does**, which is why adding Yandex took it to `v3`.
 
 [Full record → `docs/adrs/ADR-008-consent-is-a-gate-not-a-checkbox-on-a-form.md`](adrs/ADR-008-consent-is-a-gate-not-a-checkbox-on-a-form.md)
 
@@ -814,9 +845,25 @@ The VK widget is not mounted until the consent box is ticked, and `consent_at` /
 
 _Accepted · 2026-07-28_
 
-Removing somebody destroys their identity **in place** and leaves their contributions standing: `vk_user_ref` is overwritten with 32 random bytes, every `*_enc` field is emptied, consent is cleared, `forgotten_at` is stamped. Afterwards the same VK account logging in again is a genuinely new one, because the blind index that used to match is gone. A **plain soft delete is broken rather than insufficient** — `vk_user_ref` is a non-partial `UNIQUE` and the login upsert conflicts on it without touching `deleted_at` or `status`, so the next login reuses the row, gets a cookie, and is then refused by every read forever, invisibly. A **hard delete works and takes other people's words with it**: comments and votes hang off the deleted user's items by foreign key, so erasing one member would erase another's conversation. `deleted_at` is deliberately left NULL, because author lookup filters on it and setting it would blank an author rather than anonymise them — and the tombstone needed no new vocabulary, since `DisplayName()` already falls back to `psycho-<handle>` and `VKURL()` to nothing.
+Removing somebody destroys their identity **in place** and leaves their contributions standing: `identity_ref` is overwritten with 32 random bytes, every `*_enc` field is emptied, consent is cleared, `forgotten_at` is stamped. Afterwards the same provider account logging in again is a genuinely new one, because the blind index that used to match is gone. A **plain soft delete is broken rather than insufficient** — the login upsert conflicts on `(provider, identity_ref)` without touching `deleted_at` or `status`, so the next login reuses the row, gets a cookie, and is then refused by every read forever, invisibly. A **hard delete works and takes other people's words with it**: comments and votes hang off the deleted user's items by foreign key, so erasing one member would erase another's conversation. `deleted_at` is deliberately left NULL, because author lookup filters on it and setting it would blank an author rather than anonymise them — and the tombstone needed no new vocabulary, since `DisplayName()` already falls back to `psycho-<handle>` and `ProfileURL()` to nothing.
 
 [Full record → `docs/adrs/ADR-053-forgetting-a-person-is-anonymisation-not.md`](adrs/ADR-053-forgetting-a-person-is-anonymisation-not.md)
+
+#### ADR-054 · An identity is a provider and a blind index, and a second provider is a second account
+
+_Accepted · 2026-07-28_
+
+Uniqueness is over the **pair** `(provider, identity_ref)`, not over the blind index alone. Both VK and Yandex hand out small numeric user ids and the index is taken over the raw id, so VK user `12345` and Yandex user `12345` produce identical references — under the old single-column `UNIQUE` they would have been one row, and the second person to log in would have landed inside the first person's account. The obvious alternative, namespacing the index input to `"vk:12345"`, was rejected because **`APP_HMAC_KEY` cannot be rotated and the indexed value is exactly as load-bearing as the key**: changing what goes in orphans every account that already exists, unrecoverably. So the provider is carried in a column and existing rows keep the exact bytes they had. A Yandex login is therefore a **new account**, not a link to a VK one — linking would need a merge policy for two sets of contributions and is not worth it for this audience, and the composite key is precisely the shape that lets it be added later.
+
+[Full record → `docs/adrs/ADR-054-an-identity-is-a-provider-and-a-blind-index.md`](adrs/ADR-054-an-identity-is-a-provider-and-a-blind-index.md)
+
+#### ADR-055 · The authorize URL is built by the server wherever the provider allows it
+
+_Accepted · 2026-07-28_
+
+`GET /api/auth/yandex/state` returns the finished `authorize_url`, so the Yandex client id and redirect URI live only in the server's environment. The most expensive recurring failure this system has had is a string that must agree byte for byte in three places — the SPA's constants, the backend's config and the provider's dashboard — and its symptom was an unexplained `405`. Yandex needs no browser SDK, so that third copy is not required, and a copy that is not required is one that will eventually be stale. VK keeps its three because its SDK builds the URL in the browser; the asymmetry is deliberate and documented at both handlers. The PKCE challenge arrives as a query parameter — public by design, the verifier is the secret half — and is still shape-checked before being echoed into a URL handed to a browser.
+
+[Full record → `docs/adrs/ADR-055-the-authorize-url-is-built-by-the-server.md`](adrs/ADR-055-the-authorize-url-is-built-by-the-server.md)
 
 ### 8.3 Roles and access
 

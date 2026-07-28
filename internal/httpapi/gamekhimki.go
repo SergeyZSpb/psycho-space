@@ -162,9 +162,9 @@ func (s *Server) handleGameKhimkiLeaderboard(w http.ResponseWriter, r *http.Requ
 	for _, board := range gamekhimki.RecordBoards {
 		rows := make([]map[string]any, 0, len(boards[board]))
 		for _, e := range boards[board] {
-			player := map[string]any{"display_name": "", "avatar_url": "", "vk_url": ""}
+			player := map[string]any{"display_name": "", "avatar_url": "", "profile_url": ""}
 			if a := players[e.AccountID]; a != nil {
-				player = map[string]any{"display_name": a.DisplayName(), "avatar_url": a.AvatarURL, "vk_url": a.VKURL()}
+				player = map[string]any{"display_name": a.DisplayName(), "avatar_url": a.AvatarURL, "profile_url": a.ProfileURL()}
 			}
 			rows = append(rows, map[string]any{
 				"player": player,

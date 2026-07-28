@@ -24,12 +24,32 @@ import type {
   WishlistSort,
 } from './types';
 
-export interface VkCallbackBody {
+/**
+ * The body both providers' callbacks take.
+ *
+ * `device_id` is VK's alone and is simply absent from a Yandex request — hence
+ * optional here rather than an empty string, so the field never appears on a
+ * Yandex payload at all (the backend ignores it either way, but a field that
+ * means nothing to the provider has no business being sent).
+ */
+export interface OAuthCallbackBody {
   code: string;
-  device_id: string;
+  device_id?: string;
   state: string;
   code_verifier: string;
   consent_version: string;
+}
+
+/**
+ * What Yandex's state endpoint answers with.
+ *
+ * It returns the whole authorize URL, unlike VK's, because the backend builds
+ * it: the SPA never learns the Yandex client id or redirect URI, so those two
+ * values live in one place instead of three. See internal/httpapi/auth_yandex.go.
+ */
+export interface YandexStart {
+  state: string;
+  authorize_url: string;
 }
 
 export const authApi = {
@@ -37,8 +57,21 @@ export const authApi = {
   vkState: () => apiFetch<{ state: string }>('/api/auth/vk/state'),
 
   // Confidential backend code exchange; issues a session on approval.
-  vkCallback: (body: VkCallbackBody) =>
+  vkCallback: (body: OAuthCallbackBody) =>
     apiFetch<LoginResult>('/api/auth/vk/callback', { method: 'POST', body }),
+
+  // Mints + sets the Yandex CSRF state cookie AND builds the authorize URL to
+  // navigate to. The PKCE challenge is public by design (it is the verifier
+  // that is secret), so it rides the query string.
+  yandexState: (codeChallenge: string) =>
+    apiFetch<YandexStart>(
+      `/api/auth/yandex/state?code_challenge=${encodeURIComponent(codeChallenge)}`,
+    ),
+
+  // Same confidential exchange as VK's, minus the device id Yandex has no
+  // notion of.
+  yandexCallback: (body: OAuthCallbackBody) =>
+    apiFetch<LoginResult>('/api/auth/yandex/callback', { method: 'POST', body }),
 
   // Current account, or throws ApiError(status 401) when not logged in.
   me: () => apiFetch<{ account: Account }>('/api/auth/me'),

@@ -13,8 +13,11 @@
 
       <!-- messenger-style comment: avatar · header (name + handle) · body · footer (vote + time) -->
       <div v-for="c in comments" :key="c.id" class="d-flex ga-3 mb-4">
+        <!-- `profile_url` is '' for every Яндекс account and every forgotten
+             one, and `|| undefined` is what turns that into a plain avatar
+             rather than a link to nowhere. -->
         <a
-          :href="c.author.vk_url || undefined"
+          :href="c.author.profile_url || undefined"
           target="_blank"
           rel="noopener noreferrer"
           class="flex-shrink-0"
@@ -28,13 +31,15 @@
         <div class="flex-grow-1" style="min-width: 0">
           <div class="d-flex align-center ga-2 flex-wrap">
             <span class="font-weight-bold text-body-2 ps-wrap">{{ c.author.display_name || 'аноним' }}</span>
+            <!-- No profile URL means no handle, and the byline falls back to
+                 the display name on its own. -->
             <a
-              v-if="handle(c.author.vk_url)"
-              :href="c.author.vk_url"
+              v-if="handle(c.author.profile_url)"
+              :href="c.author.profile_url"
               target="_blank"
               rel="noopener noreferrer"
               class="handle-link text-caption ps-wrap"
-            >{{ handle(c.author.vk_url) }}</a>
+            >{{ handle(c.author.profile_url) }}</a>
             <v-chip v-if="c.mine" size="x-small" color="secondary" variant="tonal">вы</v-chip>
           </div>
 
@@ -118,7 +123,7 @@ import VoteButton from './VoteButton.vue';
 import { wishlistApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import { applyToggle } from '../lib/vote';
-import { vkHandle as handle } from '../lib/vk';
+import { profileHandle as handle } from '../lib/profile';
 import { useAuthStore } from '../stores/auth';
 import { useErrorStore } from '../stores/error';
 import type { WishlistComment } from '../api/types';
