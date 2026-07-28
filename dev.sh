@@ -85,9 +85,11 @@ target_web() {
   fi
 }
 
-# Playwright mobile-responsiveness suite. Part of the pre-commit gate: the
-# mobile-first rule in CLAUDE.md is only real if something enforces it, and the
-# whole suite runs in seconds once the browser is cached. The browser download
+# Playwright mobile-layout suite. Part of the pre-commit gate: the mobile-first
+# rule in CLAUDE.md is only real if something enforces it, and the whole suite
+# runs in seconds once the browser is cached. Everything runs at 360px; the
+# desktop project runs only the `@wide` tests, which are the ones whose claim is
+# about width (see the header of web/playwright.config.ts). The browser download
 # is a one-off (`npx playwright install chromium`); every project in
 # playwright.config.ts is Chromium, so nothing else is fetched.
 target_e2e() {
@@ -95,7 +97,7 @@ target_e2e() {
     echo "info: no web/playwright.config.ts — skipping e2e" >&2
     return 0
   fi
-  echo "== e2e (Playwright, mobile viewports) =="
+  echo "== e2e (Playwright: 360px in full, desktop for @wide) =="
   ( cd web && [ -d node_modules ] || npm_ ci --no-audit --no-fund )
   if ! ( cd web && npx_ playwright test "$@" ); then
     echo "e2e failed. If the browser is missing, run: (cd web && npx playwright install chromium)" >&2
@@ -192,7 +194,7 @@ psycho-space dev.sh targets:
   test         unit tests
   integration  testcontainers integration tests (when test/integration exists)
   web          frontend type-check + unit tests (when web/ exists)
-  e2e          Playwright mobile-responsiveness suite, stubbed /api (args pass through)
+  e2e          Playwright mobile-layout suite, stubbed /api (args pass through)
   e2e-stack    Playwright full-stack e2e: real binary + Postgres (needs Docker)
   cover        coverage: Go unit + Go integration + web
   run          run the server locally (sources ./.env if present)

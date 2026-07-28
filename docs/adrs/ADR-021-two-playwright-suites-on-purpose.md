@@ -11,8 +11,10 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 ---
 
-`web/e2e/` stubs `/api` in the browser and asserts **layout** at phone widths; `web/e2e-stack/` drives the **real binary against a real PostgreSQL** and asserts that actions persisted.
+`web/e2e/` stubs `/api` in the browser and asserts **layout** at the phone width; `web/e2e-stack/` drives the **real binary against a real PostgreSQL** and asserts that actions persisted.
 
-_Reasoning:_ they fail for different reasons, and each is bad at the other's job. Stubbing makes awkward states (pending, blocked, a 90-character unbroken word) trivial to render and keeps the responsive matrix fast; only the real stack can prove that an upvote became a row. Both are in the pre-commit gate.
+_Reasoning:_ they fail for different reasons, and each is bad at the other's job. Stubbing makes awkward states (pending, blocked, a 90-character unbroken word) trivial to render and keeps the layout matrix fast; only the real stack can prove that an upvote became a row. Both are in the pre-commit gate.
+
+_Consequence:_ the layout suite runs everything at 360 px and re-runs only the `@wide`-tagged tests at 1440 — the phone is the product, and every other width is a regression guard that does not earn a full replay of the suite (the matrix was four full projects and cost 16 minutes of CI; the tag and its bar are documented in `web/playwright.config.ts`).
 
 _Consequence:_ the full-stack suite runs one viewport and one worker — every project would replay the whole suite against the same database, and the first to approve the seeded pending account would leave the next with nothing to approve.

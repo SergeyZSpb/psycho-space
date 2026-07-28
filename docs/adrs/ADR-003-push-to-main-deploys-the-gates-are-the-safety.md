@@ -10,6 +10,6 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 ---
 
-There is one environment (production), one maintainer, and no staging. Feature branches are optional. What keeps that safe is that the mandatory pre-commit hook and the deploy workflow run the same suite — build, lint, unit, web, both e2e suites, integration — and the deploy is followed by an external health check.
+There is one environment (production), one maintainer, and no staging. Feature branches are optional. What keeps that safe is that the mandatory pre-commit hook and the deploy workflow run the same suite — build, lint, unit, web, both e2e suites, integration — and the deploy is followed by an external health check. The hook runs them in sequence because a workstation is one machine; CI runs them as four parallel jobs (`.github/workflows/tests.yml`, called by both `ci.yml` and `deploy.yml`) because the suites do not depend on each other and a pipeline should cost the slowest one rather than their sum.
 
 _Consequence:_ a red deploy means production is stale. That is treated as unfinished work, not as a notification.

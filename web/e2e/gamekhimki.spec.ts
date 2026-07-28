@@ -197,7 +197,7 @@ test.describe('rap pacing', () => {
     await expect(page.locator('.verse-viewport')).toHaveClass(/verse-viewport--revealed/);
   });
 
-  test('revealing the verse keeps the options on screen and the page unscrolled', async ({ page }) => {
+  test('revealing the verse keeps the options on screen and the page unscrolled', { tag: '@wide' }, async ({ page }) => {
     await startRun(page);
     await page.getByRole('button', { name: 'Показать куплет целиком' }).click();
 

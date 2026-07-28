@@ -49,7 +49,7 @@ migrations/  NNN_*.sql, embedded, auto-applied, immutable once shipped
 web/         Vue SPA source (built to internal/web/dist, embedded at compile time)
   src/realtime/  module-scoped WebSocket client + reconnect policy (refcounted)
   src/lib/       pure per-feature logic (vanyagotchiPlane/Pet, gameKhimki*) — unit-tested
-  e2e/       Playwright: mobile layout, /api stubbed in the browser
+  e2e/       Playwright: 360px layout (+ @wide at desktop), /api stubbed
   e2e-stack/ Playwright: full-stack, real binary + real Postgres
 test/integration/  //go:build integration — testcontainers-go + fake VK server
 scripts/     bootstrap.sh, harden-finalize.sh, e2e-stack.sh, ci-test-summary.sh
@@ -190,13 +190,13 @@ The exception is genuinely immutable history: `migrations/` are forward-only and
 **Tests are a deliverable**
 - Every code-touching change **extends the test base**: unit tests for the changed logic **and**, when applicable, an integration or e2e test proving the behaviour end-to-end. Running the existing suite green is necessary but not sufficient.
 - A behaviour change landing with no test delta is incomplete. Docs/config/mechanical changes may skip tests — state the reason.
-- **Four suites, four jobs.** Go unit (`./dev.sh test`) · testcontainers integration, Go-level with a fake VK server (`./dev.sh integration`) · Playwright mobile-layout with `/api` stubbed in the browser (`./dev.sh e2e`) · Playwright full-stack against the real binary and a real Postgres (`./dev.sh e2e-stack`). Put a test where it will fail for the right reason: layout regressions in the stubbed suite, "did it actually persist" in the full-stack one.
+- **Four suites, four parallel CI jobs.** Go unit (`./dev.sh test`) · testcontainers integration, Go-level with a fake VK server (`./dev.sh integration`) · Playwright mobile-layout with `/api` stubbed in the browser (`./dev.sh e2e`) · Playwright full-stack against the real binary and a real Postgres (`./dev.sh e2e-stack`). In CI the four run concurrently (`.github/workflows/tests.yml`, called by both `ci.yml` and `deploy.yml`), so the pipeline costs the slowest suite rather than their sum. Put a test where it will fail for the right reason: layout regressions in the stubbed suite, "did it actually persist" in the full-stack one.
 - `./dev.sh cover` reports coverage for all of it; CI writes the same table plus pass/fail counts into the run's job summary.
 
 **Frontend (SPA)**
 - **Mobile-first & responsive — mandatory.** The site must be fully usable on phones (target ≈360 px wide) as well as desktop. Use Vuetify's responsive grid + breakpoints (`v-container`/`v-row`/`v-col`, `d-*` display utilities, `useDisplay()`), fluid layouts, and a mobile nav pattern (drawer / bottom nav) — never fixed pixel widths that overflow small screens. Keep the `viewport` meta in `index.html`.
 - Touch targets ≥ 44 px; no hover-only affordances (tap + keyboard must both work).
-- **Verify at mobile width before shipping any UI change** — and it is enforced, not just asked for: `./dev.sh e2e` runs the Playwright suite at 360/390/768/1440 px in the pre-commit gate and fails on horizontal overflow or a sub-44 px tap target. A change that only looks right on desktop is incomplete.
+- **Verify at mobile width before shipping any UI change** — and it is enforced, not just asked for: `./dev.sh e2e` runs the whole Playwright layout suite at **360 px** in the pre-commit gate and fails on horizontal overflow or a sub-44 px tap target. A change that only looks right on desktop is incomplete. Desktop (1440 px) re-runs only the tests tagged **`@wide`** — the ones whose claim is about width (cross-width ratios, overflow, the never-scroll shell, the ≥960 px permanent drawer). **If you write a test that could fail at desktop while passing on a phone, tag it `@wide`**; the bar and the reasoning are in the header of `web/playwright.config.ts`.
 - Dark/light theme both supported; RU-only copy.
 
 **Toolchain**
@@ -310,7 +310,7 @@ Applies to each work item — and separately to **each iteration** of a larger o
    - **Verify the behaviour in production** — the health check plus whatever you actually changed.
 7. **Write back — the docs are part of the change, not a follow-up.** In the same commit: `docs/ARCHITECTURE.md` if you touched the structure (a package, a route group, a table, a runtime flow); a **new record** — a file in `docs/adrs/` plus a one-paragraph summary and link in `docs/ARCHITECTURE.md` §8, taking the next global number — **only** if you made an *architectural* decision, one that shapes deployment, data, a component boundary, or the cost of a whole class of change, whose reasoning is not recoverable from the diff; a tuning constant, a UI behaviour or a test-harness fix gets a code comment instead. A decision that has *changed* is **rewritten in place** in its existing record, in a commit whose message says what moved and why, because `git log -p` on that file is now the history; `docs/RUNBOOK.md` if you worked out an operational or debugging procedure, or if you changed behaviour it describes; **the game's own splash-screen rules cheatsheet if you changed how that game plays** (see *A game states its rules on its own splash screen* — the player-facing rules are a doc, and this is the step that keeps them true); this file if a convention changed; and the living doc for durable project state. Each doc's `## LLM Continuation Context` block is updated with it — a stale block is worse than none, and one that has grown into a history gets **rewritten as a current-state snapshot** rather than appended to. Docs that contradict the code are a defect owned by the change that caused them.
 
-**CI vs deploy:** `main` = `deploy.yml` (lint · unit · web · e2e · integration · full-stack e2e, then auto-deploy over SSH) — the normal path. Both workflows publish a test + coverage summary to the run's job summary and upload the Playwright videos. Any non-`main` branch/PR = `ci.yml` (same tests, no deploy) — only if you deliberately want to stage something before it deploys.
+**CI vs deploy:** `main` = `deploy.yml` — it calls `tests.yml` (four parallel jobs: Go lint+unit+integration · web type-check+unit+build · UI layout · full-stack e2e, joined by `summary`), builds the binary alongside them, and auto-deploys over SSH once every one of them is green. The normal path. Both workflows publish a test + coverage summary to the run's job summary and upload the Playwright videos. Any non-`main` branch/PR = `ci.yml` (same tests, no deploy) — only if you deliberately want to stage something before it deploys.
 
 ## Completion protocol (Definition of Done)
 

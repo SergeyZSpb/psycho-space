@@ -376,18 +376,21 @@ anything being refreshed.
 ./dev.sh test          # Go unit (incl. internal/gamekhimki)
 ./dev.sh integration   # testcontainers (incl. test/integration/game_test.go)
 ./dev.sh web           # frontend type-check + vitest
-./dev.sh e2e           # Playwright, mobile viewports, /api stubbed in the browser
+./dev.sh e2e           # Playwright: 360px in full, desktop for @wide, /api stubbed
 ./dev.sh e2e-stack     # Playwright against the REAL binary + Postgres (needs Docker)
 ./dev.sh cover         # coverage: Go unit + Go integration + web
 ./dev.sh pre-commit    # everything (the git hook runs this) — never bypassed
 ```
 
 **The two Playwright suites do different jobs.** `web/e2e/` stubs `/api` with route
-interception and checks responsive layout at 360/390/768/1440 px. The desktop
-project is the newest and was added because its absence hid a real bug: the yard
-drew at a different apparent scale above tablet width and nothing had ever opened
-it there. The width-gated mobile rules (tap targets, the 44 px floor) skip at
-1440 by design — that project covers the ungated half. `web/e2e-stack/` runs
+interception and checks layout at **360 px** — the whole suite, every test. A
+second project at **1440 px** re-runs only the tests tagged **`@wide`** (~22 of
+them): the ones whose claim is about width, not merely visible at one. That
+project exists because its absence hid a real bug — the yard drew at a different
+apparent scale above tablet width and nothing had ever opened it there — but it
+is a regression guard rather than a target, so it does not replay assertions that
+skip themselves above 600 px anyway (tap targets, the 44 px floor). It used to be
+four full projects and took 16 minutes in CI; it is now ~167 tests. `web/e2e-stack/` runs
 `scripts/e2e-stack.sh` — throwaway Postgres on port 55433 (tmpfs, force-recreated
 per run), the SPA built and the server compiled and started on :8081, then accounts
 seeded straight into the database (`cmd/dev-seed -json`) so tests can be "logged

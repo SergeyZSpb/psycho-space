@@ -1,7 +1,10 @@
 name: ci
 
-# Feature/PR branches: run the full test suite only (NO deploy). `main` is the
-# auto-deploy branch and is handled by deploy.yml instead.
+# Feature/PR branches: run the gate only (NO deploy). `main` is the auto-deploy
+# branch and is handled by deploy.yml instead.
+#
+# The gate itself lives in tests.yml and is shared with deploy.yml, so the two
+# cannot drift: what runs here is exactly what runs before a deploy.
 on:
   pull_request:
   push:
@@ -11,98 +14,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  GOLANGCI_LINT_VERSION: v2.12.2
-  # v1.13.0 or newer: earlier releases pin golang.org/x/tools v0.24.0, whose
-  # tokeninternal package does not compile under Go 1.26.
-  GOTESTSUM_VERSION: v1.13.0
-
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      # Both land in GOPATH/bin, which is added to PATH so `./dev.sh lint` finds
-      # the same linter the pre-commit hook runs locally.
-      - name: Install Go tooling (golangci-lint, gotestsum)
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" "$GOLANGCI_LINT_VERSION"
-          go install "gotest.tools/gotestsum@$GOTESTSUM_VERSION"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: Go build
-        run: ./dev.sh build
-
-      - name: Lint (gofmt + go vet + golangci-lint)
-        run: ./dev.sh lint
-
-      - name: Unit tests (+coverage)
-        run: |
-          mkdir -p .coverage
-          gotestsum --format testname --jsonfile .coverage/unit.json \
-            -- -covermode=atomic -coverprofile=.coverage/unit.out ./...
-
-      - name: Web install
-        working-directory: web
-        run: npm ci --no-audit --no-fund
-
-      - name: Web type-check
-        working-directory: web
-        run: npm run type-check
-
-      - name: Web unit tests (+coverage)
-        working-directory: web
-        run: npx vitest run --coverage --reporter=json --outputFile=vitest-results.json --reporter=default
-
-      - name: Web build (catch bundling errors)
-        working-directory: web
-        run: npm run build
-
-      - name: Install Playwright browser
-        working-directory: web
-        run: npx playwright install --with-deps chromium
-
-      - name: Web e2e (Playwright, mobile viewports)
-        working-directory: web
-        env:
-          PLAYWRIGHT_JSON_OUTPUT_NAME: e2e-results.json
-        run: npx playwright test --reporter=list,json
-
-      - name: Integration tests (testcontainers Postgres + fake VK) (+coverage)
-        run: |
-          gotestsum --format testname --jsonfile .coverage/integration.json \
-            -- -tags=integration -covermode=atomic -coverpkg=./... \
-               -coverprofile=.coverage/integration.out ./test/integration/...
-
-      - name: Full-stack e2e (real binary + Postgres)
-        working-directory: web
-        env:
-          PLAYWRIGHT_JSON_OUTPUT_NAME: e2e-stack-results.json
-        run: npx playwright test --config=playwright.stack.config.ts --reporter=list,json
-
-      # Always: a failed suite is exactly when the summary is most wanted.
-      - name: Test + coverage summary
-        if: always()
-        run: ./scripts/ci-test-summary.sh >> "$GITHUB_STEP_SUMMARY"
-
-      # Videos are recorded for every test (video: 'on'), so the recordings are
-      # here on a green run too — not only when something broke.
-      - name: Upload Playwright artifacts (videos, traces, reports)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-artifacts-${{ github.job }}
-          path: |
-            web/test-results
-            web/playwright-report
-          retention-days: 5
-          if-no-files-found: ignore
+  tests:
+    uses: ./.github/workflows/tests.yml

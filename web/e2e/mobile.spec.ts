@@ -131,7 +131,10 @@ async function expectPeekCompleted(page: Page, label: string): Promise<void> {
 // --- tests --------------------------------------------------------------------
 
 for (const theme of THEMES) {
-  test.describe(`theme=${theme}`, () => {
+  // Tagged @wide: this file IS the layout suite — overflow, the never-scroll
+  // shell and the permanent nav drawer (≥960px) are exactly the claims that can
+  // fail above phone width, and the drawer branch runs nowhere else.
+  test.describe(`theme=${theme}`, { tag: '@wide' }, () => {
     test('landing (hero + consent + cookie banner)', async ({ page }) => {
       await seedClient(page, theme, /* dismissCookie */ false);
       await stubBackend(page, 'anon');

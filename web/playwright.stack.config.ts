@@ -35,8 +35,7 @@ export default defineConfig({
   // ONE project on purpose. Every project would replay the whole suite against
   // the same database, so the first one to approve the seeded pending account
   // leaves the next with nothing to approve. Viewport coverage is the stubbed
-  // suite's job (it runs three); this suite is about behaviour, and it runs at
-  // the primary target width.
+  // suite's job; this suite is about behaviour, and it runs at a phone width.
   projects: [
     {
       name: 'stack-mobile-390',

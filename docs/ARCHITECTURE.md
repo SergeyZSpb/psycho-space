@@ -296,8 +296,8 @@ sequenceDiagram
     participant P as PostgreSQL
 
     D->>GH: git push main (pre-commit gate already green locally)
-    GH->>GH: lint · unit · web · e2e · integration · full-stack e2e
-    GH->>GH: build SPA → embed → build linux binary
+    GH->>GH: tests.yml — four jobs at once: Go (lint·unit·integration),<br/>web (type-check·unit·build), UI layout, full-stack e2e
+    GH->>GH: build SPA → embed → build linux binary (in parallel with them)
     GH->>S: scp binary + app.env (rendered from prod secrets) over SSH
     S->>S: install unit + nginx conf, restart service
     S->>P: migrations applied at boot (embedded, forward-only)
@@ -893,7 +893,7 @@ A «Ванягоччи» verb arrives as one `vanyagotchi_do` frame and is inter
 
 _Accepted · 2026-07-25_
 
-`web/e2e/` stubs `/api` in the browser and asserts layout at phone widths; `web/e2e-stack/` drives the real binary against a real PostgreSQL and asserts that an action persisted. They fail for different reasons and each is bad at the other's job — only stubbing makes awkward states cheap to render, and only the real stack can prove an upvote became a row.
+`web/e2e/` stubs `/api` in the browser and asserts layout at the phone width; `web/e2e-stack/` drives the real binary against a real PostgreSQL and asserts that an action persisted. They fail for different reasons and each is bad at the other's job — only stubbing makes awkward states cheap to render, and only the real stack can prove an upvote became a row. The layout suite runs everything at 360 px and replays only its `@wide`-tagged tests at 1440: the phone is the product, and a regression guard above it does not earn a full copy of the suite.
 
 [Full record → `docs/adrs/ADR-021-two-playwright-suites-on-purpose.md`](adrs/ADR-021-two-playwright-suites-on-purpose.md)
 

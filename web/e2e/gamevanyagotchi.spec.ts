@@ -1416,7 +1416,7 @@ test.describe('«Ванягоччи» — the shared plane', () => {
     expect(await peerPosition(page, 'me')).toEqual({ x: '0.5', y: '0.5' });
   });
 
-  test('the plane never scrolls, and the status row stays on screen', async ({ page }) => {
+  test('the plane never scrolls, and the status row stays on screen', { tag: '@wide' }, async ({ page }) => {
     await stubBackend(page);
     const socket = await stubSocket(page);
     await enterYard(page);
@@ -2452,7 +2452,7 @@ test.describe('«Ванягоччи» — the yard is no longer a list of the pe
     await expect(page.locator('[data-peer="walker"][data-marked="1"]')).toHaveCount(1);
   });
 
-  test('a balloon stays on the plane and never grows past its cap, at any width', async ({
+  test('a balloon stays on the plane and never grows past its cap, at any width', { tag: '@wide' }, async ({
     page,
   }) => {
     // Three independent caps, the same shape as the name's: `capSay` bounds the
@@ -2960,7 +2960,7 @@ test.describe('«Ванягоччи» — further down the plane is nearer', () 
   // switches which term binds, so height matters as much as width, and a
   // breakpoint-keyed fix would have been wrong), and a claim about two widths
   // agreeing cannot be made by a test that only ever sees one.
-  test('a Ваня is the same fraction of the yard at every width', async ({ page }) => {
+  test('a Ваня is the same fraction of the yard at every width', { tag: '@wide' }, async ({ page }) => {
     await stubBackend(page);
     const socket = await stubSocket(page);
 
@@ -3895,7 +3895,7 @@ test.describe('«Ванягоччи» — one room, several places', () => {
     expect(socket.sent.filter((f) => f.t === TYPE_MOVE)).toEqual([]);
   });
 
-  test('the caption and every place are thumb-sized, and nothing overflows', async ({ page }) => {
+  test('the caption and every place are thumb-sized, and nothing overflows', { tag: '@wide' }, async ({ page }) => {
     // The caption moved onto the plane partly FOR this: a control in the panel
     // would have cost the yard about thirty pixels of height on the phone that
     // has the least of it, and here a 44px box is free. The sheet lives inside

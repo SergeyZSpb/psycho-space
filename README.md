@@ -42,7 +42,7 @@ It prints a `psycho_session` cookie value — set it for the origin you are usin
 ./dev.sh test          # Go unit tests
 ./dev.sh integration   # testcontainers integration tests (needs Docker)
 ./dev.sh web           # frontend type-check + vitest
-./dev.sh e2e           # Playwright at mobile viewports, /api stubbed
+./dev.sh e2e           # Playwright: 360px in full, desktop for @wide, /api stubbed
 ./dev.sh e2e-stack     # Playwright against the real binary + Postgres (needs Docker)
 ./dev.sh cover         # coverage for all of the above
 ./dev.sh pre-commit    # the full gate the git hook runs
@@ -59,7 +59,7 @@ Four suites, each with a different job:
 |---|---|---|
 | Go unit | the logic is right | `internal/*/[a-z]*_test.go` |
 | Integration (testcontainers) | the API works against a real Postgres, with a fake VK server | `test/integration/` |
-| Playwright — layout | nothing overflows and every tap target is reachable at 360/390/768 px | `web/e2e/` (`/api` stubbed in the browser) |
+| Playwright — layout | nothing overflows and every tap target is reachable at 360 px, and the `@wide` tests hold at 1440 too | `web/e2e/` (`/api` stubbed in the browser) |
 | Playwright — full stack | an action actually persisted — real binary, real database | `web/e2e-stack/` |
 
 Every code change is expected to grow one of them; see *Tests are a deliverable* in [`CLAUDE.md`](./CLAUDE.md).
@@ -68,7 +68,7 @@ First Playwright run needs the browser once: `(cd web && npx playwright install 
 
 ## Deploy
 
-Push to `main` → `.github/workflows/deploy.yml` runs the whole suite, builds the binary with the SPA embedded, ships it over SSH, migrates, restarts, and health-checks the live site. Non-`main` branches run `ci.yml` — same tests, no deploy.
+Push to `main` → `.github/workflows/deploy.yml` runs the whole gate, builds the binary with the SPA embedded, ships it over SSH, migrates, restarts, and health-checks the live site. Non-`main` branches run `ci.yml` — literally the same gate, no deploy: both call the reusable `tests.yml`, whose four jobs (Go · web · UI layout · full-stack e2e) run in parallel and are joined by a `summary` job.
 
 Both workflows publish a **test + coverage summary** to the run's job summary and upload the Playwright videos. Watch a run and read what it produced rather than trusting the green tick:
 

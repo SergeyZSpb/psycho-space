@@ -1,8 +1,10 @@
 name: deploy
 
-# `main` auto-deploys to the production box. The build job runs the full test
-# suite (unit + integration) and only then builds the binary; the deploy job
-# ships it over SSH. Feature/PR branches never deploy — they run ci.yml (tests).
+# `main` auto-deploys to the production box. The gate (tests.yml — Go, web, UI
+# layout and full-stack e2e, all in parallel) and the binary build run at the
+# same time; the deploy job waits for every one of them and only then ships over
+# SSH. Feature/PR branches never deploy — they run ci.yml, which calls the same
+# tests.yml, so the gate is identical on both paths.
 on:
   push:
     branches: [main]
@@ -11,14 +13,15 @@ concurrency:
   group: deploy-prod
   cancel-in-progress: false
 
-env:
-  GOLANGCI_LINT_VERSION: v2.12.2
-  # v1.13.0 or newer: earlier releases pin golang.org/x/tools v0.24.0, whose
-  # tokeninternal package does not compile under Go 1.26.
-  GOTESTSUM_VERSION: v1.13.0
-
 jobs:
-  build:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  # Built in parallel with the gate, and shipped only if the gate passed (see
+  # `deploy.needs` below). Building early costs a runner-minute that overlaps
+  # the tests; building late would have added itself to the critical path.
+  binary:
+    name: Build linux binary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,71 +32,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-
-      - name: Install Go tooling (golangci-lint, gotestsum)
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" "$GOLANGCI_LINT_VERSION"
-          go install "gotest.tools/gotestsum@$GOTESTSUM_VERSION"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Build frontend into embed dir
         working-directory: web
         run: npm ci --no-audit --no-fund && npm run build
-
-      - name: Lint (gofmt + go vet + golangci-lint)
-        run: ./dev.sh lint
-
-      - name: Web type-check
-        working-directory: web
-        run: npm run type-check
-
-      - name: Web unit tests (+coverage)
-        working-directory: web
-        run: npx vitest run --coverage --reporter=json --outputFile=vitest-results.json --reporter=default
-
-      - name: Install Playwright browser
-        working-directory: web
-        run: npx playwright install --with-deps chromium
-
-      - name: Web e2e (Playwright, mobile viewports)
-        working-directory: web
-        env:
-          PLAYWRIGHT_JSON_OUTPUT_NAME: e2e-results.json
-        run: npx playwright test --reporter=list,json
-
-      - name: Unit + integration tests (+coverage)
-        run: |
-          mkdir -p .coverage
-          gotestsum --format testname --jsonfile .coverage/unit.json \
-            -- -covermode=atomic -coverprofile=.coverage/unit.out ./...
-          gotestsum --format testname --jsonfile .coverage/integration.json \
-            -- -tags=integration -covermode=atomic -coverpkg=./... \
-               -coverprofile=.coverage/integration.out ./test/integration/...
-
-      - name: Full-stack e2e (real binary + Postgres)
-        working-directory: web
-        env:
-          PLAYWRIGHT_JSON_OUTPUT_NAME: e2e-stack-results.json
-        run: npx playwright test --config=playwright.stack.config.ts --reporter=list,json
-
-      # Always: a failed suite is exactly when the summary is most wanted.
-      - name: Test + coverage summary
-        if: always()
-        run: ./scripts/ci-test-summary.sh >> "$GITHUB_STEP_SUMMARY"
-
-      # Videos are recorded for every test (video: 'on'), so the recordings are
-      # here on a green run too — not only when something broke.
-      - name: Upload Playwright artifacts (videos, traces, reports)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-artifacts-${{ github.job }}
-          path: |
-            web/test-results
-            web/playwright-report
-          retention-days: 5
-          if-no-files-found: ignore
 
       - name: Build linux binary (embeds SPA + migrations)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o psycho-space ./cmd/psycho-space
@@ -105,7 +49,7 @@ jobs:
           retention-days: 5
 
   deploy:
-    needs: build
+    needs: [tests, binary]
     runs-on: ubuntu-latest
     environment: prod
     steps:

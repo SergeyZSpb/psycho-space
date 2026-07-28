@@ -1362,7 +1362,7 @@ test.describe('«Ванягоччи» — the pet on the yard screen', () => {
     await expect(page.locator('[data-test="pet-tallies"] [data-trouble="1"]')).toHaveCount(0);
   });
 
-  test('a crowded yard never makes the screen scroll', async ({ page }) => {
+  test('a crowded yard never makes the screen scroll', { tag: '@wide' }, async ({ page }) => {
     // The layout rule this game inherited is literal: one flexible child, the
     // rest fixed, `overflow: hidden`. There is no panel under the plane any more
     // — everything that survived it is drawn ON the yard — so what could break
