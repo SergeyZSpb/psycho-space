@@ -45,6 +45,7 @@ internal/
                     level.go    the seeded Doom-style sector graph + derived walls
                     sim.go      Step: pure (level, player, command) → player
                     arena.go    one run's world + the real-time budget
+                    history.go  the rewind ring lag compensation reads
                     service.go  the arena map, the tick, the one writer
   gamevanyagotchi/  «Ванягоччи» — the shared plane (in memory) + the pet (Postgres):
                     content.go  the catalogue — stats, actions, skins, NPCs, every constant
@@ -59,7 +60,7 @@ migrations/  NNN_*.sql, embedded, auto-applied, immutable once shipped
 web/         Vue SPA source (built to internal/web/dist, embedded at compile time)
   src/realtime/  module-scoped WebSocket client + reconnect policy (refcounted)
   src/lib/       pure per-feature logic (vanyagotchiPlane/Pet, gameKhimki*,
-                 vanyadum{Level,Texture,Input,Rules}) — unit-tested, no WebGL
+                 vanyadum{Level,Texture,Input,Rules,Step,Predict,Interp}) — unit-tested, no WebGL
   src/render/    the impure half: vanyadumScene.ts, the ONLY module importing
                  three.js, loaded as an async chunk behind its own route
   e2e/       Playwright: 360px layout (+ @wide at desktop), /api stubbed
@@ -208,6 +209,8 @@ The exception is genuinely immutable history: `migrations/` are forward-only and
 - Every code-touching change **extends the test base**: unit tests for the changed logic **and**, when applicable, an integration or e2e test proving the behaviour end-to-end. Running the existing suite green is necessary but not sufficient.
 - A behaviour change landing with no test delta is incomplete. Docs/config/mechanical changes may skip tests — state the reason.
 - **Four suites, four parallel CI jobs.** Go unit (`./dev.sh test`) · testcontainers integration, Go-level with a fake VK server (`./dev.sh integration`) · Playwright mobile-layout with `/api` stubbed in the browser (`./dev.sh e2e`) · Playwright full-stack against the real binary and a real Postgres (`./dev.sh e2e-stack`). In CI the four run concurrently (`.github/workflows/tests.yml`, called by both `ci.yml` and `deploy.yml`), so the pipeline costs the slowest suite rather than their sum. Put a test where it will fail for the right reason: layout regressions in the stubbed suite, "did it actually persist" in the full-stack one.
+- **Bound a wait by a deadline, never by an attempt count, and assert an outcome rather than an announcement.** Both rules are written in blood: a `for (let i = 0; i < N; …)` measures how hard you are willing to try, but a loaded CI runner changes how long each try *takes*, so the count runs out mid-convergence and the test lies about why; and reading a short-lived thing — a 4-second speech balloon, a frame from a render loop a backgrounded tab has paused — in two round trips lets it expire in the gap, so a verb that landed is reported as refused. **Never** answer a flake with `retries`, and never with a flag that turns a game's randomness off — that is test-only machinery in a production path. Determinism comes from direct DB setup. Full procedure, including how to reproduce CI's contention locally, is in [`docs/RUNBOOK.md`](docs/RUNBOOK.md) → *A test that passes on its own and fails in CI*.
+- **The Playwright specs are type-checked too** (`web/tsconfig.json` includes `e2e` and `e2e-stack`). Playwright transpiles a spec without checking it, which made a test the one place in this repo where changing a shared helper's signature failed silently.
 - `./dev.sh cover` reports coverage for all of it; CI writes the same table plus pass/fail counts into the run's job summary.
 - **While developing, run the narrow thing. The gate is what runs everything, and it runs it once.** Every target takes arguments and narrows to what you pass: `./dev.sh test -run TestVKRedirect ./internal/httpapi/` · `./dev.sh integration -run TestLoginFlow ./test/integration/` · `./dev.sh web vkRedirect` · `./dev.sh e2e authRedirect.spec.ts -g "cancelled"` · `./dev.sh e2e-stack app.spec.ts -g "redirect target"`. Run the handful of tests that could plausibly fail from what you just changed, as often as you like — seconds each. Then commit, and let `./dev.sh pre-commit` be the single full pass. **Do not run a full suite by hand and then commit**: the hook runs the same suite immediately afterwards, so it is the same minutes spent twice, and the second run is the one that actually gates. The exception is a change whose blast radius you genuinely cannot bound (a shared helper, a router, a config every spec loads) — there, one broad run before the gate is cheaper than discovering it inside the hook.
 

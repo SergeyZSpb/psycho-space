@@ -14,6 +14,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
 - **vk-login:** the redirect URL is `https://psycho-space.ru/auth/redirect` — a SPA page, never the API endpoint. Three copies must match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app's registered list); a **405 on `/api/auth/vk/callback`** means one of them points at the API again. See "VK login — the redirect URL, and what a 405 means".
+- **flaky-tests:** see "A test that passes on its own and fails in CI". Every flake found so far was a defect in the *test*, of exactly four kinds — a loop bounded by an attempt count rather than a deadline; two round trips reading one 4-second speech balloon; an implicit 5 s `expect` shorter than that balloon plus a round trip; and a fixture that *plays the game* to reach its starting position (walking to a randomly-placed crate ate most of a 120 s budget, and surfaced as a bare `Test timeout exceeded`). Reproduce by saturating the CPU (`nproc − 1` spinners) and running the one spec; CI's only difference is that it is slower. **Never** fix one with `retries`, and never with an env flag that disables a game's random rolls — that is test-only machinery in a production path. Determinism comes from direct DB setup (`web/e2e-stack/vanyagotchi-db.ts`).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
 - **constraints:** never commit the host/IP/port or any secret; never paste real personal data into shared places. The app log is PII-free by design; the DB and nginx access log are not — treat their contents as confidential.
 
@@ -399,6 +400,52 @@ true", which only holds if the SQL ran. Videos are recorded for **every** test i
 both suites (`web/test-results/`).
 
 First run needs the browser once: `(cd web && npx playwright install chromium)`.
+
+### A test that passes on its own and fails in CI
+
+This has happened twice, and both times the test was wrong rather than the code. CI runs on
+a **4-vCPU** runner hosting Docker, Postgres, the Go server, Chromium and Node at once, so
+everything is slower there than on a workstation — and *slower* is the only difference.
+
+**Reproduce it before changing anything.** Saturate the machine and run the one spec:
+
+```bash
+for i in $(seq $(( $(nproc) - 1 ))); do (while :; do :; done) & done
+./dev.sh e2e-stack gamevanyagotchi-pet.spec.ts     # or: ./dev.sh e2e <spec>
+kill $(jobs -p)
+```
+
+**Then look for one of these three, in this order.** Every flake found so far was one of them:
+
+1. **A loop bounded by an attempt count instead of a deadline.** `for (let i = 0; i < 15; …)`
+   measures how hard you are willing to try; load changes how long each try *takes*, not how
+   many you need. The count runs out mid-convergence and the failure lies about why. Every
+   such loop in `web/e2e-stack/` is now `while (Date.now() < deadline)` — keep it that way,
+   and give a hot path a `waitForTimeout` so a deadline loop cannot spin.
+2. **Two round trips reading one short-lived thing.** «Ванягоччи»'s speech balloon lives
+   exactly **4 s** (`sayFor`, `service.go`). Waiting for it to appear and *then* reading its
+   text lets it expire in the gap — you conclude the verb was refused when it landed. Assert
+   the **outcome** (the stat moved, the row changed), never the announcement.
+3. **An implicit 5 s `expect`.** Playwright's default was shorter than that same 4 s balloon
+   plus a round trip. `playwright.stack.config.ts` now sets `expect: { timeout: 15_000 }`.
+4. **A fixture that plays the game to reach its starting position.** The crate hides in a
+   random one of five locations, and walking is 0.2 plane-widths a second through a give-up
+   roll — so "get to the crate" cost most of a 120 s budget before the test under it had done
+   anything. It is a `Test timeout exceeded` with no assertion named, which reads like a hang
+   and is not. Move the fixture to the player instead (`standTheCrateBesideHim` writes
+   `location_key`/`x`/`y`), and leave the walking to the one test whose subject *is* walking.
+
+**What not to do.** Do not add `retries` — a retry makes a broken test green and deletes the
+evidence. Do not add an env flag that disables a game's random rolls (the tiredness give-up,
+the relieve fail chance): that is test-only machinery in a production path, which `CLAUDE.md`
+forbids outright. Determinism comes from **direct DB setup** instead — `vanyagotchi-db.ts`
+already writes stats and crate stock that way, and that is the sanctioned seam.
+
+**Also note the full-stack suite has no isolation but seriality.** One database, one server,
+five shared seeded accounts, `beforeEach` deleting every world object. `workers: 1` is what
+makes it safe, and `./dev.sh e2e-stack` now refuses a `--workers` override rather than
+letting it produce failures that look like product bugs. Two Playwright runs against the same
+stack at once (`reuseExistingServer` is on locally) will do the same damage — don't.
 
 ## Service
 

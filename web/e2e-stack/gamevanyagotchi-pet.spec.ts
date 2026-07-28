@@ -300,34 +300,65 @@ function control(page: Page, key: string) {
  * because the refusal is total: the bladder is as full as it was, so the next
  * press asks the identical question.
  *
- * It waits for the balloon to CLEAR before pressing again rather than sleeping a
- * fixed amount. That is the honest synchronisation — the line expires by
- * arithmetic against the server's clock — and it also spends more than the one
- * second the server bounds a verb to, so a retry is never dropped in silence for
- * being too quick.
+ * IT KEYS ON THE OUTCOME, NOT ON THE BALLOON, AND THAT IS THE WHOLE POINT.
+ * The earlier version waited for the speech balloon to appear and then read its
+ * text in a SECOND round trip. A balloon lives four seconds (`sayFor` in
+ * service.go), so under load the line could expire in the gap between those two
+ * reads: the text came back empty, the helper concluded the press had been
+ * refused, and pressed again. But the press had LANDED — and relieving carries a
+ * `needs_at_least` on the bladder it has just emptied, so every subsequent press
+ * was refused with «рано ещё», the loop ran out, and the test failed claiming
+ * the verb never came off when in fact it had come off the first time. That is a
+ * test lying about the code, which is worse than no test.
+ *
+ * So the balloon is now an OPTIMISATION and the outcome is the truth. `landed`
+ * is polled directly; catching the confirmation only lets us stop a little
+ * sooner. Missing it costs nothing, because a fact that is already true stays
+ * true however long we take to look at it.
+ *
+ * Bounded by a DEADLINE rather than by an attempt count, for the reason the
+ * netcode suite learned the same week: an iteration count measures how hard we
+ * try, and a loaded machine needs the same number of tries to take longer, not
+ * more of them.
  *
  * Scoped to HIS OWN Ваня, because the yard's regulars mutter to themselves and a
  * bare balloon locator would sooner or later read an NPC's line instead.
  */
-async function pressUntilItLands(page: Page, key: string, done: string): Promise<void> {
-  // EIGHT ATTEMPTS AND A SHORTER WINDOW EACH, which is a budget rather than a
-  // patience setting. A quarter of presses are refused, so eight is one failure
-  // in sixty-five thousand runs — and twelve attempts at fifteen seconds each is
-  // over three minutes, which is longer than the test is allowed to take, so the
-  // old numbers turned an unlucky run into a timeout with no diagnosis rather
-  // than into the loud throw below.
+async function pressUntilItLands(
+  page: Page,
+  key: string,
+  landed: () => Promise<boolean>,
+): Promise<void> {
   const say = yourDot(page).locator('[data-test="peer-say"]');
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  const deadline = Date.now() + 60_000;
+  let presses = 0;
+
+  while (Date.now() < deadline) {
+    // Checked BEFORE pressing as well as after. If a previous press landed and
+    // we only noticed late, pressing again would be asking for a verb whose own
+    // precondition it has just destroyed.
+    if (await landed()) return;
+
     await control(page, key).click();
-    // The server says SOMETHING about every press — the confirmation, or the
-    // line he backs out with.
-    await expect(say).toHaveCount(1, { timeout: 8_000 });
-    if (((await say.first().textContent()) ?? '').trim() === done) return;
-    await expect(say, 'the balloon never cleared, so the next press cannot be read').toHaveCount(0, {
-      timeout: 8_000,
-    });
+    presses += 1;
+
+    // One round trip plus a little, spent watching the thing that is actually
+    // being claimed. Six seconds comfortably outlives the balloon, so a refusal
+    // is also fully visible by the end of it.
+    const settle = Math.min(Date.now() + 6_000, deadline);
+    while (Date.now() < settle) {
+      if (await landed()) return;
+      await page.waitForTimeout(150);
+    }
+
+    // Refused. Wait for his line to clear before pressing again — the server
+    // silently drops a verb repeated inside a second, and a cleared balloon is
+    // the honest signal that more than that has passed. Best-effort: if it has
+    // already gone, there is nothing to wait for.
+    await expect(say).toHaveCount(0, { timeout: 8_000 }).catch(() => {});
   }
-  throw new Error(`«${key}» never came off in 8 presses`);
+
+  throw new Error(`«${key}» never came off in ${presses} presses inside a minute`);
 }
 
 /** The one line the status row says about the beer store, or nothing at all. */
@@ -481,12 +512,34 @@ async function walkToTheCrate(page: Page): Promise<void> {
   // sat down tired, or is chasing a crate another test has just moved. Waiting out
   // a long window per attempt instead spends the whole test budget discovering
   // that one walk did not finish.
-  const REACHES = 15;
-  for (let attempt = 0; attempt < REACHES; attempt += 1) {
+  // BOUNDED BY A DEADLINE, NOT BY A TAP COUNT. Fifteen attempts is a statement
+  // about how many times we are willing to ask; what a loaded machine changes is
+  // how long each walk TAKES, not how many taps it needs. So the count ran out
+  // while the walk was still converging, and the test failed claiming he could
+  // not reach the crate when he was three seconds from it. A deadline degrades
+  // the right way: on a slow runner it simply makes fewer, longer attempts.
+  //
+  // SIXTY SECONDS, sized against its CALLERS rather than against the walk. Every
+  // test that walks to the crate has a 120 s budget and needs the rest of it for
+  // what it is actually testing, so a helper allowed to spend three quarters of
+  // the budget would convert one slow walk into a timeout with no diagnosis —
+  // which is the failure mode the deadline exists to remove. Sixty is already
+  // twice the ~30 s the fifteen-tap version could spend.
+  const deadline = Date.now() + 60_000;
+  let taps = 0;
+  while (Date.now() < deadline) {
     await travelToTheCrate(page);
     const pitch = await cratePitch(page).catch(() => undefined);
-    if (!pitch) continue;
+    if (!pitch) {
+      // A beat before going round again. The bounded loop this replaced could
+      // not spin — it ran out of attempts — but a deadline can, and the path
+      // through here does no waiting of its own when the crate is on screen and
+      // merely has no pitch yet.
+      await page.waitForTimeout(200);
+      continue;
+    }
     await tapAt(page, pitch.x, pitch.y);
+    taps += 1;
     try {
       // KEYED ON THE LINE RATHER THAN ON A BUTTON, because the button is gone.
       // «дойди» is what the readout says while the crate is out of reach, and its
@@ -501,9 +554,63 @@ async function walkToTheCrate(page: Page): Promise<void> {
   const at = await you(page);
   const pitch = await cratePitch(page).catch(() => undefined);
   throw new Error(
-    `he never got within reach of the crate in ${REACHES} taps — he is at ` +
+    `he never got within reach of the crate in 60s (${taps} taps) — he is at ` +
       `${at.x.toFixed(3)},${at.y.toFixed(3)} and it is at ` +
       (pitch ? `${pitch.x.toFixed(3)},${pitch.y.toFixed(3)}` : 'no place he can see'),
+  );
+}
+
+/**
+ * Moves the crate to where he is standing, by writing the row.
+ *
+ * The counterpart to `walkToTheCrate`, and the cheaper answer whenever a test is
+ * about what a DRAW does rather than about getting to one. A fresh crate hides
+ * at a random hotspot in a random one of five locations, so reaching it costs a
+ * journey plus a walk at 0.2 plane-widths a second through a give-up roll — tens
+ * of seconds of a test's budget, spent on a mechanic somebody else's test
+ * already pins.
+ *
+ * Whitebox, like every other fixture in this file, and for the reason
+ * `vanyagotchi-db.ts` gives: the honest alternatives are a real flow or a direct
+ * database write, and the third option — teaching the running server a switch
+ * that makes placement deterministic — would be a test-only path in production
+ * code, which this project forbids outright.
+ *
+ * IT IS PLACED NEAR HIM RATHER THAN UNDER HIM. `arrive_within` is 0.12, so a
+ * small offset is comfortably in reach while keeping the crate's own element
+ * clear of his dot — a crate drawn exactly on top of him is a crate whose click
+ * might land on a Ваня. Clamped, because he can be standing near an edge.
+ *
+ * The caller must refresh the yard afterwards: the world cache is re-read when a
+ * human causes it to be, never on a tick, so a row changed behind the process's
+ * back is a row nothing has noticed yet.
+ */
+async function standTheCrateBesideHim(page: Page, crateId: string): Promise<void> {
+  const res = await page.request.get(CONFIG_URL);
+  expect(res.status(), `GET ${CONFIG_URL}`).toBe(200);
+  const cfg = (await res.json()) as { locations?: { key: string; label: string }[] };
+
+  const label = ((await page.locator('[data-test="here"]').textContent()) ?? '').trim();
+  const here = (cfg.locations ?? []).find((l) => !!l.label && label.includes(l.label));
+  expect(here, `the yard says he is in «${label}», which is no location the catalogue knows`)
+    .toBeTruthy();
+
+  // POLLED, not read once. His dot arrives on a roster frame, and the store line
+  // the caller waited for is not proof that his own entity is drawn yet — under
+  // load it is routinely a frame or two behind, and reading NaN here would put a
+  // NaN in the UPDATE and fail against the column's CHECK rather than saying so.
+  await expect
+    .poll(async () => Number.isFinite((await you(page)).x), {
+      message: 'his dot never reached the plane, so there is nowhere to stand the crate',
+    })
+    .toBe(true);
+  const at = await you(page);
+  const near = (v: number) => Math.min(0.95, Math.max(0.05, v - 0.06));
+
+  psql(
+    `UPDATE game_vanyagotchi_world_objects SET location_key = '${here?.key}', ` +
+      `x = ${near(at.x).toFixed(4)}, y = ${near(at.y).toFixed(4)}, updated_at = now() ` +
+      `WHERE id = '${crateId}'`,
   );
 }
 
@@ -534,9 +641,13 @@ async function travelToTheCrate(page: Page): Promise<void> {
   // LOOPED, because two things can be true on the way: the first roster may not
   // have arrived yet, in which case the readout says nothing at all and there is
   // nowhere to travel to; and the crate can be drained by something else between
-  // the read and the arrival, which moves it again. Four attempts is a great deal
+  // the read and the arrival, which moves it again. Twenty-five seconds is a great deal
   // more than either needs.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  // A deadline rather than three attempts, for the reason its caller gives: a
+  // slow runner needs longer tries, not more of them. Short, because this sits
+  // INSIDE the walk loop's own deadline and must not eat it.
+  const until = Date.now() + 25_000;
+  while (Date.now() < until) {
     if (await crate(page).count()) return;
     const line = (await storeLine(page).textContent()) ?? '';
     // When it is somewhere else the line is that place's own name and nothing
@@ -564,7 +675,7 @@ async function travelToTheCrate(page: Page): Promise<void> {
       // where the yard says the beer is now, and go there.
     }
   }
-  throw new Error('the yard never said where the beer is, in three attempts');
+  throw new Error('the yard never said where the beer is, in twenty-five seconds');
 }
 
 
@@ -867,12 +978,15 @@ test('relieving himself empties the bladder and leaves the rest alone', async ({
   // The common case is one press; an unlucky run is four or five, and at four
   // seconds a balloon that is half a minute before the assertion is even
   // reached. Not a hang — a tail.
-  test.setTimeout(120_000);
+  //
   // The second verb, and the other half of the loop drinking creates. Its effect
   // is a delta larger than the whole scale, so "reset" is the clamp doing its
   // job rather than a mechanism of its own — which only the real server can be
   // shown to do.
-  test.setTimeout(90_000);
+  //
+  // (There was a second `setTimeout(90_000)` here, which silently REPLACED the
+  // budget the paragraph above it argues for. Deleted.)
+  test.setTimeout(120_000);
   const base = baseURL ?? 'http://127.0.0.1:8081';
   const seeded = await stack();
   forgetPet(seeded[PLAYER_A]);
@@ -892,7 +1006,10 @@ test('relieving himself empties the bladder and leaves the rest alone', async ({
     await expect.poll(() => shown(page, 'bladder')).toBeGreaterThanOrEqual(90);
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(1);
 
-    await pressUntilItLands(page, 'relieve', 'полегчало');
+    // What proves it landed is the bladder, not the balloon he says it with —
+    // see the note over the helper. An emptied bladder cannot be produced by a
+    // refusal, so this is the verb's effect and nothing else.
+    await pressUntilItLands(page, 'relieve', async () => (await shown(page, 'bladder')) === 0);
 
     await expect.poll(() => shown(page, 'bladder')).toBe(0);
     await expect(page.locator('[data-test="stat-bladder"][data-trouble="1"]')).toHaveCount(0);
@@ -933,7 +1050,11 @@ test('a dead Ваня is a screen with one control on it, and that control raise
   // afterwards. The `ErrPetDead` sentinel behind that line is pinned by the Go
   // tests, which own it (internal/gamevanyagotchi/pet_test.go, and
   // test/integration/gamevanyagotchi_pet_test.go drives it through Service.Do).
-  test.setTimeout(90_000);
+  //
+  // 120 s like every other test that walks to the crate — the walk is the same
+  // walk, so the budget is the same budget. It was 90 s, which left the helper's
+  // own deadline more than half of it.
+  test.setTimeout(120_000);
   const base = baseURL ?? 'http://127.0.0.1:8081';
   const seeded = await stack();
   forgetPet(seeded[PLAYER_A]);
@@ -1654,16 +1775,28 @@ test('the last beer exhausts the crate, and a fresh one is standing somewhere al
 
     await enterYardFrom(page);
     await expect(storeLine(page)).toBeVisible({ timeout: 20_000 });
-    // TO WHEREVER IT IS, before anything is read off the readout. The line only
-    // carries a COUNT for a crate in this place; for one somewhere else it is the
-    // other place's name, which is what a player is told and what `storeLeft`
-    // honestly reports as NaN.
-    await travelToTheCrate(page);
 
     const opened = liveCrates(kind.key);
     expect(opened, 'the hello did not leave exactly one crate to drain').toHaveLength(1);
     expect(opened[0].remaining, 'a fresh crate did not come out full').toBe(kind.stock);
 
+    // THE CRATE IS BROUGHT TO HIM, and this is the difference between a test that
+    // finishes and one that times out on a loaded machine. A fresh crate hides in
+    // a random one of five locations, so "get to it" was a journey plus a walk
+    // across most of a plane, against a walk speed of 0.2 widths a second and a
+    // give-up roll of up to 0.7 — a minute of the test's budget spent arriving at
+    // a place, twice over, to test something that has nothing to do with walking.
+    // Under CPU contention that overran the whole 120 s and the failure read as
+    // «he never got within reach», which was true and beside the point.
+    //
+    // Setting its position is the SAME whitebox setup the line below already uses
+    // for its stock, and the project's rule is real flows or direct DB setup —
+    // the third option, a switch that pins the crate's location in the running
+    // server, would be test-only machinery in a production path. That walking to
+    // a crate works, wherever it is, is pinned by the drinking test above and by
+    // the placement invariants in `world_test.go`; this test is about the draw
+    // that empties the row.
+    await standTheCrateBesideHim(page, opened[0].id);
     psql(
       `UPDATE game_vanyagotchi_world_objects SET remaining = 1, updated_at = now() ` +
         `WHERE id = '${opened[0].id}'`,
@@ -1725,10 +1858,19 @@ test('the last beer exhausts the crate, and a fresh one is standing somewhere al
         timeout: 20_000,
       })
       .not.toContain('пуст');
-    // And a walk to it still ends at it, wherever it went — which is the property
-    // that replaced "the replacement stands on the same pitch".
-    await walkToTheCrate(page);
-    await expect(storeLine(page)).not.toContainText('дойди', { timeout: 20_000 });
+    // THIS USED TO END WITH ANOTHER `walkToTheCrate`, asserting that the
+    // replacement is reachable too. It was deleted, and the reason is worth
+    // keeping: the drink above had just teleported the crate to a uniformly
+    // random one of five locations, so that final walk was a whole second
+    // travel-and-walk chain — the single largest cost in a test that then began
+    // timing out on a loaded runner. It was also asserting somebody else's
+    // claim twice over. That a fresh crate stands somewhere walkable is a
+    // PLACEMENT invariant, pinned in Go over many draws by
+    // `TestAFreshKeyHidesAtAHotspotAndAFreshCrateStandsWellClearOfOne`; that a
+    // walk ends at whichever crate exists is pinned by the drinking test above,
+    // which walks to one and drinks from it. Neither is better pinned by paying
+    // for it a third time here, at the price of the budget this test needs for
+    // the thing it is actually about.
   } finally {
     await context.close();
   }

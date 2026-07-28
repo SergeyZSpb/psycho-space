@@ -16,5 +16,11 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "env.d.ts", "vite.config.ts"]
+  // THE TEST SUITES ARE IN HERE TOO, and they were not before. Playwright
+  // transpiles a spec without type-checking it, so a spec was the one place in
+  // this repo where a type error was invisible until it became a runtime failure
+  // — and changing a shared helper's signature without updating a caller is
+  // exactly the mistake that produces one. It cost nothing to close: both
+  // directories were already clean the day they were added.
+  "include": ["src", "e2e", "e2e-stack", "env.d.ts", "vite.config.ts", "playwright.config.ts", "playwright.stack.config.ts"]
 }

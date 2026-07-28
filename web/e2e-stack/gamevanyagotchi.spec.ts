@@ -435,17 +435,26 @@ async function stillAt(page: Page): Promise<{ x: number; y: number }> {
  * which would be the same as not testing it.
  */
 async function walkTo(page: Page, x: number, y: number): Promise<void> {
-  // EIGHT RATHER THAN FIVE. Each attempt starts from where he sat down, so the
-  // distance left shrinks every time and is soon under the threshold at which he
-  // never gives up at all — but the convergence is a tail, and five attempts left
-  // enough of it to fail about once in a full run. Nothing about the walk changed;
-  // this is a budget for a roll the game makes on purpose.
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  // BOUNDED BY TIME, NOT BY ATTEMPTS. Each attempt starts from where he sat
+  // down, so the distance left shrinks every time and is soon under the
+  // threshold at which he never gives up at all — but the convergence is a tail,
+  // and a COUNT is the wrong budget for it: a loaded machine does not make him
+  // give up more often, it makes each walk take longer, so the count ran out
+  // mid-convergence and the failure read as "he never made it" rather than "we
+  // stopped asking". The sibling pet spec had the identical bug in
+  // `walkToTheCrate` and it is what made that suite flaky under load; fixed in
+  // both places rather than in the one that happened to fail.
+  const deadline = Date.now() + 75_000;
+  let taps = 0;
+  while (Date.now() < deadline) {
     await tapAt(page, x, y);
+    taps += 1;
     if (await settleNear(page, x, y)) return;
   }
   const at = await you(page);
-  throw new Error(`he never made it to ${x},${y}; he gave up at ${at.x},${at.y}`);
+  throw new Error(
+    `he never made it to ${x},${y} in 75s (${taps} taps); he gave up at ${at.x},${at.y}`,
+  );
 }
 
 /** One recorded moment of one entity, as the browser was told to draw it. */

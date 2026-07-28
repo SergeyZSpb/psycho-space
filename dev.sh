@@ -131,6 +131,22 @@ target_e2e_stack() {
     echo "info: no web/playwright.stack.config.ts — skipping full-stack e2e" >&2
     return 0
   fi
+  # THIS SUITE'S ONLY ISOLATION IS THAT IT RUNS ONE TEST AT A TIME. There is one
+  # database, one server, and five fixed seeded accounts that every spec mutates
+  # — `DELETE FROM game_vanyagotchi_world_objects`, delete the pet, rewrite its
+  # stats — none of it scoped to a test. `workers: 1` in the config is what makes
+  # that safe, and since arguments here are forwarded straight to Playwright,
+  # `--workers=4` would quietly override it and produce failures that look like
+  # bugs in the code under test. Refused loudly instead.
+  for arg in "$@"; do
+    case "$arg" in
+      --workers|--workers=*|-j|--fully-parallel)
+        echo "error: $arg would defeat this suite's only isolation — one DB, one server," >&2
+        echo "       five shared accounts, no per-test scoping. See web/playwright.stack.config.ts." >&2
+        return 1
+        ;;
+    esac
+  done
   echo "== e2e full-stack (real binary + Postgres) =="
   ( cd web && [ -d node_modules ] || npm_ ci --no-audit --no-fund )
   ( cd web && npx_ playwright test --config=playwright.stack.config.ts "$@" )
