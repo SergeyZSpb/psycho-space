@@ -41,6 +41,7 @@ import { authApi } from '../api/endpoints';
 import { useAuthStore } from '../stores/auth';
 import {
   CONSENT_VERSION,
+  HOME_ROUTE_NAME,
   SS_PKCE_VERIFIER,
   SS_VK_STATE,
   VK_APP_ID,
@@ -77,7 +78,7 @@ export function useVkLogin() {
     // /me on the pending screen.
     auth.setAccount(result.account);
     if (result.account.status === 'approved') {
-      await router.push({ name: 'game-khimki' });
+      await router.push({ name: HOME_ROUTE_NAME });
     } else {
       await router.push({ name: 'pending' });
     }

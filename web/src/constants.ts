@@ -11,6 +11,13 @@ export const VK_APP_ID = 54691267;
 // endpoint.
 export const VK_REDIRECT_PATH = '/auth/redirect';
 
+// The app's front door: where an approved user lands with no route of their
+// own. Named once because five places send people there — the /app index, the
+// three guard redirects in the router, and the post-login push — and a default
+// they disagree about is a bug nobody notices until someone lands in the wrong
+// section. Changing this changes all of them.
+export const HOME_ROUTE_NAME = 'game-vanyagotchi';
+
 // Consent version recorded on login (152-ФЗ). Bump when the consent text changes.
 // v2: disclose the full vkid.personal_info set (added пол + дата рождения).
 export const CONSENT_VERSION = 'v2';

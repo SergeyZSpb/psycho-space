@@ -36,7 +36,7 @@ test('a redirect-mode return finishes the login and enters the app', async ({ pa
 
   await page.goto('/auth/redirect?code=vk-code&device_id=vk-device&state=e2e-state');
 
-  await expect(page).toHaveURL(/\/app\/game-khimki$/);
+  await expect(page).toHaveURL(/\/app\/game-vanyagotchi$/);
 });
 
 test('a cancelled login says so and offers the way back', async ({ page }) => {

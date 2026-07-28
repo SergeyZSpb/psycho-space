@@ -12,7 +12,7 @@ Working rules for this repository — the *what*. The reasoning behind the shape
 
 ## What this is
 
-A Russian-language landing page + allowlist-gated web app for a small community. The landing is deliberately cringe; login is via **VK ID** only. The app's first section is a **Wishlist with upvotes** — the first of several planned sections (the UI says so). Access is allowlist-gated: the owner is promoted to admin, then approves everyone else; unapproved users are told to ask to be allowlisted. RU region, single environment (prod), under personal-data law (152-ФЗ).
+A Russian-language landing page + allowlist-gated web app for a small community. The landing is deliberately cringe; login is via **VK ID** only. The app is several sections behind one shell, and an approved user lands in **«Ванягоччи»** — the front door, named once as `HOME_ROUTE_NAME` in `web/src/constants.ts` because the `/app` index, the router's guard redirects and the post-login push all have to agree on it. The other sections are «Смолтолк в Химках» and the **Wishlist with upvotes**, which was the first one built (the UI still says more are coming). Access is allowlist-gated: the owner is promoted to admin, then approves everyone else; unapproved users are told to ask to be allowlisted. RU region, single environment (prod), under personal-data law (152-ФЗ).
 
 ## Stack & layout
 

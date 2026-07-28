@@ -363,7 +363,7 @@ The browser half is a normal Vue 3 application — until the yard, which has a s
 
 ```mermaid
 flowchart TB
-    ROUTER["router — one global beforeEach<br/>requiresApproved · requiresAdmin"]
+    ROUTER["router — one global beforeEach<br/>requiresApproved · requiresAdmin<br/>index + redirects → HOME_ROUTE_NAME"]
 
     subgraph routed["views — every route lazily loaded"]
         SHELL["AppShell.vue — /app/*"]
