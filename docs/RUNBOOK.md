@@ -491,7 +491,9 @@ for i in $(seq $(( $(nproc) - 1 ))); do (while :; do :; done) & done
 kill $(jobs -p)
 ```
 
-**Then look for one of these three, in this order.** Every flake found so far was one of them:
+**Then look for one of these five, in this order.** Every flake found so far was one of them —
+and note that the first four are defects in the *test* while the fifth is not, so a test that
+keeps insisting may be right:
 
 1. **A loop bounded by an attempt count instead of a deadline.** `for (let i = 0; i < 15; …)`
    measures how hard you are willing to try; load changes how long each try *takes*, not how
@@ -510,6 +512,27 @@ kill $(jobs -p)
    anything. It is a `Test timeout exceeded` with no assertion named, which reads like a hang
    and is not. Move the fixture to the player instead (`standTheCrateBesideHim` writes
    `location_key`/`x`/`y`), and leave the walking to the one test whose subject *is* walking.
+
+5. **…or the test was right and the product was racy.** This is the fifth kind and it broke
+   the rule the other four established, so check the code before assuming the test is at
+   fault. `TestRealtimeDrainsOnHubShutdown` failed ~7% of the time under saturation (14 in
+   200) and once in CI, and it was correct every time: on shutdown a share of clients really
+   did get a bare 1006 instead of the `bye` frame [ADR-018](adrs/ADR-018-the-close-reason-travels-as-a-frame-not-as-a.md)
+   exists to guarantee, so a browser could not tell a deploy from a tunnel dropping and
+   backed off instead of reconnecting. **The cause is worth knowing because it is invisible
+   by reading:** coder/websocket hangs a `context.AfterFunc` on the context handed to
+   `Write` and **closes the whole connection** if it fires. The write pump's per-message
+   context descended from the hub's, so cancelling the hub did not merely stop the writes —
+   it destroyed the socket, and whenever a frame happened to be queued at that instant it
+   did so before the `bye` could be written. `readPump` already carried a comment about
+   exactly this trap on `Read`; the write path did not. Both message and ping writes now use
+   `context.WithoutCancel`, and every non-close exit from the pump goes through `windUp`,
+   which gives a queued reason its one chance. 600 saturated runs, zero failures.
+
+   The diagnostic that settled it, when reasoning had run out: instrument the suspect paths
+   (`writeBye`, `hardClose`, both pump entries and exits) with temporary `slog.Error` lines,
+   run `-count=60` under spinners, and read the ordering around a failure. `readpump exit
+   … use of closed network connection` appearing *before* `hardClose` was the whole answer.
 
 **What not to do.** Do not add `retries` — a retry makes a broken test green and deletes the
 evidence. Do not add an env flag that disables a game's random rolls (the tiredness give-up,

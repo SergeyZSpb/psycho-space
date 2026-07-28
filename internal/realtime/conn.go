@@ -33,6 +33,13 @@ const (
 	// its clients calling Close, so without this window the pump would exit on
 	// the cancellation and the client would never learn why. Small enough that
 	// every connection still drains well inside the 5 s budget in main.
+	//
+	// It is a SCHEDULING budget rather than a network one — the hub and every
+	// write pump are cancelled by the same context at the same instant, so this
+	// waits on the hub goroutine being scheduled, not on any peer. Widening it
+	// was tried as a fix for the drain race and measured to do nothing, which is
+	// what identified windUp below as the real defect: the pump was not timing
+	// out, it was leaving by a door that wrote no bye at all.
 	byeGrace = 250 * time.Millisecond
 )
 
@@ -279,32 +286,68 @@ func (c *Conn) writePump(ctx context.Context) {
 
 		select {
 		case <-ctx.Done():
-			// Shutdown cancels the hub context and only then walks its clients
-			// calling Close, so wait a moment for that request rather than
-			// exiting and leaving the client to guess.
-			select {
-			case cr := <-c.closing:
-				c.writeBye(ctx, cr)
-			case <-time.After(byeGrace):
-			}
+			c.windUp(ctx)
 			return
 		case cr := <-c.closing:
 			c.writeBye(ctx, cr)
 			return
 		case msg := <-c.send:
-			writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+			// WithoutCancel, for the same reason writeBye uses it, and it is the
+			// whole drain race in one line. coder/websocket hangs a
+			// context.AfterFunc on the context handed to Write and CLOSES THE
+			// WHOLE CONNECTION if it fires — it has to, because a cancelled write
+			// may have put half a frame on the wire. So a writeCtx descending
+			// from the pump's own context turned "the hub is shutting down" into
+			// "destroy the socket now", and whenever a frame happened to be
+			// queued at that moment the peer's connection was torn down before
+			// the Bye explaining why could be written. The read pump already
+			// carries this exact guard on Read and says so.
+			//
+			// The pump does not linger for it: writeTimeout bounds this write on
+			// its own, and the top-of-loop check makes a pending close outrank
+			// whatever is left in the buffer, so shutdown costs at most one more
+			// frame — to a live peer, microseconds.
+			writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 			err := c.ws.Write(writeCtx, websocket.MessageText, msg)
 			cancel()
 			if err != nil {
+				// NOT a bare return: a close reason may already be queued, or be
+				// about to be by a hub goroutine racing this one, and leaving
+				// here used to throw it away.
+				c.windUp(ctx)
 				return
 			}
 		case <-ticker.C:
-			pingCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+			pingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 			err := c.ws.Ping(pingCtx)
 			cancel()
 			if err != nil {
+				c.windUp(ctx)
 				return
 			}
 		}
+	}
+}
+
+// windUp is the pump's single exit for "something ended this connection other
+// than an explicit close request". It gives a close reason that has already been
+// queued — or is about to be, by a hub goroutine racing this one — its one
+// chance to reach the peer.
+//
+// Every path out of the write pump that is not itself a close request comes
+// through here, deliberately. The alternative is what used to be here: each
+// error path returning on its own, which meant the reason existed, was sitting
+// in a buffered channel one line away, and was thrown away because the pump had
+// already decided it was leaving. A client then saw a bare 1006 and could not
+// tell a deploy from a tunnel dropping — the exact thing ADR-018 exists to
+// prevent, and the exact thing the client's backoff policy branches on.
+func (c *Conn) windUp(ctx context.Context) {
+	select {
+	case cr := <-c.closing:
+		c.writeBye(ctx, cr)
+	case <-time.After(byeGrace):
+		// Nobody is going to say why. Shutdown cancels the hub context and only
+		// then walks its clients, so this window is the hub goroutine's chance to
+		// be scheduled — see byeGrace.
 	}
 }
