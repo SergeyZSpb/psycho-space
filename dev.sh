@@ -62,15 +62,25 @@ target_lint() {
   ./scripts/check-docs.sh
 }
 
+# Every test target takes arguments, and passing some narrows the run: while
+# developing you are meant to run the handful of tests that could plausibly fail
+# (`./dev.sh test -run TestVKRedirect ./internal/httpapi/`), not the whole suite
+# — the pre-commit gate runs everything exactly once, and a full manual run
+# before it is the same minutes spent twice. Bare, each target still runs its
+# whole suite, which is what the gate does.
 target_test() {
   echo "== unit tests =="
-  go_ test ./...
+  if [ "$#" -gt 0 ]; then go_ test "$@"; else go_ test ./...; fi
 }
 
 target_integration() {
   if [ -d test/integration ]; then
     echo "== integration tests (testcontainers) =="
-    go_ test -tags=integration ./test/integration/...
+    if [ "$#" -gt 0 ]; then
+      go_ test -tags=integration "$@"
+    else
+      go_ test -tags=integration ./test/integration/...
+    fi
   else
     echo "info: no test/integration yet — skipping" >&2
   fi
@@ -78,6 +88,14 @@ target_integration() {
 
 target_web() {
   if [ -f web/package.json ]; then
+    # Arguments mean a targeted vitest run — the type-check is the whole
+    # frontend either way, so it belongs to the full pass, not to this one.
+    if [ "$#" -gt 0 ]; then
+      echo "== web (vitest: $*) =="
+      ( cd web && [ -d node_modules ] || npm_ ci --no-audit --no-fund )
+      ( cd web && npx_ vitest run "$@" )
+      return
+    fi
     echo "== web (type-check + unit) =="
     ( cd web && npm_ ci --no-audit --no-fund && npm_ run type-check && npm_ run test )
   else
@@ -175,9 +193,9 @@ target_pre_commit() {
 case "${1:-help}" in
   build)       target_build ;;
   lint)        target_lint ;;
-  test)        target_test ;;
-  integration) target_integration ;;
-  web)         target_web ;;
+  test)        shift || true; target_test "$@" ;;
+  integration) shift || true; target_integration "$@" ;;
+  web)         shift || true; target_web "$@" ;;
   e2e)         shift || true; target_e2e "$@" ;;
   e2e-stack)   shift || true; target_e2e_stack "$@" ;;
   cover)       target_cover ;;
@@ -191,9 +209,9 @@ case "${1:-help}" in
 psycho-space dev.sh targets:
   build        go build ./...
   lint         gofmt check + go vet (+ golangci-lint if installed)
-  test         unit tests
-  integration  testcontainers integration tests (when test/integration exists)
-  web          frontend type-check + unit tests (when web/ exists)
+  test         unit tests (args narrow it: -run TestX ./internal/pkg/)
+  integration  testcontainers integration tests (args pass through)
+  web          frontend type-check + unit tests (args = targeted vitest run)
   e2e          Playwright mobile-layout suite, stubbed /api (args pass through)
   e2e-stack    Playwright full-stack e2e: real binary + Postgres (needs Docker)
   cover        coverage: Go unit + Go integration + web
