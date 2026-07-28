@@ -460,7 +460,7 @@ func standAbout(locationKey string) Point {
 		return spawn
 	}
 	const (
-		tries  = 24
+		tries  = 32
 		floorY = 0.30
 		ceilY  = 0.92
 		edgeX  = 0.10
@@ -469,6 +469,9 @@ func standAbout(locationKey string) Point {
 		at := Point{
 			X: edgeX + unitRand()*(1-2*edgeX),
 			Y: floorY + unitRand()*(ceilY-floorY),
+		}
+		if inCorner(at) {
+			continue
 		}
 		clear := true
 		for _, spot := range loc.Hotspots {
@@ -482,6 +485,47 @@ func standAbout(locationKey string) Point {
 		}
 	}
 	return loc.Entry
+}
+
+// The two bottom corners of the plane that are INTERFACE rather than ground, as
+// fractions of the plane on each axis.
+//
+// THE SERVER HAS TO KNOW THIS, and it is worth being uncomfortable about rather
+// than hiding. Both bottom corners of the yard carry a control — the place
+// caption on the left, the verb button on the right — and both SWALLOW the taps
+// that land on them, deliberately, because a tap on a control is a different
+// intent from a tap on the ground. So anything standing in one of those corners
+// is a thing no player can walk to or search: the walk is never sent, because the
+// tap never reaches the plane. It fails in the quietest way a bug can — something
+// receives the tap, so nothing errors and nothing logs.
+//
+// It is a placement rule rather than the server learning the client's layout, the
+// same shape as keeping the shop clear of the hiding places: what it says is "do
+// not put a thing where nobody can reach it", which is a fact about the game.
+//
+// TWO RECTANGLES RATHER THAN ONE SQUARE, because the controls are two different
+// sizes and the plane is 3:4, so the same pixel count is a different fraction on
+// each axis. On the phone with the least room the plane is about 360x480: the
+// caption is a 44px-tall pill of about 90px, and the verb button is 56px inset by
+// 10 from both edges. Both are rounded up generously — the corners are the
+// cheapest part of the yard to lose, and a margin here costs nothing.
+//
+// If either control moves, these move with it, and the invariant test over the
+// catalogue's hotspots is what fails until they do.
+const (
+	captionCornerX = 0.26
+	captionCornerY = 0.86
+	verbCornerX    = 0.78
+	verbCornerY    = 0.84
+)
+
+// inCorner reports whether a point falls under one of the yard's two controls,
+// where they would take the tap meant for it.
+func inCorner(at Point) bool {
+	if at.X < captionCornerX && at.Y > captionCornerY {
+		return true
+	}
+	return at.X > verbCornerX && at.Y > verbCornerY
 }
 
 // unitRand is a number in 0..1 from crypto/rand, for the placement above.

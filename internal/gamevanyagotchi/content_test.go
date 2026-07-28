@@ -1311,3 +1311,49 @@ func TestEveryFailChanceIsAProbability(t *testing.T) {
 		t.Fatalf("%d verbs can lose their nerve and the catalogue has no lines for it", flaky)
 	}
 }
+
+// TestNoHidingPlaceIsUnderAControl.
+//
+// The two bottom corners of the plane carry the yard's only two controls — the
+// place caption and the verb button — and both swallow the taps that land on
+// them, deliberately, because a tap on a control is a different intent from a tap
+// on the ground. A hotspot underneath one is therefore a hiding place that cannot
+// be searched at all, and it fails in the quietest way a bug can: the tap is
+// received by something, so nothing errors, nothing logs, and the key simply is
+// never found there.
+//
+// It is not hypothetical. «Подъезд» sat at (0.86, 0.86) and was untappable for
+// exactly as long as the button existed, which nobody noticed because the yard
+// has two dozen other places to look in.
+func TestNoHidingPlaceIsUnderAControl(t *testing.T) {
+	for _, loc := range Content().Locations {
+		for _, spot := range loc.Hotspots {
+			if inCorner(spot.At) {
+				t.Errorf("%q's hiding place %q is at (%v,%v), under one of the yard's two controls; a tap there presses the control and the place can never be searched",
+					loc.Key, spot.Key, spot.At.X, spot.At.Y)
+			}
+		}
+		// The entry point too: it is where a journey puts him and where a spawn
+		// falls back to, so a player standing in a corner would find the ground
+		// under his own feet unwalkable.
+		if inCorner(loc.Entry) {
+			t.Errorf("%q's entry point is at (%v,%v), in a corner the controls occupy", loc.Key, loc.Entry.X, loc.Entry.Y)
+		}
+	}
+}
+
+// TestAVisibleThingIsNeverStoodWhereNobodyCanReachIt is the same rule applied to
+// the other half — what the SERVER stands up rather than what the catalogue
+// authors. A crate in a control's corner is a shop that cannot be walked to, and
+// a walk that is never sent looks exactly like a game that has stopped working.
+func TestAVisibleThingIsNeverStoodWhereNobodyCanReachIt(t *testing.T) {
+	svc := &Service{}
+	for _, loc := range Content().Locations {
+		for i := 0; i < 200; i++ {
+			at := svc.placeFor(mustObjectKind(t, KindCrate), loc.Key)
+			if inCorner(at) {
+				t.Fatalf("a crate was stood up at (%v,%v) in %q, in a corner a control takes the taps for", at.X, at.Y, loc.Key)
+			}
+		}
+	}
+}

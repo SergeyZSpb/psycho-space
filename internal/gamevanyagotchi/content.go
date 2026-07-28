@@ -1568,7 +1568,14 @@ var catalogue = Config{
 				{Key: "bins", Label: "мусорка", Emoji: "🗑️", At: Point{X: 0.30, Y: 0.86}},
 				{Key: "sandbox", Label: "песочница", Emoji: "🪣", At: Point{X: 0.20, Y: 0.58}},
 				{Key: "bench", Label: "лавочка", Emoji: "🪑", At: Point{X: 0.72, Y: 0.62}},
-				{Key: "porch", Label: "подъезд", Emoji: "🚪", At: Point{X: 0.86, Y: 0.86}},
+				// MOVED OFF THE BOTTOM-RIGHT CORNER, which it used to sit in. Both
+				// bottom corners of the plane are interface — the place caption on
+				// the left and the verb button on the right — and both swallow the
+				// taps that land on them, so a hiding place under one cannot be
+				// searched at all. It was untappable for exactly as long as the
+				// button existed. See the corner constants in world.go for the rule and
+				// the invariant test that now enforces it.
+				{Key: "porch", Label: "подъезд", Emoji: "🚪", At: Point{X: 0.88, Y: 0.42}},
 			},
 		},
 		// THE FOUR PLACES BEHIND THE YARD, and every one of them is a catalogue
