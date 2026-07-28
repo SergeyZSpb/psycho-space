@@ -181,6 +181,7 @@ import { buildRules } from '../lib/vanyadumRules';
 import {
   axesFromKeys,
   applyLook,
+  buildInputFrame,
   createEmitter,
   stickVector,
   type Emitter,
@@ -551,20 +552,16 @@ function sendInput(): void {
   // lost packet costs no input at all. The server drops any sequence it has
   // already applied, which is what makes a duplicate free — and the pending
   // list this reads from has to exist for reconciliation anyway.
-  const redundant = predictor.unacknowledged(
-    config.value.sim.redundant + fresh.length,
+  //
+  // The frame's shape is a pure function (buildInputFrame), tested on its own —
+  // `seenTick` is the last snapshot tick we drew, from which the server derives
+  // our round trip, because deriving beats trusting a number a client chooses.
+  const frame = buildInputFrame(
+    seenTick,
+    fresh,
+    predictor.unacknowledged(config.value.sim.redundant + fresh.length),
   );
-  const seen = new Set(fresh.map((c) => c.seq));
-  const cmds = [...redundant.filter((c) => !seen.has(c.seq)), ...fresh];
-
-  realtimeClient(run.room).send({
-    t: 'vanyadum_input',
-    // The last snapshot tick we drew. The server derives our round trip from
-    // it, and lag compensation rewinds by that — deriving beats trusting a
-    // number a client could choose.
-    k: seenTick,
-    cmds: cmds.map((c) => ({ q: c.seq, dt: c.dt, mx: c.mx, my: c.my, yaw: c.yaw, pitch: c.pitch })),
-  });
+  realtimeClient(run.room).send({ ...frame });
 }
 
 // --- the socket ------------------------------------------------------------

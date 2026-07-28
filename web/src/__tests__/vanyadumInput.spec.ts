@@ -4,9 +4,11 @@ import {
   STICK_DEADZONE,
   applyLook,
   axesFromKeys,
+  buildInputFrame,
   createEmitter,
   stickVector,
   wrapAngle,
+  type VanyadumCommand,
 } from '../lib/vanyadumInput';
 
 describe('stickVector', () => {
@@ -180,5 +182,44 @@ describe('createEmitter', () => {
     e.due(200, walking);
     e.reset();
     expect(e.due(5000, walking)).toEqual([]);
+  });
+});
+
+describe('buildInputFrame', () => {
+  const cmd = (seq: number): VanyadumCommand => ({ seq, dt: 0.025, mx: 0, my: 1, yaw: 0, pitch: 0 });
+
+  it('carries the tick this client last drew, so the server can derive the round trip', () => {
+    // Derived rather than reported: lag compensation rewinds by exactly that
+    // number, so a client choosing its own would be choosing an advantage.
+    expect(buildInputFrame(42, [cmd(1)], []).k).toBe(42);
+  });
+
+  it('puts the unacknowledged tail first and the fresh commands last', () => {
+    // The server applies them in order, so the resend has to come before the
+    // new input or a replayed command would land after work that followed it.
+    const frame = buildInputFrame(0, [cmd(5), cmd(6)], [cmd(3), cmd(4)]);
+    expect(frame.cmds.map((c) => c.q)).toEqual([3, 4, 5, 6]);
+  });
+
+  it('never sends the same sequence twice in one frame', () => {
+    // The unacknowledged list still contains what was just applied, so without
+    // the de-duplication every frame would carry its own fresh commands twice.
+    const frame = buildInputFrame(0, [cmd(5)], [cmd(4), cmd(5)]);
+    expect(frame.cmds.map((c) => c.q)).toEqual([4, 5]);
+  });
+
+  it('sends intent and never a fact', () => {
+    // The rule the whole design rests on: a prediction is something the client
+    // draws, never something it asserts. No position, no health, no hit claim.
+    const frame = buildInputFrame(7, [cmd(1)], []) as unknown as Record<string, unknown>;
+    expect(Object.keys(frame).sort()).toEqual(['cmds', 'k', 't']);
+    expect(Object.keys(frame.cmds as object[])).toHaveLength(1);
+    for (const c of (frame.cmds as Record<string, unknown>[])) {
+      expect(Object.keys(c).sort()).toEqual(['dt', 'mx', 'my', 'pitch', 'q', 'yaw']);
+    }
+  });
+
+  it('is happy with nothing to resend', () => {
+    expect(buildInputFrame(0, [cmd(1)], []).cmds.map((c) => c.q)).toEqual([1]);
   });
 });

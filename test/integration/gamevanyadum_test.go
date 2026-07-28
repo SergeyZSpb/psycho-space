@@ -124,8 +124,19 @@ func startRun(t *testing.T, cli *http.Client, base string) map[string]any {
 // file free of sleeps.
 func waitForFrame(t *testing.T, frames <-chan []byte, tick chan time.Time, want string) map[string]any {
 	t.Helper()
+	// Bounded by TIME, not by a count of iterations.
+	//
+	// It used to give up after four hundred loops, which is a bound on how hard
+	// it tries rather than on how long it waits — and the two are not the same
+	// thing on a fast machine. A hello is answered on the connection's own read
+	// pump, so the reply is asynchronous to this loop; on a CI runner four
+	// hundred tick sends complete in milliseconds, long before the socket has
+	// round-tripped, and the test failed with "no frame arrived" while the
+	// server was working perfectly. It passed locally because a slower machine
+	// happened to interleave differently, which is the worst way for a test to
+	// be wrong.
 	deadline := time.After(10 * time.Second)
-	for i := 0; i < 400; i++ {
+	for i := 0; ; i++ {
 		select {
 		case raw := <-frames:
 			var f map[string]any
@@ -138,10 +149,9 @@ func waitForFrame(t *testing.T, frames <-chan []byte, tick chan time.Time, want 
 		case tick <- time.Unix(int64(i), 0):
 		case <-deadline:
 			t.Fatalf("no %s frame arrived", want)
+			return nil
 		}
 	}
-	t.Fatalf("no %s frame arrived", want)
-	return nil
 }
 
 func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {

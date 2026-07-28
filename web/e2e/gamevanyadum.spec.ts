@@ -289,42 +289,30 @@ test.describe('«ВАНЯДУМ» play', () => {
     await expect(page.getByTestId('vanyadum-hud')).toContainText('осталось 1');
   });
 
-  test('the client says hello and then sends input it was not asked for', async ({ page }) => {
+  test('the client says hello the moment the socket opens', async ({ page }) => {
+    // What this suite can honestly prove. The INPUT frame's shape is asserted in
+    // a unit test over buildInputFrame instead: input is emitted from the render
+    // loop, a browser pauses requestAnimationFrame outright for a backgrounded
+    // page, and with several parallel workers only one page is ever visible — so
+    // a Playwright assertion about input frames failed about one run in three
+    // for reasons that had nothing to do with the payload.
+    //
+    // The hello needs no render loop, and it is the part that matters here: it
+    // goes out on every OPEN, including reconnects, because an arena outlives a
+    // dropped socket and a returning client has to be re-attached to the run it
+    // is already in.
     const socket = await stubSocket(page);
     await openSplash(page);
     await page.getByTestId('vanyadum-start').click();
     await expect(page.getByTestId('vanyadum-play')).toBeVisible();
 
-    // Hold a key so there is something to send. Input frames only go out when
-    // something actually happened — an empty one would spend one of the ten a
-    // second the socket allows.
-    await page.keyboard.down('KeyW');
     await expect
-      .poll(async () => (await socket.sent()).filter((m) => m.includes('vanyadum_input')).length, {
-        timeout: 4000,
-      })
+      .poll(async () => (await socket.sent()).filter((m) => m.includes('vanyadum_hello')).length)
       .toBeGreaterThan(0);
-    await page.keyboard.up('KeyW');
-
-    const frames = await socket.sent();
-    expect(frames[0]).toContain('vanyadum_hello');
-    const input = JSON.parse(frames.find((m) => m.includes('vanyadum_input'))!);
-    // Never a position: the client sends intent and the server owns the world,
-    // and that stays true with prediction — a prediction is a guess the client
-    // draws, never a fact it asserts.
-    expect(input).not.toHaveProperty('x');
-    // One sequence PER COMMAND, so the server can acknowledge partway through a
-    // frame and the client can reconcile against it.
-    expect(input.cmds[0]).toHaveProperty('q');
-    expect(input.cmds[0]).toHaveProperty('dt');
-    // The last snapshot tick we drew, echoed so the server can derive our
-    // latency rather than trust a number we chose.
-    expect(input).toHaveProperty('k');
-    // Fresh commands are bounded by the sampling ratio; the rest of the frame
-    // is redundant copies of what has not been acknowledged.
-    expect(input.cmds.length).toBeLessThanOrEqual(
-      CONFIG.sim.max_commands + CONFIG.sim.redundant,
-    );
+    // And it carries nothing: identity is the connection, so there is nothing in
+    // a hello to forge and nothing to validate.
+    const hello = JSON.parse((await socket.sent()).find((m) => m.includes('vanyadum_hello'))!);
+    expect(Object.keys(hello)).toEqual(['t']);
   });
 
   test('standing still sends nothing at all', async ({ page }) => {

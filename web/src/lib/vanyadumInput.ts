@@ -232,3 +232,42 @@ export function createEmitter(opts: EmitterOptions) {
 }
 
 export type Emitter = ReturnType<typeof createEmitter>;
+
+/** One input frame, exactly as it goes on the wire. */
+export interface InputFrame {
+  t: 'vanyadum_input';
+  /** The last snapshot tick this client drew — the server derives RTT from it. */
+  k: number;
+  cmds: { q?: number; dt: number; mx: number; my: number; yaw: number; pitch: number }[];
+}
+
+/**
+ * Builds an input frame: the commands just applied, preceded by the tail of
+ * whatever is still unacknowledged.
+ *
+ * PURE, AND EXTRACTED FOR A REASON. It used to be an object literal inside the
+ * view, asserted through Playwright — which meant the test could only see a
+ * frame if the render loop was running, and a browser pauses
+ * requestAnimationFrame outright for a backgrounded page. Under several
+ * parallel workers that made the assertion fail about one run in three for
+ * reasons that had nothing to do with the payload. The shape of what goes on
+ * the wire is a pure function of what happened, so it is one now, and it is
+ * tested where a test can be deterministic.
+ *
+ * Redundant commands come FIRST and are de-duplicated against the fresh ones:
+ * the server applies them in order and drops any sequence it has already seen,
+ * so a repeat costs a few bytes and buys immunity to a single lost packet.
+ */
+export function buildInputFrame(
+  seenTick: number,
+  fresh: VanyadumCommand[],
+  unacknowledged: VanyadumCommand[],
+): InputFrame {
+  const seen = new Set(fresh.map((c) => c.seq));
+  const cmds = [...unacknowledged.filter((c) => !seen.has(c.seq)), ...fresh];
+  return {
+    t: 'vanyadum_input',
+    k: seenTick,
+    cmds: cmds.map((c) => ({ q: c.seq, dt: c.dt, mx: c.mx, my: c.my, yaw: c.yaw, pitch: c.pitch })),
+  };
+}
