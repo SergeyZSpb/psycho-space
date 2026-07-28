@@ -441,6 +441,20 @@ the relieve fail chance): that is test-only machinery in a production path, whic
 forbids outright. Determinism comes from **direct DB setup** instead — `vanyagotchi-db.ts`
 already writes stats and crate stock that way, and that is the sanctioned seam.
 
+**A suite can also fail because it is testing an old build.** Both Playwright configs set
+`reuseExistingServer: !process.env.CI`, so **locally** a `vite preview` left running from an
+earlier `./dev.sh e2e` is reused rather than replaced — and it goes on serving the bundle it
+started with. A test written for code you just changed then fails against code that does not
+contain it, which looks exactly like a flake and is not one. Seen once during the mouse-look
+change: the gate's layout run stopped after 67 tests, and the same suite passed 201/201 on a
+clean re-run a minute later with nothing changed. If a suite fails once and then passes
+untouched, check for a stray preview before believing either result:
+
+```bash
+ss -ltnp | grep -E '4173|8081'      # 4173 = vite preview, 8081 = the full-stack server
+pkill -f 'vite preview'
+```
+
 **Also note the full-stack suite has no isolation but seriality.** One database, one server,
 five shared seeded accounts, `beforeEach` deleting every world object. `workers: 1` is what
 makes it safe, and `./dev.sh e2e-stack` now refuses a `--workers` override rather than
