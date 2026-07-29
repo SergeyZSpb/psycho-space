@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,6 +100,18 @@ func (f *fakeRepo) RecentShifts(context.Context, db.DBTX, uuid.UUID, int) ([]Shi
 func (f *fakeRepo) TopShifts(context.Context, db.DBTX, int) ([]Shift, error) { return nil, nil }
 
 // harness is a running service with a tick channel the test fires by hand.
+// fakeProfiles is the account service, reduced to the one thing this game asks
+// of it. Every account has the same picture, which is enough for "the peer got a
+// face" and keeps the test from caring which one.
+type fakeProfiles struct{ err error }
+
+func (f fakeProfiles) AvatarURL(context.Context, string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return "https://cdn.example/face.jpg", nil
+}
+
 type harness struct {
 	svc  *Service
 	tr   *fakeTransport
@@ -116,7 +129,7 @@ func start(t *testing.T, members ...realtime.Member) *harness {
 		tick: make(chan time.Time),
 		base: time.Now(),
 	}
-	h.svc = NewService(h.tr, Room, nil, h.repo)
+	h.svc = NewService(h.tr, Room, nil, h.repo, fakeProfiles{})
 	ctx, cancel := context.WithCancel(context.Background())
 	go h.svc.Run(ctx, h.tick)
 	t.Cleanup(func() {
@@ -589,7 +602,7 @@ func TestAFullSaveQueueDropsRatherThanBlocking(t *testing.T) {
 	// Stalling a twenty-hertz simulation for everybody in order to record one
 	// summary row is the wrong trade. The log line is what stops the loss being
 	// silent.
-	s := NewService(newFakeTransport(), Room, nil, newFakeRepo())
+	s := NewService(newFakeTransport(), Room, nil, newFakeRepo(), fakeProfiles{})
 	for i := 0; i < savesBuffer; i++ {
 		s.saves <- Shift{ID: uuid.New()}
 	}
@@ -618,7 +631,7 @@ func TestTheWriterDrainsOnShutdown(t *testing.T) {
 	// A deploy in the middle of somebody's best shift should still record it.
 	// The context is gone by then, so the writes get a fresh short-lived one.
 	repo := newFakeRepo()
-	s := NewService(newFakeTransport(), Room, nil, repo)
+	s := NewService(newFakeTransport(), Room, nil, repo, fakeProfiles{})
 	queued := Shift{ID: uuid.New(), AccountID: uuid.New(), Cause: CauseLeft, Salary: 1234, Seconds: 42}
 	s.saves <- queued
 
@@ -662,4 +675,42 @@ func TestRecentShiftsRefusesAnAccountThatIsNotAUUID(t *testing.T) {
 	if _, err := h.svc.RecentShifts(context.Background(), "not a uuid", 10); err == nil {
 		t.Fatal("a malformed account id reached the database")
 	}
+}
+
+func TestAShiftStartsEvenWhenTheFaceWillNotLoad(t *testing.T) {
+	// The account service is a database round trip and this is a game. A person
+	// must not be refused work because their picture would not load — the office
+	// simply draws a plain figure, which is the state it shipped in.
+	acc := uuid.New().String()
+	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
+	h.svc.profiles = fakeProfiles{err: errors.New("the account service is having a moment")}
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+		t.Fatalf("a failing avatar lookup stopped the shift: %v", err)
+	}
+	if _, ok := h.svc.CurrentShift(acc); !ok {
+		t.Fatal("no shift after a failed avatar load")
+	}
+}
+
+func TestTheFaceIsReadOnceAtTheStartAndNotOnEveryTick(t *testing.T) {
+	// It is constant for the life of a shift and it is a query. Reading it per
+	// snapshot would be a database round trip ten times a second per player.
+	acc := uuid.New().String()
+	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
+	counting := &countingProfiles{}
+	h.svc.profiles = counting
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+		t.Fatal(err)
+	}
+	h.pump(t, "a snapshot", func() bool { return len(h.tr.framesOfType(TypeSnapshot)) >= 5 })
+	if n := counting.n.Load(); n != 1 {
+		t.Fatalf("the avatar was read %d times for one shift", n)
+	}
+}
+
+type countingProfiles struct{ n atomic.Int64 }
+
+func (c *countingProfiles) AvatarURL(context.Context, string) (string, error) {
+	c.n.Add(1)
+	return "https://cdn.example/face.jpg", nil
 }

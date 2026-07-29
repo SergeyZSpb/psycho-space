@@ -776,6 +776,48 @@ keeps the modal. Pinned by `web/src/__tests__/vkLoginErrors.spec.ts`, with the
 SDK mocked — the Playwright layout suite cannot make the real widget fail on
 demand, and a test written there passed just as happily with the bug in place.
 
+## The layout suite fails only on «ВАНЯДУМ», and the page says «браузер не умеет 3D»
+
+**Symptom.** `./dev.sh e2e` goes red across most of `gamevanyadum.spec.ts` — often twenty-odd tests at once, several timing out at a minute — while every other spec passes. The error-context snapshot shows the splash rendered with:
+
+> Твой браузер не умеет 3D (WebGL выключен или не тянет).
+
+**It is the workstation, not the code.** «ВАНЯДУМ» is the one game that needs WebGL ([ADR-047](adrs/)); the other three are DOM and CSS and cannot notice. So a suite that fails on exactly this spec and nothing else is telling you the browser has no GL context, and CI passing the same commit is the confirmation.
+
+**The cause, and it is almost always this one: `DISPLAY` points at an X server that is no longer there.** Chromium's ANGLE tries the X/XCB backend first; when the connection fails it does **not** fall back, and even the software renderer never initialises. A session that restarted its graphics stack under a long-running terminal leaves exactly this state — the shell keeps `DISPLAY=:0` from before, and nothing in it works any more.
+
+**The fix is one word — unset it:**
+
+```bash
+env -u DISPLAY -u WAYLAND_DISPLAY ./dev.sh e2e          # or pre-commit, or the whole gate
+```
+
+Headless Chromium wants no display at all; given one it cannot reach, it fails closed.
+
+**Confirm the diagnosis in ten seconds** by running the browser directly and reading its own errors, which Playwright otherwise swallows:
+
+```bash
+CHROME=$(node -e "console.log(require('@playwright/test').chromium.executablePath())")
+"$CHROME" --headless=new --no-sandbox --dump-dom \
+  "data:text/html,<script>document.title='GL='+!!document.createElement('canvas').getContext('webgl2')</script>" \
+  2>&1 | grep -iE "GL=|xcb|egl|angle"
+```
+
+A broken box prints the chain that gives the game away:
+
+```
+DisplayVkXcb.cpp:62 (initialize): xcb_connect() failed, error 1
+Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Not initialized.
+eglInitialize SwANGLE failed with error EGL_NOT_INITIALIZED
+Initialization of all (1) EGL display types failed.
+```
+
+Re-run the same command under `env -u DISPLAY -u WAYLAND_DISPLAY` and it prints `GL=true`.
+
+**Two things that look like the cause and are not**, so nobody spends the time again. **`/dev/dri`**: `card0` and `renderD128` are both present and both accessible through an ACL (`getfacl /dev/dri/renderD128` shows `user:<you>:rw-`), so a missing render node is the wrong tree — and `ls -la /dev/dri | head -5` **cuts `renderD128` off the listing**, which is how that wrong diagnosis got made in the first place. And **Chromium flags**: none of `--disable-gpu`, `--use-gl=swiftshader`, `--use-gl=angle --use-angle=swiftshader`, `--enable-unsafe-swiftshader` or `--disable-gpu-sandbox` helps in any combination, because the failure is upstream of renderer selection. `npx playwright install chromium` does not help either.
+
+**Do not commit around it.** The pre-commit hook runs the layout suite and `--no-verify` is forbidden ([`CLAUDE.md`](../CLAUDE.md)) — but there is nothing to work around here, because unsetting `DISPLAY` makes the gate pass honestly. `./dev.sh e2e --grep-invert "ВАНЯДУМ"` is useful for confirming a change is otherwise sound while you diagnose, and is a diagnostic rather than a substitute for the gate.
+
 ## Forgetting a user (irreversible)
 
 **Админка → «Забыть»**, superadmin only. It anonymises the person and keeps

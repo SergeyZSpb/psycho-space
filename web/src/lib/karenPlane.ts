@@ -332,3 +332,24 @@ export function sameRoster(a: readonly PeerLook[], b: readonly PeerLook[]): bool
   }
   return true;
 }
+
+/**
+ * Where to ask for the picture to draw on a colleague.
+ *
+ * DERIVED FROM THE HANDLE RATHER THAN SENT WITH IT. A ~250-character URL beside
+ * each peer would repeat ten times a second, per viewer, for the whole of a
+ * shift, to say something that cannot change during one (ADR-037). Derived, it
+ * costs the wire nothing and the browser one cached GET per face.
+ *
+ * There is no such thing as a colleague this client cannot ask about, so it asks
+ * about every one it draws and lets the answer decide — a 404 is an ordinary
+ * reply meaning "he has no picture", not a failure.
+ *
+ * The handle is escaped even though every one the server mints today is
+ * base64url. It is a value off the wire being pasted into a URL path, and on the
+ * day that stops being true an unescaped one would ask for a different route
+ * entirely rather than fail in a way that looks like a bad handle.
+ */
+export function karenAvatarEndpoint(handle: string): string {
+  return `/api/game-karen/avatar/${encodeURIComponent(handle)}`;
+}

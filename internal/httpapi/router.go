@@ -237,6 +237,10 @@ func (s *Server) Handler() http.Handler {
 			r.Delete("/shifts/current", s.handleGameKarenLeave)
 			r.Get("/shifts/me", s.handleGameKarenMyShifts)
 			r.Get("/shifts/top", s.handleGameKarenTopShifts)
+			// The face to draw on a colleague, asked for by the pseudonym his
+			// frame already carried. A redirect or a 404 — never a URL on the
+			// socket, which is what ADR-037 is for.
+			r.Get("/avatar/{peer}", s.handleGameKarenAvatar)
 		})
 
 		// Game art — shared infrastructure, NOT a game. The blob store has

@@ -61,12 +61,28 @@ type Transport interface {
 	Members(ctx context.Context, room string) ([]realtime.Member, error)
 }
 
+// Profiles is what this game needs from the account service and nothing more:
+// the picture to draw on somebody's Карен.
+//
+// One method rather than the whole account, because everything else on one is
+// personal data this package has no business holding. Re-declared here rather
+// than shared with «Ванягоччи» — a game owns its own dependencies (ADR-028), and
+// the two happen to want the same thing.
+//
+// Nil is a supported state: without one, everybody is a plain figure, which is
+// exactly what the office looked like before avatars.
+type Profiles interface {
+	// AvatarURL returns the account's avatar, or "" when it has none.
+	AvatarURL(ctx context.Context, accountID string) (string, error)
+}
+
 // Service owns the office and the simulation loop that advances it.
 type Service struct {
 	transport Transport
 	room      string
 	q         db.DBTX
 	repo      Repository
+	profiles  Profiles
 	// pseudonymKey turns an account id into the handle other occupants see.
 	// Read-only after construction, so it needs no lock. See pseudonym.
 	pseudonymKey []byte
@@ -88,12 +104,13 @@ type Service struct {
 }
 
 // NewService builds the game.
-func NewService(t Transport, room string, q db.DBTX, repo Repository) *Service {
+func NewService(t Transport, room string, q db.DBTX, repo Repository, profiles Profiles) *Service {
 	return &Service{
 		transport:    t,
 		room:         room,
 		q:            q,
 		repo:         repo,
+		profiles:     profiles,
 		saves:        make(chan Shift, savesBuffer),
 		done:         make(chan struct{}),
 		pseudonymKey: randomKey(),
@@ -125,6 +142,18 @@ func (s *Service) pseudonym(accountID string) string {
 	mac := hmac.New(sha256.New, s.pseudonymKey)
 	_, _ = mac.Write([]byte(accountID))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:pseudonymBytes])
+}
+
+// AvatarFor is the picture to draw on a peer, by the handle the frame named him
+// with. Nothing when nobody is working, which is when there are no peers either.
+func (s *Service) AvatarFor(handle string) (string, bool) {
+	s.mu.Lock()
+	office := s.office
+	s.mu.Unlock()
+	if office == nil {
+		return "", false
+	}
+	return office.AvatarFor(handle)
 }
 
 // Done is closed once Run has returned and the last write has been attempted, so
@@ -324,8 +353,22 @@ func (s *Service) writeShift(ctx context.Context, sh Shift) {
 // request-scoped call, and a handler that had to remember which one was
 // different would eventually forget; the day this one reads the database, the
 // parameter is already there and no caller changes.
-func (s *Service) StartShift(_ context.Context, accountID string) (string, error) {
+func (s *Service) StartShift(ctx context.Context, accountID string) (string, error) {
 	now := time.Now()
+	// Read ONCE, here, and outside the lock: it is a database round trip, it is
+	// constant for the life of the shift, and the alternative is a query on a
+	// 20 Hz loop. A failure is not one — an office where somebody has no face is
+	// the state this game shipped in, so it warns and carries on rather than
+	// refusing to let a person work because their picture would not load.
+	avatar := ""
+	if s.profiles != nil {
+		got, err := s.profiles.AvatarURL(ctx, accountID)
+		if err != nil {
+			slog.WarnContext(ctx, "gamekaren: avatar load failed", "err", err)
+		} else {
+			avatar = got
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -333,7 +376,7 @@ func (s *Service) StartShift(_ context.Context, accountID string) (string, error
 		s.office = NewOffice()
 	}
 	shiftID := uuid.New().String()
-	if err := s.office.Join(accountID, shiftID, s.pseudonym(accountID), now); err != nil {
+	if err := s.office.Join(accountID, shiftID, s.pseudonym(accountID), avatar, now); err != nil {
 		// A refusal must not leave an empty office behind, or the bald man would
 		// be left standing wherever the last shift ended.
 		if s.office.Empty() {

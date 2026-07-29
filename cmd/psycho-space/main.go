@@ -151,7 +151,7 @@ func main() {
 	//
 	// The ticker is injected for the same reason both games above inject theirs —
 	// the tests drive the loop from a channel and never sleep.
-	gameKarenSvc := gamekaren.NewService(hub, gamekaren.Room, pool, gamekaren.NewPostgresRepository())
+	gameKarenSvc := gamekaren.NewService(hub, gamekaren.Room, pool, gamekaren.NewPostgresRepository(), accounts)
 	karenTicker := time.NewTicker(gamekaren.SimStep)
 	defer karenTicker.Stop()
 	go gameKarenSvc.Run(hubCtx, karenTicker.C)

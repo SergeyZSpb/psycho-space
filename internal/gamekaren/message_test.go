@@ -159,7 +159,7 @@ func TestADashCooldownIsNeverRoundedDownToReady(t *testing.T) {
 	// And the snapshot uses it, so the guarantee reaches the wire rather than
 	// stopping at the helper.
 	o := NewOffice()
-	if err := o.Join("a", "s", "p-a", time.Now()); err != nil {
+	if err := o.Join("a", "s", "p-a", "", time.Now()); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	occ := o.occupants["a"]

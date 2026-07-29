@@ -4,10 +4,12 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	neturl "net/url"
 	"strconv"
 	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/gamekaren"
+	"github.com/go-chi/chi/v5"
 )
 
 // «СИМУЛЯТОР КАРЕНА» over HTTP, which is deliberately only the edges of a shift.
@@ -254,4 +256,56 @@ func (s *Server) handleGameKarenTopShifts(w http.ResponseWriter, r *http.Request
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"shifts": out})
+}
+
+// handleGameKarenAvatar redirects to the picture to draw on a colleague.
+//
+// Asked for by the PSEUDONYM the snapshot already carried, which is what keeps a
+// couple of hundred characters of URL off a frame that repeats ten times a second
+// per viewer, and keeps a durable identifier off the wire entirely (ADR-037). One
+// cached GET per face, per shift.
+func (s *Server) handleGameKarenAvatar(w http.ResponseWriter, r *http.Request) {
+	if s.d.GameKaren == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "game_unavailable")
+		return
+	}
+	target, ok := s.d.GameKaren.AvatarFor(chi.URLParam(r, "peer"))
+	// CHECKED BEFORE IT IS TRUSTED, even though it came out of our own database.
+	// It was stored exactly as the provider returned it and validated nowhere on
+	// the way in, so this is the first place anything has looked at it — and an
+	// unvalidated redirect target is an open redirect, which turns this origin
+	// into a credible way to send somebody anywhere. Absolute https with a host,
+	// or it did not happen, and a value that fails is treated as no picture at
+	// all so the plane simply draws a plain figure.
+	if ok {
+		u, err := neturl.Parse(target)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			slog.WarnContext(r.Context(), "gamekaren: refusing to redirect to a stored avatar that is not absolute https")
+			ok = false
+		} else {
+			// Re-serialised from the parse rather than passed through, so what
+			// leaves here is a URL built out of components this process checked.
+			target = u.String()
+		}
+	}
+	if !ok {
+		// NEVER CACHED, and unlike the yard there is no permanent-miss case to
+		// distinguish: every peer in this office is a person, so a miss means
+		// either that they have no picture or that they have just walked out —
+		// and neither is a fact worth a browser remembering for half an hour.
+		w.Header().Set("Cache-Control", "no-store")
+		writeError(w, r, http.StatusNotFound, "no_avatar")
+		return
+	}
+	// Private, because the answer is about one person and a shared cache must not
+	// keep it. Thirty minutes: a face is the most static thing this game serves,
+	// and re-asking costs a request per colleague per shift.
+	w.Header().Set("Cache-Control", "private, max-age=1800")
+	// 302 rather than 301: the mapping is per-process and the picture changes
+	// when its owner changes it, so nothing here is permanent.
+	//nolint:gosec // G710: the target is parsed, required to be absolute https with a host, and
+	// re-serialised from that parse immediately above, so it is not the unvalidated taint the
+	// analysis takes it for. An allowlist of provider CDN hostnames is not knowable here and
+	// would fail closed on every face the day one changed.
+	http.Redirect(w, r, target, http.StatusFound)
 }

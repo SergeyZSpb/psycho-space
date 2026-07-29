@@ -123,6 +123,20 @@
             }}</span>
             <span class="karen-fig-body" />
             <span class="karen-fig-head"><span class="karen-fig-hair" /></span>
+            <!-- WHO is standing there. The shirt colour tells two colleagues
+                 apart at a glance; the face says which of your friends it is.
+                 Absent until the fetch answers, and absent for good if he has no
+                 picture — a 404 is the ordinary reply and means "draw a plain
+                 figure", not "something went wrong". -->
+            <img
+              v-if="peer.avatar"
+              class="karen-peer-badge"
+              data-testid="karen-peer-avatar"
+              :src="peer.avatar"
+              alt=""
+              referrerpolicy="no-referrer"
+              @error="onPeerFaceError(peer.id)"
+            />
           </span>
           <span ref="meEl" class="karen-me" data-testid="karen-me" aria-hidden="true">
             <span v-if="meSays" class="karen-say" data-testid="karen-me-say">{{ meSays }}</span>
@@ -221,6 +235,7 @@ import { KAREN_DISCLAIMER, KAREN_LORE, buildRules, endingFor } from '../lib/kare
 import {
   applyBoss,
   applyFigure,
+  karenAvatarEndpoint,
   peerColour,
   sameRoster,
   type PeerLook,
@@ -293,7 +308,41 @@ const over = ref<{ cause: string; pay: number; secs: number } | null>(null);
  * goes to CSS custom properties on the element, written from the draw loop, so a
  * plane full of figures costs the compositor rather than the scheduler.
  */
-const peers = ref<PeerLook[]>([]);
+const peers = ref<PeerShown[]>([]);
+
+/**
+ * Handles whose face this browser has given up on — a 404 (he has no picture) or
+ * an image that would not load.
+ *
+ * Remembered so the `img` is not re-created every roster change to fail again.
+ * It is per shift rather than per session, because the office is: a handle is
+ * minted per process and means nothing after a restart.
+ */
+const brokenFaces = ref(new Set<string>());
+
+/** A peer as the template needs him: identity, speech, and a face if he has one. */
+interface PeerShown extends PeerLook {
+  avatar?: string;
+}
+
+/**
+ * Whether two rosters draw the same faces.
+ *
+ * Beside sameRoster rather than folded into it: that one is about the OFFICE —
+ * who is here and what they are saying, which is what the server tells us — and
+ * this is about what this browser has managed to load, which is local. Both have
+ * to be false before a re-render is worth doing.
+ */
+function sameFaces(a: readonly PeerShown[], b: readonly PeerShown[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((p, i) => p.avatar === b[i].avatar);
+}
+
+function onPeerFaceError(id: string): void {
+  const next = new Set(brokenFaces.value);
+  next.add(id);
+  brokenFaces.value = next;
+}
 const karenLines = computed(() => config.value?.karen_lines);
 
 const meSays = computed(() => sayFor(config.value?.karen_lines, meLine.value));
@@ -532,6 +581,7 @@ function teardownPlay(): void {
   constants = null;
   outbox = [];
   peers.value = [];
+  brokenFaces.value = new Set();
   peerEls.clear();
   peerInterp.clear();
   stickPointer = null;
@@ -762,7 +812,7 @@ function applySnapshot(frame: RealtimeFrame): void {
 function applyPeers(raw: unknown): void {
   const list = Array.isArray(raw) ? raw : [];
   const now = performance.now();
-  const roster: PeerLook[] = [];
+  const roster: PeerShown[] = [];
   const live = new Set<string>();
 
   for (const entry of list) {
@@ -771,7 +821,14 @@ function applyPeers(raw: unknown): void {
     const id = typeof p.i === 'string' ? p.i : '';
     if (!id) continue;
     live.add(id);
-    roster.push({ id, line: num(p.p) });
+    roster.push({
+      id,
+      line: num(p.p),
+      // Derived from the handle, never sent with it (ADR-037). The browser
+      // caches the answer, so this is one request per colleague per shift even
+      // though the string is recomputed on every roster change.
+      avatar: brokenFaces.value.has(id) ? undefined : karenAvatarEndpoint(id),
+    });
     let interp = peerInterp.get(id);
     if (!interp) {
       // Same period as the лысый's, from the same served rate, so everybody who
@@ -794,7 +851,7 @@ function applyPeers(raw: unknown): void {
   // describes the same people saying the same things; assigning a fresh array
   // each time would be a scheduler pass and a patch per peer per frame to
   // produce identical markup.
-  if (!sameRoster(peers.value, roster)) peers.value = roster;
+  if (!sameRoster(peers.value, roster) || !sameFaces(peers.value, roster)) peers.value = roster;
 }
 
 function finish(result: { cause: string; pay: number; secs: number }): void {

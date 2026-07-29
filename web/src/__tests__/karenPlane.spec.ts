@@ -17,6 +17,7 @@ import {
   formatSeconds,
   grinState,
   hueFor,
+  karenAvatarEndpoint,
   peerColour,
   rampFraction,
   sameRoster,
@@ -305,5 +306,17 @@ describe('the roster guard', () => {
     // server started iterating a map, which is the bug peersFor avoids.
     const a = [{ id: 'x', line: 0 }, { id: 'y', line: 0 }];
     expect(sameRoster(a, [{ id: 'y', line: 0 }, { id: 'x', line: 0 }])).toBe(false);
+  });
+});
+
+describe('asking for a colleague’s face', () => {
+  it('derives the URL from the handle the frame already carried', () => {
+    expect(karenAvatarEndpoint('AbCdEfGhIjKl')).toBe('/api/game-karen/avatar/AbCdEfGhIjKl');
+  });
+
+  it('escapes it, because it is a value off the wire going into a path', () => {
+    // Today every handle is base64url. On the day one carries a slash, an
+    // unescaped id would ask for a different route rather than fail as a bad id.
+    expect(karenAvatarEndpoint('a/b?c')).toBe('/api/game-karen/avatar/a%2Fb%3Fc');
   });
 });

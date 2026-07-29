@@ -95,7 +95,7 @@ func buildAppKaren(t *testing.T, vkBaseURL string) (http.Handler, chan time.Time
 		<-hub.Done()
 	})
 
-	svc := gamekaren.NewService(hub, gamekaren.Room, pool, gamekaren.NewPostgresRepository())
+	svc := gamekaren.NewService(hub, gamekaren.Room, pool, gamekaren.NewPostgresRepository(), newAccountService())
 	tick := make(chan time.Time)
 	go svc.Run(ctx, tick)
 

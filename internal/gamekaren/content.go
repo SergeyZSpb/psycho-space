@@ -204,12 +204,34 @@ var Endings = []Ending{
 //
 // The first is who he is; the rest are the eight sentences that end an
 // afternoon, and he starts using them once he is close enough to be a problem.
-var BossLines = []string{
+// BossLines is the flat pool the wire indexes into, built from two named runs so
+// the browser never learns the layout — which run a state maps to is server-side
+// and changes without a client deploy. Exactly the arrangement KarenLines uses.
+var BossLines = append(append([]string{}, bossFar...), bossClosing...)
+
+// bossFar is what he says from across the office, and it EXISTS so that he
+// rotates while he is far away.
+//
+// He used to say «Я ЛЫСЫЙ» and nothing else until his grin started, which meant
+// the balloon over the only other figure on the plane was frozen for most of a
+// shift. One line is not a run, so rotating required writing more of them —
+// same voice, but aimed at nobody in particular: a man across the room being
+// pleased with the day rather than pleased with you.
+var bossFar = []string{
 	"Я ЛЫСЫЙ",
-	// He is a micromanager, so almost everything he says is a request for a
-	// status disguised as a favour. None of it is angry and none of it is an
-	// order — that is the whole character: it is always just a minute, always
-	// just a quick sync, and it never, ever stops.
+	"ХОРОШО СИДИМ",
+	"НАДО БЫ СИНХРОНИЗИРОВАТЬСЯ",
+	"У МЕНЯ ОКНО ПОСЛЕ ОБЕДА",
+	"Я ПРОСТО ПОСМОТРЕТЬ",
+	"КОМАНДА, Я ЗДЕСЬ",
+	"КАКИЕ У НАС ПЛАНЫ",
+}
+
+// bossClosing is what he says once the grin has started: he is a micromanager,
+// so almost everything is a request for a status disguised as a favour. None of
+// it is angry and none of it is an order — that is the whole character. It is
+// always just a minute, always just a quick sync, and it never, ever stops.
+var bossClosing = []string{
 	"А ГДЕ?",
 	"НУ ЧТО, ПОСМОТРЕЛ?",
 	"ЗАЙДИ НА МИНУТКУ",
@@ -297,10 +319,10 @@ var KarenLines = slices.Concat(karenStill, karenMoving, karenDashing)
 // Derived from the TICK rather than from a timer or a random draw, so every
 // viewer of the same office computes the same line for the same instant without
 // anything being stored or synchronised — the tick is already on every frame.
-// Two and a half seconds is long enough to read on a phone while somebody is
-// walking at you, and short enough that the approach does not feel like one
-// sentence repeated.
-const BossSlot = 50 // ticks, at SimHz — 2.5 s
+// TWO SECONDS, owner-directed, and it is the same number everybody on the plane
+// uses now. Long enough to read on a phone while somebody is walking at you, and
+// short enough that the office never looks frozen.
+const BossSlot = 40 // ticks, at SimHz — 2 s
 
 // BossQuiet is how small his grin has to be before he goes back to introducing
 // himself. It is the same number the client's «far» face uses, so what he says
@@ -309,10 +331,13 @@ const BossQuiet = 0.35
 
 // KarenSlot is how long he holds one line before moving to the next, in ticks.
 //
-// Longer than the bald man's, because yours is the one you are staring at while
-// standing still and a line that changed every couple of seconds would be
-// movement on a screen whose whole point is that nothing is moving.
-const KarenSlot = 80 // ticks, at SimHz — 4 s
+// THE SAME AS THE BALD MAN'S, at the owner's direction. It was twice his, on the
+// reasoning that yours is the line you stare at while standing still and that
+// changing it often would be movement on a screen whose point is that nothing
+// moves. In practice the office read as frozen rather than as calm — the plane
+// holds several figures now, and two of them holding a sentence for four seconds
+// is a still photograph. One cadence, everywhere, two seconds.
+const KarenSlot = 40 // ticks, at SimHz — 2 s
 
 // KarenLine is which of KarenLines belongs over a player right now.
 //
@@ -338,21 +363,120 @@ func KarenLine(p Player, tick uint64) int {
 	}
 }
 
-// pickLine walks a run of the flat pool one slot at a time and returns the
-// absolute index of the line it lands on.
+// IntroEvery is roughly how many slots pass between somebody saying who they
+// are — «Я КАРЕН», «Я ЛЫСЫЙ».
 //
-// `base` is where the run starts in KarenLines, which is what makes the wire a
+// ROUGHLY, and that is the point (owner-directed): a fixed period would make the
+// introduction a metronome, and the whole reason it is worth interjecting is
+// that it lands when you were not expecting it. So it is a hash of the slot
+// rather than a modulus of it, and at five it comes round about every ten
+// seconds without ever being ON the ten seconds.
+const IntroEvery = 5
+
+// slotHash mixes a slot number into something with no visible order.
+//
+// A HASH RATHER THAN A COUNTER, because `slot % n` walks a pool in the order it
+// happens to be written in — which reads as a script being recited, and makes
+// the next line predictable from the last. Splitmix64's finaliser is plenty: the
+// requirement is that consecutive slots land far apart, not that anything here
+// is unguessable.
+//
+// It is a pure function of the slot, so — like everything else about a balloon —
+// every viewer of the same office computes the same words for the same instant
+// with nothing stored, nothing synchronised and nothing on the wire.
+func slotHash(slot, salt uint64) uint64 {
+	x := slot*0x9E3779B97F4A7C15 + salt
+	x ^= x >> 31
+	x *= 0xBF58476D1CE4E5B9
+	x ^= x >> 29
+	return x
+}
+
+// pickLine is which line of a run belongs to the slot a tick falls in, as an
+// absolute index into the flat pool.
+//
+// `base` is where the run starts in the pool, which is what makes the wire a
 // single index into a single array however the runs are arranged.
-func pickLine(base int, run []string, tick uint64, slot uint64) int {
+//
+// Three rules, and each is a thing that was wrong without it:
+//
+//   - THE SLOT, not the tick, so a line is held for the whole of it. Two seconds
+//     is the cadence everybody on the plane shares.
+//   - HASHED, not sequential, so the pool is not recited in the order somebody
+//     wrote it in.
+//   - THE INTRODUCTION IS INTERJECTED, on its own hashed schedule, so «Я КАРЕН»
+//     and «Я ЛЫСЫЙ» come round periodically and OUT OF ORDER — including in the
+//     runs that do not contain them at all, which is every one of the bald man's
+//     closing lines.
+//
+// The no-immediate-repeat guard is closed form as well: it recomputes the
+// previous slot's answer rather than remembering it, so this stays a pure
+// function of the clock.
+func pickLine(base int, run []string, tick uint64, slotTicks uint64) int {
 	n := uint64(len(run))
-	if n == 0 {
+	if n == 0 || slotTicks == 0 {
 		return 0
 	}
-	// The remainder is strictly less than the run's length, which is a dozen at
-	// most. gosec cannot see that bound and flags every uint64 conversion.
-	//nolint:gosec // bounded by len(run), guarded non-empty immediately above
-	return base + int(tick/slot%n)
+	slot := tick / slotTicks
+	got := lineIn(base, n, slot)
+	if slot > 0 && got == lineIn(base, n, slot-1) {
+		// Say something else rather than the same thing twice running — a
+		// balloon that does not change across a slot boundary reads as frozen,
+		// which is the defect this whole cadence exists to avoid.
+		return nextLine(base, n, got)
+	}
+	return got
 }
+
+// lineIn is the unguarded pick for one slot: the introduction, or a line of the
+// run.
+func lineIn(base int, n, slot uint64) int {
+	if slotHash(slot, introSalt)%IntroEvery == 0 {
+		return introLine
+	}
+	// The remainder is strictly less than the run's length, which is a couple of
+	// dozen at most. gosec cannot see that bound and flags every uint64
+	// conversion on principle.
+	//nolint:gosec // bounded by n, guarded non-zero by the caller
+	return base + int(slotHash(slot, runSalt)%n)
+}
+
+// nextLine is the line along from this one, used only to break an immediate
+// repeat. It is guaranteed to differ from `from` whenever there is anything else
+// to say — which was NOT true of the first version, and the bug is worth naming
+// because it looked impossible: for the still run `base` IS the introduction, so
+// "the introduction repeated, start the run instead" returned the introduction.
+func nextLine(base int, n uint64, from int) int {
+	//nolint:gosec // n is a slice length, so it fits an int by construction
+	end := base + int(n)
+	if from < base || from >= end {
+		// Outside the run — the introduction interjected into a run that does
+		// not contain it. The run's own first line is somewhere else to be.
+		if base != from {
+			return base
+		}
+		return base + 1
+	}
+	if next := from + 1; next < end {
+		return next
+	}
+	// Wrapped off the end of the run. Its first line, unless that is where we
+	// already are, in which case the introduction is the only other option.
+	if base != from {
+		return base
+	}
+	return introLine
+}
+
+// introLine is where the self-introduction lives in every pool, and introSalt /
+// runSalt keep the two hashed decisions independent — without different salts,
+// "is this an introduction slot" and "which line of the run" would be the same
+// number and the pool would be walked in lockstep with the interjections.
+const (
+	introLine = 0
+	introSalt = 0x5A17_1234_ABCD_0001
+	runSalt   = 0x5A17_1234_ABCD_0002
+)
 
 // BossLine is which of BossLines belongs over the bald man right now.
 //
@@ -361,19 +485,15 @@ func pickLine(base int, run []string, tick uint64, slot uint64) int {
 // BossSlot, wrapping — so what he is saying keeps changing while he closes,
 // which is the whole of the tension made audible.
 func BossLine(grin float64, tick uint64) int {
-	// The afternoon-enders are everything after the introduction, so the length
-	// is taken once and guarded before it is used as a divisor. `len` is never
-	// negative, and the remainder is smaller than the pool, so neither
-	// conversion below can lose anything.
-	n := uint64(len(BossLines))
-	if !(grin >= BossQuiet) || n < 2 {
-		return 0
+	// THE STATE PICKS THE RUN AND THE TICK PICKS THE LINE, which is exactly what
+	// KarenLine does — and the reason this is not simply `grin >= BossQuiet ? …`
+	// any more is that HE USED TO SAY ONE SENTENCE FOREVER WHILE FAR AWAY. That
+	// is most of a shift, and it left the balloon over the only other figure on
+	// the plane frozen while everything else moved.
+	if grin >= BossQuiet {
+		return pickLine(len(bossFar), bossClosing, tick, BossSlot)
 	}
-	// The remainder is strictly less than n−1, which is the number of lines in
-	// the catalogue — nine of them. gosec cannot see that bound and flags every
-	// uint64→int conversion on principle.
-	//nolint:gosec // bounded by len(BossLines), guarded >= 2 immediately above
-	return 1 + int(tick/BossSlot%(n-1))
+	return pickLine(0, bossFar, tick, BossSlot)
 }
 
 // Config is the whole catalogue as the browser receives it.

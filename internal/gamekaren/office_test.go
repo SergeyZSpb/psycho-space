@@ -42,7 +42,7 @@ func snapOf(t *testing.T, o *Office, accountID string) Snapshot {
 // that are (TestASpawnIsDrawnSomewhereLegal and friends) call Join directly.
 func join(t *testing.T, o *Office, accountID, shiftID string) {
 	t.Helper()
-	if err := o.Join(accountID, shiftID, "p-"+accountID, epoch); err != nil {
+	if err := o.Join(accountID, shiftID, "p-"+accountID, "", epoch); err != nil {
 		t.Fatal(err)
 	}
 	place(o, accountID, Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
@@ -63,14 +63,14 @@ func TestTheSameAccountCannotStartTwice(t *testing.T) {
 	// would throw away one somebody is in the middle of on their other tab.
 	o := NewOffice()
 	join(t, o, "a", "s1")
-	if err := o.Join("a", "s2", "p-a", epoch); !errors.Is(err, ErrShiftInProgress) {
+	if err := o.Join("a", "s2", "p-a", "", epoch); !errors.Is(err, ErrShiftInProgress) {
 		t.Fatalf("the second shift was allowed: %v", err)
 	}
 	// And leaving makes room for the next one.
 	if _, ok := o.Leave("a"); !ok {
 		t.Fatal("leaving found nobody")
 	}
-	if err := o.Join("a", "s3", "p-a", epoch); err != nil {
+	if err := o.Join("a", "s3", "p-a", "", epoch); err != nil {
 		t.Fatalf("starting after leaving was refused: %v", err)
 	}
 }
@@ -78,11 +78,11 @@ func TestTheSameAccountCannotStartTwice(t *testing.T) {
 func TestTheFloorIsCapped(t *testing.T) {
 	o := NewOffice()
 	for i := 0; i < MaxOccupants; i++ {
-		if err := o.Join(string(rune('a'+i)), "s", "p-"+string(rune('a'+i)), epoch); err != nil {
+		if err := o.Join(string(rune('a'+i)), "s", "p-"+string(rune('a'+i)), "", epoch); err != nil {
 			t.Fatalf("occupant %d refused: %v", i, err)
 		}
 	}
-	if err := o.Join("z", "s", "p-z", epoch); !errors.Is(err, ErrOfficeFull) {
+	if err := o.Join("z", "s", "p-z", "", epoch); !errors.Is(err, ErrOfficeFull) {
 		t.Fatalf("the cap did not bite: %v", err)
 	}
 	if got := o.Occupants(); got != MaxOccupants {
@@ -454,7 +454,7 @@ func TestEnqueueIgnoresAnAccountThatIsNotWorking(t *testing.T) {
 func TestDriftDoesNotEatTheDash(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	o := NewOffice()
-	if err := o.Join("a", "shift-a", "p-a", now); err != nil {
+	if err := o.Join("a", "shift-a", "p-a", "", now); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 
@@ -487,7 +487,7 @@ func TestDriftDoesNotEatTheDash(t *testing.T) {
 func TestStandingPerfectlyStillStillEarns(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	o := NewOffice()
-	if err := o.Join("a", "shift-a", "p-a", now); err != nil {
+	if err := o.Join("a", "shift-a", "p-a", "", now); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	for i := 0; i < 20; i++ {
@@ -538,7 +538,7 @@ func spawnsOf(t *testing.T, n int) []Vec2 {
 	out := make([]Vec2, 0, n)
 	for i := 0; i < n; i++ {
 		o := NewOffice()
-		if err := o.Join("a", "s", "p-a", epoch); err != nil {
+		if err := o.Join("a", "s", "p-a", "", epoch); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, posOf(t, o, "a"))
@@ -610,10 +610,10 @@ func TestNobodySpawnsOnTopOfSomebodyAlreadyWorking(t *testing.T) {
 	// playing and you used to materialise INSIDE them.
 	for i := 0; i < 200; i++ {
 		o := NewOffice()
-		if err := o.Join("a", "s1", "p-a", epoch); err != nil {
+		if err := o.Join("a", "s1", "p-a", "", epoch); err != nil {
 			t.Fatal(err)
 		}
-		if err := o.Join("b", "s2", "p-b", epoch); err != nil {
+		if err := o.Join("b", "s2", "p-b", "", epoch); err != nil {
 			t.Fatal(err)
 		}
 		a, b := posOf(t, o, "a"), posOf(t, o, "b")
@@ -661,7 +661,7 @@ func TestACrowdedFloorStillProducesALegalSpawn(t *testing.T) {
 	// the sampler is fighting for room.
 	place(o, "a", Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
 	place(o, "b", Vec2{X: PlayerSpawnX + 0.1, Y: PlayerSpawnY})
-	if err := o.Join("c", "s3", "p-c", epoch); err != nil {
+	if err := o.Join("c", "s3", "p-c", "", epoch); err != nil {
 		t.Fatal(err)
 	}
 	at := posOf(t, o, "c")
@@ -714,7 +714,7 @@ func TestAPeerIsAPseudonymAndNeverAnAccountID(t *testing.T) {
 	// ADR-037. An account id is a durable identifier for a person, and it must
 	// not reach somebody else's browser — the handle is minted per process from
 	// a key held only in memory.
-	svc := NewService(nil, Room, nil, nil)
+	svc := NewService(nil, Room, nil, nil, nil)
 	account := "0195f0c2-1111-2222-3333-444455556666"
 	handle := svc.pseudonym(account)
 	if handle == account || strings.Contains(handle, account) {
@@ -728,17 +728,17 @@ func TestAPeerIsAPseudonymAndNeverAnAccountID(t *testing.T) {
 	}
 	// A second process means a second key, so the handle is meaningless once
 	// this office is gone — which is the property that makes it not an identity.
-	if NewService(nil, Room, nil, nil).pseudonym(account) == handle {
+	if NewService(nil, Room, nil, nil, nil).pseudonym(account) == handle {
 		t.Fatal("the handle survived a restart, so it is a durable identifier")
 	}
 }
 
 func TestTheFrameCarriesTheHandleTheServiceMinted(t *testing.T) {
 	o := NewOffice()
-	if err := o.Join("a", "s1", "handle-a", epoch); err != nil {
+	if err := o.Join("a", "s1", "handle-a", "", epoch); err != nil {
 		t.Fatal(err)
 	}
-	if err := o.Join("b", "s2", "handle-b", epoch); err != nil {
+	if err := o.Join("b", "s2", "handle-b", "", epoch); err != nil {
 		t.Fatal(err)
 	}
 	s := snapOf(t, o, "a")
@@ -784,5 +784,68 @@ func TestTheOrderOfPeersDoesNotWander(t *testing.T) {
 				t.Fatalf("read %d reordered the peers: %+v vs %+v", i, got, first)
 			}
 		}
+	}
+}
+
+// --- the face on a colleague ------------------------------------------------
+
+func TestAColleaguesFaceIsFetchedByHandleAndNeverSentOnAFrame(t *testing.T) {
+	// ADR-037's whole point. A ~250-character URL beside each peer would repeat
+	// ten times a second per viewer to say something that cannot change during a
+	// shift, so the frame carries the handle and the picture is one cached GET.
+	o := NewOffice()
+	if err := o.Join("a", "s1", "handle-a", "https://cdn.example/a.jpg", epoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Join("b", "s2", "handle-b", "https://cdn.example/b.jpg", epoch); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, ok := o.SnapshotFor("a")
+	if !ok {
+		t.Fatal("no snapshot")
+	}
+	if strings.Contains(string(raw), "cdn.example") || strings.Contains(string(raw), "http") {
+		t.Fatalf("an avatar URL rode a snapshot: %s", raw)
+	}
+
+	// And it is reachable by the handle that frame DID carry.
+	got, ok := o.AvatarFor("handle-b")
+	if !ok || got != "https://cdn.example/b.jpg" {
+		t.Fatalf("AvatarFor(handle-b) = %q, %v", got, ok)
+	}
+	if _, ok := o.AvatarFor("nobody"); ok {
+		t.Fatal("an unknown handle resolved to a face")
+	}
+}
+
+func TestAnAccountWithNoPictureIsSimplyAPlainFigure(t *testing.T) {
+	// Not an error and not a placeholder URL: the plane draws the figure it was
+	// already drawing, which is what the office looked like before avatars.
+	o := NewOffice()
+	if err := o.Join("a", "s1", "handle-a", "", epoch); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := o.AvatarFor("handle-a"); ok {
+		t.Fatal("an account with no avatar resolved to one")
+	}
+}
+
+func TestAFaceGoesWhenItsOwnerDoes(t *testing.T) {
+	// The handle is per-process and the office is the only thing that holds the
+	// mapping, so walking out has to take the picture with it — otherwise a
+	// handle that came back would serve a face nobody in the office has.
+	o := NewOffice()
+	if err := o.Join("a", "s1", "handle-a", "https://cdn.example/a.jpg", epoch); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := o.AvatarFor("handle-a"); !ok {
+		t.Fatal("a working occupant has no face")
+	}
+	if _, ok := o.Leave("a"); !ok {
+		t.Fatal("leave failed")
+	}
+	if _, ok := o.AvatarFor("handle-a"); ok {
+		t.Fatal("a face outlived the shift it belonged to")
 	}
 }

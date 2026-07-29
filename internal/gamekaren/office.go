@@ -46,7 +46,15 @@ type Occupant struct {
 	// account id never reaches the wire, and a pseudonym means nothing once the
 	// process that minted it has restarted.
 	Pseudonym string
-	State     Player
+	// Avatar is the picture the OTHER occupants draw on this one, read once when
+	// the shift starts and never again.
+	//
+	// Held here rather than looked up per frame because it is a constant for the
+	// life of a shift, and read once rather than per snapshot because it is a
+	// database column and this is a 20 Hz loop. It never reaches the wire — see
+	// PeerFrame — only AvatarFor, by pseudonym.
+	Avatar string
+	State  Player
 	// Pending are commands received but not yet stepped. Drained on the tick
 	// rather than applied on arrival, so the simulation advances on its own
 	// clock and never on a client's read pump.
@@ -99,7 +107,7 @@ func NewOffice() *Office {
 // first: dropping the running one would throw away a shift somebody is in the
 // middle of on their other tab, and nothing here can tell which one they meant.
 // The client's answer is the quit button.
-func (o *Office) Join(accountID, shiftID, pseudonym string, now time.Time) error {
+func (o *Office) Join(accountID, shiftID, pseudonym, avatar string, now time.Time) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if _, ok := o.occupants[accountID]; ok {
@@ -112,6 +120,7 @@ func (o *Office) Join(accountID, shiftID, pseudonym string, now time.Time) error
 		AccountID: accountID,
 		ShiftID:   shiftID,
 		Pseudonym: pseudonym,
+		Avatar:    avatar,
 		State:     NewPlayerAt(o.spawnPoint()),
 		StartedAt: now,
 		LastSeen:  now,
@@ -524,6 +533,31 @@ func (o *Office) peersFor(accountID string) []PeerFrame {
 		return nil
 	}
 	return peers
+}
+
+// AvatarFor is the picture to draw on the peer a frame calls handle, and whether
+// there is one.
+//
+// THE PSEUDONYM IS THE LOOKUP KEY, which is the whole of why a URL never rides a
+// frame (ADR-037): a couple of hundred characters re-sent ten times a second per
+// viewer, to say something that cannot change during a shift. Asked for by the
+// handle the client already has, it costs one cached GET per face instead.
+//
+// A linear scan over at most three occupants, comparing the pseudonym each one
+// already carries — so unlike the yard there is no HMAC to re-derive and no
+// second map to fall out of step with the first.
+//
+// An unknown handle is not an error: it is the ordinary answer for somebody who
+// has just walked out, and for anybody whose account has no picture.
+func (o *Office) AvatarFor(handle string) (string, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, k := range o.keys() {
+		if occ := o.occupants[k]; occ.Pseudonym == handle && occ.Avatar != "" {
+			return occ.Avatar, true
+		}
+	}
+	return "", false
 }
 
 // ShiftOf is which shift an account is working, if any.
