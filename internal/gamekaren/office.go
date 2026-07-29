@@ -114,6 +114,10 @@ type Office struct {
 	// nothing about the boss changes at all.
 	redirectTo   string
 	redirectLeft float64
+	// bottleGone is how long until another bottle appears, in seconds. Zero means
+	// one is standing there now, which is the common case and therefore the one
+	// that costs nothing on the wire.
+	bottleGone float64
 }
 
 // NewOffice opens the floor with the bald man at the far wall and nobody in it.
@@ -480,7 +484,31 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		}
 	}
 
-	o.boss = StepBoss(Desks, o.boss, targets, dt)
+	// THE BOTTLE, and it is checked before he steps so a round bought this tick
+	// slows him on this tick rather than the next. Whoever reaches it gets it —
+	// in ascending account order, like every other decision here, so two people
+	// arriving on the same tick is settled the same way his choice of victim is.
+	if o.bottleGone > 0 {
+		o.bottleGone = math.Max(0, o.bottleGone-dt)
+	} else {
+		bottle := Vec2{X: BottleX, Y: BottleY}
+		for _, k := range keys {
+			occ := o.occupants[k]
+			if !occ.State.Alive {
+				continue
+			}
+			if math.Hypot(occ.State.Pos.X-bottle.X, occ.State.Pos.Y-bottle.Y) <= BottleReach+PlayerRadius {
+				o.boss.Drunk = DrunkSeconds
+				o.bottleGone = BottleReturn
+				break
+			}
+		}
+	}
+
+	// Elapsed simulated time, which is what the wobble is a function of. Derived
+	// from the tick rather than from a clock, so it is the same number on every
+	// process that replays the same office.
+	o.boss = StepBoss(Desks, o.boss, targets, dt, float64(o.tick)*SimStep.Seconds())
 
 	var ended []*Occupant
 	for _, k := range keys {
@@ -535,7 +563,9 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 			Y: cm(o.boss.Pos.Y),
 			G: grinByte(o.boss.Grin),
 			P: BossLine(o.boss.Grin, o.tick),
+			D: msUp(o.boss.Drunk),
 		},
+		Bt: msUp(o.bottleGone),
 		Pr: o.peersFor(accountID),
 	}
 	raw, err := json.Marshal(s)

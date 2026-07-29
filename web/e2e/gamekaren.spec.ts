@@ -72,6 +72,7 @@ const CONFIG = {
   max_occupants: 3,
   // Marked like everything else in this stub, so a client that hardcoded the
   // label or the timers cannot pass the assertions below.
+  bottle: { x: 3, y: 9, reach: 0.9, drunk_ms: 8500, return_ms: 44000, slow_pct: 45 },
   redirect: {
     label: 'ЭТО К НЕМУ, СТЕНД',
     say: 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО',
@@ -623,6 +624,35 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
 
     await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }] });
     await expect(button).toBeEnabled();
+  });
+
+  test('the bottle is on the floor until somebody drinks it, and then he turns green', async ({
+    page,
+  }) => {
+    // «Набухать лысого». `bt` is omitted while a bottle is standing there, which
+    // is the common case — so an ABSENT field means present, and the plane draws
+    // it on the strength of the catalogue's own coordinates.
+    const socket = await enterOffice(page);
+    await socket.snapshot();
+    const bottle = page.getByTestId('karen-bottle');
+    await expect(bottle).toHaveCount(1);
+    await expect(bottle).toHaveCSS('--x', String(CONFIG.bottle.x / CONFIG.office.w));
+
+    // Somebody drank it: it is gone, and he is drunk.
+    await socket.snapshot({ bt: 44000, b: { x: 300, y: 1500, g: 40, d: 8500 } });
+    await expect(bottle).toHaveCount(0);
+    await expect(page.getByTestId('karen-boss')).toHaveAttribute('data-drunk', '1');
+
+    // GREEN IS A STATE OF THE FIGURE, not a box around it — the positioning
+    // element must stay transparent, which is the defect §17.5 caught once.
+    const boxed = await page
+      .getByTestId('karen-boss')
+      .evaluate((el) => getComputedStyle(el).backgroundImage + '|' + getComputedStyle(el).backgroundColor);
+    expect(boxed).toMatch(/none\|rgba\(0, 0, 0, 0\)/);
+
+    // And he sobers up.
+    await socket.snapshot({ bt: 30000, b: { x: 300, y: 1500, g: 40 } });
+    await expect(page.getByTestId('karen-boss')).not.toHaveAttribute('data-drunk', '1');
   });
 
   test('a balloon rides the man rather than being placed beside him', async ({ page }) => {

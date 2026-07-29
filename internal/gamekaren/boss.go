@@ -17,6 +17,13 @@ type Boss struct {
 	// Grin is 0..1: 0 at GrinRange or further, 1 on contact. The client picks a
 	// face from it; the server sends it quantised to a byte.
 	Grin float64
+	// Drunk is seconds of wobble remaining. Somebody bought him a round.
+	//
+	// ON THE BOSS RATHER THAN ON THE OFFICE, unlike the redirect: being drunk is
+	// a property of the MAN and it changes how he walks, so it belongs to the
+	// value StepBoss takes and returns. Who he is chasing is a fact about the
+	// room; how steady he is on his feet is not.
+	Drunk float64
 }
 
 // NewBoss puts him at his spawn, at the far end of the floor.
@@ -42,15 +49,29 @@ func Grin(dist float64) float64 {
 // never empty of a boss; an office empty of PEOPLE is torn down entirely, so
 // this is what he does on the last tick before that happens and while somebody
 // is between shifts.
-func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64) Boss {
+func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64, elapsed float64) Boss {
 	aim, ok := nearest(b.Pos, targets)
 	if !ok {
 		aim = Vec2{X: BossSpawnX, Y: BossSpawnY}
 	}
 
+	speed := BossSpeed
+	if b.Drunk > 0 {
+		b.Drunk = math.Max(0, b.Drunk-dt)
+		speed *= DrunkSpeed
+	}
+
 	dx, dy := aim.X-b.Pos.X, aim.Y-b.Pos.Y
 	dist := math.Hypot(dx, dy)
-	if step := BossSpeed * dt; dist > 1e-9 {
+	if b.Drunk > 0 && dist > 1e-9 {
+		// WOBBLE THE HEADING, NOT THE FACT OF IT. He is still walking at you;
+		// he is just not walking at you in a straight line. A sine of elapsed
+		// time rather than a random draw keeps this pure and keeps StepBoss the
+		// deterministic function every test of the chase depends on.
+		a := math.Atan2(dy, dx) + DrunkWobble*math.Sin(2*math.Pi*DrunkWobbleHz*elapsed)
+		dx, dy = math.Cos(a)*dist, math.Sin(a)*dist
+	}
+	if step := speed * dt; dist > 1e-9 {
 		if step >= dist {
 			// Arriving exactly rather than overshooting and oscillating. On a
 			// target this is the tick he catches you; on his spawn it is where

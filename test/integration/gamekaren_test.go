@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -1041,6 +1042,104 @@ func TestKarenPointingHimAtAColleagueOverTheSocket(t *testing.T) {
 		}
 		if p, _ := raw[0].(map[string]any)["p"].(float64); int(p) == gamekaren.RedirectLine {
 			break
+		}
+	}
+}
+
+func TestKarenBuyingHimARoundIsVisibleToTheWholeOffice(t *testing.T) {
+	// «Набухать лысого», end to end — and the claim that matters is the last
+	// one: being drunk is a fact about the OFFICE, not about the screen of
+	// whoever bought the round. One Карен walks to the bottle and BOTH of them
+	// watch him wobble.
+	app, tick, _ := buildAppKaren(t, karenVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cliA := loginAs(t, srv.URL, "920016", "user")
+	cliB := loginAs(t, srv.URL, "920017", "user")
+	clock := newKarenClock()
+
+	startShift(t, cliA, srv.URL)
+	startShift(t, cliB, srv.URL)
+
+	connA, _, err := dialKaren(t, srv.URL, cookieHeader(t, cliA, srv.URL), gamekaren.Room)
+	if err != nil {
+		t.Fatalf("dial a: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialKaren(t, srv.URL, cookieHeader(t, cliB, srv.URL), gamekaren.Room)
+	if err != nil {
+		t.Fatalf("dial b: %v", err)
+	}
+	defer connB.CloseNow()
+	framesA, framesB := readFrames(t, connA), readFrames(t, connB)
+
+	ctx := context.Background()
+	for _, c := range []*websocket.Conn{connA, connB} {
+		if err := c.Write(ctx, websocket.MessageText, []byte(`{"t":"karen_hello"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Walk A at the bottle. Batched exactly as the browser batches — one frame
+	// per sub-step trips the socket's rate limiter, which is the limiter doing
+	// its job rather than something to ask an exemption from.
+	var seq int
+	walk := func(mx, my float64) {
+		cmds := make([]map[string]any, 0, 4)
+		for j := 0; j < 4; j++ {
+			seq++
+			cmds = append(cmds, map[string]any{
+				"q": seq, "dt": gamekaren.SimStep.Seconds(), "mx": mx, "my": my,
+			})
+		}
+		raw, _ := json.Marshal(map[string]any{"t": "karen_input", "cmds": cmds})
+		if err := connA.Write(ctx, websocket.MessageText, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Steer towards the bottle from wherever the draw put him, re-reading his
+	// position as he goes. Bounded by TIME, never by a count of attempts.
+	// EVERY OTHER SNAPSHOT, not every one. The socket allows ten frames a second
+	// and snapshots arrive at ten a second, so steering on each of them sits
+	// exactly on the limiter — which then closes the connection, and the failure
+	// presents as "no karen_snap frame arrived" rather than as a rate limit.
+	// Steering at half rate is also what a browser does: it samples faster than
+	// it sends and packs the sub-steps into one frame.
+	deadline := time.Now().Add(25 * time.Second)
+	drunk, n := false, 0
+	for !drunk && time.Now().Before(deadline) {
+		f := waitForKarenFrame(t, framesA, tick, clock, "karen_snap", 15*time.Second)
+		x, _ := f["x"].(float64)
+		y, _ := f["y"].(float64)
+		dx := gamekaren.BottleX - x/100
+		dy := gamekaren.BottleY - y/100
+		d := math.Hypot(dx, dy)
+		n++
+		if d > 1e-6 && n%2 == 0 {
+			walk(dx/d, dy/d)
+		}
+		if b, ok := f["b"].(map[string]any); ok {
+			if dv, _ := b["d"].(float64); dv > 0 {
+				drunk = true
+			}
+		}
+	}
+	if !drunk {
+		t.Fatal("walking onto the bottle never got him drunk")
+	}
+
+	// AND HIS COLLEAGUE SEES IT, without having gone anywhere near the bottle.
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("b never saw the bald man wobble")
+		}
+		f := waitForKarenFrame(t, framesB, tick, clock, "karen_snap", 15*time.Second)
+		if b, ok := f["b"].(map[string]any); ok {
+			if dv, _ := b["d"].(float64); dv > 0 {
+				break
+			}
 		}
 	}
 }

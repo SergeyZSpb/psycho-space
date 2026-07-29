@@ -956,6 +956,15 @@ export interface KarenConfig {
     seconds_ms: number;
     cooldown_ms: number;
   };
+  /** «Набухать лысого» — where the bottle stands and what drinking it does. */
+  bottle?: {
+    x: number;
+    y: number;
+    reach: number;
+    drunk_ms: number;
+    return_ms: number;
+    slow_pct: number;
+  };
 }
 
 /** A started or resumed shift. No level — the office is in the catalogue. */

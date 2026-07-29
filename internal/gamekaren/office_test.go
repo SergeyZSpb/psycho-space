@@ -999,3 +999,69 @@ func TestARedirectedColleagueWhoLeavesGivesHimBack(t *testing.T) {
 		t.Fatalf("he did not come back to the only person left: %.2f then %.2f", before, after)
 	}
 }
+
+// --- «набухать лысого» ------------------------------------------------------
+
+func TestWalkingIntoTheBottleBuysHimARound(t *testing.T) {
+	// The one mechanic that acts on HIM rather than on the space between you, so
+	// it costs a walk — which means leaving wherever you were standing, and the
+	// streak with it.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(o, "a", Vec2{X: BottleX, Y: BottleY})
+	advance(o, 1)
+
+	if drunkOf(o) <= 0 {
+		t.Fatal("standing on the bottle did not get him drunk")
+	}
+	// And the frame says so, to EVERYBODY — being drunk is a fact about the
+	// office, so one Карен buys the round and both of them watch him wobble.
+	if got := snapOf(t, o, "a").B.D; got <= 0 {
+		t.Fatalf("the frame does not carry his state: %d", got)
+	}
+}
+
+func TestTheBottleIsNotAButtonYouCanHold(t *testing.T) {
+	// It is spent, and another one takes a long time to arrive — the effect is
+	// the strongest in the game, so the cooldown is the whole balance of it.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(o, "a", Vec2{X: BottleX, Y: BottleY})
+	advance(o, 1)
+	first := drunkOf(o)
+
+	// Stand on the spot for a while: no second round, and he sobers up on
+	// schedule rather than being topped up.
+	for i := 0; i < int(DrunkSeconds*SimHz)+4; i++ {
+		place(o, "a", Vec2{X: BottleX, Y: BottleY})
+		advance(o, 1)
+	}
+	if drunkOf(o) > 0 {
+		t.Fatalf("he never sobered up — the bottle is refilling under him (%v, was %v)", drunkOf(o), first)
+	}
+	// The frame says when another one is due, so the plane can stop drawing it.
+	if snapOf(t, o, "a").Bt <= 0 {
+		t.Fatal("the frame does not say the bottle is gone, so a client would draw one that is not there")
+	}
+}
+
+func TestABottleNobodyHasReachedIsStillThere(t *testing.T) {
+	// Absent `bt` means "it is standing there", which is the common case and is
+	// why it costs nothing to say.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(o, "a", Vec2{X: OfficeW - 1, Y: 1})
+	advance(o, 2)
+	if got := snapOf(t, o, "a").Bt; got != 0 {
+		t.Fatalf("an untouched bottle reports %d ms until it returns", got)
+	}
+	if drunkOf(o) != 0 {
+		t.Fatal("he got drunk with nobody near the bottle")
+	}
+}
+
+func drunkOf(o *Office) float64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.boss.Drunk
+}

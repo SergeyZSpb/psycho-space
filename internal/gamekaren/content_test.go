@@ -565,3 +565,22 @@ func TestNobodyRecitesThePoolInOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestTheBottleIsSomewhereYouCanActuallyStand(t *testing.T) {
+	// It is a place you WALK TO, so it has to be reachable: on the floor, and
+	// not inside a desk. A bottle in the furniture is a mechanic nobody can use.
+	at := Vec2{X: BottleX, Y: BottleY}
+	if at.X < PlayerRadius || at.X > OfficeW-PlayerRadius ||
+		at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
+		t.Fatalf("the bottle stands off the floor at %+v", at)
+	}
+	for i, d := range Desks {
+		if insideDesk(d, at, PlayerRadius) {
+			t.Fatalf("the bottle is inside desk %d", i)
+		}
+	}
+	// And it is not where you spawn — the walk IS the price.
+	if math.Hypot(at.X-PlayerSpawnX, at.Y-PlayerSpawnY) < 2 {
+		t.Fatal("the bottle is close enough to the spawn to be free")
+	}
+}

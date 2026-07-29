@@ -224,7 +224,11 @@ func TestSnapshotStaysSmall(t *testing.T) {
 		T: TypeSnapshot, Tick: 36000, Ack: 71999,
 		X: 1565, Y: 2165, Pay: 648000, M: 300, St: 30000, Dc: 4000, Rc: 20000,
 		P: len(KarenLines) - 1,
-		B: BossFrame{X: 1560, Y: 2160, G: 255, P: len(BossLines) - 1},
+		B: BossFrame{X: 1560, Y: 2160, G: 255, P: len(BossLines) - 1, D: 8000},
+		// Somebody bought him a round moments ago: he is still wobbling AND the
+		// bottle has not come back. Both present at once is the real worst case,
+		// even though it only lasts as long as he stays drunk.
+		Bt: 45000,
 		// A FULL OFFICE, which is the worst case and is now most of the frame.
 		// MaxOccupants is three, so two peers; twelve-character handles, both in
 		// the far corner, both on the widest line index in the pool.
@@ -271,7 +275,14 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// verb was accepted (a second message type, and a client that could believe
 	// a verb the office refused), or a client-side timer (which would offer the
 	// button back before the office would honour it).
-	const budget = 260
+	//
+	// 260 -> 280, for «набухать лысого». `,"bt":45000` is twelve bytes and rides
+	// only while the bottle is gone; `,"d":8000` is nine and rides only while he
+	// is actually drunk, which is eight seconds of a forty-five second cycle.
+	// Both at once is the eleven-byte overlap measured above. Neither is on a
+	// frame in the state this game spends most of its time in, which is a sober
+	// bald man and a bottle standing on the floor.
+	const budget = 280
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}

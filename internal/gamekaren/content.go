@@ -366,6 +366,45 @@ const (
 	RedirectSaySeconds = 3.0
 )
 
+// «Набухать лысого» — the bottle, and the one mechanic in this game that acts on
+// HIM rather than on the space between you.
+//
+// That is exactly why it has a price. He is the only thing that ends a shift, so
+// a few seconds of a harmless лысый is the strongest effect available, and it
+// costs a walk to a fixed spot — which means leaving wherever you were standing,
+// and therefore the streak, which is the whole currency of the game.
+const (
+	// BottleX and BottleY are where it stands. A fixed spot, in the catalogue,
+	// like everything else about this office: fetch-and-spend only means
+	// anything if the fetching is somewhere you have to go.
+	// Off to one side and at the same end of the room the draw puts you in, so
+	// fetching it is a LATERAL walk rather than a sprint into the man chasing
+	// you. Mid-floor was tried first and is effectively unreachable: he closes
+	// from the far wall at BossSpeed while you walk at WalkSpeed, so a bottle
+	// at the midpoint is one he arrives at first. The price is meant to be the
+	// streak, not the shift.
+	BottleX = 2.2
+	BottleY = 6.0
+	// BottleReach is how close you have to be to pick it up. Generous, because
+	// the streak is the price and fighting the collision resolver for the last
+	// twenty centimetres is not.
+	BottleReach = 0.9
+	// DrunkSeconds is how long he wobbles. Long enough to walk somewhere better,
+	// short enough that it is a reprieve and not a win.
+	DrunkSeconds = 8.0
+	// DrunkSpeed is what he is multiplied by while drunk. STAGGERING IS NOT
+	// STOPPING: a boss who freezes is a boss you ignore, and the joke is that he
+	// is delighted AND now also drunk. He is slower and he is still coming.
+	DrunkSpeed = 0.45
+	// DrunkWobble is how far off his heading he weaves, in radians.
+	DrunkWobble = 1.1
+	// DrunkWobbleHz is how fast the weave oscillates.
+	DrunkWobbleHz = 1.7
+	// BottleReturn is how long until another one appears. It is the cooldown of
+	// the whole mechanic, and it is long: see the note above about strength.
+	BottleReturn = 45.0
+)
+
 // KarenSlot is how long he holds one line before moving to the next, in ticks.
 //
 // THE SAME AS THE BALD MAN'S, at the owner's direction. It was twice his, on the
@@ -557,6 +596,19 @@ type Config struct {
 	KarenLines   []string     `json:"karen_lines"`
 	MaxOccupants int          `json:"max_occupants"`
 	Redirect     VerbConfig   `json:"redirect"`
+	Bottle       BottleConfig `json:"bottle"`
+}
+
+// BottleConfig is «набухать лысого», published so the plane can draw the bottle
+// where it actually stands and the cheatsheet can state the rule without typing
+// a number.
+type BottleConfig struct {
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	Reach    float64 `json:"reach"`
+	DrunkMs  int     `json:"drunk_ms"`
+	ReturnMs int     `json:"return_ms"`
+	SlowPct  int     `json:"slow_pct"`
 }
 
 // VerbConfig publishes a verb: what it does and what it costs, so the control
@@ -662,6 +714,14 @@ func BuildConfig() Config {
 		BossLines:    append([]string(nil), BossLines...),
 		KarenLines:   append([]string(nil), KarenLines...),
 		MaxOccupants: MaxOccupants,
+		Bottle: BottleConfig{
+			X:        BottleX,
+			Y:        BottleY,
+			Reach:    BottleReach,
+			DrunkMs:  int(DrunkSeconds * 1000),
+			ReturnMs: int(BottleReturn * 1000),
+			SlowPct:  int(DrunkSpeed * 100),
+		},
 		Redirect: VerbConfig{
 			Label:      "ЭТО К НЕМУ",
 			Say:        karenRedirect[0],

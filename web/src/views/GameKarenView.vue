@@ -100,6 +100,16 @@
             data-testid="karen-desk"
             :style="deskStyle(desk)"
           />
+          <!-- The bottle. Placed from the catalogue, drawn only while it is
+               there — `bt` is omitted while it stands, so an absent field means
+               present and the common case costs nothing to say. -->
+          <span
+            v-if="bottleAt && bottleMs === 0"
+            class="karen-bottle"
+            data-testid="karen-bottle"
+            :style="bottleStyle"
+            aria-hidden="true"
+          />
           <span ref="bossEl" class="karen-boss" data-testid="karen-boss" aria-hidden="true">
             <span v-if="bossSays" class="karen-say" data-testid="karen-boss-say">{{ bossSays }}</span>
             <span class="karen-fig-body" />
@@ -353,6 +363,21 @@ const brokenFaces = ref(new Set<string>());
 /** The redirect verb's cooldown, milliseconds, straight off the snapshot. */
 const redirectMs = ref(0);
 
+/** How long until another bottle stands in the office. Zero means one is there. */
+const bottleMs = ref(0);
+
+/** Where the bottle stands, in plane coordinates, from the catalogue. */
+const bottleAt = computed(() => {
+  const b = config.value?.bottle;
+  if (!b || !constants) return null;
+  return toPlane(b.x, b.y, constants.officeW, constants.officeH);
+});
+
+const bottleStyle = computed(() => {
+  const at = bottleAt.value;
+  return at ? { '--x': String(at.u), '--y': String(at.v) } : {};
+});
+
 /** A peer as the template needs him: identity, speech, and a face if he has one. */
 interface PeerShown extends PeerLook {
   avatar?: string;
@@ -442,6 +467,7 @@ let bossInterp: Interpolator | null = null;
 const peerEls = new Map<string, HTMLElement>();
 const peerInterp = new Map<string, Interpolator>();
 /** The grin state currently written on the boss, so the class is not rewritten. */
+let bossDrunk = false;
 let bossGrin = '';
 
 // --- the stick --------------------------------------------------------------
@@ -633,6 +659,7 @@ function teardownPlay(): void {
   peers.value = [];
   brokenFaces.value = new Set();
   redirectMs.value = 0;
+  bottleMs.value = 0;
   peerEls.clear();
   peerInterp.clear();
   stickPointer = null;
@@ -824,6 +851,7 @@ function applySnapshot(frame: RealtimeFrame): void {
   meLine.value = num(frame.p);
   // Omitted when ready, like `dc` — absent means zero, never "unchanged".
   redirectMs.value = num(frame.rc);
+  bottleMs.value = num(frame.bt);
 
   if (!predictor) {
     // The first authoritative position is what the predictor is seeded with —
@@ -844,6 +872,16 @@ function applySnapshot(frame: RealtimeFrame): void {
   if (b && el) {
     bossLine.value = num(b.p);
     const grin = num(b.g) / 255;
+    // GREEN IS A STATE OF THE FIGURE, not a box around it. It goes on a data
+    // attribute that flips `--skin` and `--body`, exactly as the grin steps do —
+    // a `background` on `.karen-boss` paints the positioning rectangle and reads
+    // as a broken sprite (§17.5 of the build plan, learned the hard way).
+    const drunk = num(b.d) > 0;
+    if (el && drunk !== bossDrunk) {
+      bossDrunk = drunk;
+      if (drunk) el.dataset.drunk = '1';
+      else delete el.dataset.drunk;
+    }
     bossAt = { x: num(b.x) / 100, y: num(b.y) / 100 };
     // Buffered rather than drawn. The render loop reads him back out a beat
     // later, between two samples it already holds, which is what makes jitter
@@ -1429,6 +1467,31 @@ function onDash(): void {
    colours below are the ones those gradients already carried; only the element
    they land on has moved. Nothing may set `background` on `.karen-me` or
    `.karen-boss` — a figure's box is a coordinate, not a surface. */
+/* The bottle. A small thing on the floor you have to walk to — deliberately
+   drawn at ground level and NOT feet-anchored like a figure, because it is not
+   standing, it is lying about. */
+.karen-bottle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--unit) * 0.28);
+  height: calc(var(--unit) * 0.62);
+  transform: translate3d(calc(var(--x, 0.5) * 100cqw - 50%), calc(var(--y, 0.5) * 100cqh - 50%), 0);
+  border-radius: 40% 40% 22% 22%;
+  background: linear-gradient(180deg, #cfe3d0 0%, #7fa886 55%, #4c6b52 100%);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Drunk: green, and it is the SKIN and the BODY that go green rather than the
+   positioning box — the same rule the grin steps follow, and for the same
+   reason. He is still coming; he is just not coming in a straight line. */
+.karen-boss[data-drunk] {
+  --skin: linear-gradient(180deg, #b9d8a4 0%, #7fae6a 100%);
+  --body: #4f7a46;
+}
+
 .karen-boss[data-grin='closing'] {
   --skin: linear-gradient(180deg, #f3c98a 0%, #d99a52 100%);
   --body: #9a5f2a;

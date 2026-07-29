@@ -212,6 +212,10 @@ type Snapshot struct {
 	// Rc is the redirect verb's cooldown, milliseconds, rounded up and omitted
 	// when it is ready — the same rule and the same reason as `dc`.
 	Rc int `json:"rc,omitempty"`
+	// Bt is how long until a bottle stands in the office again, milliseconds,
+	// OMITTED WHILE ONE IS THERE — which is the common case, so the plane draws
+	// it on an absent field and costs nothing to say so.
+	Bt int `json:"bt,omitempty"`
 	// The bald man.
 	B BossFrame `json:"b"`
 	// Pr is everybody else in the office — at most two, because MaxOccupants is
@@ -257,6 +261,14 @@ type BossFrame struct {
 	Y int `json:"y"`
 	G int `json:"g"`
 	P int `json:"p,omitempty"`
+	// D is how long he stays drunk, milliseconds, omitted when he is sober.
+	//
+	// A DURATION RATHER THAN A BOOLEAN, because the client draws a countdown as
+	// well as a colour — and because "how much longer" is the only question
+	// worth asking about a state you are trying to outlast. Whether he is drunk
+	// is a fact about the OFFICE, so it rides everybody's frame: one Карен buys
+	// the round and both of them watch him wobble.
+	D int `json:"d,omitempty"`
 }
 
 // Over ends a shift. It is sent once, and the client stops sending input.

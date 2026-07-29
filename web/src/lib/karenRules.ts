@@ -161,6 +161,27 @@ export function buildRules(config: KarenConfig | null): RuleBlock[] {
     });
   }
 
+  // The bottle, generated from what the server publishes — how long he wobbles,
+  // how slow he gets, and how long until there is another one.
+  const bottle = config.bottle;
+  if (bottle && has(bottle.drunk_ms) && has(bottle.return_ms)) {
+    blocks.push({
+      title: 'Бутылка',
+      lines: [
+        {
+          label: '🍾 набухать лысого',
+          text:
+            `Дойди до бутылки — он выпьет, позеленеет и поплывёт: ` +
+            `${decimal(bottle.drunk_ms / 1000)} с на ${bottle.slow_pct} % скорости.`,
+        },
+        {
+          label: '🚶 но он всё равно идёт',
+          text: `Шатается, а не стоит. Следующая бутылка через ${decimal(bottle.return_ms / 1000)} с.`,
+        },
+      ],
+    });
+  }
+
   const endings = Array.isArray(config.endings) ? config.endings : [];
   const endingLines = endings
     .filter((e) => e && typeof e.title === 'string' && e.title.length > 0)

@@ -11,7 +11,7 @@ func TestHeClosesOnTheNearestTarget(t *testing.T) {
 	near := Vec2{X: 8, Y: 9}
 	far := Vec2{X: 8, Y: 1}
 
-	got := StepBoss(nil, b, []Vec2{far, near}, testDt)
+	got := StepBoss(nil, b, []Vec2{far, near}, testDt, 0)
 	if got.Pos.Y >= b.Pos.Y {
 		t.Fatalf("he walked away from both of them: %v → %v", b.Pos.Y, got.Pos.Y)
 	}
@@ -30,10 +30,10 @@ func TestATieIsBrokenByTheCallersOrdering(t *testing.T) {
 	right := Vec2{X: 12, Y: 11}
 
 	for i := 0; i < 50; i++ {
-		if got := StepBoss(nil, b, []Vec2{left, right}, testDt); got.Pos.X >= b.Pos.X {
+		if got := StepBoss(nil, b, []Vec2{left, right}, testDt, 0); got.Pos.X >= b.Pos.X {
 			t.Fatalf("run %d: he went right (%v) when the left target was listed first", i, got.Pos.X)
 		}
-		if got := StepBoss(nil, b, []Vec2{right, left}, testDt); got.Pos.X <= b.Pos.X {
+		if got := StepBoss(nil, b, []Vec2{right, left}, testDt, 0); got.Pos.X <= b.Pos.X {
 			t.Fatalf("run %d: he went left (%v) when the right target was listed first", i, got.Pos.X)
 		}
 	}
@@ -46,7 +46,7 @@ func TestHeNeverEndsInsideADeskOrOutsideTheFloor(t *testing.T) {
 	b := NewBoss()
 	for i := 0; i < 5000; i++ {
 		target := Vec2{X: r.Float64() * OfficeW, Y: r.Float64() * OfficeH}
-		b = StepBoss(Desks, b, []Vec2{target}, testDt)
+		b = StepBoss(Desks, b, []Vec2{target}, testDt, 0)
 		if b.Pos.X < BossRadius-1e-9 || b.Pos.X > OfficeW-BossRadius+1e-9 ||
 			b.Pos.Y < BossRadius-1e-9 || b.Pos.Y > OfficeH-BossRadius+1e-9 {
 			t.Fatalf("step %d put him outside the floor at %+v", i, b.Pos)
@@ -83,7 +83,7 @@ func TestTheGrinIsRecomputedEveryStep(t *testing.T) {
 		t.Fatal("he started out pleased")
 	}
 	for i := 0; i < 200; i++ {
-		next := StepBoss(nil, b, []Vec2{target}, testDt)
+		next := StepBoss(nil, b, []Vec2{target}, testDt, 0)
 		if next.Grin < b.Grin {
 			t.Fatalf("step %d: the grin went down while he was closing", i)
 		}
@@ -116,7 +116,7 @@ func TestWithNobodyToChaseHeGoesHomeAndStops(t *testing.T) {
 	// down entirely. This is what he does in between.
 	b := Boss{Pos: Vec2{X: 2, Y: 4}}
 	for i := 0; i < 1000; i++ {
-		b = StepBoss(Desks, b, nil, testDt)
+		b = StepBoss(Desks, b, nil, testDt, 0)
 	}
 	if math.Abs(b.Pos.X-BossSpawnX) > 1e-6 || math.Abs(b.Pos.Y-BossSpawnY) > 1e-6 {
 		t.Fatalf("he ended up at %+v rather than his spawn", b.Pos)
@@ -127,7 +127,7 @@ func TestWithNobodyToChaseHeGoesHomeAndStops(t *testing.T) {
 	// And he stays there rather than jittering around it.
 	settled := b
 	for i := 0; i < 10; i++ {
-		b = StepBoss(Desks, b, nil, testDt)
+		b = StepBoss(Desks, b, nil, testDt, 0)
 	}
 	if b.Pos != settled.Pos {
 		t.Fatalf("he drifted from %+v to %+v with nothing to chase", settled.Pos, b.Pos)
@@ -142,5 +142,56 @@ func TestHeCannotOutrunAWalk(t *testing.T) {
 	}
 	if DashSpeed <= WalkSpeed {
 		t.Fatalf("the dash (%v) is not faster than a walk (%v)", DashSpeed, WalkSpeed)
+	}
+}
+
+func TestADrunkBaldManIsSlowerButStillComing(t *testing.T) {
+	// STAGGERING IS NOT STOPPING, and that is the whole character: a boss who
+	// freezes is a boss you ignore, and the joke is that he is delighted AND now
+	// also drunk. Sober covers more ground than drunk; drunk still covers some.
+	target := []Vec2{{X: BossSpawnX, Y: 2}}
+	sober := StepBoss(Desks, NewBoss(), target, 1, 0)
+	drunkStart := NewBoss()
+	drunkStart.Drunk = DrunkSeconds
+	drunk := StepBoss(Desks, drunkStart, target, 1, 0)
+
+	soberGap := BossSpawnY - sober.Pos.Y
+	drunkGap := BossSpawnY - drunk.Pos.Y
+	if drunkGap <= 0 {
+		t.Fatalf("drunk, he moved %v towards his target — he has stopped or gone backwards", drunkGap)
+	}
+	if drunkGap >= soberGap {
+		t.Fatalf("drunk he covered %v and sober %v", drunkGap, soberGap)
+	}
+}
+
+func TestHeWeavesWhileDrunkRatherThanWalkingAStraightLine(t *testing.T) {
+	// The wobble is on the HEADING, so the same second of pursuit from the same
+	// place lands somewhere different depending on where in the weave he is.
+	target := []Vec2{{X: BossSpawnX, Y: 2}}
+	start := NewBoss()
+	start.Drunk = DrunkSeconds
+	seen := map[int]bool{}
+	for i := 0; i < 8; i++ {
+		// A quarter of the wobble period apart, so the samples are spread across
+		// it rather than landing on the same phase.
+		at := float64(i) / (4 * DrunkWobbleHz)
+		got := StepBoss(Desks, start, target, 0.5, at)
+		seen[int(got.Pos.X*1000)] = true
+	}
+	if len(seen) < 3 {
+		t.Fatalf("he walked the same line from every phase of the weave: %d distinct", len(seen))
+	}
+}
+
+func TestHeSobersUp(t *testing.T) {
+	b := NewBoss()
+	b.Drunk = 0.1
+	target := []Vec2{{X: BossSpawnX, Y: 2}}
+	for i := 0; i < 5; i++ {
+		b = StepBoss(Desks, b, target, SimStep.Seconds(), float64(i)*SimStep.Seconds())
+	}
+	if b.Drunk != 0 {
+		t.Fatalf("he is still %v drunk", b.Drunk)
 	}
 }
