@@ -68,13 +68,19 @@ func TestMovingResetsTheStreakButOnlyAfterTheGraceWindow(t *testing.T) {
 	}
 
 	// Inside the window: a twitch costs nothing at all.
-	brief := walk(full, int(GraceSeconds*SimHz)-1)
+	//
+	// Floor, not a plain conversion: the grace need not land on a whole tick —
+	// it did at 0.3 s and does not at 0.18 — and a test that assumes it does
+	// stops compiling the first time somebody retunes the feel, which is exactly
+	// when it should be telling them whether the rule still holds.
+	graceTicks := int(math.Floor(GraceSeconds * SimHz))
+	brief := walk(full, graceTicks-1)
 	if brief.Streak != full.Streak {
 		t.Fatalf("a %v-second twitch cost the streak: %v → %v", GraceSeconds, full.Streak, brief.Streak)
 	}
 
 	// Past it: the streak is gone in one step, not decayed.
-	past := walk(full, int(GraceSeconds*SimHz)+2)
+	past := walk(full, graceTicks+2)
 	if past.Streak != 0 {
 		t.Fatalf("walking past the grace window left a streak of %v", past.Streak)
 	}

@@ -78,16 +78,30 @@ var Desks = []Rect{
 }
 
 // Movement.
+//
+// THESE ARE PIXELS PER SECOND ON A PHONE, NOT METRES PER SECOND ON PAPER, and
+// that is the mistake the first tuning made. The plane is ~349 px wide for the
+// office's 16 m, so 22 px is a metre — and the original 3.2 m/s walk was 70 px/s,
+// which crosses the plane in five seconds and reads as wading. The dash was
+// worse: 9 m/s for 0.22 s is 2 m, which is 43 px, barely a thumb's width and
+// only 1.7x the radius it has to break. It looked decisive in metres and did
+// nothing on glass.
+//
+// The player's numbers are raised and the BOSS'S ARE NOT, deliberately: his
+// approach takes 6.5 s against a 6 s ramp, and that margin is the whole tension
+// of the game (design 12.1). Raising his speed would close it and make the x3
+// unreachable, so "make it feel faster" is a change to how the player moves, not
+// to the clock he is racing.
 const (
 	// WalkSpeed is how fast you move when you have decided to stop earning.
-	WalkSpeed = 3.2 // m/s
+	WalkSpeed = 6.4 // m/s
 
 	// DashSpeed, DashSeconds and DashCooldown are the one verb iteration 1 has.
 	// It is deliberately short and deliberately expensive to repeat: the dash is
 	// the answer to being caught, not a way to travel.
-	DashSpeed    = 9.0 // m/s
-	DashSeconds  = 0.22
-	DashCooldown = 4.0
+	DashSpeed    = 20.0 // m/s
+	DashSeconds  = 0.26
+	DashCooldown = 2.2
 
 	// IdleThreshold is how small a movement vector has to be before the
 	// simulation calls it standing still. It is not zero because an analogue
@@ -120,7 +134,7 @@ const (
 	// and immediately regretted — does not cost six seconds of ramp. It is NOT
 	// the dash: a dash costs nothing at all, however long it lasts, which is the
 	// asymmetry the whole skill ceiling rests on.
-	GraceSeconds = 0.3
+	GraceSeconds = 0.18
 )
 
 // The bald man.
