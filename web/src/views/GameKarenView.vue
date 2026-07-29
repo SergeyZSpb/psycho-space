@@ -868,24 +868,45 @@ function onDash(): void {
    somebody is standing still watching a multiplier climb — a page that scrolls
    under a thumb resting on a stick is a page that moves the stick. */
 
+/* THE OFFICE IS THE SCREEN, AND EVERYTHING ELSE FLOATS ON IT.
+   This used to be a flex column — readouts, then the office, then a band of
+   controls — which meant the plane only got whatever height the other two left
+   it. The office is a portrait 16 × 22 room, so a plane bounded by height is a
+   plane narrower than the phone: measured on a 412 px phone, 470 px of an
+   available 591 with dead space above and below it. The controls' band alone
+   was 200 px of that.
+   So the stage is absolute and fills this box, and the HUD, the streak, the
+   link and the controls are drawn ON TOP of it — which is «ВАНЯДУМ»'s
+   arrangement exactly (`.dum-play` / `.dum-canvas` / `.dum-hud`), and the
+   yard's rule that a control belongs on the plane rather than under it.
+   Nothing here is a column any more, so nothing can push the office. */
 .karen-play {
   position: absolute;
   inset: 0;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
   background: #16181d;
   color: rgba(255, 255, 255, 0.94);
 }
 
+/* IN FLOW, BUT OVER THE OFFICE. `.karen-play` is no longer a column, so normal
+   flow starts at its top edge and stacks these two exactly where they were —
+   while `z-index` puts them above the stage behind them. Keeping them in flow
+   rather than absolutely positioning each is what lets the streak sit under the
+   HUD without anybody having to know how tall the HUD is.
+   `pointer-events: none` because they are readouts standing on the floor now: a
+   tap that lands on the word ЗАРПЛАТА has to reach the office, not be eaten by
+   a label. The one real control in here turns them back on for itself. */
 .karen-hud {
-  flex: 0 0 auto;
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
   font-variant-numeric: tabular-nums;
   min-width: 0;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
 }
 
 .karen-hud-cell {
@@ -927,6 +948,8 @@ function onDash(): void {
    yard shipped a control standing where another one takes the tap once. */
 .karen-quit {
   flex: 0 0 auto;
+  /* The exception to the strip above: this one IS a control. */
+  pointer-events: auto;
   min-width: 56px;
   min-height: 44px;
   padding: 0 10px;
@@ -942,7 +965,9 @@ function onDash(): void {
    the one number a player watches continuously, and a bar says it without being
    read. */
 .karen-streak {
-  flex: 0 0 auto;
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
   height: 6px;
   margin: 0 10px 4px;
   border-radius: 3px;
@@ -974,8 +999,8 @@ function onDash(): void {
 /* The stage is the only flexible child, and `min-height: 0` is what lets it give
    up space rather than pushing the controls off a short screen. */
 .karen-stage {
-  flex: 1 1 auto;
-  min-height: 0;
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1170,17 +1195,32 @@ function onDash(): void {
 /* --- controls -------------------------------------------------------------
    Both thumbs, both ends, and nothing between them that can be hit by accident. */
 
+/* ON the office rather than under it, both thumbs where they already were.
+   The wrapper is a layout box and NOTHING ELSE: `pointer-events: none` so the
+   gap between the two thumbs is still office — a tap there has to reach the
+   floor, because the whole width of the screen is the room now. Each control
+   turns them back on for itself.
+   `align-items: flex-end` rather than `center`, because the two are different
+   sizes and it is their BOTTOMS that must line up against the edge of the
+   screen. And the bottom padding respects the home indicator: this band used to
+   be reserved space, and now it is the room. */
 .karen-controls {
-  flex: 0 0 auto;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  padding: 10px 16px 18px;
+  padding: 10px 16px calc(18px + env(safe-area-inset-bottom, 0px));
   gap: 12px;
+  pointer-events: none;
 }
 
 .karen-stick {
   position: relative;
+  pointer-events: auto;
   width: 104px;
   height: 104px;
   border-radius: 50%;
@@ -1205,6 +1245,7 @@ function onDash(): void {
 }
 
 .karen-dash {
+  pointer-events: auto;
   width: 84px;
   height: 84px;
   border-radius: 50%;

@@ -172,6 +172,18 @@ async function enterOffice(page: Page, opts: StubOptions = {}) {
   return socket;
 }
 
+/**
+ * The shape the complaint arrived on, and the one that discriminates.
+ *
+ * This suite's own project is 360 × 800, where a portrait office is full width
+ * whichever way it is laid out — so a full-bleed assertion made at 360 asserts
+ * nothing. 412 × 746 is a common Android viewport and is tall enough to play on
+ * but not tall enough to hide a control band, which is exactly the case that was
+ * broken. Any test that claims something about how big the office is has to set
+ * this first.
+ */
+const PHONE = { width: 412, height: 746 };
+
 const overflow = (page: Page) =>
   page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
 
@@ -404,7 +416,86 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
       expect(box!.height, id).toBeGreaterThanOrEqual(44);
       expect(box!.x, id).toBeGreaterThanOrEqual(0);
       expect(box!.x + box!.width, id).toBeLessThanOrEqual(viewport.width);
+      // THE OTHER AXIS, which did not exist while the controls were a band in a
+      // flex column — a column cannot put its own children off the screen. They
+      // are absolutely positioned over the office now, so `bottom: -20px` is one
+      // typo away and nothing else in this file would notice.
+      expect(box!.y, id).toBeGreaterThanOrEqual(0);
+      expect(box!.y + box!.height, id).toBeLessThanOrEqual(viewport.height);
     }
+  });
+
+  test('the office is the whole screen, edge to edge', async ({ page }) => {
+    // THE POINT OF THE OVERLAY, and it needs A REAL PHONE'S SHAPE rather than
+    // this project's to be a claim at all.
+    //
+    // This suite runs at 360 × 800, and at that shape the office was ALREADY
+    // full width before the controls became overlays — 800 is tall enough that
+    // the plane's WIDTH bound wins either way, so nothing asserted at 360 could
+    // tell the two layouts apart. 412 × 746 is the shape the complaint arrived
+    // on: 746 − 72 of shell − 56 of readouts − 132 of control band left 486 px
+    // of stage, and a portrait room bounded by 486 is only 324 px wide — 79 % of
+    // the phone, with dead space down both sides and above and below. Give the
+    // stage the whole box and the width bound wins instead.
+    //
+    // NOT @wide, deliberately: at 1440 × 900 the plane is bounded by HEIGHT and
+    // is correctly NOT full width, so this claim is about a phone and skips
+    // itself above 600 px — exactly the condition `playwright.config.ts` says
+    // earns no tag.
+    if (!isMobile(page)) test.skip();
+    await page.setViewportSize(PHONE);
+    await enterOffice(page);
+    const plane = (await page.getByTestId('karen-plane').boundingBox())!;
+    expect(plane.x).toBeLessThanOrEqual(1);
+    expect(plane.width).toBeGreaterThanOrEqual(PHONE.width - 1);
+  });
+
+  test('and both thumbs rest ON it, not in a band beneath it', async ({ page }) => {
+    // The inverse of "no control stands where another takes the tap": the
+    // controls SHOULD overlap the office, and without this the whole change is
+    // invisible to the suite — the plane could quietly go back to being one
+    // child of a column and every other test here would still pass.
+    if (!isMobile(page)) test.skip();
+    await enterOffice(page);
+    const plane = (await page.getByTestId('karen-plane').boundingBox())!;
+    for (const id of ['karen-stick', 'karen-dash']) {
+      const box = (await page.getByTestId(id).boundingBox())!;
+      const overlaps =
+        box.x < plane.x + plane.width &&
+        box.x + box.width > plane.x &&
+        box.y < plane.y + plane.height &&
+        box.y + box.height > plane.y;
+      expect(overlaps, `${id} is not over the office`).toBe(true);
+    }
+  });
+
+  test('a thumb on an overlaid control reaches the control, not the office', async ({ page }) => {
+    // `pointer-events` is the whole of this, and it is the one thing an overlay
+    // gets wrong in both directions. A real hit test rather than a dispatched
+    // event: `tap()` fails outright if something else is on top, which is the
+    // failure this is here to catch.
+    if (!isMobile(page)) test.skip();
+    await enterOffice(page);
+    await page.getByTestId('karen-dash').tap();
+    // And the gap BETWEEN the two thumbs is still office — the wrapper that
+    // lays them out must not be swallowing the middle of the screen.
+    const viewport = page.viewportSize()!;
+    const stick = (await page.getByTestId('karen-stick').boundingBox())!;
+    // Whatever is under that point, it must not be the controls' own wrapper.
+    // The office, a desk, or the stage behind the office are all fine answers —
+    // the claim is only that a box which exists to lay two thumbs out does not
+    // also eat the whole width of the screen between them.
+    const under = await page.evaluate(
+      ([x, y]) => {
+        const el = document.elementFromPoint(x, y);
+        return {
+          inControls: !!el?.closest('.karen-controls'),
+          what: el?.getAttribute('data-testid') ?? el?.className ?? '(nothing)',
+        };
+      },
+      [viewport.width / 2, stick.y + stick.height / 2],
+    );
+    expect(under.inControls, `the gap between the thumbs was eaten by ${under.what}`).toBe(false);
   });
 
   test('and no control stands where another one takes the tap', async ({ page }) => {
@@ -546,4 +637,6 @@ test.describe('«СИМУЛЯТОР КАРЕНА» in the nav', () => {
     if ((page.viewportSize()?.width ?? 0) >= 960) await expect(entry).toBeVisible();
   });
 });
+
+
 
