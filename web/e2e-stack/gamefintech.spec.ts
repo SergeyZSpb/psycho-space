@@ -43,16 +43,34 @@ const MIN_SHIFT_MS = 3_000;
  *     before the timer started (the POST and the first frame), and every
  *     millisecond a loaded runner adds to the click and the DELETE makes the
  *     shift longer. Load can only push us further inside this bound.
- *   * The CEILING is the bald man, and it is the one CI can actually break. He
- *     spawns at (8, 20.5), the player at (8, 4), and he needs to close to
- *     `CatchRadius + PlayerRadius` = 1.2 m — so 15.3 m at `BossSpeed` 2.35 m/s,
- *     which is **6.51 s** down a clear central lane. Past that the shift ends as
- *     `promoted` and the assertion below reads «ТЕБЯ ПОВЫСИЛИ».
+ *   * The CEILING is the bald man, and it is the one CI can actually break. Past
+ *     it the shift ends as `promoted` and the assertion below reads «ТЕБЯ
+ *     ПОВЫСИЛИ» instead.
  *
- * So the slack is spent where it buys something: quitting at ~3.3 s leaves
- * ~3.2 s of runner latency before the ceiling, where the obvious "wait a
- * comfortable second or two" left barely two. Standing still longer is not
- * caution here — it is walking towards the only thing that can fail.
+ * THE CEILING IS GUARANTEED BY A SERVER CONSTANT, not by geometry, and the
+ * arithmetic here used to say otherwise. It claimed a fixed player spawn at
+ * (8, 4) and `BossSpeed` 2.35 m/s giving 6.51 s of room; both numbers are gone.
+ * The spawn is DRAWN now (`Office.spawnPoint`) and the walk speed is 4.0 m/s, so
+ * neither the distance nor the time is a property of this test's setup.
+ *
+ * What replaces them is an inequality, and it is the reason `spawnHeadStart`
+ * exists. `spawnPoint` resamples until the straight-line gap to the boss is at
+ * least `spawnFromBoss = spawnHeadStart × BossSpeed + CatchRadius + PlayerRadius`,
+ * where `spawnHeadStart = MinShiftSeconds + 0.5`. So *whatever* the draw returns,
+ * he needs at least `MinShiftSeconds + 0.5` = 3.5 s to arrive — that constant is
+ * defined to make a recordable shift always possible — and he has to walk round
+ * the desks, so in practice it is several seconds more (the docs measure 10.35 s
+ * worst case across the floor).
+ *
+ * Which makes the bound on SLACK_MS exact and independent of the room's shape:
+ *
+ *     SLACK_MS < (spawnHeadStart − MinShiftSeconds) × 1000 = 500 ms
+ *
+ * 300 leaves 200 ms of guaranteed runner latency and, in the overwhelmingly
+ * common case, seconds. Raising it past 500 would make the test's correctness
+ * depend on the boss taking the long way round, which is luck rather than a
+ * guarantee. Standing still longer is not caution here — it is walking towards
+ * the only thing that can fail.
  */
 const SLACK_MS = 300;
 
@@ -117,9 +135,12 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     // The ending's words come from the served catalogue, so this is also the
     // assertion that the real content.go and the real client agree.
     //
-    // If this ever reads «ТЕБЯ ПОВЫСИЛИ», the runner spent more than ~3.2 s
-    // between the clock-in and this click and the bald man arrived first — read
-    // SLACK_MS above before treating it as a bug in the game.
+    // If this ever reads «ТЕБЯ ПОВЫСИЛИ», the bald man arrived first: the runner
+    // spent more than the ~200 ms of guaranteed slack between the clock-in and
+    // this click, and probably a great deal more, since he normally has to walk
+    // round the desks. Read SLACK_MS above before treating it as a bug in the
+    // game — and if it recurs on an idle machine, the thing to change is
+    // `spawnHeadStart`, not this timer.
     await expect(page.getByTestId('fintech-over-title')).toHaveText('ТЫ ПРОСТО УШЁЛ');
 
     // The row is written by a separate goroutine reading a buffered channel, so
