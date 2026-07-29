@@ -1079,3 +1079,144 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» in the nav', () => {
 
 
 
+
+test.describe('«СИМУЛЯТОР ФИНТЕХА» — the top of the room', () => {
+  // THE BUG THIS FIXES WAS THE FIRST THING A SHIFT SHOWED. A figure is
+  // feet-anchored, the simulation clamps only to PlayerRadius (0.35 m of a 22 m
+  // room), and the plane clipped everything above its top edge — so a man at the
+  // top wall was a sliver of body with no head and no words. The spawn sampler
+  // draws the first point far enough from the лысый, and he starts at the bottom,
+  // so most shifts OPENED in exactly that band.
+  //
+  // Every assertion here drives the BOSS rather than your own figure, on purpose:
+  // he is written straight from the snapshot, while `fintech-me` is predicted from
+  // a render loop that a browser pauses outright for a backgrounded tab — and with
+  // several workers only one page is ever visible.
+
+  test('a figure against the top wall is drawn whole, head and all', { tag: '@wide' }, async ({
+    page,
+  }) => {
+    const socket = await enterOffice(page);
+    // 0.4 m from the top wall — nearer than a player can actually stand.
+    await socket.snapshot({ b: { x: 600, y: 40, g: 10 } });
+    // WAIT FOR HIM TO GET THERE BEFORE MEASURING. He is interpolated, so his
+    // position arrives a frame or two after the snapshot carrying it — and until
+    // it does he is still standing where he was first placed, which is in the
+    // middle of the room where he has always fitted. Measured without this poll
+    // the test passes for the wrong reason and fails at random; bounded by a
+    // deadline rather than an attempt count, per docs/RUNBOOK.md.
+    await expect
+      .poll(() =>
+        page
+          .getByTestId('fintech-boss')
+          .evaluate((el) => getComputedStyle(el).getPropertyValue('--y').trim()),
+      )
+      .toBe(String(0.4 / CONFIG.office.h));
+
+    // ONE evaluate for the geometry, not four round trips: several of these boxes
+    // are written by a render loop, and reading them one at a time lets them move
+    // between the reads.
+    const seen = await page.evaluate(() => {
+      const boss = document.querySelector('[data-testid="fintech-boss"]')!;
+      const head = boss.querySelector('.fintech-fig-head')!.getBoundingClientRect();
+      const plane = document.querySelector('[data-testid="fintech-plane"]')!.getBoundingClientRect();
+      const office = document.querySelector('[data-testid="fintech-office"]')!.getBoundingClientRect();
+      return {
+        head: { top: head.top, height: head.height },
+        planeTop: plane.top,
+        officeTop: office.top,
+      };
+    });
+
+    // His head is inside the clipping box — which is the first claim.
+    expect(seen.head.height).toBeGreaterThan(0);
+    expect(seen.head.top).toBeGreaterThanOrEqual(seen.planeTop - 1);
+    // And it is genuinely ABOVE the room, standing on the wall: if this ever
+    // passed with the head below the office's top edge, the test would be
+    // asserting nothing, because the room is where he always fitted.
+    expect(seen.head.top).toBeLessThan(seen.officeTop);
+  });
+
+  test('his words go under his feet when there is no room over his head', async ({ page }) => {
+    // The wall is one figure deep, which makes the MAN visible; covering his
+    // WORDS too would need it half again as deep, and that is floor space taken
+    // from the room for two lines of text. So the balloon moves instead.
+    const socket = await enterOffice(page);
+
+    const boss = page.getByTestId('fintech-boss');
+    const flag = () => boss.evaluate((el) => getComputedStyle(el).getPropertyValue('--say-below').trim());
+    // Polled on a DEADLINE, never an attempt count: he is interpolated, so his
+    // first position arrives a frame or two after the snapshot that carries it.
+    // The flag is durable state once written, so reading it and then measuring is
+    // not the two-round-trip race the RUNBOOK warns about.
+    const geometry = () =>
+      boss.evaluate((el) => {
+        const say = el.querySelector('[data-testid="fintech-boss-say"]')!.getBoundingClientRect();
+        return { sayTop: say.top, figTop: el.getBoundingClientRect().top };
+      });
+
+    await socket.snapshot({ b: { x: 600, y: 40, g: 10 } });
+    await expect.poll(flag).toBe('1');
+    const atWall = await geometry();
+    // Below his feet, so below the top of his own box.
+    expect(atWall.sayTop).toBeGreaterThan(atWall.figTop);
+
+    // And in the middle of the room it is over his head, as it always was — which
+    // is what makes the assertion above discriminate.
+    await socket.snapshot({ b: { x: 600, y: 900, g: 10 } });
+    await expect.poll(flag).toBe('0');
+    const midRoom = await geometry();
+    expect(midRoom.sayTop).toBeLessThan(midRoom.figTop);
+  });
+});
+
+test.describe('«СИМУЛЯТОР ФИНТЕХА» — the scale of the world', () => {
+  test('a figure is the same fraction of the room on a phone and on a desktop', { tag: '@wide' }, async ({
+    page,
+  }) => {
+    // THE OWNER'S REQUIREMENT, and the reason the basis is `cqw` rather than `vw`:
+    // «i want other mobile phones to have same scale as i have». A figure is a
+    // fixed fraction of the ROOM, so two players see the same distances whatever
+    // they are holding — which a viewport-relative unit would break, drawing a man
+    // three and a half office metres wide in a desktop window.
+    //
+    // This is exactly the cross-width claim the desktop project exists for: it
+    // cannot fail at one width alone, so it earns the @wide tag.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ b: { x: 600, y: 900, g: 10 } });
+    await expect
+      .poll(() =>
+        page
+          .getByTestId('fintech-boss')
+          .evaluate((el) => getComputedStyle(el).getPropertyValue('--y').trim()),
+      )
+      .toBe(String(9 / CONFIG.office.h));
+
+    const ratio = await page.evaluate(() => {
+      const boss = document.querySelector('[data-testid="fintech-boss"]')!.getBoundingClientRect();
+      const office = document.querySelector('[data-testid="fintech-office"]')!.getBoundingClientRect();
+      return boss.height / office.width;
+    });
+    // 1.6 × --unit × the depth scale at this y, and --unit is 8.25 % of the room's
+    // width: 1.6 × 0.0825 × 1.16 = 0.1531. Asserted to three places rather than as
+    // a range, so it discriminates — before the world was cut by a quarter this
+    // was 0.204, and a `vw` basis would give two different answers here.
+    expect(ratio).toBeCloseTo(0.1531, 3);
+  });
+
+  test('the words over the office did not shrink with it', async ({ page }) => {
+    // PINNING A DELIBERATE EXCLUSION. Everything in the room is a fraction of
+    // `--unit` and got a quarter smaller; the balloon did not, and must not. Its
+    // font is 0.54rem — 8.64 px — and three quarters of that is 6.5 px, which is
+    // not text on a phone held at arm's length. `content_test.go`'s 48-rune bound
+    // is a MEASUREMENT of this font against this max-width, so shrinking either
+    // would make a Go test assert something false and start clamping lines that
+    // are inside the bound.
+    const socket = await enterOffice(page);
+    await socket.snapshot();
+    const say = page.getByTestId('fintech-boss-say');
+    await expect(say).toHaveCSS('font-size', '8.64px');
+    const laid = await say.evaluate((el) => (el as HTMLElement).offsetWidth);
+    expect(laid).toBeLessThanOrEqual(161);
+  });
+});

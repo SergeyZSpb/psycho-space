@@ -145,6 +145,134 @@ export function applyFigure(el: StyleTarget, at: PlanePoint): void {
   // The band picks the paint order, which steps; the scale is read from the
   // continuous ramp, which does not. See depthScaleFor.
   el.style.setProperty(DEPTH_PROPERTY, String(depthScaleFor(at.v)));
+  // Whether his words have anywhere to go above his head. Written HERE for the
+  // same reason the band is: derived at a second site it lags the coordinate it
+  // is derived from by a frame, and a balloon that flips one frame late is worse
+  // than one that never flips.
+  el.style.setProperty(SAY_BELOW_PROPERTY, sayBelow(at.v) ? '1' : '0');
+}
+
+/**
+ * How much clear wall is kept above the room, expressed in FIGURE HEIGHTS.
+ *
+ * A figure is `1.6 × --unit` tall and feet-anchored, so its box hangs entirely
+ * above the coordinate it stands on. At the top wall — reachable, because the
+ * simulation clamps only to `PlayerRadius` = 0.35 m of a 22 m room — that box is
+ * almost entirely above the office rectangle, and the plane clips it. So the
+ * plane is drawn taller than the room and the room sits at the bottom of it; the
+ * strip above is wall.
+ *
+ * IN FIGURE HEIGHTS RATHER THAN IN METRES, and that is the whole point of the
+ * number. Sized in metres it would have to be re-derived by hand every time the
+ * figure's size changed — and the figure is about to shrink by a quarter. Tied
+ * to the unit, the band follows automatically and the relation is testable:
+ * `planeBoxFits` below is what asserts it, and `UNIT_CQW` is the one number a
+ * scale change touches.
+ *
+ * EXACTLY ONE FIGURE, AND THE CEILING IS NOT TASTE — it is the full-bleed rule.
+ * Every extra tenth of a figure makes the plane taller, and on a phone the plane's
+ * HEIGHT is what binds, so a deeper wall is paid for directly in room width.
+ * Measured on a 412 × 746 phone: at 1.0 the room is the whole 412; at 1.035 it
+ * starts losing pixels; at 1.1 it is 410 and at 1.2 it is 408, drawing with dead
+ * space down both sides — which is the exact defect the overlay layout was built
+ * to remove («the office is the whole screen, edge to edge» in the layout suite).
+ *
+ * So there is no air above his head, and the consequence is worth stating: at the
+ * wall, the outermost pixel or two of the head's outline and the top of a
+ * colleague's avatar badge are clipped. That is invisible at a glance and is the
+ * right way round — a man drawn a pixel short beats a room drawn narrow.
+ */
+export const HEADROOM_FIGURES = 1.0;
+
+/**
+ * The figure's height as a fraction of the office's WIDTH.
+ *
+ * `--unit` is `UNIT_CQW × 100cqw` of the office and a figure is `1.6 × --unit`
+ * tall, so this is the one bridge between the stylesheet's sense of scale and
+ * this module's. It is exported so the view can write `--unit-cqw` and the
+ * stylesheet can read it: the coefficient then lives in exactly one place
+ * instead of being spelled once in CSS and once here, which is the duplication
+ * that makes a scale change a two-file guess.
+ */
+export const UNIT_CQW = 0.0825;
+
+/** A figure's height, as a fraction of the office's width. */
+export const FIGURE_W = 1.6 * UNIT_CQW;
+
+/** The custom property saying a balloon must hang below the feet instead. */
+export const SAY_BELOW_PROPERTY = '--say-below';
+
+/**
+ * How near the top wall a figure has to be before its words move below its feet.
+ *
+ * THE BAND MAKES THE MAN VISIBLE; IT DOES NOT MAKE ROOM FOR HIS WORDS. Covering
+ * both would need a strip about half again as deep, which is floor space and
+ * screen taken from the room for the sake of two lines of text — so the balloon
+ * is moved instead of the wall being grown. Below this height there is a figure's
+ * worth of wall above him and no more, which is where the balloon stops fitting.
+ *
+ * Deliberately looser than the derived threshold, following the yard's recorded
+ * failure direction: too tight clips a balloon to nothing, too loose costs
+ * nothing at all — the flip is invisible when there was room anyway.
+ */
+export const SAY_FLIP_V = 0.08;
+
+/** Whether this figure's balloon has to hang below its feet. */
+export function sayBelow(v: number): boolean {
+  if (!Number.isFinite(v)) return false;
+  return v < SAY_FLIP_V;
+}
+
+/** The plane's shape, and how much of it is the wall above the room. */
+export interface PlaneBox {
+  /** width ÷ height of the whole plane, room plus wall. */
+  boxRatio: number;
+  /** The wall's share of the plane's height, 0..1. */
+  headShare: number;
+}
+
+/**
+ * The plane's box for a room of this size.
+ *
+ * PURE, AND THE REASON THE SPLIT IS TWO ELEMENTS RATHER THAN ARITHMETIC. The
+ * plane is the clipping box and holds the wall; the office rectangle inside it
+ * keeps the catalogue's own shape and is the query container, so `toPlane`,
+ * `deskBox` and every `100cqw` / `100cqh` consumer are untouched by the band's
+ * existence — a coordinate is still a fraction of the room. Folding the band into
+ * the four transform sites instead would be four independent edits that have to
+ * agree forever.
+ *
+ * A degenerate room answers the plane's own ratio with no wall, so a catalogue
+ * that has not arrived yet draws a plausible empty box rather than `NaN` — which
+ * `toPlane` would clamp to zero and stack every figure in one corner, a failure
+ * this game has shipped before.
+ */
+export function planeBox(officeW: number, officeH: number): PlaneBox {
+  if (!(officeW > 0) || !(officeH > 0) || !Number.isFinite(officeW) || !Number.isFinite(officeH)) {
+    return { boxRatio: 16 / 22, headShare: 0 };
+  }
+  const headroom = HEADROOM_FIGURES * FIGURE_W * officeW;
+  return {
+    boxRatio: officeW / (officeH + headroom),
+    headShare: headroom / (officeH + headroom),
+  };
+}
+
+/**
+ * Whether the wall is deep enough to hold a whole figure standing at the wall.
+ *
+ * This is the relation the band exists to satisfy, written down so that changing
+ * `UNIT_CQW` cannot silently break it — which is exactly what a hand-tuned metre
+ * constant would have done the moment the figures were resized. Asserted by the
+ * unit tests rather than trusted.
+ */
+export function planeBoxFits(officeW: number, officeH: number): boolean {
+  const { headShare, boxRatio } = planeBox(officeW, officeH);
+  if (headShare <= 0) return false;
+  // The wall, as a fraction of the office's WIDTH — the same basis as FIGURE_W.
+  // A plane of width w is w / boxRatio tall, and the wall is headShare of that.
+  const wallW = headShare / boxRatio;
+  return wallW >= FIGURE_W;
 }
 
 /** How pleased he is, as a state the stylesheet can key off. */

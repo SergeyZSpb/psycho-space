@@ -25,6 +25,13 @@ import {
   sameRoster,
   sayFor,
   toPlane,
+  FIGURE_W,
+  HEADROOM_FIGURES,
+  SAY_BELOW_PROPERTY,
+  SAY_FLIP_V,
+  planeBox,
+  planeBoxFits,
+  sayBelow,
   type StyleTarget,
 } from '../lib/fintechPlane';
 
@@ -110,6 +117,18 @@ describe('writing a figure onto its element', () => {
     expect(el.props.get(DEPTH_PROPERTY)).toBe(String(depthScaleFor(0.8)));
     expect(Number(el.props.get(DEPTH_PROPERTY))).toBeGreaterThan(DEPTH_SCALES[2]);
     expect(Number(el.props.get(DEPTH_PROPERTY))).toBeLessThan(DEPTH_SCALES[3]);
+    // And whether his words fit above his head, for the same reason: derived at
+    // a second site it would lag the coordinate it is derived from by a frame.
+    expect(el.props.get(SAY_BELOW_PROPERTY)).toBe('0');
+  });
+
+  it('tells a figure at the top wall that its words must go under its feet', () => {
+    const el = target();
+    applyFigure(el, { u: 0.5, v: 0.016 });
+    expect(el.props.get(SAY_BELOW_PROPERTY)).toBe('1');
+    // It is written by the SAME call that writes the position, which is what
+    // stops the balloon flipping a frame after the man arrives.
+    expect(el.props.get(Y_PROPERTY)).toBe('0.016');
   });
 
   it('gives the boss his grin along with his position', () => {
@@ -353,5 +372,71 @@ describe('seeing a colleague dash', () => {
       expect(movingFast({ x: 0, y: 0 }, { x: 99, y: 0 }, dt, walk)).toBe(false);
     }
     expect(movingFast({ x: 0, y: 0 }, { x: 99, y: 0 }, 0.1, 0)).toBe(false);
+  });
+});
+
+describe('the wall the room stands against', () => {
+  it('keeps the room the catalogue’s shape and puts a figure’s worth of wall over it', () => {
+    // The plane is taller than the room by the wall, and the room's own aspect
+    // ratio is untouched — which is the whole reason the split is two elements:
+    // every coordinate stays a fraction of the ROOM, so nothing that maps metres
+    // to pixels knows the wall exists.
+    const { boxRatio, headShare } = planeBox(16, 22);
+    const planeH = 1 / boxRatio; // per unit of plane width
+    const roomH = planeH * (1 - headShare);
+    expect(16 / 22 / (1 / roomH)).toBeCloseTo(1, 6);
+    expect(headShare).toBeGreaterThan(0);
+    expect(headShare).toBeLessThan(0.25);
+  });
+
+  it('is deep enough to hold a whole figure standing against it', () => {
+    // THE RELATION THE WALL EXISTS TO SATISFY. A figure is 1.6 × --unit tall and
+    // feet-anchored, so at the top wall its whole box is above the room; if the
+    // wall is shallower than that, the plane clips his head off and the fix has
+    // not worked. Asserted rather than trusted, because the wall is DERIVED from
+    // the same coefficient as the figure — which is what stops a later resize
+    // from leaving it behind. A hand-tuned metre constant would break here.
+    expect(planeBoxFits(16, 22)).toBe(true);
+    // The wall is HEADROOM_FIGURES of him, and it may not be LESS than one of
+    // him — that is the relation. It is exactly one today, because the full-bleed
+    // rule pays for no more; see the constant for the measurement.
+    expect(HEADROOM_FIGURES).toBeGreaterThanOrEqual(1);
+    const { headShare, boxRatio } = planeBox(16, 22);
+    expect(headShare / boxRatio).toBeCloseTo(HEADROOM_FIGURES * FIGURE_W, 6);
+  });
+
+  it('answers a usable box for a catalogue that has not arrived', () => {
+    // The plane renders before the config resolves. A NaN here would reach
+    // toPlane, clamp to zero, and stack every figure in the room's top-left
+    // corner — which this game has shipped once already.
+    for (const [w, h] of [
+      [0, 0],
+      [16, 0],
+      [Number.NaN, 22],
+      [-16, 22],
+    ]) {
+      const box = planeBox(w, h);
+      expect(Number.isFinite(box.boxRatio)).toBe(true);
+      expect(box.boxRatio).toBeGreaterThan(0);
+      expect(box.headShare).toBe(0);
+    }
+  });
+});
+
+describe('a balloon with nothing over its head', () => {
+  it('flips below the feet only in the band where the wall is too thin', () => {
+    expect(sayBelow(0)).toBe(true);
+    expect(sayBelow(0.0159)).toBe(true); // the top wall, at PlayerRadius
+    expect(sayBelow(SAY_FLIP_V - 0.001)).toBe(true);
+    expect(sayBelow(SAY_FLIP_V)).toBe(false);
+    expect(sayBelow(0.5)).toBe(false);
+    expect(sayBelow(1)).toBe(false);
+  });
+
+  it('does not flip on a coordinate it cannot read', () => {
+    // Absent beats wrong: a figure whose position could not be read keeps the
+    // rendering it has always had rather than being moved somewhere arbitrary.
+    expect(sayBelow(Number.NaN)).toBe(false);
+    expect(sayBelow(Number.POSITIVE_INFINITY)).toBe(false);
   });
 });

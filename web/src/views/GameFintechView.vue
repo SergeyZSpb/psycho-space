@@ -91,8 +91,21 @@
         {{ link === 'connecting' ? 'связь…' : 'связь потеряна, ждём…' }}
       </p>
 
-      <div class="fintech-stage" :style="{ '--ratio': String(ratio) }">
+      <div
+        class="fintech-stage"
+        :style="{
+          '--box-ratio': String(box.boxRatio),
+          '--head-share': String(box.headShare),
+          '--unit-cqw': String(UNIT_CQW),
+        }"
+      >
+        <!-- THE PLANE IS THE ROOM PLUS THE WALL OVER IT, and it is the clipper.
+             The office rectangle below is the room proper: it keeps the
+             catalogue's shape, it is the query container, and every coordinate is
+             a fraction of IT — so nothing that maps metres to pixels knows the
+             wall exists. -->
         <div class="fintech-plane" data-testid="fintech-plane">
+          <div class="fintech-office" data-testid="fintech-office">
           <span
             v-for="(desk, i) in desks"
             :key="i"
@@ -165,6 +178,7 @@
             <span class="fintech-fig-body" />
             <span class="fintech-fig-head"><span class="fintech-fig-hair" /></span>
           </span>
+          </div>
         </div>
       </div>
 
@@ -299,8 +313,10 @@ import {
   formatMultiplier,
   formatSeconds,
   grinState,
+  planeBox,
   rampFraction,
   toPlane,
+  UNIT_CQW,
 } from '../lib/fintechPlane';
 import { MAX_STEP_SECONDS, stepConstants } from '../lib/fintechStep';
 import {
@@ -330,9 +346,21 @@ const myShifts = ref<FintechShiftRow[]>([]);
 const topShifts = ref<FintechTopRow[]>([]);
 const rules = computed(() => buildRules(config.value));
 const desks = computed<FintechRect[]>(() => config.value?.office.desks ?? []);
-const ratio = computed(() => {
+/**
+ * The plane's box, which is the ROOM PLUS THE WALL ABOVE IT.
+ *
+ * The office keeps the catalogue's own shape; the plane it sits in is taller,
+ * because a figure is feet-anchored and the top wall is reachable, so at the wall
+ * a man's whole box is above the room and the plane would clip it. `planeBox`
+ * owns that arithmetic and is unit-tested; this is only the wiring.
+ *
+ * `--unit-cqw` travels with them so the stylesheet and `fintechPlane` cannot
+ * disagree about how big a person is — the wall's depth is derived from exactly
+ * that coefficient, so a scale change is one number in one file.
+ */
+const box = computed(() => {
   const o = config.value?.office;
-  return o && o.w > 0 && o.h > 0 ? o.w / o.h : 0.75;
+  return planeBox(o?.w ?? 0, o?.h ?? 0);
 });
 
 // --- what the server last told us ------------------------------------------
@@ -1354,6 +1382,26 @@ function onDash(): void {
   overflow: hidden;
   background: #16181d;
   color: rgba(255, 255, 255, 0.94);
+
+  /* HOW TALL THE READOUTS ARE, in one place, because more than one thing has to
+     agree with it and none of them can measure it.
+
+     It is the HUD strip plus the streak bar: `.fintech-quit`'s `min-height: 44px`
+     plus 6 px of padding top and bottom is 56, and the streak is 6 px with 4 px
+     of margin under it. Both are in normal flow at the top of this box.
+
+     THE STAGE IS NOT INSET BY IT, and that is worth writing down because it looks
+     like a bug and is not. The readouts DO stand over the office — they are
+     transparent, text with a shadow and no background at all, which is the whole
+     point of the overlay layout: the room gets the entire box and the numbers
+     float on it. A figure standing at the top wall is therefore drawn among a few
+     glyphs of ЗАРПЛАТА rather than behind a panel, which is a cosmetic overlap
+     and not the reported bug — the reported bug was that he was DELETED, by the
+     plane's `overflow: hidden`, and that is what the wall fixes.
+     Insetting the stage was tried, and it costs a phone its full-width office:
+     the plane becomes bounded by height instead of width and the room draws ~7 %
+     narrower with dead space down both sides. That trade is the wrong way round. */
+  --fintech-hud-h: 66px;
 }
 
 /* IN FLOW, BUT OVER THE OFFICE. `.fintech-play` is no longer a column, so normal
@@ -1456,7 +1504,9 @@ function onDash(): void {
 
 .fintech-link {
   position: absolute;
-  top: 56px;
+  /* Just under the readouts, derived rather than measured a second time: this
+     used to be a hardcoded 56px that happened to agree with the HUD's height. */
+  top: calc(var(--fintech-hud-h) - 10px);
   left: 12px;
   margin: 0;
   font-size: 0.76rem;
@@ -1465,7 +1515,13 @@ function onDash(): void {
 }
 
 /* The stage is the only flexible child, and `min-height: 0` is what lets it give
-   up space rather than pushing the controls off a short screen. */
+   up space rather than pushing the controls off a short screen.
+
+   IT FILLS THE BOX, READOUTS AND ALL, and that is deliberate — see the note on
+   `.fintech-play`. Insetting it below the HUD was tried and reverted: it costs a
+   phone its full-width office, because the plane then becomes bounded by height
+   rather than width and the room draws ~7 % narrower with dead space down both
+   sides, which is the exact defect the overlay layout exists to remove. */
 .fintech-stage {
   position: absolute;
   inset: 0;
@@ -1475,41 +1531,75 @@ function onDash(): void {
   container-type: size;
 }
 
-/* THE OFFICE HAS A FIXED SHAPE, and it is the catalogue's shape rather than the
-   screen's: coordinates are metres in a 16×22 room, so a plane that took
-   whatever space was left would give a phone a tall office and a tablet a wide
-   one — the same coordinates, different distances between them, and a chase that
-   is a different game on each. `--ratio` is w/h, written by the template.
-   `min(100cqw, 100cqh × ratio)` is the largest box of that shape that fits,
-   whichever way the stage is shaped; `container-type: size` is what lets a
-   figure be placed in `cqw`/`cqh`, so metres map to pixels entirely in CSS and
-   there is no measured box cached in JavaScript to invalidate when mobile chrome
-   slides in. */
+/* THE PLANE IS THE ROOM PLUS THE WALL ABOVE IT, AND IT IS THE CLIPPER.
+   `--box-ratio` is w / (h + wall), written by the template from `planeBox`, so
+   `min(100cqw, 100cqh × box-ratio)` is still the largest box of that shape that
+   fits whichever way the stage is shaped.
+
+   WHY THERE IS A WALL AT ALL. A figure is feet-anchored — the coordinate is where
+   somebody is STANDING and the box hangs above it — and the top wall is
+   reachable, because the simulation clamps only to `PlayerRadius`, 0.35 m of a
+   22 m room. So a man at the wall had his whole box above the room, `overflow:
+   hidden` deleted it, and what a player saw was the bottom sliver of a body with
+   no head and no words at all. Most shifts OPENED like that: the spawn sampler
+   draws the first point far enough from the лысый, and he starts at the bottom,
+   so the qualifying region is a strip along the top.
+   This is not a `z-index` problem and could not be fixed by reordering — the
+   pixels are clipped before anything composites.
+
+   TWO ELEMENTS, NOT ONE, and the reason is worth keeping. The room inside keeps
+   the catalogue's own shape and is the query container, so `toPlane`, `deskBox`
+   and every `100cqw`/`100cqh` consumer are untouched: a coordinate is still a
+   fraction of the room and nothing that maps metres to pixels knows the wall
+   exists. `padding-top` on this element instead would have resolved its
+   percentage against `.fintech-stage`'s WIDTH — 216 px on a desktop against the
+   87 wanted — and folding the wall into the four transform sites would have been
+   four independent edits that must agree forever. */
 .fintech-plane {
-  width: min(100cqw, calc(100cqh * var(--ratio, 0.75)));
-  aspect-ratio: var(--ratio, 0.75);
-  container-type: size;
+  width: min(100cqw, calc(100cqh * var(--box-ratio, 0.63)));
+  aspect-ratio: var(--box-ratio, 0.63);
   position: relative;
   overflow: hidden;
   border-radius: 10px;
+  /* The wall. Darker than the floor and unlit, so the room reads as a room seen
+     from slightly above rather than as a plane that got taller. */
+  background: linear-gradient(180deg, #1b1e24, #23262d);
+}
+
+/* THE ROOM ITSELF — the catalogue's 16 × 22, sitting at the bottom of the plane.
+   `top` as a percentage resolves against the containing block's HEIGHT, which is
+   what makes this the right element to carry the wall's share; the plane's height
+   is definite because of its `aspect-ratio`.
+   It is the query container, so every `cqw`/`cqh` inside resolves against the
+   ROOM — which is why nothing else in this stylesheet had to change. */
+.fintech-office {
+  position: absolute;
+  inset: calc(var(--head-share, 0.13) * 100%) 0 0 0;
+  container-type: size;
+  border-radius: 0 0 10px 10px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.25)),
-    repeating-linear-gradient(0deg, #2a2e36 0 22px, #262a31 22px 44px);
-  /* HOW BIG A PERSON IS, IN THIS OFFICE. Every fixed length inside the plane is
-     a fraction of this one, so the world is drawn at the same apparent scale on
-     every screen instead of shrinking as the plane grows. Declared here and used
-     only by descendants — `.fintech-plane` is itself the query container, so a
-     `cqw` in a property ON this rule would resolve against `.fintech-stage`. */
-  --unit: clamp(26px, 11cqw, 54px);
+    repeating-linear-gradient(0deg, #2a2e36 0 4.5455%, #262a31 4.5455% 9.0909%);
+  /* HOW BIG A PERSON IS, IN THIS OFFICE. Every fixed length inside the room is a
+     fraction of this one, so the world is drawn at the same apparent scale on
+     every screen instead of shrinking as the room grows. Declared here and used
+     only by descendants — `.fintech-office` is itself the query container, so a
+     `cqw` in a property ON this rule would resolve against `.fintech-plane`.
+
+     `--unit-cqw` is written by the template from `fintechPlane.UNIT_CQW`, which
+     is also what the wall's depth is derived from. That is the whole point: the
+     coefficient lives in ONE place, so resizing the world cannot leave the wall
+     behind at its old depth. */
+  --unit: clamp(20px, calc(var(--unit-cqw, 0.0825) * 100cqw), 96px);
 }
 
 /* Furniture. Static — it comes off the catalogue once and never moves — so
    unlike the figures these go through Vue exactly once. */
 .fintech-desk {
   position: absolute;
-  border-radius: 3px;
+  border-radius: calc(var(--unit) * 0.075);
   background: #4a3b28;
-  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 calc(var(--unit) * -0.05) 0 rgba(0, 0, 0, 0.35);
 }
 
 /* THE FIGURES. Feet-anchored: the coordinate is where somebody is STANDING, so
@@ -1523,6 +1613,14 @@ function onDash(): void {
   position: absolute;
   left: 0;
   top: 0;
+  /* WHAT AN `em` MEANS INSIDE A FIGURE. The shadows on the head and the body are
+     written in `em`, which LOOKED relative and was not: nothing else sets a
+     font-size in here, so they resolved against the root's 16px and would have
+     kept their old size while the world shrank around them. Anchoring the figure's
+     font-size to `--unit` makes every one of them a fraction of the man, which is
+     what they always read as. Nothing inside a figure prints text — the balloon
+     deliberately uses `rem` and is excluded from the world's scale. */
+  font-size: var(--unit);
   width: var(--unit);
   height: calc(var(--unit) * 1.6);
   transform: translate3d(
@@ -1568,7 +1666,7 @@ function onDash(): void {
   aspect-ratio: 1;
   border-radius: 50%;
   object-fit: cover;
-  border: 2px solid rgba(0, 0, 0, 0.4);
+  border: max(1px, calc(var(--unit) * 0.05)) solid rgba(0, 0, 0, 0.4);
   background: rgba(0, 0, 0, 0.25);
   /* Decoration on somebody else's figure: it must never take a tap meant for
      the office underneath. */
@@ -1580,7 +1678,7 @@ function onDash(): void {
    orbiting him — the same shape the bald man's green follows. Small on purpose:
    it says "he is moving fast", not "look over here". */
 .fintech-peer[data-fast] {
-  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.55));
+  filter: drop-shadow(0 0 calc(var(--unit) * 0.15) rgba(255, 255, 255, 0.55));
 }
 
 /* Placeholder shapes rather than art: iteration 1 ships with no uploaded assets
@@ -1627,7 +1725,7 @@ function onDash(): void {
   border-radius: 50%;
   background: var(--skin, #e8d7b0);
   box-shadow:
-    0 0 0 2px rgba(0, 0, 0, 0.35),
+    0 0 0 calc(var(--unit) * 0.05) rgba(0, 0, 0, 0.35),
     inset -0.18em -0.22em 0.5em rgba(0, 0, 0, 0.18);
   overflow: hidden;
 }
@@ -1641,7 +1739,7 @@ function onDash(): void {
   height: 22%;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.5);
-  filter: blur(1px);
+  filter: blur(calc(var(--unit) * 0.03));
 }
 /* And you are not bald, which is the only reason this exists. */
 .fintech-fig-hair {
@@ -1688,7 +1786,7 @@ function onDash(): void {
   transform: translate3d(calc(var(--x, 0.5) * 100cqw - 50%), calc(var(--y, 0.5) * 100cqh - 50%), 0);
   border-radius: 40% 40% 22% 22%;
   background: linear-gradient(180deg, #cfe3d0 0%, #7fa886 55%, #4c6b52 100%);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0 0 max(1px, calc(var(--unit) * 0.025)) rgba(0, 0, 0, 0.4);
   pointer-events: none;
   z-index: 1;
 }
@@ -1717,14 +1815,29 @@ function onDash(): void {
    compositor for nothing — no second write, no chance of the words being a frame
    behind the man saying them.
    `bottom: 100%` puts it above the head; the figure's box is feet-anchored, so
-   that is above him rather than over him. It does not scale with `--depth`,
-   deliberately: a far-away line would become unreadable exactly when the man
-   saying it is hardest to see. */
+   that is above him rather than over him.
+
+   AND IT MOVES BELOW HIS FEET AT THE TOP WALL. The wall above the room is one
+   figure deep, which is what makes the MAN visible there; covering his words too
+   would need it half again as deep, and that is floor space and screen taken from
+   the room for two lines of text. So near the wall the balloon goes under him
+   instead: `--say-below` is written by `applyFigure` from the same coordinate that
+   positions him, so it can never be a frame behind. `100%` in the translation is
+   the balloon's OWN height, so it self-adjusts between a one-row and a two-row
+   line, and at `--say-below: 0` this renders exactly as it always did.
+
+   IT USED TO SAY «it does not scale with --depth, deliberately», and that was
+   simply false: this is a child of an element whose transform ends in
+   `scale(var(--depth))`, so the whole subtree scales with it, and the layout
+   suite has documented the real behaviour all along (a drawn balloon is bounded
+   at 160 × 1.4). The claim is removed rather than corrected upward, because
+   nothing here depends on it either way. */
 .fintech-say {
   position: absolute;
   left: 50%;
   bottom: 100%;
-  transform: translateX(-50%);
+  transform: translateX(-50%)
+    translateY(calc(var(--say-below, 0) * (100% + var(--unit) * 1.6 + 8px)));
   margin-bottom: 4px;
   padding: 2px 6px;
   border-radius: 8px;
@@ -1948,7 +2061,7 @@ function onDash(): void {
   margin: calc(var(--unit) * -0.45) 0 0 calc(var(--unit) * -0.45);
   transform: translate3d(calc(var(--x, 0.5) * 100cqw), calc(var(--y, 0.5) * 100cqh), 0);
   border-radius: 50%;
-  border: 2px solid var(--pop, rgba(255, 255, 255, 0.85));
+  border: max(1px, calc(var(--unit) * 0.05)) solid var(--pop, rgba(255, 255, 255, 0.85));
   pointer-events: none;
   z-index: 4;
   animation: fintech-pop 420ms ease-out forwards;
