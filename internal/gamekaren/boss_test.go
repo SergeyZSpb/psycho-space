@@ -195,3 +195,92 @@ func TestHeSobersUp(t *testing.T) {
 		t.Fatalf("he is still %v drunk", b.Drunk)
 	}
 }
+
+// --- getting round a desk ---------------------------------------------------
+
+func TestHeReachesSomebodyStandingBehindADesk(t *testing.T) {
+	// THE DEFECT THIS FIXES, stated as the test that used to fail. Pure pursuit
+	// grinds along a desk in whichever direction the push-out resolver happens to
+	// send him, which has nothing to do with where he is trying to get — measured
+	// at up to ninety seconds against a still player, in a game whose optimal
+	// play is standing still.
+	//
+	// Behind the FIRST desk, on the far side from him, which is the shape of the
+	// worst case: a straight line that is blocked for most of its length.
+	d := Desks[0]
+	behind := Vec2{X: d.X + d.W/2, Y: d.Y - PlayerRadius - 0.45}
+	if clearLine(behind, NewBoss().Pos, BossRadius) {
+		t.Skip("the catalogue moved: this point is no longer behind a desk")
+	}
+
+	o := NewOffice()
+	if err := o.Join("a", "s1", "p-a", "", epoch); err != nil {
+		t.Fatal(err)
+	}
+	const patience = 30 * SimHz
+	ticks := 0
+	for ; ticks < patience; ticks++ {
+		place(t, o, "a", behind)
+		advance(o, 1)
+		o.mu.Lock()
+		_, still := o.occupants["a"]
+		o.mu.Unlock()
+		if !still {
+			break
+		}
+	}
+	if ticks >= patience {
+		t.Fatalf("he never got round a desk to somebody standing %v away", behind)
+	}
+}
+
+func TestHeWalksStraightWhenNothingIsInTheWay(t *testing.T) {
+	// The fast path, and it is worth pinning: following grid cells across an
+	// empty floor would move him in visible steps for no reason. With a clear
+	// line he heads at the target itself.
+	from := Vec2{X: BossSpawnX, Y: BossSpawnY}
+	to := Vec2{X: BossSpawnX, Y: BossSpawnY - 3}
+	if !clearLine(from, to, BossRadius) {
+		t.Skip("the catalogue moved: this line is no longer clear")
+	}
+	if got := navAimAt(from, to); got != to {
+		t.Fatalf("with a clear line he aimed at %+v rather than at the target %+v", got, to)
+	}
+}
+
+func TestAPathStepIsSomewhereHeCanStand(t *testing.T) {
+	// Whatever it hands back has to be a place his disc fits, or the resolver
+	// spends the next tick pushing him out of the waypoint it was sent to.
+	from := Vec2{X: BossSpawnX, Y: BossSpawnY}
+	for _, to := range []Vec2{
+		{X: 1, Y: 1}, {X: OfficeW - 1, Y: 1}, {X: 1, Y: OfficeH - 1},
+		{X: Desks[0].X + Desks[0].W/2, Y: Desks[0].Y - 0.8},
+	} {
+		got := navAimAt(from, to)
+		if got.X < 0 || got.X > OfficeW || got.Y < 0 || got.Y > OfficeH {
+			t.Fatalf("heading for %+v he was sent off the floor to %+v", to, got)
+		}
+		if got == to {
+			continue // the clear-line fast path
+		}
+		for i, d := range Desks {
+			if insideDesk(d, got, BossRadius) {
+				t.Fatalf("heading for %+v he was sent into desk %d at %+v", to, i, got)
+			}
+		}
+	}
+}
+
+func TestTheRouteIsTheSameEveryTime(t *testing.T) {
+	// Determinism is what every test of the chase rests on, and a flood fill is
+	// exactly the sort of thing that stops being deterministic when somebody
+	// reaches for a map.
+	from := Vec2{X: BossSpawnX, Y: BossSpawnY}
+	to := Vec2{X: Desks[0].X + Desks[0].W/2, Y: Desks[0].Y - 0.8}
+	first := navAimAt(from, to)
+	for i := 0; i < 50; i++ {
+		if got := navAimAt(from, to); got != first {
+			t.Fatalf("run %d routed him to %+v, the first run to %+v", i, got, first)
+		}
+	}
+}

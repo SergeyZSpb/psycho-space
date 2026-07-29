@@ -159,13 +159,18 @@ const (
 	// simulation does — so this terminates in a bounded number of draws and
 	// falls back to a point that is legal by construction.
 	//
-	// The count is sized against a MEASUREMENT rather than picked: with the
-	// clear-line rule and the spawnFromBoss floor below, 8.4 % of the legal floor
-	// qualifies, so 48 draws would miss about once in seventy joins and take the
-	// fallback — which is exactly the near-the-boss spawn the floor exists to
-	// prevent. At 240 the miss rate is about one in forty million. They are
-	// arithmetic on a join, which happens once a shift and never on a tick.
-	spawnTries = 240
+	// The count is sized against a MEASUREMENT rather than picked: 26.9 % of the
+	// legal floor clears the spawnFromBoss floor below, so 64 draws miss about
+	// once in three hundred million and take the fallback — which is the
+	// near-the-boss spawn the floor exists to prevent. They are arithmetic on a
+	// join, which happens once a shift and never on a tick.
+	//
+	// It was 240 while a spawn also had to have a clear line to him, which left
+	// only 8.4 % qualifying. That rule is gone: he can walk round a desk now
+	// (navigate.go), so a spawn in a desk's shadow is no longer a spawn he cannot
+	// reach — and dropping it took the usable floor from 8.4 % to 26.9 %, which
+	// is most of the variety a drawn spawn was asked for in the first place.
+	spawnTries = 64
 	// spawnFromEachOther is how much room two Карена get. Two player radii is
 	// touching; this is enough that a joiner is visibly beside somebody rather
 	// than inside them.
@@ -201,10 +206,14 @@ const (
 // Neither is a rendering problem, so neither could be fixed by drawing peers.
 //
 // The rule a drawn point has to satisfy: inside the walls, out of the furniture,
-// clear of everybody already working, and further from the лысый than he can be
-// seen smiling from — that last one being the same invariant the fixed spawn was
-// chosen to satisfy, so the shift still opens with him a walk away rather than
-// on top of you.
+// clear of everybody already working, and far enough from the лысый to be worth
+// calling a shift — see spawnFromBoss, which is derived from MinShiftSeconds
+// rather than picked.
+//
+// It used to require a CLEAR LINE to him as well, because he could not walk round
+// a desk and a shift opening in one measured up to ninety seconds of nothing
+// happening. He can now (navigate.go), so that rule went with the defect it was
+// working around.
 //
 // The randomness is crypto/rand, matching the yard's habit rather than because a
 // spawn is a secret: this package has one reader, and a second generator here
@@ -218,13 +227,6 @@ func (o *Office) spawnPoint() Vec2 {
 			if insideDesk(d, at, PlayerRadius) {
 				return false
 			}
-		}
-		// HE CANNOT WALK ROUND A DESK — see clearLine, which is a measurement
-		// rather than a guess: from a point in a desk's shadow he took up to 90 s
-		// to arrive against a still player, and from one with a clear line, 4.75.
-		// A shift must not OPEN in a spot he cannot get to.
-		if !clearLine(at, o.boss.Pos, PlayerRadius) {
-			return false
 		}
 		// Map iteration is fine here and only here: this reads every occupant to
 		// answer one boolean, so the ORDER cannot reach the result. Anything that

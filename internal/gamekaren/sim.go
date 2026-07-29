@@ -110,20 +110,15 @@ func insideDesk(d Rect, p Vec2, r float64) bool {
 // clearLine reports whether a disc of radius r could travel straight from a to b
 // without meeting a desk.
 //
-// IT EXISTS BECAUSE THE BALD MAN CANNOT WALK ROUND ANYTHING. StepBoss is naive
-// pursuit — head at the target, then get pushed out of whatever you ended up
-// inside — so a desk between him and a player is not cover he goes around, it is
-// a wall he grinds along, and which way the push sends him has nothing to do
-// with where he is trying to get. Measured on the real simulation with a player
-// standing perfectly still: from a point with a clear line he arrives in at most
-// 4.75 s, and from one in a desk's shadow it took as long as 90 s, with about a
-// sixth of the floor over ten seconds.
+// IT IS THE FAST PATH OF THE NAVIGATION (navigate.go): when the straight line is
+// free there is nothing to plan, and the bald man simply walks at you — which is
+// both cheaper and smoother than following a grid across an empty floor.
 //
-// So this is the predicate a SPAWN is chosen by (Office.spawnPoint). It is not a
-// fix for the pursuit itself: a player can still walk into a shadow mid-shift and
-// buy himself a very long time, which is a real defect this measurement found and
-// which belongs to whichever iteration gives him a way round a desk. What it does
-// is stop a shift OPENING in one.
+// It was written for a different job. Before he could route around furniture, a
+// clear line was the predicate a SPAWN was chosen by, because a shift opening in
+// a desk's shadow measured up to ninety seconds of nothing happening. That defect
+// is fixed rather than avoided now, so the spawn rule is gone and this is what
+// survives of it.
 //
 // Liang–Barsky against each desk grown by r, which is the standard segment/box
 // clip and is exact — no sampling along the segment, so a thin desk cannot be

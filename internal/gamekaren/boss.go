@@ -61,7 +61,14 @@ func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64, elapsed float64)
 		speed *= DrunkSpeed
 	}
 
-	dx, dy := aim.X-b.Pos.X, aim.Y-b.Pos.Y
+	// ROUND THE FURNITURE. He heads for the next step of a path when the straight
+	// line is blocked, and straight at the target when it is not — see navigate.go
+	// for why he needed this at all. `dist` stays the distance to the TARGET
+	// rather than to the waypoint, so his speed and his grin are unchanged: he
+	// is not slower for going around, he simply takes longer to arrive, which is
+	// what furniture is supposed to cost.
+	head := navAimAt(b.Pos, aim)
+	dx, dy := head.X-b.Pos.X, head.Y-b.Pos.Y
 	dist := math.Hypot(dx, dy)
 	if b.Drunk > 0 && dist > 1e-9 {
 		// WOBBLE THE HEADING, NOT THE FACT OF IT. He is still walking at you;
@@ -75,8 +82,9 @@ func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64, elapsed float64)
 		if step >= dist {
 			// Arriving exactly rather than overshooting and oscillating. On a
 			// target this is the tick he catches you; on his spawn it is where
-			// he stands and waits.
-			b.Pos = aim
+			// he stands and waits; on a waypoint it is simply the next one next
+			// tick.
+			b.Pos = head
 		} else {
 			b.Pos.X += dx / dist * step
 			b.Pos.Y += dy / dist * step
@@ -84,9 +92,13 @@ func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64, elapsed float64)
 	}
 
 	// The same treatment the player gets: clamped to the floor, then pushed out
-	// of every desk in catalogue order. He does NOT route around them — bumping
-	// into a desk and sliding along it is what makes furniture tactically
-	// useful, and it is the only thing in the game that is on your side.
+	// of every desk in catalogue order.
+	//
+	// STILL HERE, EVEN THOUGH HE NOW ROUTES AROUND THEM. The path is coarse — half
+	// a metre a cell — and the drunk wobble steers him off it deliberately, so he
+	// does still clip a corner and does still get pushed off it. What changed is
+	// that clipping a corner is no longer the whole of his navigation: it is the
+	// last few centimetres rather than the plan.
 	b.Pos = clampToFloor(b.Pos, BossRadius)
 	for _, d := range desks {
 		b.Pos = pushOut(d, b.Pos, BossRadius)

@@ -45,7 +45,7 @@ func join(t *testing.T, o *Office, accountID, shiftID string) {
 	if err := o.Join(accountID, shiftID, "p-"+accountID, "", epoch); err != nil {
 		t.Fatal(err)
 	}
-	place(o, accountID, Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
+	place(t, o, accountID, Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
 }
 
 // advance runs n ticks of real simulation time from the epoch.
@@ -369,10 +369,16 @@ func TestTheTickIsTheClientsTimeline(t *testing.T) {
 // position directly — white-box setup, the same answer the repository gives for
 // determinism everywhere else, and specifically NOT a production flag that turns
 // the randomness off: that would be test-only machinery in a live path.
-func place(o *Office, accountID string, at Vec2) {
+func place(t *testing.T, o *Office, accountID string, at Vec2) {
+	t.Helper()
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.occupants[accountID].State.Pos = at
+	occ, ok := o.occupants[accountID]
+	if !ok {
+		t.Fatalf("cannot place %s — the occupant is gone, which almost always means "+
+			"the bald man reached them mid-test", accountID)
+	}
+	occ.State.Pos = at
 }
 
 func TestTwoOccupantsAreSteppedInADeterministicOrder(t *testing.T) {
@@ -576,15 +582,33 @@ func TestEverySpawnIsSomewhereYouCouldStand(t *testing.T) {
 	}
 }
 
-func TestEverySpawnIsSomewhereHeCanWalkStraightTo(t *testing.T) {
-	// The measurement behind this is on clearLine: he has no way round a desk,
-	// so a shift opening in one is a shift where nothing happens for a minute
-	// and a half. Without this rule about a sixth of the floor was over ten
-	// seconds and the worst point took ninety.
-	boss := NewBoss()
-	for i, at := range spawnsOf(t, 300) {
-		if !clearLine(at, boss.Pos, PlayerRadius) {
-			t.Fatalf("draw %d spawned in a desk's shadow at %+v", i, at)
+func TestEverySpawnIsSomewhereHeCanActuallyGetTo(t *testing.T) {
+	// THE CLAIM CHANGED WITH THE PURSUIT. It used to be "every spawn has a clear
+	// straight line to him", because he could not walk round a desk and a shift
+	// opening in one measured up to ninety seconds. He can now, so the claim is
+	// the one that actually matters: wherever the draw puts you, he arrives.
+	//
+	// Simulated rather than asserted geometrically, against a player standing
+	// perfectly still — which is how this game is played and therefore the case
+	// that matters. Bounded generously: the measured worst over the whole floor
+	// is 10.35 s, and this is here to catch "never", not to pin a number.
+	const patience = 30 * SimHz
+	for i, at := range spawnsOf(t, 40) {
+		o := NewOffice()
+		join(t, o, "a", "s1")
+		place(t, o, "a", at)
+		caught := false
+		for tick := 0; tick < patience && !caught; tick++ {
+			place(t, o, "a", at)
+			advance(o, 1)
+			o.mu.Lock()
+			_, still := o.occupants["a"]
+			o.mu.Unlock()
+			caught = !still
+		}
+		if !caught {
+			t.Fatalf("draw %d spawned at %+v, where he never arrived in %v seconds",
+				i, at, patience/SimHz)
 		}
 	}
 }
@@ -659,8 +683,8 @@ func TestACrowdedFloorStillProducesALegalSpawn(t *testing.T) {
 	join(t, o, "b", "s2")
 	// Fill the room: pin the two of them either side of the canonical spawn so
 	// the sampler is fighting for room.
-	place(o, "a", Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
-	place(o, "b", Vec2{X: PlayerSpawnX + 0.1, Y: PlayerSpawnY})
+	place(t, o, "a", Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
+	place(t, o, "b", Vec2{X: PlayerSpawnX + 0.1, Y: PlayerSpawnY})
 	if err := o.Join("c", "s3", "p-c", "", epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +707,7 @@ func TestYourFrameCarriesTheOtherPeopleInTheOffice(t *testing.T) {
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	// Somewhere else, so the two of them are distinguishable on the wire.
-	place(o, "b", Vec2{X: PlayerSpawnX + 3, Y: PlayerSpawnY + 1})
+	place(t, o, "b", Vec2{X: PlayerSpawnX + 3, Y: PlayerSpawnY + 1})
 
 	sa := snapOf(t, o, "a")
 	if len(sa.Pr) != 1 {
@@ -881,8 +905,8 @@ func TestPointingHimAtSomebodyElseOverridesWhoIsNearest(t *testing.T) {
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	// `a` is much closer to him, so without the verb he is `a`'s problem.
-	place(o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
-	place(o, "b", Vec2{X: 2, Y: 2})
+	place(t, o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
+	place(t, o, "b", Vec2{X: 2, Y: 2})
 	if got := closesOn(t, o, "a", "b"); got != "a" {
 		t.Fatalf("without the verb he closed on %s, not the nearer one", got)
 	}
@@ -900,18 +924,46 @@ func TestTheRedirectWearsOffAndHeComesBack(t *testing.T) {
 	o := NewOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
-	place(o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
-	place(o, "b", Vec2{X: 2, Y: 2})
+	// `a` parks out of the way; `b` RUNS, and has to.
+	//
+	// Both used to be pinned, which was safe only because the bald man could not
+	// get round the furniture. Now that he can, standing still in front of a man
+	// who has been pointed at you for six seconds is exactly as fatal as it
+	// sounds — and a caught `b` would end the redirect for the wrong reason,
+	// proving nothing about the timer. So he keeps to whichever corner is
+	// furthest from wherever the chase has got to.
+	aAt := Vec2{X: OfficeW - 1.2, Y: 1.2}
+	place(t, o, "a", aAt)
+	place(t, o, "b", Vec2{X: 1.2, Y: 1.2})
 	if !o.Redirect("a", "p-b") {
 		t.Fatal("the verb was refused")
 	}
-	// Run past the window. Positions are pinned each tick so the test is about
-	// the TIMER and not about anybody walking.
+	flee := func() {
+		him := bossOf(o)
+		far, best := Vec2{}, -1.0
+		for _, c := range []Vec2{{X: 1.2, Y: 1.2}, {X: OfficeW - 1.2, Y: OfficeH - 1.2}, {X: 1.2, Y: OfficeH - 1.2}} {
+			if d := math.Hypot(c.X-him.X, c.Y-him.Y); d > best {
+				far, best = c, d
+			}
+		}
+		place(t, o, "b", far)
+	}
 	for i := 0; i < int(RedirectSeconds*SimHz)+2; i++ {
-		place(o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
-		place(o, "b", Vec2{X: 2, Y: 2})
+		place(t, o, "a", aAt)
+		flee()
 		advance(o, 1)
 	}
+
+	// The window has closed, so he is back on the NEAREST — and the chase has
+	// left him somewhere this test did not choose, so both of them are placed
+	// relative to where he actually is before the question is asked. `a` a few
+	// metres off him, `b` across the room: anything less deliberate and the
+	// answer is about wherever the flee loop happened to end.
+	him := bossOf(o)
+	near := clampToFloor(Vec2{X: him.X, Y: him.Y - GrinRange}, PlayerRadius)
+	far := Vec2{X: OfficeW - him.X, Y: OfficeH - him.Y}
+	place(t, o, "a", near)
+	place(t, o, "b", clampToFloor(far, PlayerRadius))
 	if got := closesOn(t, o, "a", "b"); got != "a" {
 		t.Fatalf("the redirect never wore off — he is still on %s", got)
 	}
@@ -983,8 +1035,8 @@ func TestARedirectedColleagueWhoLeavesGivesHimBack(t *testing.T) {
 	o := NewOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
-	place(o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
-	place(o, "b", Vec2{X: 2, Y: 2})
+	place(t, o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
+	place(t, o, "b", Vec2{X: 2, Y: 2})
 	if !o.Redirect("a", "p-b") {
 		t.Fatal("the verb was refused")
 	}
@@ -1008,7 +1060,7 @@ func TestWalkingIntoTheBottleBuysHimARound(t *testing.T) {
 	// streak with it.
 	o := NewOffice()
 	join(t, o, "a", "s1")
-	place(o, "a", Vec2{X: BottleX, Y: BottleY})
+	place(t, o, "a", Vec2{X: BottleX, Y: BottleY})
 	advance(o, 1)
 
 	if drunkOf(o) <= 0 {
@@ -1026,14 +1078,14 @@ func TestTheBottleIsNotAButtonYouCanHold(t *testing.T) {
 	// the strongest in the game, so the cooldown is the whole balance of it.
 	o := NewOffice()
 	join(t, o, "a", "s1")
-	place(o, "a", Vec2{X: BottleX, Y: BottleY})
+	place(t, o, "a", Vec2{X: BottleX, Y: BottleY})
 	advance(o, 1)
 	first := drunkOf(o)
 
 	// Stand on the spot for a while: no second round, and he sobers up on
 	// schedule rather than being topped up.
 	for i := 0; i < int(DrunkSeconds*SimHz)+4; i++ {
-		place(o, "a", Vec2{X: BottleX, Y: BottleY})
+		place(t, o, "a", Vec2{X: BottleX, Y: BottleY})
 		advance(o, 1)
 	}
 	if drunkOf(o) > 0 {
@@ -1050,7 +1102,7 @@ func TestABottleNobodyHasReachedIsStillThere(t *testing.T) {
 	// why it costs nothing to say.
 	o := NewOffice()
 	join(t, o, "a", "s1")
-	place(o, "a", Vec2{X: OfficeW - 1, Y: 1})
+	place(t, o, "a", Vec2{X: OfficeW - 1, Y: 1})
 	advance(o, 2)
 	if got := snapOf(t, o, "a").Bt; got != 0 {
 		t.Fatalf("an untouched bottle reports %d ms until it returns", got)
