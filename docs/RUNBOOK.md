@@ -11,7 +11,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/gamekhimki/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
 - **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*` — **two reads (`config`, `state`) and nothing that writes**, because a verb travels over the socket as a `vanyagotchi_do` frame and cannot be curl'd (ADR-043) — view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and every phrase pool are in `content.go`, not the database — so retuning, renaming, adding a regular or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from **five disjoint pools** (a test enforces the disjointness, so a line can only ever mean one thing) and they say different things about him: `tiredSays` — he gave up on a walk; `idleSays` — he is just standing about; `shySays` — he lost his nerve and the verb did nothing; `reekSays` — **somebody else** relieved himself near him; `enviousSays` — **somebody else** found the keys. The last two are the only lines another player's action puts in your mouth, and the regulars get them too. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep; the two reactions are held in memory with an expiry and dropped by the tick that finds them stale.
-- **game 4 («Симулятор Карена»):** package `internal/gamekaren/`, table `game_karen_shifts` (`migrations/013_game_karen.sql`), routes `/api/game-karen/*`, realtime room `karen`, view `GameKarenView.vue` at `/app/game-karen`. **No LLM on any path.** Debugging it is unlike every game above in one way that dominates: **almost nothing is stored.** The office, the positions, the boss, the streak and the salary live in process memory and are lost on any restart; Postgres gets **one summary row when a shift ends** and nothing else, so there is no table to look at while somebody is playing. A shift shorter than `MinShiftSeconds` is deliberately **dropped rather than written**, which is the first thing to check when somebody swears they played and there is no row. `cause` is `promoted` (the лысый reached you) or `left` (you walked out, or your socket was gone past the abandon grace) — plain `text`, so a later ending is not a migration. Every rule — the static office and its desks, the walk and dash speeds, the base rate, the ×1→×3 ramp, the grace window, the boss's speed and catch radius, the ending titles — is in `content.go`, **served** at `GET /api/game-karen/config`, and the splash screen's cheatsheet is generated from that same payload, so the rules on screen cannot drift from the rules enforced. Playing happens entirely on the socket (`karen_input` up, `karen_snap` down at 10 Hz) and cannot be curl'd; the HTTP surface is only the edges of a shift. See "Working on «Симулятор Карена» (the office)" below.
+- **game 4 («Симулятор Карена»):** package `internal/gamekaren/`, table `game_karen_shifts` (`migrations/013_game_karen.sql`), routes `/api/game-karen/*`, realtime room `karen`, view `GameKarenView.vue` at `/app/game-karen`. **No LLM on any path.** Debugging it is unlike every game above in one way that dominates: **almost nothing is stored.** The office, the positions, the boss, the streak and the salary live in process memory and are lost on any restart; Postgres gets **one summary row when a shift ends** and nothing else, so there is no table to look at while somebody is playing. A shift shorter than `MinShiftSeconds` is deliberately **dropped rather than written**, which is the first thing to check when somebody swears they played and there is no row. `cause` is `promoted` (the лысый reached you) or `left` (you walked out, or your socket was gone past the abandon grace) — plain `text`, so a later ending is not a migration. Every rule — the static office and its desks, the walk and dash speeds, the base rate, the ×1→×3 ramp, the grace window, the boss's speed and catch radius, the ending titles — is in `content.go`, **served** at `GET /api/game-karen/config`, and the splash screen's cheatsheet is generated from that same payload, so the rules on screen cannot drift from the rules enforced. Playing happens entirely on the socket (`karen_input` up, `karen_snap` down at 10 Hz) and cannot be curl'd; the HTTP surface is only the edges of a shift. **Every defect it has had so far has been the client and the server disagreeing about how far something moved**, and none of them was found by reading the code — see "«It teleports / stutters / doesn't move» — measuring a netcode complaint" for the two procedures that did find them (drive the real stack from `web/e2e-stack/` and record the socket frames beside the drawn CSS position; or track the figure in the owner's phone recording, calibrating metres per pixel off the desks). See "Working on «Симулятор Карена» (the office)" below.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
 - **login:** two providers, VK ID and Яндекс ID, sharing everything after the exchange. Redirect URLs are SPA **pages**, never API endpoints: `/auth/redirect` (VK) and `/auth/yandex/redirect` (Yandex). VK needs **three** copies of its URL to match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app list); Yandex needs only **two** because the server builds its authorize URL (ADR-055). A **405 on either `/api/auth/*/callback`** means something points at the API again. See "Login — the redirect URL, and what a 405 means".
@@ -446,6 +446,80 @@ live.** The honest fix is the one the client already does — `GET /shifts/curre
 and reconnect — and the blunt one is to wait out the abandon grace, after which
 the occupant is ended as `left`, written, and dropped. Restarting the service
 clears every office instantly and loses every shift in flight.
+
+#### «It teleports / stutters / doesn't move» — measuring a netcode complaint
+
+Every defect this game has had so far has been *the client and the server
+disagreeing about how far something moved*, and every one of them was found by
+printing metres rather than by reading code that looked right. The trap is that
+the game is allowlist-gated, so you usually cannot reproduce it yourself and are
+working from a description and, if you are lucky, a phone recording. Two
+procedures, and they answer different halves of the question.
+
+**1. Drive the real stack and record both ends.** This is the strong one, and it
+needs nothing test-only in the app: Playwright can read the WebSocket frames, and
+the drawn position is a CSS custom property, so a throwaway spec in
+`web/e2e-stack/` sees exactly what the client sent, what the server answered, and
+where the figure was actually painted on every animation frame.
+
+```ts
+// what the client sent and what the server answered
+page.on('websocket', (s) => {
+  s.on('framesent', (f) => log('OUT', f.payload));      // karen_input: q, dt, mx, my, d
+  s.on('framereceived', (f) => log('IN', f.payload));   // karen_snap:  k, ack, x, y, dc
+});
+// where the figure was actually drawn, every frame — --x/--y are fractions of the office
+await page.evaluate(() => {
+  const el = document.querySelector('[data-testid="karen-me"]') as HTMLElement;
+  const tick = (now: number) => {
+    (window as any).__samples.push([now,
+      parseFloat(el.style.getPropertyValue('--x')), parseFloat(el.style.getPropertyValue('--y'))]);
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+});
+```
+
+Then print, per frame, the position in metres and the step since the last frame,
+and summarise **the largest single step and the number of direction reversals**.
+Those two numbers are the complaint, quantified: a healthy dash is one monotone
+burst of ~0.33 m per frame at 60 Hz, and the defect that shipped on 2026-07-29
+read 2.767 m and fifteen reversals.
+
+**Choose the lane deliberately, or the probe will lie to you.** Spawn is (8, 4);
+desks occupy x 2.8–5.4 and 10.6–13.2 at y 3–4, 7–8, 11–12, 15–16; the floor clamp
+is the player's 0.35 m radius. A dash is 5.5 m, so walking "somewhere" and dashing
+"somewhere" mostly measures the wall clamp — the third time this project has been
+fooled by exactly that. Walk down to y ≈ 5.6 and work rightwards, where 7.65 m of
+clear floor holds a whole dash. And **the лысый is closing the whole time** (4.0
+m/s from y = 20.5, so contact in under four seconds): keep the probe short, and
+never walk *towards* him, or the occupant is deleted mid-run and the trace looks
+like a deadlock.
+
+**2. Track the figure in the phone recording.** When all you have is a video, the
+positions are still in it. There is no `ffmpeg` on the workstation but
+`gst-launch-1.0` is present, and PIL plus numpy do the rest:
+
+```bash
+gst-launch-1.0 filesrc location=clip.mp4 ! qtdemux ! h264parse ! avdec_h264 \
+  ! videoconvert ! pngenc ! multifilesink location=f%05d.png
+```
+
+Then mask the figure by the colour of its shirt, take the largest connected
+component **inside the plane only** (the controls below and the HUD above match
+the same colours and will drag the centroid across the screen), and calibrate
+metres per pixel off the **desks**, whose world coordinates are in `content.go` —
+the two desk columns give the x scale and the four rows give the y scale, and they
+must agree. Two warnings, both of which cost a wrong diagnosis on 2026-07-29:
+**identify the figures before trusting a trace** (you have hair and a blue shirt,
+the лысый is bald with a purple one and a grin; tracking the wrong one gives a
+smooth 4 m/s walk that hides everything), and **re-extract at the native frame
+rate** — resampling to 30 fps duplicates frames and manufactures a stutter that
+is not there.
+
+The dash cooldown readout is the clock for all of this: it comes from the
+snapshot's `dc`, so the frame where «РЫВОК ГОТОВ» becomes a countdown is the frame
+the *server* granted the dash, ± one snapshot period.
 
 ### Tests
 

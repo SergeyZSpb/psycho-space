@@ -388,6 +388,7 @@ sequenceDiagram
 
     Note over B,P: INPUT — ten frames a second, and the client PREDICTS locally
     loop while on shift
+        B->>B: emit while the stick is pushed, a dash is asked for, OR ONE IS RUNNING
         B->>B: apply each command through its own copy of Step, keep it pending
         B->>G: karen_input {k, cmds:[{q,dt,mx,my,d}]} + the unacknowledged tail
         G->>G: Sanitise every field, QUEUE — nothing is refused for being generous
@@ -402,7 +403,7 @@ sequenceDiagram
         G->>G: Caught? then the shift ends with cause promoted
         G->>H: PublishTo(conn, snapshot) every SECOND tick — 10 Hz
         H-->>B: karen_snap {k, ack, x, y, pay, m, st, dc?, b}
-        B->>B: drop acked, reset to authority, REPLAY the rest, ease the residue
+        B->>B: drop acked, REWIND to the state at the ack, replay the rest, ease the residue
     end
 
     Note over B,P: END — promoted, walked out, or abandoned. One row, once.
@@ -772,9 +773,9 @@ A third protocol, and the third *addressing* model with it. The yard broadcasts 
 | Direction | `t` | Payload | Notes |
 |---|---|---|---|
 | → server | `karen_hello` | none | Attaches this connection to whatever shift the account already started over HTTP. No fields — identity is the connection. Sent on **every** open, including reconnects: the office outlives a dropped socket, so a reconnecting client says hello again to be re-attached to the shift it is already in. |
-| → server | `karen_input` | `k` last snapshot tick drawn · `cmds[]` of `{q, dt, mx, my, d}` | A batch of sub-steps at ten frames a second, a third of the socket's allowance ([ADR-049](#adr-049--input-is-batched-to-fit-the-sockets-bound-never-to-loosen-it)). `mx`/`my` are the stick's axes and `d` is the dash — **intent, never a fact**: no position, no salary, no claim to have dodged anything. Every field is **clamped rather than refused**, and a frame carrying more commands than the cap **keeps the cap's worth and is still accepted** — refusing a frame for being generous is how a lossy client gets stuck. `q` is a per-command sequence, which is what reconciliation runs on and what makes redundancy free: a frame carries the fresh commands plus the tail of what is still unacknowledged, so one lost packet costs no input. `k` is how round trip is **derived** rather than reported. |
+| → server | `karen_input` | `k` last snapshot tick drawn · `cmds[]` of `{q, dt, mx, my, d}` | A batch of sub-steps at ten frames a second, a third of the socket's allowance ([ADR-049](#adr-049--input-is-batched-to-fit-the-sockets-bound-never-to-loosen-it)). `mx`/`my` are the stick's axes and `d` is the dash — **intent, never a fact**: no position, no salary, no claim to have dodged anything. **A running dash keeps the batch flowing even with the stick neutral**, carrying `mx`/`my` of zero: `Step` ignores a command's axes for a dash's duration on both ends, so what those commands carry is TIME, and without them the browser's own simulation stops a twentieth of the way through the burst while the server runs it to the end. Every field is **clamped rather than refused**, and a frame carrying more commands than the cap **keeps the cap's worth and is still accepted** — refusing a frame for being generous is how a lossy client gets stuck. `q` is a per-command sequence, which is what reconciliation runs on and what makes redundancy free: a frame carries the fresh commands plus the tail of what is still unacknowledged, so one lost packet costs no input. `k` is how round trip is **derived** rather than reported. |
 | ← client | `karen_ready` | `shift_id` | Which shift this socket is now watching. A hello with no shift gets **silence** — a socket that opened before the shift did is not an error. |
-| ← client | `karen_snap` | `k` tick · `ack` · `x`,`y` · `pay` · `m` · `st` · `dc?` · `b` | The idempotent full-state frame, **10 Hz** — every second tick of the 20 Hz simulation. **Quantised, because this frame repeats forever**: positions are centimetres as integers, `pay` is whole rubles, the multiplier `m` is hundredths, the streak `st` and the dash cooldown `dc` are milliseconds, and the boss `b` carries centimetres plus a grin as a single byte. `dc` is **omitted when the dash is ready**, which is the common case. The **office is never here** — it is static, published once in the catalogue, and referenced by nothing. |
+| ← client | `karen_snap` | `k` tick · `ack` · `x`,`y` · `pay` · `m` · `st` · `dc?` · `b` | The idempotent full-state frame, **10 Hz** — every second tick of the 20 Hz simulation. **Quantised, because this frame repeats forever**: positions are centimetres as integers, `pay` is whole rubles, the multiplier `m` is hundredths, the streak `st` and the dash cooldown `dc` are milliseconds, and the boss `b` carries centimetres plus a grin as a single byte. `dc` is **omitted when the dash is ready**, which is the common case, and is **rounded up rather than to nearest** — it is the one duration the client SIMULATES from rather than merely displays (a still player emits nothing and so never runs the timer down locally), so zero on the wire has to mean exactly zero on the server, or the client would grant a dash the server is about to refuse. The **office is never here** — it is static, published once in the catalogue, and referenced by nothing. |
 | ← client | `karen_over` | `cause` · `pay` · `secs` | The shift ended — `promoted` because he reached you, or `left` because you walked out. Sent once, and the client stops sending input. |
 | ← client | `bye` | `code`, `reason` | Transport-owned, shared with every room ([ADR-018](#adr-018--the-close-reason-travels-as-a-frame-not-as-a-close-code)). |
 

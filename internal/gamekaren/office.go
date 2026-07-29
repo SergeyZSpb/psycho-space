@@ -244,12 +244,22 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		// inventing input the player did not give.
 		//
 		// It was doing precisely that, and the dash is where it showed. A still
-		// step is not free while a dash is running: `Step` reads DashLeft, so it
-		// decrements the dash timer at dash speed and moves the player nowhere.
-		// The burst therefore lost a slice of its distance to drift on most
-		// ticks, the client predicted the full nine steps, and the difference
-		// arrived as a correction at the end of every dash — the one move in the
-		// game that must feel exact.
+		// step is NOT a still step while a dash is running: `Step` reads
+		// DashLeft, and since the dash became a committed movement it carries
+		// the player along DashDX/DashDY at the full 20 m/s. A browser timer
+		// does not tile a 50 ms tick evenly, so an unguarded fill fired on most
+		// ticks and added a sliver of dash the client had not predicted.
+		//
+		// Which makes the guard load-bearing in BOTH directions, and worth
+		// stating plainly because it is not obvious: this fill is also the only
+		// thing that moves a dashing player whose client has gone quiet. It ran
+		// the whole burst by itself for one build, while the browser predicted a
+		// single sub-step of it — 5.5 m against 0.5 m, snapped back and forth
+		// two metres at a time. The client no longer goes quiet mid-dash (see
+		// `due` in web/src/lib/karenPredict.ts), so the fill's job during a dash
+		// is now only to cover a stalled or lagging one — which it does at
+		// exactly the right speed, and which is why it is not guarded on
+		// DashLeft as well.
 		//
 		// Nothing is lost by skipping it: money accrues only while standing
 		// still, so an unclaimed sliver during movement was never worth
@@ -311,7 +321,7 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 		Pay:  rub(occ.State.Salary),
 		M:    hundredths(Multiplier(occ.State.Streak)),
 		St:   ms(occ.State.Streak),
-		Dc:   ms(occ.State.DashCooldown),
+		Dc:   msUp(occ.State.DashCooldown),
 		B: BossFrame{
 			X: cm(o.boss.Pos.X),
 			Y: cm(o.boss.Pos.Y),

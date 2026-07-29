@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseInboundIgnoresEverythingItDoesNotUnderstand(t *testing.T) {
@@ -127,6 +128,52 @@ func TestQuantisation(t *testing.T) {
 	// show a ruble that has not been earned.
 	if got := rub(4299.99); got != 4299 {
 		t.Fatalf("rub(4299.99) = %d", got)
+	}
+}
+
+// The dash cooldown is the one duration the CLIENT SIMULATES FROM rather than
+// merely displays — it is folded straight into the browser's own predicted
+// player, because a still player emits no commands and so never runs the timer
+// down locally. So zero on the wire has to mean zero here: `ms`'s round-to-
+// nearest would report a sliver of cooldown as ready, the client would grant a
+// dash the server is about to refuse, and the two would disagree by a whole
+// burst — 5.5 m, nearly three times the snap threshold.
+func TestADashCooldownIsNeverRoundedDownToReady(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   float64
+		want int
+	}{
+		{"exactly ready is ready", 0, 0},
+		{"a negative sliver is ready", -1e-9, 0},
+		{"floating-point residue is NOT ready", 4e-16, 1},
+		{"a fifth of a millisecond is NOT ready", 0.0002, 1},
+		{"half a millisecond is NOT ready", 0.0005, 1},
+		{"a whole cooldown", 2.2, 2200},
+		{"a value between milliseconds rounds up", 1.2341, 1235},
+	} {
+		if got := msUp(tc.in); got != tc.want {
+			t.Fatalf("%s: msUp(%v) = %d, want %d", tc.name, tc.in, got, tc.want)
+		}
+	}
+	// And the snapshot uses it, so the guarantee reaches the wire rather than
+	// stopping at the helper.
+	o := NewOffice()
+	if err := o.Join("a", "s", time.Now()); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	occ := o.occupants["a"]
+	occ.State.DashCooldown = 4e-16
+	raw, ok := o.SnapshotFor("a")
+	if !ok {
+		t.Fatal("no snapshot")
+	}
+	var snap Snapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if snap.Dc != 1 {
+		t.Fatalf("a cooldown of 4e-16 s went on the wire as dc=%d, which the client reads as ready", snap.Dc)
 	}
 }
 

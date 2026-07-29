@@ -493,7 +493,12 @@ function drawFrame(now: number): void {
     if (Math.hypot(axes.mx, axes.my) > idle) lastDir = { mx: axes.mx, my: axes.my };
     const me = predictor.view();
     const away = bossAt ? { dx: me.x - bossAt.x, dy: me.y - bossAt.y } : null;
-    const due = emitter.due(now, axes, dashPending, dashAxes(axes, lastDir, away, idle));
+    // The last argument is whether a dash is STILL RUNNING, which is not the
+    // same question as whether one has been asked for: a dash tapped from a
+    // standstill leaves the stick neutral, so it is the only thing that keeps
+    // the emitter — and therefore the prediction — alive for the rest of the
+    // burst. See createEmitter.due.
+    const due = emitter.due(now, axes, dashPending, dashAxes(axes, lastDir, away, idle), predictor.dashing());
     for (const cmd of due) {
       // Applied locally the instant it exists, and queued for sending unchanged.
       // Predicting one thing and sending another is the one mistake this whole
@@ -601,20 +606,23 @@ function applySnapshot(frame: RealtimeFrame): void {
   const x = num(frame.x) / 100;
   const y = num(frame.y) / 100;
   const ack = num(frame.ack);
+  // Omitted when the dash is ready, so an absent field means zero rather than
+  // "unchanged" — reading it any other way would leave the button dead forever.
+  dashMs.value = num(frame.dc);
 
   if (!predictor) {
     // The first authoritative position is what the predictor is seeded with —
     // see enterPlay for why there is nothing better to start from.
     predictor = createPredictor({ desks: desks.value, constants, start: { x, y } });
   }
-  predictor.reconcile({ x, y, ack });
+  // The cooldown is folded in beside the position, because the client SIMULATES
+  // from it: `step` refuses a dash while it is running, and a client whose own
+  // copy had gone stale would refuse the dash the server was about to grant.
+  predictor.reconcile({ x, y, ack, dashCooldown: dashMs.value / 1000 });
 
   pay.value = num(frame.pay);
   mult.value = num(frame.m);
   ramp.value = rampFraction(num(frame.st), config.value?.money.ramp_seconds ?? 0);
-  // Omitted when the dash is ready, so an absent field means zero rather than
-  // "unchanged" — reading it any other way would leave the button dead forever.
-  dashMs.value = num(frame.dc);
 
   const b = frame.b as Record<string, number> | undefined;
   const el = bossEl.value;

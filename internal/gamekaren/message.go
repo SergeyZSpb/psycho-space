@@ -148,8 +148,9 @@ type Snapshot struct {
 	M int `json:"m"`
 	// Streak, milliseconds. Always present: a bar reading zero is information.
 	St int `json:"st"`
-	// Dash cooldown remaining, milliseconds. OMITTED WHEN READY, which is the
-	// common case — the button spends most of the shift available.
+	// Dash cooldown remaining, milliseconds, ROUNDED UP — see msUp. OMITTED WHEN
+	// READY, which is the common case — the button spends most of the shift
+	// available.
 	Dc int `json:"dc,omitempty"`
 	// The bald man.
 	B BossFrame `json:"b"`
@@ -175,6 +176,29 @@ func cm(v float64) int { return int(math.Round(v * 100)) }
 
 // ms quantises seconds to milliseconds for the wire.
 func ms(v float64) int { return int(math.Round(v * 1000)) }
+
+// msUp quantises a countdown to milliseconds, ROUNDING UP, so that zero on the
+// wire means exactly zero here.
+//
+// `ms` rounds to nearest, which is right for a number that is only ever read —
+// and the streak is only ever read. The dash cooldown is not: the client folds
+// it into its own simulated player (`reconcile` in web/src/lib/karenPredict.ts),
+// because a still player emits no commands and so never runs the timer down
+// locally. That makes this a value the client PREDICTS FROM, and a prediction
+// that says "ready" half a millisecond before the server does is a dash the
+// client grants and the server refuses — five and a half metres of divergence,
+// which is nearly three times the snap threshold.
+//
+// It is reachable rather than theoretical: floating-point residue can leave the
+// cooldown at 4e-16 for the one tick before the next step clamps it, and a
+// snapshot published in that tick would round it away. Rounding up costs a
+// millisecond on a readout nobody reads to the millisecond.
+func msUp(v float64) int {
+	if v <= 0 {
+		return 0
+	}
+	return int(math.Ceil(v * 1000))
+}
 
 // rub quantises money to whole rubles, TRUNCATING rather than rounding: a
 // counter that only ever goes up should never show a ruble that has not been

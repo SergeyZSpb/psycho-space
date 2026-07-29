@@ -76,6 +76,25 @@ export interface Authoritative {
   y: number;
   /** The last command sequence the server folded in. */
   ack: number;
+  /**
+   * Seconds until the next dash — the caller converts from the wire's `dc`
+   * milliseconds, reading an absent field as zero.
+   *
+   * IT IS FOLDED IN LIKE THE POSITION, AND FOR THE SAME REASON. The predicted
+   * player's own cooldown only moves inside `apply`, and `apply` only runs when
+   * a command is emitted — so a player standing perfectly still, which is this
+   * game's default state, never runs their cooldown down at all. It would still
+   * read 1.9 s when the server had long been ready, `step` would refuse the next
+   * dash locally while the server granted it, and the client would predict a
+   * walk against a 20 m/s burst: five and a half metres of divergence, on every
+   * dash after the first.
+   *
+   * The server already publishes this on every snapshot, so agreeing with it
+   * costs nothing on the wire — which is the whole argument for taking it from
+   * here rather than keeping the client talking for the 2.2 s it would take to
+   * run the timer down locally.
+   */
+  dashCooldown: number;
 }
 
 /**
@@ -89,7 +108,21 @@ export function createPredictor(opts: PredictorOptions) {
   const { desks, constants } = opts;
 
   let seq = 0;
-  let pending: StepCommand[] = [];
+  /**
+   * The commands the server has not acknowledged, each with the predicted state
+   * as it stood BEFORE that command was applied.
+   *
+   * The `before` is what makes a replay a replay rather than a second
+   * application. `predicted` already contains every one of these commands, so
+   * replaying them on top of it would decrement each timer twice — the position
+   * is safe because it is overwritten from the snapshot, and everything else is
+   * not. Measured: a walking client burned 1.8 s of dash cooldown in 0.9 s of
+   * wall time, and a dash whose commands were still in flight ended in half its
+   * length. The first unacknowledged command's `before` is exactly the state the
+   * server's snapshot describes, so replaying from there is exact for every
+   * field, not just the two the wire carries.
+   */
+  let pending: { cmd: StepCommand; before: StepPlayer }[] = [];
   let predicted: StepPlayer = {
     x: opts.start.x,
     y: opts.start.y,
@@ -118,22 +151,29 @@ export function createPredictor(opts: PredictorOptions) {
     apply(cmd: Omit<StepCommand, 'seq'>): StepCommand {
       seq += 1;
       const stamped: StepCommand = { ...cmd, seq };
+      // `step` returns a fresh object, so keeping the old one costs nothing and
+      // nothing can mutate it afterwards.
+      pending.push({ cmd: stamped, before: predicted });
       predicted = step(desks, predicted, stamped, constants);
-      pending.push(stamped);
       return stamped;
     },
 
     /**
-     * Folds in an authoritative position: drop what it acknowledges, reset to
+     * Folds in an authoritative position: drop what it acknowledges, rewind to
      * it, replay the rest.
      *
      * The replay is the part that is easy to get wrong by omitting: without it
      * the client snaps back to where the server was a round trip ago and then
      * re-runs forwards from there on the next frame, which is the classic
      * rubber-band.
+     *
+     * THE REWIND IS THE PART THAT IS EASY TO GET WRONG BY HALVING. Replaying on
+     * top of the CURRENT prediction resets the position — which the snapshot
+     * overwrites anyway — while applying every pending command's effect on the
+     * timers, the streak and the grace a second time. See `pending`.
      */
     reconcile(a: Authoritative): void {
-      pending = pending.filter((c) => (c.seq ?? 0) > a.ack);
+      pending = pending.filter((p) => (p.cmd.seq ?? 0) > a.ack);
 
       // Where the figure is being DRAWN right now — predicted plus whatever
       // correction is still easing out. Measured against this rather than
@@ -142,8 +182,12 @@ export function createPredictor(opts: PredictorOptions) {
       const drawnX = predicted.x + errX;
       const drawnY = predicted.y + errY;
 
-      let replayed: StepPlayer = { ...predicted, x: a.x, y: a.y };
-      for (const c of pending) replayed = step(desks, replayed, c, constants);
+      // The state this client believed in at the moment the server's number
+      // describes, with the two fields the server is authoritative about
+      // written over it. With nothing pending that moment is now.
+      const base = pending.length ? pending[0].before : predicted;
+      let replayed: StepPlayer = { ...base, x: a.x, y: a.y, dashCooldown: a.dashCooldown };
+      for (const p of pending) replayed = step(desks, replayed, p.cmd, constants);
       predicted = replayed;
 
       const dx = drawnX - predicted.x;
@@ -193,11 +237,16 @@ export function createPredictor(opts: PredictorOptions) {
      * that has already passed, using the axes the thumb is on *now*, and it runs
      * against a COPY — so when the real command arrives a moment later it starts
      * from the untouched `predicted` and lands exactly where this had already
-     * drawn him. Release the stick and the carry is simply zero, so there is
-     * nothing to snap back from either.
+     * drawn him.
+     *
+     * Releasing the stick is the one case where it steps BACK, by however much
+     * of a sub-step the carry was showing — measured at a walk, 0.107 m on one
+     * frame, which is two pixels on a phone. It is honest rather than wrong: the
+     * carry was drawing a command that then never came. Worth knowing before
+     * reading a small backwards step as this game's older and much larger one.
      *
      * A dash in progress carries at dash speed, because the copy still holds the
-     * dash timer and `step` reads it. That is the whole point: the burst is nine
+     * dash timer and `step` reads it. That is the whole point: the burst is ten
      * commands long, so it is the one move that was almost entirely stepping.
      */
     viewAhead(dt: number, axes: { mx: number; my: number }): { x: number; y: number } {
@@ -212,7 +261,21 @@ export function createPredictor(opts: PredictorOptions) {
      * Sent again in each frame up to `max`; see REDUNDANT_COMMANDS.
      */
     unacknowledged(max: number): StepCommand[] {
-      return max <= 0 ? [] : pending.slice(-max);
+      return max <= 0 ? [] : pending.slice(-max).map((p) => p.cmd);
+    },
+
+    /**
+     * Whether a dash is still running in the predicted player.
+     *
+     * THE EMITTER NEEDS THIS AND NOTHING ELSE DOES. A dash is a committed
+     * movement that outlives the one command which started it by nine more, and
+     * the commonest dash in this game is tapped from a standstill — so without
+     * this the emitter falls silent the instant the request has been carried,
+     * the prediction freezes a fifth of the way through the burst, and the
+     * server runs the other four fifths on its own. See `due`.
+     */
+    dashing(): boolean {
+      return predicted.dashLeft > 0;
     },
 
     /** For tests and for the shift ending. */
@@ -333,8 +396,32 @@ export function createEmitter(opts: EmitterOptions) {
      * `dash` is consumed by the FIRST command this call emits. The caller keeps
      * asking until one comes back carrying it, so a tap during a frame that
      * produced no command is not silently lost.
+     *
+     * `dashing` is whether a dash STARTED EARLIER IS STILL RUNNING, and it is a
+     * different question from `dash`, which is a request that has not been
+     * carried yet. Keeping the two apart is the whole of this method's
+     * correctness, because a dash outlives its request by nine commands:
+     *
+     *   * `dash` true, `dashing` false — the tap. One command carries it.
+     *   * `dash` false, `dashing` true — the other 0.235 s of the burst. The
+     *     stick is neutral (that is what you dash out of), so nothing else here
+     *     would produce a command, and NOT producing one is the bug this
+     *     parameter exists to prevent: the client's simulation only advances
+     *     inside `apply`, so it would freeze a fifth of the way through while
+     *     the server ran the burst to the end. Measured, before the fix: the
+     *     client predicted 0.500 m of a 5.500 m dash, the gap reached the 2 m
+     *     snap threshold in a tenth of a second, and the figure sawed back and
+     *     forth by up to 2.8 m before arriving where the server had put it.
+     *   * both false, stick neutral — standing perfectly still, which is the
+     *     point of the game and still emits nothing at all.
+     *
+     * The commands emitted for a running dash carry the stick as it is, which
+     * for a still player is `(0, 0)` — and that is correct rather than a
+     * compromise, because `step` ignores a command's axes for the duration of a
+     * dash on both ends of the port. What they carry is TIME, which is the thing
+     * the prediction was missing.
      */
-    due(nowMs: number, axes: KarenAxes, dash: boolean, forDash?: KarenAxes): StepCommand[] {
+    due(nowMs: number, axes: KarenAxes, dash: boolean, forDash: KarenAxes, dashing: boolean): StepCommand[] {
       if (last === null) {
         last = nowMs;
         return [];
@@ -353,12 +440,12 @@ export function createEmitter(opts: EmitterOptions) {
         owed -= period;
         budget -= 1;
         const pushing = Math.hypot(axes.mx, axes.my) > opts.idleThreshold;
-        if (!pushing && !dashLeft) continue;
+        if (!pushing && !dashLeft && !dashing) continue;
         // The command that CARRIES the dash takes the resolved direction, which
         // for a still player is not the stick — see dashAxes. Every other
         // command takes the stick as it is, because a neutral stick means stand
         // still and that is the point of the game.
-        const use = dashLeft && forDash ? forDash : axes;
+        const use = dashLeft ? forDash : axes;
         const cmd: StepCommand = {
           dt: Math.min(opts.maxStepSeconds, period / 1000),
           mx: use.mx,

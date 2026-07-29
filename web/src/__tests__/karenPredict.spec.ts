@@ -10,7 +10,8 @@ import {
   createPredictor,
   stickVector,
 } from '../lib/karenPredict';
-import type { StepConstants } from '../lib/karenStep';
+import type { KarenAxes } from '../lib/karenPredict';
+import type { StepCommand, StepConstants } from '../lib/karenStep';
 import type { KarenRect } from '../api/types';
 
 /**
@@ -46,6 +47,14 @@ const K: StepConstants = {
 /** An empty room, so nothing below is about collision. */
 const NO_DESKS: readonly KarenRect[] = [];
 
+/**
+ * The direction a dash would resolve to if one were asked for.
+ *
+ * `dashAxes` has its own tests; everywhere else this is just "some direction",
+ * and it is only read by the one command that carries a dash request.
+ */
+const FOR_DASH = { mx: 0, my: -1 };
+
 function predictor() {
   return createPredictor({ desks: NO_DESKS, constants: K, start: { x: 8, y: 11 } });
 }
@@ -77,7 +86,7 @@ describe('reconciliation', () => {
   it('drops acknowledged commands and keeps the rest', () => {
     const p = predictor();
     for (let i = 0; i < 5; i++) p.apply(walk);
-    p.reconcile({ x: 8, y: 11.2, ack: 3 });
+    p.reconcile({ x: 8, y: 11.2, ack: 3, dashCooldown: 0 });
     expect(p.pendingCount()).toBe(2);
   });
 
@@ -88,14 +97,14 @@ describe('reconciliation', () => {
     const p = predictor();
     for (let i = 0; i < 4; i++) p.apply(walk);
     // The server has only seen the first two, so it is two steps behind.
-    p.reconcile({ x: 8, y: 11 + 2 * walk.dt * K.walkSpeed, ack: 2 });
+    p.reconcile({ x: 8, y: 11 + 2 * walk.dt * K.walkSpeed, ack: 2, dashCooldown: 0 });
     expect(p.raw().y).toBeCloseTo(11 + 4 * walk.dt * K.walkSpeed, 6);
   });
 
   it('lands exactly where the server says once everything is acknowledged', () => {
     const p = predictor();
     for (let i = 0; i < 6; i++) p.apply(walk);
-    p.reconcile({ x: 4.25, y: 17, ack: 6 });
+    p.reconcile({ x: 4.25, y: 17, ack: 6, dashCooldown: 0 });
     expect(p.raw().x).toBeCloseTo(4.25, 9);
     expect(p.raw().y).toBeCloseTo(17, 9);
   });
@@ -107,7 +116,7 @@ describe('reconciliation', () => {
     const p = predictor();
     p.apply(walk);
     const y = p.raw().y;
-    p.reconcile({ x: 8, y: y + SILENT_CORRECTION / 2, ack: 1 });
+    p.reconcile({ x: 8, y: y + SILENT_CORRECTION / 2, ack: 1, dashCooldown: 0 });
     expect(p.correction()).toBe(0);
   });
 
@@ -115,7 +124,7 @@ describe('reconciliation', () => {
     const p = predictor();
     p.apply(walk);
     const drawn = p.view();
-    p.reconcile({ x: 8, y: p.raw().y + 0.5, ack: 1 });
+    p.reconcile({ x: 8, y: p.raw().y + 0.5, ack: 1, dashCooldown: 0 });
     expect(p.view().y).toBeCloseTo(drawn.y, 6);
     expect(p.correction()).toBeGreaterThan(0);
   });
@@ -123,7 +132,7 @@ describe('reconciliation', () => {
   it('and the correction actually goes away', () => {
     const p = predictor();
     p.apply(walk);
-    p.reconcile({ x: 8, y: p.raw().y + 0.5, ack: 1 });
+    p.reconcile({ x: 8, y: p.raw().y + 0.5, ack: 1, dashCooldown: 0 });
     // Exponential decay never reaches zero by arithmetic, so it is cut off at a
     // tenth of a millimetre. The point is that it ENDS, not how fast.
     for (let i = 0; i < 150; i++) p.tick(CORRECTION_SECONDS / 10);
@@ -134,14 +143,14 @@ describe('reconciliation', () => {
   it('snaps a disagreement too large to glide', () => {
     const p = predictor();
     p.apply(walk);
-    p.reconcile({ x: 8, y: p.raw().y + SNAP_CORRECTION * 2, ack: 1 });
+    p.reconcile({ x: 8, y: p.raw().y + SNAP_CORRECTION * 2, ack: 1, dashCooldown: 0 });
     expect(p.correction()).toBe(0);
   });
 
   it('never argues with the server, however wrong the server looks', () => {
     const p = predictor();
     for (let i = 0; i < 20; i++) p.apply(walk);
-    p.reconcile({ x: 1, y: 1, ack: 20 });
+    p.reconcile({ x: 1, y: 1, ack: 20, dashCooldown: 0 });
     for (let i = 0; i < 60; i++) p.tick(0.016);
     expect(p.view().x).toBeCloseTo(1, 6);
     expect(p.view().y).toBeCloseTo(1, 6);
@@ -158,7 +167,7 @@ describe('input redundancy', () => {
   it('offers nothing once everything has been acknowledged', () => {
     const p = predictor();
     for (let i = 0; i < 4; i++) p.apply(walk);
-    p.reconcile({ x: 8, y: p.raw().y, ack: 4 });
+    p.reconcile({ x: 8, y: p.raw().y, ack: 4, dashCooldown: 0 });
     expect(p.unacknowledged(6)).toEqual([]);
   });
 
@@ -174,7 +183,7 @@ describe('the emitter', () => {
     createEmitter({ hz: 40, maxStepSeconds: 0.2, maxPerWake: 4, idleThreshold: K.idleThreshold });
 
   it('says nothing on its very first wake, because it has no interval yet', () => {
-    expect(emitter().due(1000, { mx: 0, my: 1 }, false)).toEqual([]);
+    expect(emitter().due(1000, { mx: 0, my: 1 }, false, FOR_DASH, false)).toEqual([]);
   });
 
   it('emits at a fixed rate rather than one per frame', () => {
@@ -182,8 +191,8 @@ describe('the emitter', () => {
     // rate is fixed and a frame carries however many the window held. At 40 Hz a
     // 100 ms window is exactly four.
     const e = emitter();
-    e.due(0, { mx: 0, my: 1 }, false);
-    expect(e.due(100, { mx: 0, my: 1 }, false)).toHaveLength(4);
+    e.due(0, { mx: 0, my: 1 }, false, FOR_DASH, false);
+    expect(e.due(100, { mx: 0, my: 1 }, false, FOR_DASH, false)).toHaveLength(4);
   });
 
   it('SENDS NOTHING WHILE SOMEBODY IS STANDING STILL', () => {
@@ -192,28 +201,28 @@ describe('the emitter', () => {
     // network nothing at all. The salary climbs because the SERVER advances the
     // shift, never because the client keeps talking.
     const e = emitter();
-    e.due(0, { mx: 0, my: 0 }, false);
-    expect(e.due(1000, { mx: 0, my: 0 }, false)).toEqual([]);
+    e.due(0, { mx: 0, my: 0 }, false, FOR_DASH, false);
+    expect(e.due(1000, { mx: 0, my: 0 }, false, FOR_DASH, false)).toEqual([]);
   });
 
   it('treats a push inside the dead zone as standing still', () => {
     const e = emitter();
-    e.due(0, { mx: 0.01, my: -0.01 }, false);
-    expect(e.due(200, { mx: 0.01, my: -0.01 }, false)).toEqual([]);
+    e.due(0, { mx: 0.01, my: -0.01 }, false, FOR_DASH, false);
+    expect(e.due(200, { mx: 0.01, my: -0.01 }, false, FOR_DASH, false)).toEqual([]);
   });
 
   it('speaks up for a dash even when the feet are still', () => {
     const e = emitter();
-    e.due(0, { mx: 0, my: 0 }, false);
-    const out = e.due(100, { mx: 0, my: 0 }, true);
+    e.due(0, { mx: 0, my: 0 }, false, FOR_DASH, false);
+    const out = e.due(100, { mx: 0, my: 0 }, true, FOR_DASH, false);
     expect(out).toHaveLength(1);
     expect(out[0].dash).toBe(true);
   });
 
   it('puts the dash on exactly one command, never on the whole window', () => {
     const e = emitter();
-    e.due(0, { mx: 0, my: 1 }, false);
-    const out = e.due(100, { mx: 0, my: 1 }, true);
+    e.due(0, { mx: 0, my: 1 }, false, FOR_DASH, false);
+    const out = e.due(100, { mx: 0, my: 1 }, true, FOR_DASH, false);
     expect(out.filter((c) => c.dash)).toHaveLength(1);
     expect(out[0].dash).toBe(true);
   });
@@ -225,8 +234,8 @@ describe('the emitter', () => {
       maxPerWake: 4,
       idleThreshold: K.idleThreshold,
     });
-    e.due(0, { mx: 0, my: 1 }, false);
-    for (const c of e.due(2000, { mx: 0, my: 1 }, false)) expect(c.dt).toBeLessThanOrEqual(0.2);
+    e.due(0, { mx: 0, my: 1 }, false, FOR_DASH, false);
+    for (const c of e.due(2000, { mx: 0, my: 1 }, false, FOR_DASH, false)) expect(c.dt).toBeLessThanOrEqual(0.2);
   });
 
   it('does not empty a minute of stall into the office all at once', () => {
@@ -234,17 +243,17 @@ describe('the emitter', () => {
     // commands, every one of which the server's time budget would refuse — and
     // not creating them is what keeps the prediction agreeing with that refusal.
     const e = emitter();
-    e.due(0, { mx: 0, my: 1 }, false);
-    expect(e.due(60_000, { mx: 0, my: 1 }, false)).toHaveLength(4);
+    e.due(0, { mx: 0, my: 1 }, false, FOR_DASH, false);
+    expect(e.due(60_000, { mx: 0, my: 1 }, false, FOR_DASH, false)).toHaveLength(4);
     // And the backlog is dropped rather than paid off over the next second.
-    expect(e.due(60_025, { mx: 0, my: 1 }, false)).toHaveLength(1);
+    expect(e.due(60_025, { mx: 0, my: 1 }, false, FOR_DASH, false)).toHaveLength(1);
   });
 
   it('forgets everything on reset, so a new shift starts from zero', () => {
     const e = emitter();
-    e.due(0, { mx: 0, my: 1 }, false);
+    e.due(0, { mx: 0, my: 1 }, false, FOR_DASH, false);
     e.reset();
-    expect(e.due(1000, { mx: 0, my: 1 }, false)).toEqual([]);
+    expect(e.due(1000, { mx: 0, my: 1 }, false, FOR_DASH, false)).toEqual([]);
   });
 });
 
@@ -420,5 +429,185 @@ describe('a dash always has a direction', () => {
     const dir = dashAxes(still, { mx: 0, my: 1 }, null, IDLE);
     p.apply({ dt: 0.025, mx: dir.mx, my: dir.my, dash: true });
     expect(Math.hypot(p.view().x - from.x, p.view().y - from.y)).toBeCloseTo(K.dashSpeed * 0.025, 6);
+  });
+});
+
+describe('a dash is predicted for the whole of its length', () => {
+  /**
+   * Regression, and it is the worst defect this game has had.
+   *
+   * The client's simulation only advances inside `apply`, and `apply` only runs
+   * on a command the emitter produced. The emitter used to fall silent as soon
+   * as the dash REQUEST had been carried — but a dash tapped from a standstill
+   * leaves the stick neutral for the other 0.235 s of the burst, so exactly one
+   * command was ever emitted for it. The server, meanwhile, simulates any part
+   * of a tick nobody claimed as standing still, and a still step during a
+   * committed dash travels at the full dash speed. So the server ran the whole
+   * burst while the browser predicted a twentieth of it.
+   *
+   * Measured on production, at 20 m/s and a 2 m snap threshold: the client
+   * predicted 0.500 m of 5.500 m, the disagreement cleared the snap threshold in
+   * 0.1 s, and the figure sawed back and forth — teleports of 4.566 m, 3.197 m
+   * and 2.340 m in a single dash — before arriving where the server had put it.
+   * Three separate things go wrong and all three are pinned below: the position
+   * freezes, `dashLeft` never reaches zero, and `dashCooldown` never reaches
+   * zero either, so the NEXT dash is refused locally while the server grants it.
+   */
+  const FRAME_MS = 1000 / 60;
+  const STILL: KarenAxes = { mx: 0, my: 0 };
+
+  /**
+   * The loop the view actually runs, with nothing stubbed out: an emitter at the
+   * fixed command rate, the real predictor, and a 60 Hz frame that emits,
+   * applies, decays the correction and reads the drawn position — `drawFrame`
+   * and `placeMe`, in order.
+   */
+  function loop(opts: { frames: number; dashAt: number; axes?: (frame: number) => KarenAxes }) {
+    const p = predictor();
+    const e = createEmitter({
+      hz: 40,
+      maxStepSeconds: 0.2,
+      maxPerWake: 4,
+      idleThreshold: K.idleThreshold,
+    });
+    const axesFor = opts.axes ?? (() => STILL);
+    let dashPending = false;
+    const commands: StepCommand[] = [];
+    const drawn: { x: number; y: number }[] = [];
+    for (let f = 0; f < opts.frames; f++) {
+      if (f === opts.dashAt) dashPending = true;
+      const axes = axesFor(f);
+      const due = e.due(f * FRAME_MS, axes, dashPending, FOR_DASH, p.dashing());
+      for (const c of due) commands.push(p.apply(c));
+      if (due.some((c) => c.dash)) dashPending = false;
+      p.tick(FRAME_MS / 1000);
+      drawn.push(p.viewAhead(e.residualSeconds(), axes));
+    }
+    return { p, commands, drawn };
+  }
+
+  /** How many sub-steps a dash is, at the fixed command rate. */
+  const DASH_COMMANDS = K.dashSeconds / 0.025;
+
+  it('keeps emitting for the rest of the burst, though the stick is neutral', () => {
+    const { commands, p } = loop({ frames: 40, dashAt: 4 });
+    // One command carries the request; the rest carry the TIME the prediction
+    // would otherwise never simulate. BEFORE THE FIX THIS WAS EXACTLY 1.
+    //
+    // Two sub-steps of slack, and both are honest rather than sloppy. `step`
+    // decides whether a sub-step is a dash BEFORE decrementing the timer, so a
+    // dash that does not tile the command rate runs one partial sub-step at full
+    // speed — and floating-point residue in the repeated subtraction can leave
+    // that partial step a hair above zero, which the server does identically.
+    // The caller also samples "is a dash running" once per drawn frame while a
+    // frame may produce two commands, so the last still-step can be one late.
+    expect(commands.length).toBeGreaterThanOrEqual(DASH_COMMANDS);
+    expect(commands.length).toBeLessThanOrEqual(DASH_COMMANDS + 2);
+    expect(commands.filter((c) => c.dash)).toHaveLength(1);
+    expect(p.raw().dashLeft).toBe(0);
+  });
+
+  it('predicts the whole distance, not a twentieth of it', () => {
+    const { p } = loop({ frames: 40, dashAt: 4 });
+    // Straight up, from the spawn this suite uses, with no walls in reach.
+    const travelled = 11 - p.raw().y;
+    // The nominal burst, plus at most the one partial sub-step described above.
+    // Before the fix this was a single sub-step: 0.25 m of 2.00 m.
+    expect(travelled).toBeGreaterThanOrEqual(K.dashSpeed * K.dashSeconds);
+    expect(travelled).toBeLessThanOrEqual(K.dashSpeed * (K.dashSeconds + 0.025));
+  });
+
+  it('draws it as one burst — the figure never goes backwards', () => {
+    // THE SYMPTOM, and it is what the owner saw. With `predicted` frozen the
+    // only thing moving the figure was the renderer's carry over elapsed-but-
+    // uncommitted time, which sweeps a whole sub-step at dash speed and then
+    // resets to nothing forty times a second.
+    const { drawn } = loop({ frames: 40, dashAt: 4 });
+    let backwards = 0;
+    let worst = 0;
+    for (let i = 1; i < drawn.length; i++) {
+      const step = drawn[i].y - drawn[i - 1].y;
+      if (step > 1e-9) {
+        backwards += 1;
+        worst = Math.max(worst, step);
+      }
+    }
+    expect({ backwards, worst }).toEqual({ backwards: 0, worst: 0 });
+  });
+
+  it('and standing still afterwards draws the same place every frame', () => {
+    // `dashLeft` used to be left permanently non-zero, so the carry kept running
+    // at dash speed for the rest of the shift and the figure shivered by up to
+    // half a metre while the player was doing nothing at all.
+    const { p, drawn } = loop({ frames: 60, dashAt: 4 });
+    const settled = drawn.slice(-20);
+    for (const at of settled) expect(at.y).toBeCloseTo(p.raw().y, 9);
+  });
+
+  it('and says nothing at all once it is over, which is the whole design', () => {
+    // The fix must not become "always talk". Standing perfectly still is what
+    // this game is about and it still costs the network nothing.
+    const before = loop({ frames: 40, dashAt: 4 }).commands.length;
+    const after = loop({ frames: 200, dashAt: 4 }).commands.length;
+    expect(after).toBe(before);
+  });
+});
+
+describe('the dash cooldown comes from the server, because a still client cannot count it', () => {
+  it('folds the authoritative cooldown in beside the position', () => {
+    const p = predictor();
+    p.apply({ dt: 0.025, mx: 0, my: -1, dash: true });
+    expect(p.raw().dashCooldown).toBeCloseTo(K.dashCooldownSeconds - 0.025, 9);
+    // Some seconds later the server says it is ready. The client emitted nothing
+    // in between — it was standing still, which is the point of the game — so
+    // this snapshot is the only way it can ever find out.
+    p.reconcile({ x: p.raw().x, y: p.raw().y, ack: 1, dashCooldown: 0 });
+    expect(p.raw().dashCooldown).toBe(0);
+  });
+
+  it('so the second dash of a shift is granted locally, not refused', () => {
+    // Before the fix the client's own cooldown stayed frozen at 2.175 s for the
+    // rest of the shift, so `step` refused every later dash while the server
+    // granted it — the client predicted a walk against a 20 m/s burst.
+    const p = predictor();
+    p.apply({ dt: 0.025, mx: 0, my: -1, dash: true });
+    // Run the burst out, the way the emitter now does.
+    while (p.raw().dashLeft > 0) p.apply({ dt: 0.025, mx: 0, my: 0 });
+    // Seconds pass. The client is standing perfectly still, so it sends nothing
+    // and its own cooldown stays frozen wherever the burst left it.
+    expect(p.raw().dashCooldown).toBeGreaterThan(0);
+
+    p.reconcile({ x: p.raw().x, y: p.raw().y, ack: 99, dashCooldown: 0 });
+    const before = p.raw().y;
+    p.apply({ dt: 0.025, mx: 0, my: -1, dash: true });
+    expect(p.raw().dashLeft).toBeCloseTo(K.dashSeconds - 0.025, 9);
+    expect(before - p.raw().y).toBeCloseTo(K.dashSpeed * 0.025, 9);
+  });
+});
+
+describe('a replay is a rewind, not a second application', () => {
+  it('does not spend the dash timer twice on the commands still in flight', () => {
+    // `predicted` already contains every pending command. Replaying them on top
+    // of it reset the position — which the snapshot overwrites anyway — while
+    // decrementing every timer a second time. Measured before the fix: a walking
+    // client burned 1.8 s of cooldown in 0.9 s of wall time, and a dash whose
+    // commands were still in flight ended in half its length.
+    const p = predictor();
+    p.apply({ dt: 0.025, mx: 0, my: -1, dash: true });
+    for (let i = 0; i < 3; i++) p.apply({ dt: 0.025, mx: 0, my: 0 });
+    const straight = p.raw();
+    // The server has acknowledged only the dash. The other three are replayed.
+    p.reconcile({ x: straight.x, y: straight.y, ack: 1, dashCooldown: straight.dashCooldown + 3 * 0.025 });
+    expect(p.raw().dashLeft).toBeCloseTo(straight.dashLeft, 9);
+    expect(p.raw().dashCooldown).toBeCloseTo(straight.dashCooldown, 9);
+    expect(p.raw().streak).toBeCloseTo(straight.streak, 9);
+  });
+
+  it('still lands exactly on the server once everything is acknowledged', () => {
+    const p = predictor();
+    for (let i = 0; i < 6; i++) p.apply({ dt: 0.025, mx: 0, my: 1 });
+    p.reconcile({ x: 4.25, y: 17, ack: 6, dashCooldown: 0 });
+    expect(p.raw().x).toBeCloseTo(4.25, 9);
+    expect(p.raw().y).toBeCloseTo(17, 9);
   });
 });
