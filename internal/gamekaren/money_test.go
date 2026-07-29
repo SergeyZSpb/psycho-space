@@ -220,3 +220,58 @@ func TestAThumbRestingOnTheStickIsStandingStill(t *testing.T) {
 		t.Fatalf("a stick below the idle threshold spent grace: %v", twitch.MoveGrace)
 	}
 }
+
+// TestADashCoversItsWholeDistanceWithNoFurtherInput is the rule that makes a
+// dash a dash.
+//
+// The commonest dash in this game is tapped from a standstill — that is the
+// state the whole game is played in — so exactly ONE command carries a
+// direction and the rest of the burst carries no input at all. A dash steered
+// per-command covered 0.50 m of its 5.20 m, and covered a DIFFERENT fraction on
+// the client, which is what threw the player back and forth.
+func TestADashCoversItsWholeDistanceWithNoFurtherInput(t *testing.T) {
+	p := NewPlayer()
+	from := p.Pos
+	// One command carrying the dash and its direction, then silence. DOWN the
+	// clear central lane: the spawn is only 3.65 m from the top wall and a dash
+	// is 5.2 m, so dashing up would measure the wall rather than the dash.
+	p = Step(Desks, p, Command{Seq: 1, Dt: 0.025, MX: 0, MY: 1, Dash: true})
+	for p.DashLeft > 0 {
+		p = Step(Desks, p, Command{Dt: 0.025})
+	}
+	got := p.Pos.Y - from.Y
+	want := DashSpeed * DashSeconds
+	// Within one sub-step. A dash is granted in whole sub-steps, and DashSeconds
+	// need not be a multiple of one, so the last step of a dash runs its full
+	// length even when less dash remained. That is quantisation rather than
+	// drift: both ends run this same function over the same sub-steps, so they
+	// overshoot identically and never disagree — which is the property that
+	// matters, and the reason this is a tolerance and not a bug.
+	if slack := DashSpeed * 0.025; math.Abs(got-want) > slack+1e-9 {
+		t.Fatalf("a dash covered %.3f m with no further input, want %.3f m (±%.3f)", got, want, slack)
+	}
+	// And it is emphatically not the 0.50 m it used to be.
+	if got < want*0.9 {
+		t.Fatalf("a dash covered only %.3f m of its %.3f m", got, want)
+	}
+}
+
+// TestADashIgnoresTheStickOnceCommitted — it goes where it committed, so the
+// same dash covers the same ground however the thumb wanders during it.
+func TestADashIgnoresTheStickOnceCommitted(t *testing.T) {
+	run := func(during Command) Vec2 {
+		p := NewPlayer()
+		p = Step(Desks, p, Command{Seq: 1, Dt: 0.025, MX: 0, MY: 1, Dash: true})
+		for p.DashLeft > 0 {
+			c := during
+			c.Dt = 0.025
+			p = Step(Desks, p, c)
+		}
+		return p.Pos
+	}
+	silent := run(Command{})
+	fighting := run(Command{MX: 1, MY: 1}) // shoving the other way mid-dash
+	if math.Abs(silent.X-fighting.X) > 1e-9 || math.Abs(silent.Y-fighting.Y) > 1e-9 {
+		t.Fatalf("the stick steered a committed dash: %v vs %v", silent, fighting)
+	}
+}

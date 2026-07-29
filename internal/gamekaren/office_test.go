@@ -20,7 +20,9 @@ func snapOf(t *testing.T, o *Office, accountID string) Snapshot {
 	t.Helper()
 	raw, ok := o.SnapshotFor(accountID)
 	if !ok {
-		t.Fatalf("no snapshot for %s", accountID)
+		t.Fatalf("no snapshot for %s — the occupant is gone, which almost always means "+
+			"the bald man reached them. He crosses from his spawn in about %.1fs, so a test "+
+			"that is not ABOUT the chase must finish well inside that.", accountID, (BossSpawnY-PlayerSpawnY-CatchRadius-PlayerRadius)/BossSpeed)
 	}
 	var s Snapshot
 	if err := json.Unmarshal(raw, &s); err != nil {
@@ -200,10 +202,16 @@ func TestTheTimeBudgetCapsBankedSimulatedTime(t *testing.T) {
 	o.Enqueue("a", cmds, epoch)
 	start := snapOf(t, o, "a").X
 
-	// One tick, claiming five whole seconds — a stalled loop, a suspended
-	// process, or a test being unkind. The queue holds eight seconds of
-	// movement; the cap says half a second of it may be spent.
-	o.Advance(5.0, epoch.Add(time.Second))
+	// One tick claiming a whole second — a stalled loop, a suspended process, or
+	// a test being unkind. The queue holds eight seconds of movement; the cap
+	// says half a second of it may be spent.
+	//
+	// A second rather than five, and the reason is worth knowing: the BOSS is not
+	// budget-capped, because in production Advance is only ever called with
+	// SimStep. Hand it five seconds and he crosses the whole office in one step
+	// and ends the shift, and this test — which is about the player's cap — dies
+	// of something else entirely.
+	o.Advance(1.0, epoch.Add(time.Second))
 
 	moved := float64(snapOf(t, o, "a").X-start) / 100
 	if limit := TimeBudgetCap*WalkSpeed + 1e-6; moved > limit {
@@ -223,7 +231,10 @@ func TestQuietTimeCannotBeBankedAndSpentOnMovement(t *testing.T) {
 	if err := o.Join("a", "s1", epoch); err != nil {
 		t.Fatal(err)
 	}
-	advance(o, 5*SimHz) // five seconds of standing perfectly still
+	// Two seconds of standing perfectly still. NOT five: the bald man reaches the
+	// spawn in about 3.8 s, and this test is about the budget rather than about
+	// him — see snapOf.
+	advance(o, 2*SimHz)
 	start := snapOf(t, o, "a").X
 
 	var cmds []Command
@@ -378,7 +389,9 @@ func TestTwoOccupantsAreSteppedInADeterministicOrder(t *testing.T) {
 		// Symmetrically apart, so his choice is a pure tie.
 		o.Enqueue("a", []Command{{Seq: 1, Dt: MaxStepSeconds, MX: -1}}, epoch)
 		o.Enqueue("b", []Command{{Seq: 1, Dt: MaxStepSeconds, MX: 1}}, epoch)
-		advance(o, 100)
+		// Comfortably inside the chase: determinism shows up in the first second
+		// and the shift ending mid-run would prove nothing — see snapOf.
+		advance(o, 40)
 		sa, sb := snapOf(t, o, "a"), snapOf(t, o, "b")
 		return Vec2{X: float64(sa.B.X), Y: float64(sa.B.Y)}, Vec2{X: float64(sb.X), Y: float64(sb.Y)}
 	}

@@ -125,7 +125,7 @@ const (
 	// short enough that a shift has several full ramps in it. Retuning it
 	// retunes the whole game, and the splash-screen cheatsheet updates itself
 	// because it is generated from the served config.
-	RampSeconds   = 6.0
+	RampSeconds   = 3.5
 	MaxMultiplier = 3.0
 
 	// GraceSeconds is how long you may move before the streak resets.
@@ -142,7 +142,7 @@ const (
 	// BossSpeed is slower than a walk and faster than a stroll. He never runs
 	// and he never stops, which is the joke: you can always outpace him and you
 	// can never be rid of him.
-	BossSpeed = 2.35 // m/s
+	BossSpeed = 4.0 // m/s
 
 	// CatchRadius is how close he has to get. Added to PlayerRadius, so the
 	// shift ends when the two discs are about a metre apart — the distance at

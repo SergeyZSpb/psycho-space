@@ -102,6 +102,19 @@ export interface StepPlayer {
   dashLeft: number;
   /** Seconds until the dash is available again. */
   dashCooldown: number;
+  /**
+   * The direction the current dash committed to, unit length, captured when it
+   * started.
+   *
+   * A DASH IS A COMMITTED MOVEMENT, not "move fast while holding the stick".
+   * The commonest dash in this game is tapped from a standstill, where exactly
+   * one command carries a direction and the rest of the burst carries no input
+   * at all — so a per-command dash covered a fraction of its distance, and a
+   * different fraction on each end of the port, which the correction then
+   * yanked back. See the Go original in sim.go.
+   */
+  dashDx: number;
+  dashDy: number;
 }
 
 /** Reads the simulation constants off the served catalogue. */
@@ -220,6 +233,14 @@ export function step(
   if (c.dash && out.dashCooldown <= 0 && out.dashLeft <= 0) {
     out.dashLeft = k.dashSeconds;
     out.dashCooldown = k.dashCooldownSeconds;
+    // The direction is captured HERE, once, and the whole dash runs on it — see
+    // the Go original, sim.go. A dash tapped from a standstill has exactly one
+    // command carrying a direction and no input at all for the rest of its
+    // duration, so a dash steered per-command covered a fraction of its distance
+    // and a DIFFERENT fraction on each end of the port.
+    const mag = Math.hypot(c.mx, c.my);
+    out.dashDx = mag > 0 ? c.mx / mag : 0;
+    out.dashDy = mag > 0 ? c.my / mag : 0;
   }
 
   // Captured BEFORE the timers are decremented: a dash that starts on this very
@@ -231,15 +252,18 @@ export function step(
   out.dashLeft = Math.max(0, out.dashLeft - dt);
   out.dashCooldown = Math.max(0, out.dashCooldown - dt);
 
-  // 3. Speed.
+  // 3. Speed, and — while dashing — the DIRECTION too. The command's axes are
+  //    ignored for the duration: the dash goes where it committed.
   const speed = dashing ? k.dashSpeed : k.walkSpeed;
+  const mx = dashing ? out.dashDx : c.mx;
+  const my = dashing ? out.dashDy : c.my;
 
   // 4. Move, then the floor, then every desk. That order is the specification:
   //    the floor clamp can put a player against a wall and a desk push can move
   //    them along it, and doing it the other way round lets a corner desk push
   //    somebody through the wall behind it.
-  let px = out.x + c.mx * speed * dt;
-  let py = out.y + c.my * speed * dt;
+  let px = out.x + mx * speed * dt;
+  let py = out.y + my * speed * dt;
   const r = k.playerRadius;
   px = clamp(px, r, k.officeW - r);
   py = clamp(py, r, k.officeH - r);

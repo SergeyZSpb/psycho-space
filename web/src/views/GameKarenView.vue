@@ -214,6 +214,7 @@ import {
   type Predictor,
 } from '../lib/karenPredict';
 import type { StepCommand, StepConstants } from '../lib/karenStep';
+import { createInterpolator, type Interpolator } from '../lib/karenInterp';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
 
 type Phase = 'splash' | 'playing' | 'over';
@@ -271,6 +272,10 @@ let dashPending = false;
 // neutral — which, in this game, is most of the time. See dashAxes.
 let lastDir: { mx: number; my: number } | null = null;
 let bossAt: { x: number; y: number } | null = null;
+// The лысый is INTERPOLATED, not predicted: his intent is not ours to guess, so
+// he is drawn in the recent past between two samples that have both already
+// arrived. See karenInterp.
+let bossInterp: Interpolator | null = null;
 /** The grin state currently written on the boss, so the class is not rewritten. */
 let bossGrin = '';
 
@@ -442,6 +447,7 @@ function enterPlay(): void {
   const client = realtimeClient(shift.room);
   release = client.subscribe({ frames: onFrame, status: onStatus });
 
+  bossInterp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
   sendTimer = window.setInterval(sendInput, Math.round(1000 / config.value.move.input_hz));
   lastFrameMs = performance.now();
   frameHandle = requestAnimationFrame(drawFrame);
@@ -465,6 +471,7 @@ function teardownPlay(): void {
   dashPending = false;
   lastDir = null;
   bossAt = null;
+  bossInterp = null;
 }
 
 // --- the two clocks --------------------------------------------------------
@@ -491,6 +498,7 @@ function drawFrame(now: number): void {
     if (due.some((c) => c.dash)) dashPending = false;
     predictor.tick(dt);
     placeMe();
+    placeBoss(now);
   }
 
   frameHandle = requestAnimationFrame(drawFrame);
@@ -518,6 +526,24 @@ function sendInput(): void {
 }
 
 // --- placing ---------------------------------------------------------------
+
+// The лысый, drawn from the interpolation buffer every animation frame rather
+// than written once per snapshot and smoothed by CSS. That is the third
+// Gambetta rung, and the reason it is worth a module is in karenInterp.
+function placeBoss(now: number): void {
+  const el = bossEl.value;
+  if (!el || !bossInterp || !constants) return;
+  const at = bossInterp.at(now);
+  // Nothing has arrived yet — draw nothing rather than guess a position and
+  // then snap it.
+  if (!at) return;
+  applyBoss(el, toPlane(at.x, at.y, constants.officeW, constants.officeH), at.grin);
+  const state = grinState(at.grin);
+  if (state !== bossGrin) {
+    bossGrin = state;
+    el.dataset.grin = state;
+  }
+}
 
 function placeMe(): void {
   const el = meEl.value;
@@ -588,16 +614,10 @@ function applySnapshot(frame: RealtimeFrame): void {
   if (b && el) {
     const grin = num(b.g) / 255;
     bossAt = { x: num(b.x) / 100, y: num(b.y) / 100 };
-    applyBoss(el, toPlane(num(b.x) / 100, num(b.y) / 100, constants.officeW, constants.officeH), grin);
-    // Written as an attribute only when it CHANGES: the smile widens from
-    // `--grin`, which the compositor interpolates, but the colour steps, and
-    // rewriting an attribute ten times a second to the same value is a style
-    // recalculation for nothing.
-    const state = grinState(grin);
-    if (state !== bossGrin) {
-      bossGrin = state;
-      el.dataset.grin = state;
-    }
+    // Buffered rather than drawn. The render loop reads him back out a beat
+    // later, between two samples it already holds, which is what makes jitter
+    // and a dropped frame cost nothing.
+    bossInterp?.push({ x: bossAt.x, y: bossAt.y, grin }, performance.now());
   }
 }
 
@@ -1014,7 +1034,10 @@ function onDash(): void {
      arrives ten times a second and is eased across the gap between two frames.
      100ms is exactly the snapshot period: long enough to be continuous, short
      enough that he is never drawn anywhere the server did not put him. */
-  transition: transform 100ms linear;
+  /* NO TRANSITION. He is interpolated in JS now (karenInterp), so a CSS
+     transition here would smooth an already-smooth position — adding a second
+     lag on top of the interpolation delay and reintroducing the stop-start it
+     exists to remove. */
 }
 
 .karen-boss[data-grin='closing'] {

@@ -98,6 +98,8 @@ export function createPredictor(opts: PredictorOptions) {
     moveGrace: 0,
     dashLeft: 0,
     dashCooldown: 0,
+    dashDx: 0,
+    dashDy: 0,
   };
   // The offset being eased out, in metres. Added to the predicted position when
   // drawing, and decayed towards zero every frame.

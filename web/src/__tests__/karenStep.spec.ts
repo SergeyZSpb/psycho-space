@@ -37,6 +37,8 @@ interface GoldenPlayer {
   streak: number;
   move_grace: number;
   dash_left: number;
+  dash_dx: number;
+  dash_dy: number;
   dash_cooldown: number;
 }
 
@@ -140,6 +142,8 @@ function fromGolden(p: GoldenPlayer): StepPlayer {
     streak: p.streak,
     moveGrace: p.move_grace,
     dashLeft: p.dash_left,
+    dashDx: p.dash_dx,
+    dashDy: p.dash_dy,
     dashCooldown: p.dash_cooldown,
   };
 }
@@ -215,6 +219,8 @@ function player(over: Partial<StepPlayer> = {}): StepPlayer {
     moveGrace: 0,
     dashLeft: 0,
     dashCooldown: 0,
+    dashDx: 0,
+    dashDy: 0,
     ...over,
   };
 }

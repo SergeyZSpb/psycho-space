@@ -89,7 +89,10 @@ func TestTheGrinIsRecomputedEveryStep(t *testing.T) {
 		}
 		b = next
 	}
-	if b.Grin != 1 {
+	// Within floating-point slack rather than exactly: the grin is 1 − dist/range
+	// clamped, and whether the last step lands exactly on top of the target
+	// depends on the speed dividing the distance evenly. It does not have to.
+	if 1-b.Grin > 1e-9 {
 		t.Fatalf("having arrived, he is only smiling %v", b.Grin)
 	}
 }

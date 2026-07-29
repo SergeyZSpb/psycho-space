@@ -99,6 +99,8 @@ type goldenPlayer struct {
 	Streak       float64 `json:"streak"`
 	MoveGrace    float64 `json:"move_grace"`
 	DashLeft     float64 `json:"dash_left"`
+	DashDX       float64 `json:"dash_dx"`
+	DashDY       float64 `json:"dash_dy"`
 	DashCooldown float64 `json:"dash_cooldown"`
 	Alive        bool    `json:"alive"`
 }
@@ -107,7 +109,8 @@ func toGolden(p Player) goldenPlayer {
 	return goldenPlayer{
 		X: round9(p.Pos.X), Y: round9(p.Pos.Y),
 		Salary: round9(p.Salary), Streak: round9(p.Streak), MoveGrace: round9(p.MoveGrace),
-		DashLeft: round9(p.DashLeft), DashCooldown: round9(p.DashCooldown), Alive: p.Alive,
+		DashLeft: round9(p.DashLeft), DashDX: round9(p.DashDX), DashDY: round9(p.DashDY),
+		DashCooldown: round9(p.DashCooldown), Alive: p.Alive,
 	}
 }
 

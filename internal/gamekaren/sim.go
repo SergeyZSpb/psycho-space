@@ -69,6 +69,20 @@ type Player struct {
 	// next one is available.
 	DashLeft     float64
 	DashCooldown float64
+	// DashDX and DashDY are the direction the current dash committed to, unit
+	// length, captured when it started.
+	//
+	// A DASH IS A COMMITTED MOVEMENT, NOT "MOVE FAST WHILE HOLDING THE STICK",
+	// and that is the whole reason these exist. Without them a dash only moved on
+	// the ticks that happened to carry input — and the commonest dash in this
+	// game is tapped from a standstill, where exactly ONE command carries a
+	// direction and the rest of the burst has no input at all. Measured: 0.50 m
+	// of a 5.20 m dash. Worse than short, it was NON-DETERMINISTIC: how far you
+	// went depended on which ticks input landed on, the client and the server
+	// disagreed about that, and at dash speed the gap cleared the snap threshold
+	// and yanked the player back and forth.
+	DashDX float64
+	DashDY float64
 	// Alive is false once the bald man has reached this player. A dead occupant
 	// is not a target for him and is not stepped again.
 	Alive bool
@@ -149,6 +163,15 @@ func Step(desks []Rect, p Player, c Command) Player {
 	if c.Dash && p.DashCooldown <= 0 && p.DashLeft <= 0 {
 		p.DashLeft = DashSeconds
 		p.DashCooldown = DashCooldown
+		// The direction is captured HERE, once, and the whole dash runs on it.
+		// A dash with no direction at all still burns — the client always sends
+		// one (see dashAxes), and inventing one here would be the server making
+		// up input.
+		if mag := math.Hypot(c.MX, c.MY); mag > 0 {
+			p.DashDX, p.DashDY = c.MX/mag, c.MY/mag
+		} else {
+			p.DashDX, p.DashDY = 0, 0
+		}
 	}
 
 	// Whether the dash is running FOR THIS STEP, captured after it may have
@@ -163,10 +186,15 @@ func Step(desks []Rect, p Player, c Command) Player {
 	p.DashLeft = math.Max(0, p.DashLeft-c.Dt)
 	p.DashCooldown = math.Max(0, p.DashCooldown-c.Dt)
 
-	// 3. Speed.
+	// 3. Speed, and — while dashing — the DIRECTION too. The command's axes are
+	// ignored for the duration: the dash goes where it committed, so it covers
+	// the same ground whether input arrives on every tick, on one of them, or on
+	// none at all. That is what makes it identical on both ends of the port.
 	speed := WalkSpeed
+	mx, my := c.MX, c.MY
 	if dashing {
 		speed = DashSpeed
+		mx, my = p.DashDX, p.DashDY
 	}
 
 	// 4. Move, then clamp to the floor, then push out of every desk in
@@ -176,8 +204,8 @@ func Step(desks []Rect, p Player, c Command) Player {
 	// through one. content_test pins both of those invariants, which is what
 	// lets this stay a single pass rather than the iterative resolver a
 	// generated level needs.
-	p.Pos.X += c.MX * speed * c.Dt
-	p.Pos.Y += c.MY * speed * c.Dt
+	p.Pos.X += mx * speed * c.Dt
+	p.Pos.Y += my * speed * c.Dt
 	p.Pos = clampToFloor(p.Pos, PlayerRadius)
 	for _, d := range desks {
 		p.Pos = pushOut(d, p.Pos, PlayerRadius)
