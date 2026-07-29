@@ -353,3 +353,34 @@ export function sameRoster(a: readonly PeerLook[], b: readonly PeerLook[]): bool
 export function karenAvatarEndpoint(handle: string): string {
   return `/api/game-karen/avatar/${encodeURIComponent(handle)}`;
 }
+
+/**
+ * Whether a figure is moving faster than anybody can walk — which, on this
+ * plane, means dashing.
+ *
+ * A BUFF DERIVED RATHER THAN SENT. A colleague's dash used to be visible only to
+ * the colleague, because the only thing that knew about it was his own
+ * predictor. Nothing here exceeds the walk speed except a dash, so two
+ * consecutive drawn positions and the walk speed the catalogue already publishes
+ * are enough to know — for every peer, at no cost on a frame that repeats ten
+ * times a second.
+ *
+ * The margin is what makes it usable rather than merely true: interpolation and
+ * a recovered dropped frame both overstate a single step, while a dash is
+ * several times a walk, so there is a wide gap to sit in. A non-positive or
+ * absurd `dt` answers false rather than dividing by it.
+ */
+export function movingFast(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  dtSeconds: number,
+  walkSpeed: number,
+): boolean {
+  if (!(dtSeconds > 0) || !Number.isFinite(dtSeconds) || dtSeconds > 1) return false;
+  if (!(walkSpeed > 0)) return false;
+  const speed = Math.hypot(to.x - from.x, to.y - from.y) / dtSeconds;
+  return speed > walkSpeed * FAST_MARGIN;
+}
+
+/** How far past a walk counts as a dash. See movingFast. */
+export const FAST_MARGIN = 1.6;

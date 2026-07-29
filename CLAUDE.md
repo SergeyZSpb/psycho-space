@@ -122,17 +122,28 @@ Each game is its own module: its own package, tables, routes and views. **No gam
 
 **Reasoning for all of the above lives in the records — [ADR-028](docs/adrs/) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared), ADR-046/047/057 (each game's rendering decision, where the canvas line falls, and why owning a tick does not oblige a game to leave the DOM), ADR-056 (one shared office against one arena per run), summarised in `docs/ARCHITECTURE.md` §8.** Read those before arguing with this rule. They are settled: rewriting one to mean something else is how a decision changes, so do it deliberately and in a commit that says why — not as a side effect of disagreeing with it.
 
-### A verb announces itself on the plane
+### Everything a player does is visible to everyone, and derived rather than sent
 
-**Anything that is not ordinary movement gets a brief visual acknowledgement, at the place it happened.** Standing, walking, dashing and being caught need none — you can already see all of them. A *verb* cannot be seen: you press something, and a second later the world behaves differently. Without an acknowledgement a player who is not sure he pressed anything reads that as the game misbehaving, and a player who is sure reads it as the game ignoring him.
+Two halves of one rule: **an action is acknowledged where it happened**, and **everybody sees it — not just the person who did it.** It covers one-off *actions* and ongoing *buffs* alike, and it is a gate on every new verb, effect and state.
 
-- **Small, and over quickly.** One mark, well under half a second, at the point the thing happened — a ring, a pulse, a flash of the figure it landed on. No screen shake, no full-plane flash, no sound, nothing that has to be waited out. These games are played while something is walking towards you, and an effect big enough to watch is an effect that takes your eye off the only thing that matters.
-- **Derive it from state the frame already carries.** A timer crossing from zero to non-zero, a counter changing, a flag appearing — the client watches an **edge**, not a level. A dedicated "an event happened" field is bytes on a repeating payload to say *nothing happened* almost every time it is sent, which is the mistake the wire rules exist to prevent. If an effect genuinely cannot be derived, that is worth saying out loud in the change rather than quietly adding a field.
-- **A level is not an event.** Marking on "the cooldown is non-zero" rather than on "the cooldown just started" flashes the plane ten times a second for the whole cooldown. Compare against the previous frame, and do it **before** anything overwrites the value you are comparing to.
-- **It still shows under `prefers-reduced-motion`** — unanimated, or dimmer, but present. Somebody who asked for less motion still needs to know their verb landed. Clear it on a timer rather than on `animationend`, which never fires when the animation is switched off.
-- **It says WHERE, not WHAT.** The words are the balloons' job. Distinguish kinds by colour or shape if two can happen at once, and leave the explaining to the text that is already there.
+**Actions get a brief mark, at the place they happened.** Standing, walking, dashing and being caught need none — you can already see all of them. A *verb* cannot be seen: you press something, and a second later the world behaves differently. Without an acknowledgement a player who is not sure he pressed anything reads that as the game misbehaving, and a player who is sure reads it as being ignored.
 
-This is a rule for **every future action**, in this game and any other: a new verb ships with its acknowledgement in the same change, exactly as it ships with its line in the splash cheatsheet. A verb that lands invisibly is an unfinished verb.
+**Buffs are shown for as long as they last**, on whoever is carrying them: a state with a duration is not an event, and a mark that flashes once and vanishes tells you nothing about the eight seconds that follow. The bald man going green while drunk is the shape — a property of the figure, visible the whole time, gone when it is.
+
+**And all of it belongs to the whole office, not to the actor.** A colleague pointing the antagonist at *you* is the moment it matters most, so an effect only its author can see is a bug rather than a smaller feature. Assume every screen shows every action and every buff of every player, and treat "only the person who pressed it sees this" as unfinished.
+
+**Derive it locally; do not spend the wire on it.** This is the constraint that makes the rest affordable:
+
+- **Prefer a value the frame already carries.** A timer crossing from zero to non-zero, a balloon index becoming a line the catalogue already publishes, two consecutive positions implying a speed no walk could reach — all of these are free, and all of them work for peers as well as for yourself.
+- **Join against the catalogue, which was fetched once.** Matching a published string to its index is better than a new field, and it keeps the pool layout server-side, so it can still be retuned without a client deploy.
+- **A dedicated "an event happened" field is the last resort**, because it is bytes on a repeating payload to say *nothing happened* almost every time it is sent. If one is genuinely unavoidable, make it an index or a duration rather than a description, omit it in the resting state, and say in the change what it cost — bytes × rate × players × viewers.
+- **A level is not an event.** Marking on "the cooldown is non-zero" rather than "it just started" flashes the plane ten times a second for the whole cooldown. Compare against the previous frame, per entity, and do it **before** anything overwrites the value being compared to.
+
+**Keep it small.** One mark, well under half a second; a buff shown as a property of the figure rather than as something orbiting it. No screen shake, no full-plane flash, no sound. These games are played while something is walking towards you, and an effect big enough to watch is an effect that takes your eye off the only thing that matters. It says WHERE, not WHAT — the words are the balloons' job — and kinds are told apart by colour or shape when two can land at once.
+
+**It still shows under `prefers-reduced-motion`** — unanimated, or dimmer, but present. Somebody who asked for less motion still needs to know something happened. Clear it on a timer rather than on `animationend`, which never fires when the animation is switched off.
+
+A new verb ships with its acknowledgement, its buff rendering and its visibility to other players in the same change, exactly as it ships with its line in the splash cheatsheet. **An action nobody else can see is an unfinished action.**
 
 ### A game states its rules on its own splash screen
 

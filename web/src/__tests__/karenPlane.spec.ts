@@ -3,6 +3,7 @@ import {
   BAND_PROPERTY,
   DEPTH_PROPERTY,
   DEPTH_SCALES,
+  FAST_MARGIN,
   GRIN_PROPERTY,
   X_PROPERTY,
   Y_PROPERTY,
@@ -18,6 +19,7 @@ import {
   grinState,
   hueFor,
   karenAvatarEndpoint,
+  movingFast,
   peerColour,
   rampFraction,
   sameRoster,
@@ -318,5 +320,38 @@ describe('asking for a colleague’s face', () => {
     // Today every handle is base64url. On the day one carries a slash, an
     // unescaped id would ask for a different route rather than fail as a bad id.
     expect(karenAvatarEndpoint('a/b?c')).toBe('/api/game-karen/avatar/a%2Fb%3Fc');
+  });
+});
+
+describe('seeing a colleague dash', () => {
+  const walk = 3.2;
+
+  it('says no to anything a walk could have produced', () => {
+    // A buff derived rather than sent: nothing on this plane exceeds the walk
+    // speed except a dash, so this is the whole of "is he dashing".
+    expect(movingFast({ x: 0, y: 0 }, { x: walk * 0.1, y: 0 }, 0.1, walk)).toBe(false);
+    expect(movingFast({ x: 0, y: 0 }, { x: 0, y: 0 }, 0.1, walk)).toBe(false);
+  });
+
+  it('says yes to a dash, which is several times a walk', () => {
+    expect(movingFast({ x: 0, y: 0 }, { x: 0.9, y: 0 }, 0.1, walk)).toBe(true);
+    expect(movingFast({ x: 0, y: 0 }, { x: 0, y: -0.9 }, 0.1, walk)).toBe(true);
+  });
+
+  it('leaves a margin, because interpolation overstates a single step', () => {
+    // Just over a walk is NOT a dash: a recovered dropped frame covers two
+    // steps' ground in one, and a figure flickering into a dash aura every time
+    // the network hiccups is worse than one that occasionally misses a burst.
+    const justOver = walk * 1.2 * 0.1;
+    expect(movingFast({ x: 0, y: 0 }, { x: justOver, y: 0 }, 0.1, walk)).toBe(false);
+    expect(FAST_MARGIN).toBeGreaterThan(1);
+  });
+
+  it('never divides by a bad clock', () => {
+    // A NaN written into a data attribute is a figure stuck in a dash for ever.
+    for (const dt of [0, -0.1, Number.NaN, Number.POSITIVE_INFINITY, 5]) {
+      expect(movingFast({ x: 0, y: 0 }, { x: 99, y: 0 }, dt, walk)).toBe(false);
+    }
+    expect(movingFast({ x: 0, y: 0 }, { x: 99, y: 0 }, 0.1, 0)).toBe(false);
   });
 });

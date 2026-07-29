@@ -288,6 +288,7 @@ import {
   applyBoss,
   applyFigure,
   karenAvatarEndpoint,
+  movingFast,
   peerColour,
   sameRoster,
   type PeerLook,
@@ -466,10 +467,34 @@ function onRedirect(peerID: string): void {
  * `bossAt` at all, so it cached `null` and every mark on him silently did
  * nothing. A computed's cache is only correct when its inputs are reactive.
  */
+/** Where you are, in plane coordinates. A function, not a computed — see bossPlace. */
+function mePlace(): { u: number; v: number } | null {
+  if (!predictor || !constants) return null;
+  const v = predictor.view();
+  return toPlane(v.x, v.y, constants.officeW, constants.officeH);
+}
+
 function bossPlace(): { u: number; v: number } | null {
   if (!bossAt || !constants) return null;
   return toPlane(bossAt.x, bossAt.y, constants.officeW, constants.officeH);
 }
+
+/**
+ * Which line index is «ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО».
+ *
+ * FOUND BY MATCHING THE STRING THE CATALOGUE ALREADY PUBLISHES, rather than by
+ * serving an index or hardcoding one. `redirect.say` and `karen_lines` are both
+ * already on the config this client fetched once, so the join costs nothing on
+ * the wire and nothing at runtime — and the server can still rearrange its pools
+ * without a client deploy, which is the property that made the layout server-side
+ * in the first place.
+ */
+const redirectLine = computed(() => {
+  const say = config.value?.redirect?.say;
+  const lines = config.value?.karen_lines;
+  if (!say || !lines) return -1;
+  return lines.indexOf(say);
+});
 
 const pop = ref<{ key: number; kind: string; u: number; v: number } | null>(null);
 let popKey = 0;
@@ -540,6 +565,10 @@ let bossInterp: Interpolator | null = null;
  */
 const peerEls = new Map<string, HTMLElement>();
 const peerInterp = new Map<string, Interpolator>();
+/** Each colleague's last balloon index, so an announcement can be seen ARRIVING. */
+const peerLines = new Map<string, number>();
+/** Each colleague's last drawn position, which is how his speed — and so his dash — is known. */
+const peerSeen = new Map<string, { x: number; y: number; at: number }>();
 /** The grin state currently written on the boss, so the class is not rewritten. */
 let bossDrunk = false;
 let bossGrin = '';
@@ -740,6 +769,8 @@ function teardownPlay(): void {
   bottleSpot.value = 0;
   peerEls.clear();
   peerInterp.clear();
+  peerLines.clear();
+  peerSeen.clear();
   stickPointer = null;
   axes = { mx: 0, my: 0 };
   knob.value = { dx: 0, dy: 0 };
@@ -868,6 +899,24 @@ function placePeers(now: number): void {
     // position and then snap it.
     if (!at) continue;
     applyFigure(el, toPlane(at.x, at.y, constants.officeW, constants.officeH));
+
+    // A COLLEAGUE'S DASH, DERIVED FROM HOW FAST HE IS MOVING and from nothing
+    // else. It is a buff — brief, but a state rather than an event — and until
+    // now it was visible only to the man doing it, which the visibility rule
+    // calls unfinished.
+    //
+    // Two consecutive drawn positions and the walk speed the catalogue already
+    // publishes are enough: nothing on this plane exceeds a walk except a dash,
+    // so "faster than a walk" IS "dashing". That costs no byte on a frame that
+    // repeats ten times a second, and it works for every peer without the server
+    // saying anything about any of them.
+    const was = peerSeen.get(id);
+    peerSeen.set(id, { x: at.x, y: at.y, at: now });
+    if (!was) continue;
+    const fast = movingFast(was, at, (now - was.at) / 1000, constants.walkSpeed);
+    if (fast === (el.dataset.fast === '1')) continue;
+    if (fast) el.dataset.fast = '1';
+    else delete el.dataset.fast;
   }
 }
 
@@ -926,6 +975,7 @@ function applySnapshot(frame: RealtimeFrame): void {
   // Same rule for the balloons: absent is index 0, which is the default line.
   // Read as "unchanged" a figure would stick on the last interesting thing it
   // said for the rest of the shift.
+  const wasMeLine = meLine.value;
   meLine.value = num(frame.p);
   // Omitted when ready, like `dc` — absent means zero, never "unchanged".
   // EDGES, NOT LEVELS: each of these is "it just started", which is the only
@@ -934,11 +984,22 @@ function applySnapshot(frame: RealtimeFrame): void {
   // either ref is written, because an assignment earlier in this function would
   // destroy the very edge being looked for. (It did, once.)
   const bt = num(frame.bt);
-  const rc = num(frame.rc);
   if (bt > 0 && bottleMs.value === 0) markAt('bottle', bottleAt.value);
-  if (rc > 0 && redirectMs.value === 0) markAt('redirect', bossPlace());
-  redirectMs.value = rc;
+  redirectMs.value = num(frame.rc);
   bottleMs.value = bt;
+
+  // WHOEVER JUST SAID IT, WHEREVER THEY ARE STANDING. The redirect used to be
+  // marked off your own cooldown starting, which meant only the person who
+  // pressed it ever saw anything — a colleague pointing the bald man at YOU was
+  // silent on your screen, which is the one time it matters most.
+  //
+  // The announcement is already on the wire for everybody: your own line is `p`
+  // and a colleague's is `pr[].p`, both indexes into a pool this client fetched
+  // once. So every screen sees every redirect, derived locally, with no extra
+  // byte on a frame that repeats ten times a second.
+  if (redirectLine.value >= 0 && meLine.value === redirectLine.value && wasMeLine !== redirectLine.value) {
+    markAt('redirect', mePlace());
+  }
   bottleSpot.value = num(frame.bs);
 
   if (!predictor) {
@@ -1001,9 +1062,16 @@ function applyPeers(raw: unknown): void {
     const id = typeof p.i === 'string' ? p.i : '';
     if (!id) continue;
     live.add(id);
+    const line = num(p.p);
+    // A COLLEAGUE'S redirect, marked where HE is standing. Same edge rule as
+    // yours: the line becoming the announcement, not merely being it.
+    if (redirectLine.value >= 0 && line === redirectLine.value && peerLines.get(id) !== line && constants) {
+      markAt('redirect', toPlane(num(p.x) / 100, num(p.y) / 100, constants.officeW, constants.officeH));
+    }
+    peerLines.set(id, line);
     roster.push({
       id,
-      line: num(p.p),
+      line,
       // Derived from the handle, never sent with it (ADR-037). The browser
       // caches the answer, so this is one request per colleague per shift even
       // though the string is recomputed on every roster change.
@@ -1025,6 +1093,12 @@ function applyPeers(raw: unknown): void {
   // or a handle that came back would be interpolated from where it died.
   for (const id of peerInterp.keys()) {
     if (!live.has(id)) peerInterp.delete(id);
+  }
+  for (const id of peerLines.keys()) {
+    if (!live.has(id)) peerLines.delete(id);
+  }
+  for (const id of peerSeen.keys()) {
+    if (!live.has(id)) peerSeen.delete(id);
   }
 
   // THE GUARD IS THE POINT. This runs ten times a second and almost every call
@@ -1861,6 +1935,9 @@ function onDash(): void {
   .karen-streak-fill {
     transition: none;
   }
+
+  /* A dash is a state rather than motion, so its aura stays under reduced
+     motion — there is nothing moving about it to reduce. */
 
   /* Still SHOWN, just not animated — somebody who has asked for less motion
      still needs to know their verb landed. It is cleared on a timer rather than

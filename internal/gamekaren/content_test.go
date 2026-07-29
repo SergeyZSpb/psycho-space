@@ -639,3 +639,57 @@ func TestSomethingHappeningToHimInterruptsWhatHeWasSaying(t *testing.T) {
 		t.Fatal("the two states are indistinguishable")
 	}
 }
+
+func TestTheServedGeometryUsesTheKeysTheClientReads(t *testing.T) {
+	// THE BUG THIS EXISTS FOR, and it shipped. Vec2 had no JSON tags, so the
+	// catalogue served `{"X":2.2,"Y":6}` while the browser read `at.x` — which is
+	// `undefined`, then NaN, and `toPlane` clamps a NaN to zero. The bottle was
+	// therefore drawn in the top-left corner of the office rather than where the
+	// server was checking for it, so it could never be picked up, and because it
+	// is only ever replaced after somebody drinks it, it never moved either. One
+	// missing struct tag, three symptoms.
+	//
+	// The layout suite could not catch it: its stub is hand-written in the shape
+	// the CLIENT expects, so the stub and the server disagreed and both were
+	// self-consistent. Checking a served payload against the names the client
+	// actually reads is the only thing that closes that gap.
+	raw, err := json.Marshal(BuildConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var served struct {
+		Bottle struct {
+			Spots []struct {
+				X *float64 `json:"x"`
+				Y *float64 `json:"y"`
+			} `json:"spots"`
+		} `json:"bottle"`
+		Office struct {
+			Desks []struct {
+				X *float64 `json:"x"`
+				W *float64 `json:"w"`
+			} `json:"desks"`
+		} `json:"office"`
+	}
+	if err := json.Unmarshal(raw, &served); err != nil {
+		t.Fatal(err)
+	}
+	if len(served.Bottle.Spots) != len(BottleSpots) {
+		t.Fatalf("the client reads %d bottle spots, the catalogue has %d",
+			len(served.Bottle.Spots), len(BottleSpots))
+	}
+	for i, spot := range served.Bottle.Spots {
+		if spot.X == nil || spot.Y == nil {
+			t.Fatalf("bottle spot %d has no x/y the client can read: %s", i, raw)
+		}
+		if *spot.X != BottleSpots[i].X || *spot.Y != BottleSpots[i].Y {
+			t.Fatalf("bottle spot %d reads (%v,%v), the catalogue says %+v",
+				i, *spot.X, *spot.Y, BottleSpots[i])
+		}
+	}
+	for i, d := range served.Office.Desks {
+		if d.X == nil || d.W == nil {
+			t.Fatalf("desk %d has no x/w the client can read: %s", i, raw)
+		}
+	}
+}

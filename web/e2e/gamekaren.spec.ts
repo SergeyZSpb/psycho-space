@@ -33,6 +33,14 @@ import { seedClient } from './fixtures';
  */
 const LONG_SAY = 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО КОЛЛЕГИ, СТЕНД';
 
+/**
+ * The redirect announcement, as the catalogue publishes it in TWO places — the
+ * verb's `say` and a line of `karen_lines`. The client joins them by string to
+ * learn which index means "somebody just pointed him at a colleague", so this
+ * stub has to agree with itself the way the server does.
+ */
+const REDIRECT_SAY = 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО, СТЕНД';
+
 const CONFIG = {
   game_key: 'karen',
   title: 'СИМУЛЯТОР КАРЕНА',
@@ -68,7 +76,7 @@ const CONFIG = {
   // Marked like everything else here, so a client that hardcoded a balloon
   // instead of reading the catalogue cannot pass the assertions below.
   boss_lines: ['Я ЛЫСЫЙ, СТЕНД', 'А ГДЕ, СТЕНД?'],
-  karen_lines: ['Я КАРЕН, СТЕНД', 'ВОДЫ, СТЕНД', 'НА ВСТРЕЧУ, СТЕНД', LONG_SAY],
+  karen_lines: ['Я КАРЕН, СТЕНД', 'ВОДЫ, СТЕНД', 'НА ВСТРЕЧУ, СТЕНД', LONG_SAY, REDIRECT_SAY],
   max_occupants: 3,
   // Marked like everything else in this stub, so a client that hardcoded the
   // label or the timers cannot pass the assertions below.
@@ -84,7 +92,7 @@ const CONFIG = {
   },
   redirect: {
     label: 'ЭТО К НЕМУ, СТЕНД',
-    say: 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО',
+    say: REDIRECT_SAY,
     seconds_ms: 7000,
     cooldown_ms: 21000,
   },
@@ -697,8 +705,8 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     });
     await expect(page.getByTestId('karen-pop')).toHaveAttribute('data-kind', 'drunk');
 
-    // And your own verb landing — `rc` starts running.
-    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], rc: 8000 });
+    // Your own verb landing — YOUR balloon becomes the announcement.
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], p: 4 });
     await expect(page.getByTestId('karen-pop')).toHaveAttribute('data-kind', 'redirect');
 
     // A LEVEL IS NOT AN EVENT. A cooldown still running is not a verb being
@@ -707,8 +715,27 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     await expect
       .poll(async () => page.getByTestId('karen-pop').count(), { message: 'the mark never cleared' })
       .toBe(0);
-    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], rc: 7000 });
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], p: 4 });
     await expect(page.getByTestId('karen-pop')).toHaveCount(0);
+  });
+
+  test('and a colleague’s verb is marked too, where HE is standing', async ({ page }) => {
+    // EVERY SCREEN SEES EVERY ACTION. It used to be marked off your own cooldown
+    // starting, so only the person who pressed it saw anything — a colleague
+    // pointing the bald man at YOU was silent on your screen, which is the one
+    // time it matters most.
+    //
+    // Derived locally from what the frame already carries: his balloon index,
+    // joined against the catalogue this client fetched once. No extra byte.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }] });
+    await expect(page.getByTestId('karen-pop')).toHaveCount(0);
+
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600, p: 4 }] });
+    const pop = page.getByTestId('karen-pop');
+    await expect(pop).toHaveAttribute('data-kind', 'redirect');
+    // AT HIM, not at you: 3 m across a 12 m office.
+    await expect(pop).toHaveCSS('--x', String(3 / CONFIG.office.w));
   });
 
   test('a balloon rides the man rather than being placed beside him', async ({ page }) => {

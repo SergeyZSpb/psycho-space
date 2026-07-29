@@ -61,7 +61,16 @@ type Rect struct {
 // ORIGIN TOP-LEFT, +X RIGHT, +Y DOWN — the same convention the plane is drawn
 // with, so there is no axis flip anywhere in the client and a position read off
 // a snapshot places an element directly.
-type Vec2 struct{ X, Y float64 }
+// The JSON tags are load-bearing: a Vec2 is SERVED — the bottle's spots ride the
+// catalogue — and Go's default is the exported name, so without them the client
+// receives `{"X":2.2,"Y":6}` and reads `at.x` as undefined. That is not a
+// harmless mismatch: it becomes NaN, `toPlane` clamps NaN to zero, and the prop
+// is drawn in the top-left corner of the office instead of where it actually is.
+// Which is exactly what shipped, and is why TestTheServedGeometryUsesTheKeysTheClientReads exists.
+type Vec2 struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
 
 // Desks are the furniture. Both the player and the bald man are pushed out of
 // them and neither paths around them: bumping into a desk and sliding along it
