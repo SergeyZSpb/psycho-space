@@ -15,6 +15,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
 - **login:** two providers, VK ID and Яндекс ID, sharing everything after the exchange. Redirect URLs are SPA **pages**, never API endpoints: `/auth/redirect` (VK) and `/auth/yandex/redirect` (Yandex). VK needs **three** copies of its URL to match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app list); Yandex needs only **two** because the server builds its authorize URL (ADR-055). A **405 on either `/api/auth/*/callback`** means something points at the API again. See "Login — the redirect URL, and what a 405 means".
+- **webgl:** `./dev.sh` runs both Playwright suites with `DISPLAY` unset (`playwright_`), because Chromium's ANGLE picks Vulkan/XCB from a set-but-unreachable `DISPLAY` and then exits the GPU process instead of falling back to SwiftShader — which silently removes WebGL, sends «ВАНЯДУМ» down its no-3D production path and times out every spec that clicks `vanyadum-start`. The first test in `web/e2e/gamevanyadum.spec.ts` asserts 3D is present, so this fails by name rather than as twenty unrelated timeouts. Details + the ten-second diagnosis: "The layout suite fails only on «ВАНЯДУМ»".
 - **flaky-tests:** see "A test that passes on its own and fails in CI". Every flake found so far was a defect in the *test*, of exactly four kinds — a loop bounded by an attempt count rather than a deadline; two round trips reading one 4-second speech balloon; an implicit 5 s `expect` shorter than that balloon plus a round trip; and a fixture that *plays the game* to reach its starting position (walking to a randomly-placed crate ate most of a 120 s budget, and surfaced as a bare `Test timeout exceeded` — the same kind bites again when a caller's budget contradicts the helper it calls, which is what broke CI on 2026-07-29). Reproduce by saturating the CPU (`nproc − 1` spinners) and running the one spec; CI's only difference is that it is slower. **Never** fix one with `retries`, and never with an env flag that disables a game's random rolls — that is test-only machinery in a production path. Determinism comes from direct DB setup (`web/e2e-stack/vanyagotchi-db.ts`).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
 - **constraints:** never commit the host/IP/port or any secret; never paste real personal data into shared places. The app log is PII-free by design; the DB and nginx access log are not — treat their contents as confidential.
@@ -782,17 +783,19 @@ demand, and a test written there passed just as happily with the bug in place.
 
 > Твой браузер не умеет 3D (WebGL выключен или не тянет).
 
+**`./dev.sh` now prevents this, so seeing it at all is information.** `dev.sh`'s `playwright_` helper runs both Playwright suites with `DISPLAY` unset, which is what makes the browser take the same path a CI runner takes. So if the symptom appears, one of two things is true: the suite was **not** run through `./dev.sh` (a bare `npx playwright test` from `web/` inherits the shell's broken `DISPLAY`), or something new is breaking GL and the rest of this section is how to find out which. `web/e2e/gamevanyadum.spec.ts` opens with a test — *«can actually do 3D, or every test that starts a run below is a lie»* — that fails first and by name, so the twenty red specs below it are no longer the diagnosis.
+
 **It is the workstation, not the code.** «ВАНЯДУМ» is the one game that needs WebGL ([ADR-047](adrs/)); the other three are DOM and CSS and cannot notice. So a suite that fails on exactly this spec and nothing else is telling you the browser has no GL context, and CI passing the same commit is the confirmation.
 
-**The cause, and it is almost always this one: `DISPLAY` points at an X server that is no longer there.** Chromium's ANGLE tries the X/XCB backend first; when the connection fails it does **not** fall back, and even the software renderer never initialises. A session that restarted its graphics stack under a long-running terminal leaves exactly this state — the shell keeps `DISPLAY=:0` from before, and nothing in it works any more.
+**The cause, and it is almost always this one: `DISPLAY` points at an X server the shell cannot reach.** Chromium's ANGLE chooses its EGL backend from the environment: with `DISPLAY` set it selects the Vulkan/XCB display, and when `xcb_connect()` fails it does **not** fall back — the GPU process exits and even the software renderer never initialises. Two situations produce it. A session that restarted its graphics stack under a long-running terminal leaves the shell holding a `DISPLAY=:0` that no longer answers; and on a Wayland session, a shell that cannot use the Xwayland cookie in `$XAUTHORITY` — an agent, a service, an `ssh` login — has the same `DISPLAY=:0` and the same dead connection while the desktop itself is perfectly healthy.
 
-**The fix is one word — unset it:**
+**The fix, if you are running Playwright by hand, is one word — unset it:**
 
 ```bash
-env -u DISPLAY -u WAYLAND_DISPLAY ./dev.sh e2e          # or pre-commit, or the whole gate
+env -u DISPLAY npx playwright test          # from web/, when not going through dev.sh
 ```
 
-Headless Chromium wants no display at all; given one it cannot reach, it fails closed.
+Headless Chromium wants no display at all; given one it cannot reach, it fails closed. **`DISPLAY` alone is enough** — `WAYLAND_DISPLAY` is deliberately left set, both here and in `dev.sh`, so `--headed` can still open a real window when a human wants to watch.
 
 **Confirm the diagnosis in ten seconds** by running the browser directly and reading its own errors, which Playwright otherwise swallows:
 
@@ -812,11 +815,11 @@ eglInitialize SwANGLE failed with error EGL_NOT_INITIALIZED
 Initialization of all (1) EGL display types failed.
 ```
 
-Re-run the same command under `env -u DISPLAY -u WAYLAND_DISPLAY` and it prints `GL=true`.
+Re-run the same command under `env -u DISPLAY` and it prints `GL=true`, and the renderer it reports is `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)` — software, which is all this suite has ever needed.
 
 **Two things that look like the cause and are not**, so nobody spends the time again. **`/dev/dri`**: `card0` and `renderD128` are both present and both accessible through an ACL (`getfacl /dev/dri/renderD128` shows `user:<you>:rw-`), so a missing render node is the wrong tree — and `ls -la /dev/dri | head -5` **cuts `renderD128` off the listing**, which is how that wrong diagnosis got made in the first place. And **Chromium flags**: none of `--disable-gpu`, `--use-gl=swiftshader`, `--use-gl=angle --use-angle=swiftshader`, `--enable-unsafe-swiftshader` or `--disable-gpu-sandbox` helps in any combination, because the failure is upstream of renderer selection. `npx playwright install chromium` does not help either.
 
-**Do not commit around it.** The pre-commit hook runs the layout suite and `--no-verify` is forbidden ([`CLAUDE.md`](../CLAUDE.md)) — but there is nothing to work around here, because unsetting `DISPLAY` makes the gate pass honestly. `./dev.sh e2e --grep-invert "ВАНЯДУМ"` is useful for confirming a change is otherwise sound while you diagnose, and is a diagnostic rather than a substitute for the gate.
+**Do not commit around it.** The pre-commit hook runs the layout suite and `--no-verify` is forbidden ([`CLAUDE.md`](../CLAUDE.md)) — but there is nothing to work around here, because the gate already unsets `DISPLAY` and passes honestly. `./dev.sh e2e --grep-invert "ВАНЯДУМ"` is useful for confirming a change is otherwise sound while you diagnose, and is a diagnostic rather than a substitute for the gate.
 
 ## Forgetting a user (irreversible)
 

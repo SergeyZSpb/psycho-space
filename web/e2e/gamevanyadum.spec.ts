@@ -186,6 +186,43 @@ async function openSplash(page: Page, opts: StubOptions = {}): Promise<void> {
   await expect(page.getByTestId('vanyadum-root')).toBeVisible();
 }
 
+test.describe('«ВАНЯДУМ» — the browser running this suite', () => {
+  // THIS TEST IS ABOUT THE HARNESS, NOT THE GAME, and it exists because the
+  // failure it names is unrecognisable without it.
+  //
+  // Every test below that reaches `vanyadum-start` needs a real WebGL context:
+  // the view probes for one before it builds anything, and a browser without it
+  // is shown the «твой браузер не умеет 3D» screen instead of a start button —
+  // correctly, that is a production path (ADR-047). So when the browser loses
+  // 3D, fifteen specs fail with `waiting for getByTestId('vanyadum-start')` and
+  // point at the game, which is innocent.
+  //
+  // It happens for one environmental reason: Chromium's ANGLE picks its EGL
+  // backend from `$DISPLAY`, and a DISPLAY it cannot connect to makes it choose
+  // Vulkan/XCB and then exit the GPU process rather than fall back to
+  // SwiftShader. `dev.sh`'s `playwright_` unsets DISPLAY for exactly this, and
+  // this test is what says so out loud when something defeats that again.
+  //
+  // Asserting the EFFECT rather than the presence of the fix, which is the
+  // lesson of the three CSS rules that were written and never landed.
+  test('can actually do 3D, or every test that starts a run below is a lie', async ({ page }) => {
+    await openSplash(page);
+    const gl = await page.evaluate(() => {
+      const probe = document.createElement('canvas');
+      return !!(probe.getContext('webgl2') ?? probe.getContext('webgl'));
+    });
+    expect(
+      gl,
+      'no WebGL in this browser: ANGLE could not initialise EGL. Run the suite through ' +
+        '`./dev.sh e2e` (it unsets DISPLAY) rather than `npx playwright test` from a ' +
+        'shell whose $DISPLAY is set but unreachable.',
+    ).toBe(true);
+    // And the view agrees, so this is the same judgement the game makes.
+    await expect(page.getByTestId('vanyadum-nogl')).toHaveCount(0);
+    await expect(page.getByTestId('vanyadum-start')).toBeVisible();
+  });
+});
+
 test.describe('«ВАНЯДУМ» splash', () => {
   test('the rules cheatsheet is generated from the served catalogue', async ({ page }) => {
     // The point of the whole derived-cheatsheet arrangement: these numbers are

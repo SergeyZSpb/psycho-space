@@ -27,6 +27,28 @@ go_()    { if command -v mise >/dev/null 2>&1; then mise exec -- go    "$@"; els
 npm_()   { if command -v mise >/dev/null 2>&1; then mise exec -- npm   "$@"; else npm   "$@"; fi; }
 npx_()   { if command -v mise >/dev/null 2>&1; then mise exec -- npx   "$@"; else npx   "$@"; fi; }
 gofmt_() { if command -v mise >/dev/null 2>&1; then mise exec -- gofmt "$@"; else gofmt "$@"; fi; }
+
+# Playwright, with $DISPLAY deliberately unset.
+#
+# A HEADLESS BROWSER HAS NO BUSINESS CONSULTING $DISPLAY, and when it can see one
+# it cannot reach, «ВАНЯДУМ» loses its start button. Chromium's ANGLE chooses its
+# EGL backend from the environment: with DISPLAY set it selects the Vulkan XCB
+# display, and if that X server is not actually reachable from this shell — a
+# Wayland session whose Xwayland cookie the shell may not use, an SSH session, a
+# service manager, an agent — `xcb_connect()` fails, ANGLE reports
+# EGL_NOT_INITIALIZED, and the GPU process EXITS rather than falling back to
+# SwiftShader. WebGL is then simply absent; `webglAvailable()` correctly reports
+# so, the 3D game renders its «твой браузер не умеет 3D» screen, and every spec
+# that clicks `vanyadum-start` waits sixty seconds for a button that is
+# deliberately not there.
+#
+# It fails on a workstation and passes in CI, which is the wrong way round for a
+# gate: a CI runner has no DISPLAY at all, so ANGLE goes straight to SwiftShader
+# and 3D works. Unsetting it makes both machines take the same path — the suite's
+# result stops depending on whether an X server happens to be answering. WAYLAND
+# DISPLAY IS LEFT ALONE on purpose, so `--headed` still opens a real window when
+# a human asks to watch.
+playwright_() { ( unset DISPLAY; npx_ playwright "$@" ); }
 golangci_() {
   if command -v mise >/dev/null 2>&1 && mise which golangci-lint >/dev/null 2>&1; then
     mise exec -- golangci-lint "$@"
@@ -117,7 +139,7 @@ target_e2e() {
   fi
   echo "== e2e (Playwright: 360px in full, desktop for @wide) =="
   ( cd web && [ -d node_modules ] || npm_ ci --no-audit --no-fund )
-  if ! ( cd web && npx_ playwright test "$@" ); then
+  if ! ( cd web && playwright_ test "$@" ); then
     echo "e2e failed. If the browser is missing, run: (cd web && npx playwright install chromium)" >&2
     return 1
   fi
@@ -149,7 +171,7 @@ target_e2e_stack() {
   done
   echo "== e2e full-stack (real binary + Postgres) =="
   ( cd web && [ -d node_modules ] || npm_ ci --no-audit --no-fund )
-  ( cd web && npx_ playwright test --config=playwright.stack.config.ts "$@" )
+  ( cd web && playwright_ test --config=playwright.stack.config.ts "$@" )
 }
 
 # Coverage for both Go layers. Kept separate rather than merged: the unit
