@@ -1,5 +1,7 @@
 package gamekaren
 
+import "slices"
+
 // THE CATALOGUE.
 //
 // Every piece of content and every tuning constant this game has lives in this
@@ -204,6 +206,10 @@ var Endings = []Ending{
 // afternoon, and he starts using them once he is close enough to be a problem.
 var BossLines = []string{
 	"Я ЛЫСЫЙ",
+	// He is a micromanager, so almost everything he says is a request for a
+	// status disguised as a favour. None of it is angry and none of it is an
+	// order — that is the whole character: it is always just a minute, always
+	// just a quick sync, and it never, ever stops.
 	"А ГДЕ?",
 	"НУ ЧТО, ПОСМОТРЕЛ?",
 	"ЗАЙДИ НА МИНУТКУ",
@@ -212,17 +218,79 @@ var BossLines = []string{
 	"Я ТЕБЕ В ЛИЧКУ НАПИСАЛ",
 	"ТЫ ЖЕ ГОВОРИЛ ЧТО СДЕЛАЛ",
 	"ПРОСТО ПОСМОТРИ, НИЧЕГО НЕ ДЕЛАЙ",
+	"ЕСТЬ МИНУТКА?",
+	"СИНХРОНИЗИРУЕМСЯ?",
+	"НА КАКОМ ЭТАПЕ?",
+	"Я НЕ ТОРОПЛЮ, НО КОГДА?",
+	"ДАВАЙ БЫСТРЕНЬКО СОЗВОН",
+	"НЕ СРОЧНО. НО СЕГОДНЯ",
+	"ТЫ ЖЕ ПОМНИШЬ ПРО ДЕМО",
+	"Я ПРОСТО МИМО ПРОХОДИЛ",
+	"МЕЛОЧЬ, НО ПЕРЕДЕЛАЙ",
+	"ДОБАВИЛ ТЕБЯ В ЕЩЁ ОДИН ЧАТ",
+	"ПОСТАВИЛ ВСТРЕЧУ НА 19:00",
+	"ЭТО НЕ КОНТРОЛЬ, ЭТО ЗАБОТА",
+	"ПРОСТО ДЕРЖИ МЕНЯ В КУРСЕ",
+	"КИНЬ В ТРЕД СКРИНШОТ",
+	"А ОЦЕНКУ ДАШЬ?",
+	"ОБСУДИМ НА ДЕЙЛИКЕ",
+	"Я УЖЕ СКАЗАЛ ЧТО ГОТОВО",
+	"ТЫ ТОЛЬКО НЕ ОТВЛЕКАЙСЯ",
 }
 
 // KarenLines is what YOU say, and it is a readout as much as a joke: the line
 // over your head is a function of what the simulation thinks you are doing, so
 // it is the one place the streak rule states itself while you are playing
 // rather than on the splash screen you have already scrolled past.
-var KarenLines = []string{
-	"Я КАРЕН",              // standing perfectly still, which is the job
-	"Я ПРОСТО ВОДЫ ПОПИТЬ", // moving, and the streak is on the clock
-	"Я НА ВСТРЕЧУ",         // dashing, which costs nothing and keeps the ramp
+// THREE RUNS, CONCATENATED, AND THE CLIENT NEVER LEARNS THE LAYOUT.
+//
+// The wire is one index into one flat array, so the browser renders
+// `karen_lines[p]` and knows nothing about which line means what — the whole of
+// that is `KarenLine` below, on the server, where it can change without a client
+// deploy. Splitting the pools on the wire instead would mean sending which pool
+// AND which line, which is a second field on a frame that repeats ten times a
+// second to say something the server already knows.
+//
+// Each run is what a lazy man says while doing that particular nothing. He is
+// never idle — he is thinking, he is in context, he is almost done. The first
+// line of the first run is «Я КАРЕН» because an absent index means zero (see
+// the note above BossLines).
+var karenStill = []string{
+	"Я КАРЕН",
+	"Я ДУМАЮ",
+	"Я В КОНТЕКСТЕ",
+	"ЗАГРУЖАЮСЬ",
+	"ЭТО СЛОЖНАЯ ЗАДАЧА",
+	"АНАЛИЗИРУЮ",
+	"ПОЧТИ ГОТОВО",
+	"ДА Я УЖЕ ДЕЛАЮ",
+	"ТУТ НАДО ПОДУМАТЬ",
+	"Я В ПОТОКЕ",
+	"ЖДУ ОТВЕТА",
+	"ЭТО НЕ КО МНЕ",
 }
+
+var karenMoving = []string{
+	"Я ПРОСТО ВОДЫ ПОПИТЬ",
+	"Я НА МИНУТКУ",
+	"МНЕ ПОЗВОНИЛИ",
+	"Я ЗА КОФЕ",
+	"Я СЕЙЧАС ВЕРНУСЬ",
+	"ЭТО ПО РАБОТЕ",
+	"НАДО РАЗМЯТЬСЯ",
+}
+
+var karenDashing = []string{
+	"Я НА ВСТРЕЧУ",
+	"МЕНЯ ЗОВУТ",
+	"У МЕНЯ ДЕЙЛИК",
+	"Я НЕ УБЕГАЮ",
+	"ЭТО НЕ Я",
+	"СРОЧНО НАДО",
+}
+
+// KarenLines is the three runs above, in order, as the catalogue serves them.
+var KarenLines = slices.Concat(karenStill, karenMoving, karenDashing)
 
 // BossSlot is how long he holds one of his sentences before moving to the next.
 //
@@ -239,24 +307,51 @@ const BossSlot = 50 // ticks, at SimHz — 2.5 s
 // and what his face does change together rather than a beat apart.
 const BossQuiet = 0.35
 
+// KarenSlot is how long he holds one line before moving to the next, in ticks.
+//
+// Longer than the bald man's, because yours is the one you are staring at while
+// standing still and a line that changed every couple of seconds would be
+// movement on a screen whose whole point is that nothing is moving.
+const KarenSlot = 80 // ticks, at SimHz — 4 s
+
 // KarenLine is which of KarenLines belongs over a player right now.
+//
+// The STATE picks the run and the TICK picks the line within it — the same
+// closed form the bald man uses, so nothing is stored, nothing expires, and two
+// people watching the same office read the same words at the same instant.
 //
 // PURE, AND DELIBERATELY NOT IN sim.go. `Step` is pinned to its TypeScript port
 // by the golden vectors, and a balloon is neither predicted nor simulated — it
 // is read off the state `Step` has already produced. Putting it on `Player`
 // would force a vector regeneration and a client change for a value the
 // simulation never reads.
-func KarenLine(p Player) int {
+func KarenLine(p Player, tick uint64) int {
 	switch {
 	case p.DashLeft > 0:
-		return 2
+		return pickLine(len(karenStill)+len(karenMoving), karenDashing, tick, KarenSlot)
 	case p.MoveGrace > 0:
 		// He has moved inside the grace window, so the streak is at risk even
 		// though it has not gone yet. That is exactly when it is worth saying.
-		return 1
+		return pickLine(len(karenStill), karenMoving, tick, KarenSlot)
 	default:
+		return pickLine(0, karenStill, tick, KarenSlot)
+	}
+}
+
+// pickLine walks a run of the flat pool one slot at a time and returns the
+// absolute index of the line it lands on.
+//
+// `base` is where the run starts in KarenLines, which is what makes the wire a
+// single index into a single array however the runs are arranged.
+func pickLine(base int, run []string, tick uint64, slot uint64) int {
+	n := uint64(len(run))
+	if n == 0 {
 		return 0
 	}
+	// The remainder is strictly less than the run's length, which is a dozen at
+	// most. gosec cannot see that bound and flags every uint64 conversion.
+	//nolint:gosec // bounded by len(run), guarded non-empty immediately above
+	return base + int(tick/slot%n)
 }
 
 // BossLine is which of BossLines belongs over the bald man right now.

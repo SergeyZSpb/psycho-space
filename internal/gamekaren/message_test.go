@@ -217,11 +217,14 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// shift (36 000 ticks), a five-figure command sequence, a position in the
 	// far corner, six figures of salary, the multiplier capped, a thirty-second
 	// streak, the dash on cooldown so `dc` is present rather than omitted, and
-	// BOTH balloons off their default so both `p` fields are present too.
+	// both balloons on the LAST line of their pool — which is the widest either
+	// index can be, and stays the widest as the pools grow, so this bound does
+	// not quietly stop being the worst case the day somebody adds a joke.
 	s := Snapshot{
 		T: TypeSnapshot, Tick: 36000, Ack: 71999,
-		X: 1565, Y: 2165, Pay: 648000, M: 300, St: 30000, Dc: 4000, P: 2,
-		B: BossFrame{X: 1560, Y: 2160, G: 255, P: 8},
+		X: 1565, Y: 2165, Pay: 648000, M: 300, St: 30000, Dc: 4000,
+		P: len(KarenLines) - 1,
+		B: BossFrame{X: 1560, Y: 2160, G: 255, P: len(BossLines) - 1},
 	}
 	raw, err := json.Marshal(s)
 	if err != nil {

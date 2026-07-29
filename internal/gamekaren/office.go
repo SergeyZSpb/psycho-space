@@ -326,7 +326,7 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 		// because both are pure functions of state this frame already carries —
 		// so nothing has to be kept in sync, nothing expires, and two people
 		// looking at the same office are told the same thing by construction.
-		P: KarenLine(occ.State),
+		P: KarenLine(occ.State, o.tick),
 		B: BossFrame{
 			X: cm(o.boss.Pos.X),
 			Y: cm(o.boss.Pos.Y),

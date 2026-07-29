@@ -293,22 +293,62 @@ func TestTheDefaultLinesAreFirst(t *testing.T) {
 }
 
 func TestWhatKarenIsSaying(t *testing.T) {
-	// A readout of what the simulation thinks you are doing, so each arm is a
-	// state that actually occurs rather than a decoration.
+	// The STATE picks the run and the TICK picks the line inside it, so what is
+	// asserted here is which RUN each state lands in — never a fixed index,
+	// because adding a line to any run would then be a broken test rather than
+	// more of the same joke.
+	stillRun := func(i int) bool { return i >= 0 && i < len(karenStill) }
+	movingRun := func(i int) bool {
+		return i >= len(karenStill) && i < len(karenStill)+len(karenMoving)
+	}
+	dashRun := func(i int) bool { return i >= len(karenStill)+len(karenMoving) && i < len(KarenLines) }
+
 	still := Player{}
-	if got := KarenLine(still); got != 0 {
-		t.Fatalf("standing perfectly still says %d (%q), want the default", got, KarenLines[got])
-	}
 	moving := Player{MoveGrace: 0.05}
-	if got := KarenLine(moving); got != 1 {
-		t.Fatalf("moving inside the grace window says %d", got)
-	}
 	// A dash outranks moving: it IS moving, and it is the one movement that
 	// costs nothing, so saying the same thing as an ordinary walk would be a lie
 	// about the rule the whole game rests on.
 	dashing := Player{MoveGrace: 0.05, DashLeft: 0.1}
-	if got := KarenLine(dashing); got != 2 {
-		t.Fatalf("dashing says %d", got)
+
+	// Across enough ticks to walk every run right round and wrap.
+	for tick := uint64(0); tick < KarenSlot*uint64(len(KarenLines))*2; tick += KarenSlot {
+		if got := KarenLine(still, tick); !stillRun(got) {
+			t.Fatalf("tick %d: standing still says %d (%q), which is not in the still run", tick, got, KarenLines[got])
+		}
+		if got := KarenLine(moving, tick); !movingRun(got) {
+			t.Fatalf("tick %d: moving says %d (%q), which is not in the moving run", tick, got, KarenLines[got])
+		}
+		if got := KarenLine(dashing, tick); !dashRun(got) {
+			t.Fatalf("tick %d: dashing says %d (%q), which is not in the dash run", tick, got, KarenLines[got])
+		}
+	}
+	// Standing still at tick zero is the default, which is what an absent index
+	// on the wire means.
+	if got := KarenLine(still, 0); got != 0 {
+		t.Fatalf("a fresh still player says %d, want the default", got)
+	}
+	// He HOLDS a line for a whole slot rather than flickering, and then moves on.
+	if KarenLine(still, KarenSlot-1) != KarenLine(still, 0) {
+		t.Fatal("the line changed inside one slot")
+	}
+	if len(karenStill) > 1 && KarenLine(still, KarenSlot) == KarenLine(still, 0) {
+		t.Fatal("the line did not change after a whole slot")
+	}
+}
+
+// A balloon is `white-space: nowrap` over a plane that is now the whole width of
+// a phone, so a sentence somebody could not resist is a sentence clipped by the
+// edge of the office. Both pools are catalogue data and adding to them is meant
+// to be cheap, which is exactly why the bound belongs in a test rather than in
+// somebody's memory.
+func TestNobodySaysMoreThanFitsOnAPhone(t *testing.T) {
+	const most = 32 // runes; ~190 px at the balloon's size, inside 360
+	for name, pool := range map[string][]string{"BossLines": BossLines, "KarenLines": KarenLines} {
+		for i, line := range pool {
+			if n := len([]rune(line)); n > most {
+				t.Errorf("%s[%d] is %d characters and the balloon holds %d: %q", name, i, n, most, line)
+			}
+		}
 	}
 }
 
