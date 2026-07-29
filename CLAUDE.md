@@ -122,6 +122,18 @@ Each game is its own module: its own package, tables, routes and views. **No gam
 
 **Reasoning for all of the above lives in the records — [ADR-028](docs/adrs/) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared), ADR-046/047/057 (each game's rendering decision, where the canvas line falls, and why owning a tick does not oblige a game to leave the DOM), ADR-056 (one shared office against one arena per run), summarised in `docs/ARCHITECTURE.md` §8.** Read those before arguing with this rule. They are settled: rewriting one to mean something else is how a decision changes, so do it deliberately and in a commit that says why — not as a side effect of disagreeing with it.
 
+### A verb announces itself on the plane
+
+**Anything that is not ordinary movement gets a brief visual acknowledgement, at the place it happened.** Standing, walking, dashing and being caught need none — you can already see all of them. A *verb* cannot be seen: you press something, and a second later the world behaves differently. Without an acknowledgement a player who is not sure he pressed anything reads that as the game misbehaving, and a player who is sure reads it as the game ignoring him.
+
+- **Small, and over quickly.** One mark, well under half a second, at the point the thing happened — a ring, a pulse, a flash of the figure it landed on. No screen shake, no full-plane flash, no sound, nothing that has to be waited out. These games are played while something is walking towards you, and an effect big enough to watch is an effect that takes your eye off the only thing that matters.
+- **Derive it from state the frame already carries.** A timer crossing from zero to non-zero, a counter changing, a flag appearing — the client watches an **edge**, not a level. A dedicated "an event happened" field is bytes on a repeating payload to say *nothing happened* almost every time it is sent, which is the mistake the wire rules exist to prevent. If an effect genuinely cannot be derived, that is worth saying out loud in the change rather than quietly adding a field.
+- **A level is not an event.** Marking on "the cooldown is non-zero" rather than on "the cooldown just started" flashes the plane ten times a second for the whole cooldown. Compare against the previous frame, and do it **before** anything overwrites the value you are comparing to.
+- **It still shows under `prefers-reduced-motion`** — unanimated, or dimmer, but present. Somebody who asked for less motion still needs to know their verb landed. Clear it on a timer rather than on `animationend`, which never fires when the animation is switched off.
+- **It says WHERE, not WHAT.** The words are the balloons' job. Distinguish kinds by colour or shape if two can happen at once, and leave the explaining to the text that is already there.
+
+This is a rule for **every future action**, in this game and any other: a new verb ships with its acknowledgement in the same change, exactly as it ships with its line in the splash cheatsheet. A verb that lands invisibly is an unfinished verb.
+
 ### A game states its rules on its own splash screen
 
 **Every game's splash screen carries a cheatsheet of that game's current rules** — what the player needs in order to play, on one screen, before they start. Not flavour text and not a vague description of the idea: the actual numbers and the actual consequences. What drains, what fixes it, what kills you, what the controls are, what happens while you are away.

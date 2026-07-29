@@ -671,6 +671,46 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     await expect(page.getByTestId('karen-boss')).not.toHaveAttribute('data-drunk', '1');
   });
 
+  test('a verb that is not movement says so on the plane', async ({ page }) => {
+    // THE RULE (CLAUDE.md → «A verb announces itself on the plane»): anything
+    // that is not ordinary movement gets a brief mark where it happened.
+    // Standing, walking and dashing do not need one — you can see those. The
+    // bottle and the redirect are otherwise invisible: the office simply behaves
+    // differently a moment later, which reads as the game misbehaving.
+    //
+    // It costs NOTHING on the wire: every mark is an existing field crossing
+    // from zero to non-zero.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }] });
+    await expect(page.getByTestId('karen-pop')).toHaveCount(0);
+
+    // Somebody drank it — `bt` starts running.
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], bt: 9500 });
+    await expect(page.getByTestId('karen-pop')).toHaveAttribute('data-kind', 'bottle');
+
+    // He turned green — `d` starts running. A different kind, so two things in
+    // the same second are still two things.
+    await socket.snapshot({
+      pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }],
+      bt: 9000,
+      b: { x: 300, y: 1500, g: 40, d: 8500 },
+    });
+    await expect(page.getByTestId('karen-pop')).toHaveAttribute('data-kind', 'drunk');
+
+    // And your own verb landing — `rc` starts running.
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], rc: 8000 });
+    await expect(page.getByTestId('karen-pop')).toHaveAttribute('data-kind', 'redirect');
+
+    // A LEVEL IS NOT AN EVENT. A cooldown still running is not a verb being
+    // used again, so a frame that merely repeats it marks nothing — without
+    // this the plane would flash ten times a second for eight seconds.
+    await expect
+      .poll(async () => page.getByTestId('karen-pop').count(), { message: 'the mark never cleared' })
+      .toBe(0);
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], rc: 7000 });
+    await expect(page.getByTestId('karen-pop')).toHaveCount(0);
+  });
+
   test('a balloon rides the man rather than being placed beside him', async ({ page }) => {
     // It is a CHILD of the figure, so the transform that moves him every
     // animation frame carries it too — no second write, and no chance of the

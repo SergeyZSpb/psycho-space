@@ -110,6 +110,18 @@
             :style="bottleStyle"
             aria-hidden="true"
           />
+          <!-- WHERE SOMETHING JUST HAPPENED. One short ring, keyed so that a
+               second event re-mounts it and restarts the animation rather than
+               being swallowed by the first. -->
+          <span
+            v-if="pop"
+            :key="pop.key"
+            class="karen-pop"
+            data-testid="karen-pop"
+            :data-kind="pop.kind"
+            :style="{ '--x': String(pop.u), '--y': String(pop.v) }"
+            aria-hidden="true"
+          />
           <span ref="bossEl" class="karen-boss" data-testid="karen-boss" aria-hidden="true">
             <span v-if="bossSays" class="karen-say" data-testid="karen-boss-say">{{ bossSays }}</span>
             <span class="karen-fig-body" />
@@ -423,6 +435,58 @@ function onRedirect(peerID: string): void {
   realtimeClient(shift.room).send({ t: 'karen_do', v: 'redirect', tg: peerID });
 }
 
+/**
+ * A one-off mark on the plane saying that something just happened, and where.
+ *
+ * THE RULE THIS IMPLEMENTS (see CLAUDE.md → «A verb announces itself on the
+ * plane»): anything that is not ordinary movement gets a brief visual
+ * acknowledgement at the place it happened. Standing still, walking and dashing
+ * do not — you can already see those. Drinking, and pointing the bald man at a
+ * colleague, are invisible without this: the office simply behaves differently a
+ * moment later, and a player who did not know he had pressed anything reads that
+ * as the game misbehaving.
+ *
+ * DELIBERATELY SMALL: one ring, under half a second, no colour flash and no
+ * screen shake. It is an acknowledgement, not a celebration, and it must never
+ * be the thing you are looking at when the man arrives.
+ *
+ * IT COSTS NOTHING ON THE WIRE. Every one of these is derived from a field the
+ * snapshot already carries crossing from zero to non-zero — the bottle's return
+ * timer starting, his drunk timer starting, your own verb cooldown starting. An
+ * event field would be bytes ten times a second to say "nothing happened".
+ */
+/**
+ * Where the bald man is, in plane coordinates — the anchor for anything that
+ * happens TO him.
+ *
+ * A PLAIN FUNCTION AND NOT A `computed`, which is the whole of a bug worth
+ * remembering. `bossAt` is deliberately not reactive (positions never enter
+ * reactivity on this plane), so a computed over it caches its first evaluation
+ * forever — and its first evaluation happens before the first snapshot has set
+ * `bossAt` at all, so it cached `null` and every mark on him silently did
+ * nothing. A computed's cache is only correct when its inputs are reactive.
+ */
+function bossPlace(): { u: number; v: number } | null {
+  if (!bossAt || !constants) return null;
+  return toPlane(bossAt.x, bossAt.y, constants.officeW, constants.officeH);
+}
+
+const pop = ref<{ key: number; kind: string; u: number; v: number } | null>(null);
+let popKey = 0;
+let popTimer: number | undefined;
+
+function markAt(kind: string, at: { u: number; v: number } | null): void {
+  if (!at) return;
+  popKey += 1;
+  pop.value = { key: popKey, kind, u: at.u, v: at.v };
+  if (popTimer !== undefined) window.clearTimeout(popTimer);
+  // Cleared on a timer rather than on `animationend`, which never fires under
+  // prefers-reduced-motion — where the animation is switched off entirely.
+  popTimer = window.setTimeout(() => {
+    pop.value = null;
+  }, 600);
+}
+
 function onPeerFaceError(id: string): void {
   const next = new Set(brokenFaces.value);
   next.add(id);
@@ -667,6 +731,9 @@ function teardownPlay(): void {
   constants = null;
   outbox = [];
   peers.value = [];
+  if (popTimer !== undefined) window.clearTimeout(popTimer);
+  popTimer = undefined;
+  pop.value = null;
   brokenFaces.value = new Set();
   redirectMs.value = 0;
   bottleMs.value = 0;
@@ -861,8 +928,17 @@ function applySnapshot(frame: RealtimeFrame): void {
   // said for the rest of the shift.
   meLine.value = num(frame.p);
   // Omitted when ready, like `dc` — absent means zero, never "unchanged".
-  redirectMs.value = num(frame.rc);
-  bottleMs.value = num(frame.bt);
+  // EDGES, NOT LEVELS: each of these is "it just started", which is the only
+  // moment worth marking — a cooldown merely still running would flash the plane
+  // ten times a second for eight seconds. Both are read and compared BEFORE
+  // either ref is written, because an assignment earlier in this function would
+  // destroy the very edge being looked for. (It did, once.)
+  const bt = num(frame.bt);
+  const rc = num(frame.rc);
+  if (bt > 0 && bottleMs.value === 0) markAt('bottle', bottleAt.value);
+  if (rc > 0 && redirectMs.value === 0) markAt('redirect', bossPlace());
+  redirectMs.value = rc;
+  bottleMs.value = bt;
   bottleSpot.value = num(frame.bs);
 
   if (!predictor) {
@@ -889,6 +965,7 @@ function applySnapshot(frame: RealtimeFrame): void {
     // a `background` on `.karen-boss` paints the positioning rectangle and reads
     // as a broken sprite (§17.5 of the build plan, learned the hard way).
     const drunk = num(b.d) > 0;
+    if (drunk && !bossDrunk) markAt('drunk', bossPlace());
     if (el && drunk !== bossDrunk) {
       bossDrunk = drunk;
       if (drunk) el.dataset.drunk = '1';
@@ -1737,9 +1814,60 @@ function onDash(): void {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* THE ACKNOWLEDGEMENT. One ring, expanding and fading, under half a second.
+   Deliberately restrained: it says "that landed", not "well done" — a bigger
+   effect would be the thing you are watching when the bald man arrives, which is
+   the one moment this game cannot afford to take your eye off.
+   Sized off `--unit` like everything else here, so it scales with the plane. */
+.karen-pop {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--unit) * 0.9);
+  height: calc(var(--unit) * 0.9);
+  margin: calc(var(--unit) * -0.45) 0 0 calc(var(--unit) * -0.45);
+  transform: translate3d(calc(var(--x, 0.5) * 100cqw), calc(var(--y, 0.5) * 100cqh), 0);
+  border-radius: 50%;
+  border: 2px solid var(--pop, rgba(255, 255, 255, 0.85));
+  pointer-events: none;
+  z-index: 4;
+  animation: karen-pop 420ms ease-out forwards;
+}
+
+/* A colour per kind, so two things happening in the same second are still two
+   things. No text: the balloons already say what happened. */
+.karen-pop[data-kind='bottle'] {
+  --pop: rgba(150, 220, 150, 0.9);
+}
+.karen-pop[data-kind='drunk'] {
+  --pop: rgba(120, 210, 110, 0.95);
+}
+.karen-pop[data-kind='redirect'] {
+  --pop: rgba(240, 180, 41, 0.95);
+}
+
+@keyframes karen-pop {
+  from {
+    opacity: 0.9;
+    scale: 0.35;
+  }
+  to {
+    opacity: 0;
+    scale: 1.6;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .karen-streak-fill {
     transition: none;
+  }
+
+  /* Still SHOWN, just not animated — somebody who has asked for less motion
+     still needs to know their verb landed. It is cleared on a timer rather than
+     on `animationend` precisely so that this branch works. */
+  .karen-pop {
+    animation: none;
+    opacity: 0.55;
   }
 }
 </style>
