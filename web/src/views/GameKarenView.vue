@@ -1537,6 +1537,52 @@ function onDash(): void {
   pointer-events: none;
 }
 
+/* ANOTHER КАРЕН. Same build as you — a head with hair, a body — because he is
+   the same kind of thing; the shirt is the only difference, and it is written
+   INLINE from his handle (peerColour) because a colour changes when somebody
+   joins, which is a membership event and not something for the frame loop.
+
+   `--body` rather than `background`, for the reason stated above the figure box:
+   a background on the positioning rectangle paints the coordinate instead of the
+   man, which is the defect the лысый shipped with once. The skin stays
+   everybody's, so the office reads as colleagues in different shirts rather than
+   as different species. */
+.karen-peer {
+  --skin: #f0d9bd;
+  --body: #4a5a6a;
+  /* Slightly recessed, so a glance tells you which one you are steering — but
+     not so faint that a colleague is easy to lose, since he is the thing you are
+     negotiating with. */
+  opacity: 0.88;
+}
+
+/* HIS FACE, beside the head rather than on it: a colleague is a cut-out figure,
+   and painting a photograph into the head would make him a token seen from
+   above, which is the one thing this plane is not. Sized off `--unit` like every
+   other length here, so it rides the depth ramp with the man. */
+.karen-peer-badge {
+  position: absolute;
+  left: 78%;
+  top: -6%;
+  width: 62%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.25);
+  /* Decoration on somebody else's figure: it must never take a tap meant for
+     the office underneath. */
+  pointer-events: none;
+}
+
+/* A COLLEAGUE MID-DASH. A buff, so it is shown for as long as it lasts rather
+   than flashed once, and it is a property of the figure rather than something
+   orbiting him — the same shape the bald man's green follows. Small on purpose:
+   it says "he is moving fast", not "look over here". */
+.karen-peer[data-fast] {
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.55));
+}
+
 /* Placeholder shapes rather than art: iteration 1 ships with no uploaded assets
    at all, on purpose, and a missing sprite must be a shape and never a broken
    screen. */

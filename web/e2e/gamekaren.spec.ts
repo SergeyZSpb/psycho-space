@@ -131,6 +131,20 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
         },
       });
     }
+    // A COLLEAGUE'S FACE, and it has to actually resolve. Left to the catch-all
+    // this 404s, the `img` errors, and the client correctly gives up on it — so
+    // any assertion about the badge would be racing that. A one-pixel PNG makes
+    // it deterministic.
+    if (path.startsWith('/api/game-karen/avatar/')) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'image/png',
+        body: Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+          'base64',
+        ),
+      });
+    }
     if (path === '/api/game-karen/config') return json(200, CONFIG);
     if (path === '/api/game-karen/shifts/me') return json(200, { shifts: opts.mine ?? [] });
     if (path === '/api/game-karen/shifts/top') return json(200, { shifts: opts.top ?? [] });
@@ -564,6 +578,18 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     // plane and nothing extra on the wire.
     expect(one.body).not.toBe('');
     expect(one.body).not.toBe(two.body);
+
+    // AND HE IS ACTUALLY STYLED. Three CSS blocks for the peer — his colours,
+    // his face and his dash aura — were written and silently did not land, so
+    // avatars shipped as unstyled `img` elements at their natural size over the
+    // office. Nothing noticed, because every test asked about POSITION. A rule
+    // that exists only in a diff is a rule that does not exist.
+    const badge = page.getByTestId('karen-peer-avatar').first();
+    await expect(badge).toHaveCount(1);
+    const box = (await badge.boundingBox())!;
+    expect(box.width, 'the avatar is unstyled — natural size, not sized off --unit').toBeLessThan(60);
+    expect(box.width).toBeGreaterThan(4);
+    await expect(page.locator('[data-testid="karen-peer"]').first()).toHaveCSS('opacity', '0.88');
 
     // The line over his head comes from the catalogue by INDEX, exactly as
     // yours and his do — these are the stub's words, so a hardcoded balloon
