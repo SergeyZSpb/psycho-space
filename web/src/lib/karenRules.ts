@@ -121,6 +121,28 @@ export function buildRules(config: KarenConfig | null): RuleBlock[] {
     });
   }
 
+  // The office is SHARED, and until peers were drawn there was no way for a
+  // player to find that out. `max_occupants` has been in the served catalogue
+  // since iteration 1 and nothing read it — deriving the line from it rather
+  // than typing the number keeps it true when the cap is retuned.
+  if (has(config.max_occupants) && config.max_occupants > 1) {
+    blocks.push({
+      title: 'Коллеги',
+      lines: [
+        {
+          label: '🧑‍🤝‍🧑 в опенспейсе',
+          text:
+            `До ${config.max_occupants} Каренов одновременно. ` +
+            `Видно, кто где стоит и кто что говорит.`,
+        },
+        {
+          label: '🎯 кто ближе',
+          text: 'Лысый идёт к ближайшему. Отойди — и пойдёт не к тебе.',
+        },
+      ],
+    });
+  }
+
   const endings = Array.isArray(config.endings) ? config.endings : [];
   const endingLines = endings
     .filter((e) => e && typeof e.title === 'string' && e.title.length > 0)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +32,22 @@ func snapOf(t *testing.T, o *Office, accountID string) Snapshot {
 	return s
 }
 
+// join puts an account to work ON THE CANONICAL SPAWN.
+//
+// Production DRAWS a spawn now (Office.spawnPoint), which is right for the game
+// and wrong for almost every test in this file: they are about the idle fill, the
+// time budget, the ramp or the wire, and every one of them reasons from how long
+// the bald man takes to arrive — a number that is only knowable from a known
+// starting point. So the tests that are not ABOUT spawning pin it, and the ones
+// that are (TestASpawnIsDrawnSomewhereLegal and friends) call Join directly.
+func join(t *testing.T, o *Office, accountID, shiftID string) {
+	t.Helper()
+	if err := o.Join(accountID, shiftID, "p-"+accountID, epoch); err != nil {
+		t.Fatal(err)
+	}
+	place(o, accountID, Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
+}
+
 // advance runs n ticks of real simulation time from the epoch.
 func advance(o *Office, n int) []*Occupant {
 	var ended []*Occupant
@@ -45,17 +62,15 @@ func TestTheSameAccountCannotStartTwice(t *testing.T) {
 	// A refusal rather than a silent replacement: dropping the running shift
 	// would throw away one somebody is in the middle of on their other tab.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
-	if err := o.Join("a", "s2", epoch); !errors.Is(err, ErrShiftInProgress) {
+	join(t, o, "a", "s1")
+	if err := o.Join("a", "s2", "p-a", epoch); !errors.Is(err, ErrShiftInProgress) {
 		t.Fatalf("the second shift was allowed: %v", err)
 	}
 	// And leaving makes room for the next one.
 	if _, ok := o.Leave("a"); !ok {
 		t.Fatal("leaving found nobody")
 	}
-	if err := o.Join("a", "s3", epoch); err != nil {
+	if err := o.Join("a", "s3", "p-a", epoch); err != nil {
 		t.Fatalf("starting after leaving was refused: %v", err)
 	}
 }
@@ -63,11 +78,11 @@ func TestTheSameAccountCannotStartTwice(t *testing.T) {
 func TestTheFloorIsCapped(t *testing.T) {
 	o := NewOffice()
 	for i := 0; i < MaxOccupants; i++ {
-		if err := o.Join(string(rune('a'+i)), "s", epoch); err != nil {
+		if err := o.Join(string(rune('a'+i)), "s", "p-"+string(rune('a'+i)), epoch); err != nil {
 			t.Fatalf("occupant %d refused: %v", i, err)
 		}
 	}
-	if err := o.Join("z", "s", epoch); !errors.Is(err, ErrOfficeFull) {
+	if err := o.Join("z", "s", "p-z", epoch); !errors.Is(err, ErrOfficeFull) {
 		t.Fatalf("the cap did not bite: %v", err)
 	}
 	if got := o.Occupants(); got != MaxOccupants {
@@ -82,12 +97,8 @@ func TestEmptyIsTrueOnceEverybodyHasGoneHome(t *testing.T) {
 	if !o.Empty() {
 		t.Fatal("a fresh office is not empty")
 	}
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
-	if err := o.Join("b", "s2", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
 	if o.Empty() {
 		t.Fatal("two people in and it is empty")
 	}
@@ -108,9 +119,7 @@ func TestStandingStillEarnsWithoutSendingAnything(t *testing.T) {
 	// simulate the time no command claimed. Without this, standing perfectly
 	// still would pay nothing, which is the one outcome the design cannot have.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 	advance(o, SimHz) // one second, no input at all
 
 	s := snapOf(t, o, "a")
@@ -137,9 +146,7 @@ func TestQueuedInputDrainsAtRealTimeRatherThanAllAtOnce(t *testing.T) {
 	// Two sub-steps arrive per input frame at 10 Hz and are spent one per tick
 	// at 20 Hz, so a client cannot get ahead by batching — it merely queues.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 	cmds := make([]Command, 0, 10)
 	for i := 1; i <= 10; i++ {
 		cmds = append(cmds, Command{Seq: uint32(i), Dt: SimStep.Seconds(), MX: 1})
@@ -162,9 +169,7 @@ func TestACommandAlreadyAppliedIsDroppedRatherThanReplayed(t *testing.T) {
 	// movement that happens twice on the server and once on the client — which
 	// the player feels as being dragged.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 	c := Command{Seq: 1, Dt: SimStep.Seconds(), MX: 1}
 	o.Enqueue("a", []Command{c}, epoch)
 	advance(o, 1)
@@ -192,9 +197,7 @@ func TestTheTimeBudgetCapsBankedSimulatedTime(t *testing.T) {
 	// a tick may spend at most TimeBudgetCap seconds of client-claimed movement,
 	// however much is queued and however long the tick itself claims to be.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 	var cmds []Command
 	for i := 1; i <= maxPending; i++ {
 		cmds = append(cmds, Command{Seq: uint32(i), Dt: MaxStepSeconds, MX: 1})
@@ -228,9 +231,7 @@ func TestQuietTimeCannotBeBankedAndSpentOnMovement(t *testing.T) {
 	// player cannot earn the ramp for ten seconds and then cash those ten
 	// seconds in as free movement.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 	// Two seconds of standing perfectly still. NOT five: the bald man reaches the
 	// spawn in about 3.8 s, and this test is about the budget rather than about
 	// him — see snapOf.
@@ -254,9 +255,7 @@ func TestBeingCaughtEndsTheShiftAsAPromotion(t *testing.T) {
 	// End to end, with nothing reached into: somebody stands still at the spawn
 	// earning money, and the bald man crosses the office to congratulate them.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 
 	// Long enough for him to walk the length of the floor and no longer, so a
 	// boss who stopped moving fails here rather than hanging.
@@ -291,9 +290,7 @@ func TestAnOccupantNobodyHasSeenIsEndedAsHavingWalkedOut(t *testing.T) {
 	// is not a result, but a SHIFT somebody walked away from is exactly what this
 	// game is about.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 
 	// One tick just inside the grace, and one just outside it. The clock is the
 	// tick's own, so nothing here waits for ninety seconds.
@@ -317,9 +314,7 @@ func TestBeingSeenKeepsAShiftAlive(t *testing.T) {
 	// anything is sent down it. A player standing perfectly still sends nothing
 	// at all and is the most present person in the game.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 	for i := 1; i <= 5; i++ {
 		at := epoch.Add(time.Duration(i) * AbandonGrace)
 		o.Seen("a", at)
@@ -334,12 +329,8 @@ func TestBeingSeenKeepsAShiftAlive(t *testing.T) {
 
 func TestASnapshotDescribesTheOccupantItIsAddressedTo(t *testing.T) {
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
-	if err := o.Join("b", "s2", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
 	// Move one of them and not the other.
 	o.Enqueue("a", []Command{{Seq: 1, Dt: SimStep.Seconds(), MX: 1}}, epoch)
 	advance(o, 1)
@@ -361,9 +352,7 @@ func TestASnapshotDescribesTheOccupantItIsAddressedTo(t *testing.T) {
 
 func TestTheTickIsTheClientsTimeline(t *testing.T) {
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 	advance(o, 7)
 	if got := o.Tick(); got != 7 {
 		t.Fatalf("seven ticks left the counter at %d", got)
@@ -373,6 +362,19 @@ func TestTheTickIsTheClientsTimeline(t *testing.T) {
 	}
 }
 
+// place stands an occupant on a known point.
+//
+// Production DRAWS a spawn (Office.spawnPoint), which is right for the game and
+// useless to a test that has to know where somebody started. This writes the
+// position directly — white-box setup, the same answer the repository gives for
+// determinism everywhere else, and specifically NOT a production flag that turns
+// the randomness off: that would be test-only machinery in a live path.
+func place(o *Office, accountID string, at Vec2) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.occupants[accountID].State.Pos = at
+}
+
 func TestTwoOccupantsAreSteppedInADeterministicOrder(t *testing.T) {
 	// Nothing in this game iterates a map to produce a result, because map order
 	// is randomised in Go and the bald man's choice of victim would otherwise
@@ -380,13 +382,10 @@ func TestTwoOccupantsAreSteppedInADeterministicOrder(t *testing.T) {
 	// hypothetical in a room this size.
 	run := func() (Vec2, Vec2) {
 		o := NewOffice()
-		if err := o.Join("a", "s1", epoch); err != nil {
-			t.Fatal(err)
-		}
-		if err := o.Join("b", "s2", epoch); err != nil {
-			t.Fatal(err)
-		}
-		// Symmetrically apart, so his choice is a pure tie.
+		join(t, o, "a", "s1")
+		join(t, o, "b", "s2")
+		// Both start on the same known point (join pins it), so the split below
+		// is symmetric and his choice is a pure tie — which is the whole claim.
 		o.Enqueue("a", []Command{{Seq: 1, Dt: MaxStepSeconds, MX: -1}}, epoch)
 		o.Enqueue("b", []Command{{Seq: 1, Dt: MaxStepSeconds, MX: 1}}, epoch)
 		// Comfortably inside the chase: determinism shows up in the first second
@@ -409,9 +408,7 @@ func TestPendingInputIsBounded(t *testing.T) {
 	// What bounds how much of it is SIMULATED is the time budget; this bounds
 	// the memory.
 	o := NewOffice()
-	if err := o.Join("a", "s1", epoch); err != nil {
-		t.Fatal(err)
-	}
+	join(t, o, "a", "s1")
 	for frame := 0; frame < 100; frame++ {
 		cmds := make([]Command, 0, MaxInboundCommands)
 		for i := 0; i < MaxInboundCommands; i++ {
@@ -457,7 +454,7 @@ func TestEnqueueIgnoresAnAccountThatIsNotWorking(t *testing.T) {
 func TestDriftDoesNotEatTheDash(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	o := NewOffice()
-	if err := o.Join("a", "shift-a", now); err != nil {
+	if err := o.Join("a", "shift-a", "p-a", now); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 
@@ -490,7 +487,7 @@ func TestDriftDoesNotEatTheDash(t *testing.T) {
 func TestStandingPerfectlyStillStillEarns(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	o := NewOffice()
-	if err := o.Join("a", "shift-a", now); err != nil {
+	if err := o.Join("a", "shift-a", "p-a", now); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	for i := 0; i < 20; i++ {
@@ -525,4 +522,270 @@ func (o *Office) salaryOf(t *testing.T, accountID string) float64 {
 		t.Fatalf("no occupant %q", accountID)
 	}
 	return occ.State.Salary
+}
+
+// --- the drawn spawn -------------------------------------------------------
+//
+// These are the ones that are ABOUT spawning, so they call Join directly rather
+// than the pinning helper above. None of them asserts a POSITION: the draw is
+// random by design and no production flag turns it off (that would be test-only
+// machinery in a live path), so what is pinned is the INVARIANTS every draw has
+// to satisfy, over enough draws that a rule which held by luck would show.
+
+// spawnsOf draws n spawns into an otherwise empty office.
+func spawnsOf(t *testing.T, n int) []Vec2 {
+	t.Helper()
+	out := make([]Vec2, 0, n)
+	for i := 0; i < n; i++ {
+		o := NewOffice()
+		if err := o.Join("a", "s", "p-a", epoch); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, posOf(t, o, "a"))
+	}
+	return out
+}
+
+// posOf reads an occupant's simulated position, unrounded.
+//
+// Unrounded on purpose: the wire quantises to centimetres, which is nothing to a
+// figure on a phone and everything to "is this point outside that rectangle", so
+// the GEOMETRIC claims below read the simulation and the rest read the frame.
+func posOf(t *testing.T, o *Office, accountID string) Vec2 {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	occ, ok := o.occupants[accountID]
+	if !ok {
+		t.Fatalf("no occupant %s", accountID)
+	}
+	return occ.State.Pos
+}
+
+func TestEverySpawnIsSomewhereYouCouldStand(t *testing.T) {
+	for i, at := range spawnsOf(t, 300) {
+		if at.X < PlayerRadius || at.X > OfficeW-PlayerRadius ||
+			at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
+			t.Fatalf("draw %d spawned outside the floor at %+v", i, at)
+		}
+		for d, desk := range Desks {
+			if insideDesk(desk, at, PlayerRadius) {
+				t.Fatalf("draw %d spawned inside desk %d at %+v", i, d, at)
+			}
+		}
+	}
+}
+
+func TestEverySpawnIsSomewhereHeCanWalkStraightTo(t *testing.T) {
+	// The measurement behind this is on clearLine: he has no way round a desk,
+	// so a shift opening in one is a shift where nothing happens for a minute
+	// and a half. Without this rule about a sixth of the floor was over ten
+	// seconds and the worst point took ninety.
+	boss := NewBoss()
+	for i, at := range spawnsOf(t, 300) {
+		if !clearLine(at, boss.Pos, PlayerRadius) {
+			t.Fatalf("draw %d spawned in a desk's shadow at %+v", i, at)
+		}
+	}
+}
+
+func TestASpawnIsNotTheSamePlaceEveryTime(t *testing.T) {
+	// The point of the change. A fixed spawn put two occupants inside each other
+	// and made death-and-rejoin a free teleport to the safe end of the room.
+	//
+	// Twenty distinct points out of 300 draws is a deliberately loose bar: it is
+	// here to catch the draw being switched off or collapsing to the fallback,
+	// not to assert a distribution.
+	seen := map[Vec2]bool{}
+	for _, at := range spawnsOf(t, 300) {
+		seen[at] = true
+	}
+	if len(seen) < 20 {
+		t.Fatalf("300 draws produced only %d distinct spawns", len(seen))
+	}
+}
+
+func TestNobodySpawnsOnTopOfSomebodyAlreadyWorking(t *testing.T) {
+	// The first of the two faults a fixed spawn had: join while somebody is
+	// playing and you used to materialise INSIDE them.
+	for i := 0; i < 200; i++ {
+		o := NewOffice()
+		if err := o.Join("a", "s1", "p-a", epoch); err != nil {
+			t.Fatal(err)
+		}
+		if err := o.Join("b", "s2", "p-b", epoch); err != nil {
+			t.Fatal(err)
+		}
+		a, b := posOf(t, o, "a"), posOf(t, o, "b")
+		if gap := math.Hypot(a.X-b.X, a.Y-b.Y); gap < spawnFromEachOther-0.02 {
+			t.Fatalf("run %d put two people %.2f m apart: %+v %+v", i, gap, a, b)
+		}
+	}
+}
+
+func TestASpawnKeepsItsDistanceFromHimWhereItCan(t *testing.T) {
+	// TWO CLAIMS, because spawnFromBoss is a PREFERENCE and not a filter — the
+	// sampler short-circuits on the first draw that is comfortably clear and
+	// otherwise keeps the best it saw, so a run of unlucky draws legitimately
+	// lands inside it. Rejecting outright is the worse design: mid-shift he can
+	// stand where almost nothing is 12 m away, and a hard filter would reject
+	// every draw and fall through to a fixed point that could be beside him.
+	//
+	// Both numbers are measured over 3000 draws into an empty office: the
+	// smallest gap seen was 8.02 m and 0.17 % were inside the preference. The
+	// bars below are those with room — a hard floor at GrinRange, which is the
+	// distance that decides whether the shift opens with him already smiling at
+	// you, and 95 % against a measured 99.8 %.
+	const draws = 400
+	inside := 0
+	for i, at := range spawnsOf(t, draws) {
+		gap := math.Hypot(at.X-BossSpawnX, at.Y-BossSpawnY)
+		if gap <= GrinRange {
+			t.Fatalf("draw %d spawned %.2f m from him — inside the range he smiles from (%v)", i, gap, GrinRange)
+		}
+		if gap < spawnFromBoss {
+			inside++
+		}
+	}
+	if got := float64(draws-inside) / draws; got < 0.95 {
+		t.Fatalf("only %.1f%% of draws kept %v m from him", 100*got, spawnFromBoss)
+	}
+}
+
+func TestACrowdedFloorStillProducesALegalSpawn(t *testing.T) {
+	// The fallback path, reached by making every draw fail: everybody alive is
+	// standing in the one lane, so nothing is spawnFromEachOther clear of them.
+	// It must still answer with a point on the floor and out of the furniture —
+	// overlapping is untidy, off the floor is broken.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	// Fill the room: pin the two of them either side of the canonical spawn so
+	// the sampler is fighting for room.
+	place(o, "a", Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
+	place(o, "b", Vec2{X: PlayerSpawnX + 0.1, Y: PlayerSpawnY})
+	if err := o.Join("c", "s3", "p-c", epoch); err != nil {
+		t.Fatal(err)
+	}
+	at := posOf(t, o, "c")
+	if at.X < PlayerRadius || at.X > OfficeW-PlayerRadius ||
+		at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
+		t.Fatalf("the crowded fallback stood somebody off the floor at %+v", at)
+	}
+	for d, desk := range Desks {
+		if insideDesk(desk, at, PlayerRadius) {
+			t.Fatalf("the crowded fallback stood somebody inside desk %d at %+v", d, at)
+		}
+	}
+}
+
+// --- peers on the frame ----------------------------------------------------
+
+func TestYourFrameCarriesTheOtherPeopleInTheOffice(t *testing.T) {
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	// Somewhere else, so the two of them are distinguishable on the wire.
+	place(o, "b", Vec2{X: PlayerSpawnX + 3, Y: PlayerSpawnY + 1})
+
+	sa := snapOf(t, o, "a")
+	if len(sa.Pr) != 1 {
+		t.Fatalf("a's frame carries %d peers: %+v", len(sa.Pr), sa.Pr)
+	}
+	if sa.Pr[0].X != cm(PlayerSpawnX+3) || sa.Pr[0].Y != cm(PlayerSpawnY+1) {
+		t.Fatalf("the peer is drawn at %+v, b is at %v,%v", sa.Pr[0], PlayerSpawnX+3, PlayerSpawnY+1)
+	}
+	// And it is symmetric: b sees a, in a's place.
+	sb := snapOf(t, o, "b")
+	if len(sb.Pr) != 1 || sb.Pr[0].X != cm(PlayerSpawnX) {
+		t.Fatalf("b's frame does not carry a: %+v", sb.Pr)
+	}
+}
+
+func TestYouAreNeverYourOwnPeer(t *testing.T) {
+	// The frame already says where YOU are at the top level, and the client
+	// predicts that position rather than interpolating it. A self-entry in the
+	// array would draw a second, laggier copy of you standing on yourself.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	if s := snapOf(t, o, "a"); len(s.Pr) != 0 {
+		t.Fatalf("a solo occupant sees %d peers: %+v", len(s.Pr), s.Pr)
+	}
+}
+
+func TestAPeerIsAPseudonymAndNeverAnAccountID(t *testing.T) {
+	// ADR-037. An account id is a durable identifier for a person, and it must
+	// not reach somebody else's browser — the handle is minted per process from
+	// a key held only in memory.
+	svc := NewService(nil, Room, nil, nil)
+	account := "0195f0c2-1111-2222-3333-444455556666"
+	handle := svc.pseudonym(account)
+	if handle == account || strings.Contains(handle, account) {
+		t.Fatalf("the wire handle is the account id: %q", handle)
+	}
+	if handle != svc.pseudonym(account) {
+		t.Fatal("the same account got two different handles from one process")
+	}
+	if svc.pseudonym("someone-else") == handle {
+		t.Fatal("two accounts share a handle")
+	}
+	// A second process means a second key, so the handle is meaningless once
+	// this office is gone — which is the property that makes it not an identity.
+	if NewService(nil, Room, nil, nil).pseudonym(account) == handle {
+		t.Fatal("the handle survived a restart, so it is a durable identifier")
+	}
+}
+
+func TestTheFrameCarriesTheHandleTheServiceMinted(t *testing.T) {
+	o := NewOffice()
+	if err := o.Join("a", "s1", "handle-a", epoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Join("b", "s2", "handle-b", epoch); err != nil {
+		t.Fatal(err)
+	}
+	s := snapOf(t, o, "a")
+	if len(s.Pr) != 1 || s.Pr[0].I != "handle-b" {
+		t.Fatalf("a's peer is %+v, expected handle-b", s.Pr)
+	}
+	if s.Pr[0].I == "b" {
+		t.Fatal("the account id reached the wire")
+	}
+}
+
+func TestADeadColleagueIsNotDrawn(t *testing.T) {
+	// The tick that catches somebody deletes them, so this is reachable only in
+	// the instant between the two — but drawing a figure the simulation has
+	// stopped stepping is worse than drawing nothing.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	o.mu.Lock()
+	o.occupants["b"].State.Alive = false
+	o.mu.Unlock()
+	if s := snapOf(t, o, "a"); len(s.Pr) != 0 {
+		t.Fatalf("a promoted colleague is still on the plane: %+v", s.Pr)
+	}
+}
+
+func TestTheOrderOfPeersDoesNotWander(t *testing.T) {
+	// A slice's order is part of its value, so a randomised one is a diff on the
+	// wire and a re-render on the client ten times a second for nothing. Map
+	// iteration is what would cause it, which is why peersFor walks keys().
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	join(t, o, "c", "s3")
+	first := snapOf(t, o, "a").Pr
+	for i := 0; i < 30; i++ {
+		got := snapOf(t, o, "a").Pr
+		if len(got) != len(first) {
+			t.Fatalf("read %d saw %d peers, first saw %d", i, len(got), len(first))
+		}
+		for j := range got {
+			if got[j].I != first[j].I {
+				t.Fatalf("read %d reordered the peers: %+v vs %+v", i, got, first)
+			}
+		}
+	}
 }

@@ -126,7 +126,10 @@ describe('buildRules', () => {
     delete partial.boss;
     delete partial.endings;
     const blocks = buildRules(partial as unknown as KarenConfig);
-    expect(blocks.map((b) => b.title)).toEqual(['Ноги', 'Коротко']);
+    // «Коллеги» survives because ITS half of the catalogue did: the block is
+    // derived from max_occupants, which is still here. That is the claim — a
+    // block is dropped when its own input is missing, not when a neighbour's is.
+    expect(blocks.map((b) => b.title)).toEqual(['Ноги', 'Коллеги', 'Коротко']);
   });
 
   it('still says how to play when the catalogue says nothing at all', () => {
@@ -171,5 +174,21 @@ describe('endingFor', () => {
     // an unknown cause is "no idea", and the view falls back to a neutral title.
     expect(endingFor(config, 'exposed')).toBeUndefined();
     expect(endingFor(null, 'left')).toBeUndefined();
+  });
+});
+
+describe('the colleagues block', () => {
+  it('takes the office capacity from the catalogue rather than typing it', () => {
+    // The cap is retunable server-side, and a hand-typed number is a number that
+    // goes stale the first time somebody changes it.
+    const blocks = buildRules({ ...config, max_occupants: 7 });
+    const colleagues = blocks.find((b) => b.title === 'Коллеги');
+    expect(colleagues).toBeDefined();
+    expect(colleagues!.lines.some((l) => l.text.includes('7'))).toBe(true);
+  });
+
+  it('says nothing about colleagues in an office that holds one person', () => {
+    const blocks = buildRules({ ...config, max_occupants: 1 });
+    expect(blocks.find((b) => b.title === 'Коллеги')).toBeUndefined();
   });
 });

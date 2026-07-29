@@ -159,7 +159,7 @@ func TestADashCooldownIsNeverRoundedDownToReady(t *testing.T) {
 	// And the snapshot uses it, so the guarantee reaches the wire rather than
 	// stopping at the helper.
 	o := NewOffice()
-	if err := o.Join("a", "s", time.Now()); err != nil {
+	if err := o.Join("a", "s", "p-a", time.Now()); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	occ := o.occupants["a"]
@@ -225,6 +225,13 @@ func TestSnapshotStaysSmall(t *testing.T) {
 		X: 1565, Y: 2165, Pay: 648000, M: 300, St: 30000, Dc: 4000,
 		P: len(KarenLines) - 1,
 		B: BossFrame{X: 1560, Y: 2160, G: 255, P: len(BossLines) - 1},
+		// A FULL OFFICE, which is the worst case and is now most of the frame.
+		// MaxOccupants is three, so two peers; twelve-character handles, both in
+		// the far corner, both on the widest line index in the pool.
+		Pr: []PeerFrame{
+			{I: "AbCdEfGhIjKl", X: 1565, Y: 2165, P: len(KarenLines) - 1},
+			{I: "MnOpQrStUvWx", X: 1565, Y: 2165, P: len(KarenLines) - 1},
+		},
 	}
 	raw, err := json.Marshal(s)
 	if err != nil {
@@ -236,7 +243,24 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// above: the alternative shape, putting the words themselves on the frame,
 	// is what this pays for — `,"p":8` against `,"say":"ПРОСТО ПОСМОТРИ,
 	// НИЧЕГО НЕ ДЕЛАЙ"` is 6 bytes against 72, ten times a second, per viewer.
-	const budget = 152
+	//
+	// 152 -> 248, FOR PEERS, and measured the same way. A full office is two of
+	// them at 42 bytes each — `,{"i":"AbCdEfGhIjKl","x":1565,"y":2165,"p":24}` —
+	// plus 8 for the `,"pr":[…]` that carries them, so 93 in total and the frame
+	// lands at 245. At 10 Hz that is 2.5 kB/s per viewer and 7.4 kB/s out of this
+	// box with all three watching: still an order inside the platform's 4 KiB
+	// frame limit, and the reason a design for three people can send full state
+	// rather than deltas.
+	//
+	// What the pseudonym buys is most of that number back. The obvious shape —
+	// a display name and an avatar URL beside each peer — is about 280 bytes a
+	// peer, so the same office would be ~800 bytes of frame and 24 kB/s out of
+	// the box, to re-send a face and a name that never change for the whole of a
+	// shift (ADR-037). Twelve characters and one cached GET instead.
+	//
+	// SOLO IS UNCHANGED: `pr` is omitempty and a lone occupant has no peers, so
+	// the commonest frame in this game did not grow by a byte.
+	const budget = 248
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}

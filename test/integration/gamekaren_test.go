@@ -784,3 +784,149 @@ func TestKarenRoomIsRefusedWhenNothingListens(t *testing.T) {
 		t.Fatalf("want 400, got %v", resp)
 	}
 }
+
+func TestKarenTwoPeopleInOneOfficeSeeEachOther(t *testing.T) {
+	// CO-OP VISIBILITY, END TO END: two accounts, two real sockets, one shared
+	// office, over a real Postgres. Everything below the HTTP layer has been
+	// multi-occupant since iteration 1 (ADR-052, ADR-056) — what this proves is
+	// that the office says so on the wire.
+	app, tick, _ := buildAppKaren(t, karenVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cliA := loginAs(t, srv.URL, "920010", "user")
+	cliB := loginAs(t, srv.URL, "920011", "user")
+	clock := newKarenClock()
+
+	startShift(t, cliA, srv.URL)
+	startShift(t, cliB, srv.URL)
+
+	connA, _, err := dialKaren(t, srv.URL, cookieHeader(t, cliA, srv.URL), gamekaren.Room)
+	if err != nil {
+		t.Fatalf("dial a: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialKaren(t, srv.URL, cookieHeader(t, cliB, srv.URL), gamekaren.Room)
+	if err != nil {
+		t.Fatalf("dial b: %v", err)
+	}
+	defer connB.CloseNow()
+	framesA, framesB := readFrames(t, connA), readFrames(t, connB)
+
+	ctx := context.Background()
+	for _, c := range []*websocket.Conn{connA, connB} {
+		if err := c.Write(ctx, websocket.MessageText, []byte(`{"t":"karen_hello"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Each of them has to SEE the other, so wait for a snapshot that carries a
+	// peer rather than for the first snapshot of any kind: the two shifts start
+	// on different ticks, so an early frame legitimately has an empty office in
+	// it. Bounded by time, never by a count of tries.
+	peerOf := func(frames <-chan []byte, who string) map[string]any {
+		t.Helper()
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			f := waitForKarenFrame(t, frames, tick, clock, "karen_snap", 15*time.Second)
+			raw, ok := f["pr"].([]any)
+			if !ok || len(raw) == 0 {
+				continue
+			}
+			return raw[0].(map[string]any)
+		}
+		t.Fatalf("%s never saw anybody else in the office", who)
+		return nil
+	}
+
+	pa, pb := peerOf(framesA, "a"), peerOf(framesB, "b")
+
+	// A HANDLE, NOT AN ACCOUNT (ADR-037). It is twelve base64url characters
+	// minted per process, and it must not be either account's id — those are
+	// UUIDs, so a peer entry that leaked one would be far longer than this.
+	for who, p := range map[string]map[string]any{"a's peer": pa, "b's peer": pb} {
+		id, _ := p["i"].(string)
+		if len(id) != 12 {
+			t.Fatalf("%s is identified by %q, which is not a 12-character handle", who, id)
+		}
+		if _, ok := p["x"]; !ok {
+			t.Fatalf("%s has no position: %v", who, p)
+		}
+		// No name, no avatar URL, no salary: another Карен's money is his own
+		// business and a URL on a frame that repeats ten times a second is what
+		// the handle exists to avoid.
+		for _, banned := range []string{"name", "display_name", "avatar", "avatar_url", "pay"} {
+			if _, ok := p[banned]; ok {
+				t.Fatalf("%s carries %q, which must not ride a repeating frame: %v", who, banned, p)
+			}
+		}
+	}
+	// And they are not the same person: each sees the OTHER.
+	if pa["i"] == pb["i"] {
+		t.Fatalf("both frames name the same peer %v — somebody is seeing himself", pa["i"])
+	}
+
+	// When one of them walks out, the other's office empties.
+	if code := leaveShift(t, cliB, srv.URL); code != http.StatusNoContent {
+		t.Fatalf("b leaving: status %d", code)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("a still sees a colleague who walked out")
+		}
+		f := waitForKarenFrame(t, framesA, tick, clock, "karen_snap", 15*time.Second)
+		if raw, ok := f["pr"].([]any); !ok || len(raw) == 0 {
+			break
+		}
+	}
+}
+
+func TestKarenTwoShiftsDoNotStartOnTheSameTile(t *testing.T) {
+	// The other half of the spawn change. A fixed spawn put a joiner INSIDE
+	// whoever was already playing, on the one spot the bald man was walking
+	// towards — and made death-and-rejoin a free teleport to the safe end.
+	//
+	// The unit tests pin the invariants over hundreds of draws; this one proves
+	// the drawn position is what actually reaches the wire.
+	app, tick, _ := buildAppKaren(t, karenVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cliA := loginAs(t, srv.URL, "920012", "user")
+	cliB := loginAs(t, srv.URL, "920013", "user")
+	clock := newKarenClock()
+
+	startShift(t, cliA, srv.URL)
+	startShift(t, cliB, srv.URL)
+
+	conn, _, err := dialKaren(t, srv.URL, cookieHeader(t, cliA, srv.URL), gamekaren.Room)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	frames := readFrames(t, conn)
+	if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"t":"karen_hello"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("никто never appeared in the office")
+		}
+		f := waitForKarenFrame(t, frames, tick, clock, "karen_snap", 15*time.Second)
+		raw, ok := f["pr"].([]any)
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		peer := raw[0].(map[string]any)
+		mine := [2]float64{f["x"].(float64), f["y"].(float64)}
+		theirs := [2]float64{peer["x"].(float64), peer["y"].(float64)}
+		// Centimetres on the wire. They have had a moment to move, so this is a
+		// floor rather than the exact spawn separation — the claim is only that
+		// two people did not start life standing in the same place.
+		if mine == theirs {
+			t.Fatalf("two shifts started on the same tile: %v", mine)
+		}
+		return
+	}
+}

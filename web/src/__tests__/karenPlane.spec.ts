@@ -3,7 +3,6 @@ import {
   BAND_PROPERTY,
   DEPTH_PROPERTY,
   DEPTH_SCALES,
-  depthScaleFor,
   GRIN_PROPERTY,
   X_PROPERTY,
   Y_PROPERTY,
@@ -11,13 +10,17 @@ import {
   applyFigure,
   bandFor,
   decimal,
+  depthScaleFor,
   deskBox,
   formatMoney,
   formatMultiplier,
   formatSeconds,
   grinState,
-  sayFor,
+  hueFor,
+  peerColour,
   rampFraction,
+  sameRoster,
+  sayFor,
   toPlane,
   type StyleTarget,
 } from '../lib/karenPlane';
@@ -259,5 +262,48 @@ describe('a balloon is an index and a catalogue, never words on the wire', () =>
   it('says nothing at all when the catalogue has nothing to say', () => {
     expect(sayFor([], 0)).toBe('');
     expect(sayFor(undefined, 0)).toBe('');
+  });
+});
+
+describe('telling two colleagues apart', () => {
+  it('gives a handle a stable hue, and different handles different ones', () => {
+    // Derived from the handle the frame already carries, so the wire says
+    // nothing about colour and both players see each other the same.
+    expect(hueFor('AbCdEfGhIjKl')).toBe(hueFor('AbCdEfGhIjKl'));
+    expect(hueFor('AbCdEfGhIjKl')).not.toBe(hueFor('MnOpQrStUvWx'));
+  });
+
+  it('always answers a hue CSS can use', () => {
+    for (const handle of ['', 'a', 'AbCdEfGhIjKl', '////----____', 'ЖЖЖ']) {
+      const h = hueFor(handle);
+      expect(Number.isInteger(h)).toBe(true);
+      expect(h).toBeGreaterThanOrEqual(0);
+      expect(h).toBeLessThan(360);
+    }
+    expect(peerColour('AbCdEfGhIjKl')).toMatch(/^hsl\(\d+ 55% 42%\)$/);
+  });
+});
+
+describe('the roster guard', () => {
+  it('says an unchanged office is unchanged, so no render happens', () => {
+    // The frame repeats ten times a second; almost every one of them describes
+    // the same people saying the same things.
+    const a = [{ id: 'x', line: 0 }, { id: 'y', line: 3 }];
+    expect(sameRoster(a, [{ id: 'x', line: 0 }, { id: 'y', line: 3 }])).toBe(true);
+  });
+
+  it('notices somebody arriving, leaving, or starting to say something else', () => {
+    const a = [{ id: 'x', line: 0 }];
+    expect(sameRoster(a, [])).toBe(false);
+    expect(sameRoster(a, [{ id: 'x', line: 1 }])).toBe(false);
+    expect(sameRoster(a, [{ id: 'z', line: 0 }])).toBe(false);
+    expect(sameRoster(a, [{ id: 'x', line: 0 }, { id: 'y', line: 0 }])).toBe(false);
+  });
+
+  it('is order-sensitive, because the server sends a sorted roster', () => {
+    // Two arrays holding the same people in a different order would mean the
+    // server started iterating a map, which is the bug peersFor avoids.
+    const a = [{ id: 'x', line: 0 }, { id: 'y', line: 0 }];
+    expect(sameRoster(a, [{ id: 'y', line: 0 }, { id: 'x', line: 0 }])).toBe(false);
   });
 });

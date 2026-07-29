@@ -1,8 +1,10 @@
 package gamekaren
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"math"
+	"math/big"
 	"sort"
 	"sync"
 	"time"
@@ -39,6 +41,11 @@ const maxPending = 4 * MaxInboundCommands
 type Occupant struct {
 	AccountID string
 	ShiftID   string
+	// Pseudonym is the handle the OTHER occupants know this one by (ADR-037).
+	// Stamped once at Join and never derived again, so it cannot drift; an
+	// account id never reaches the wire, and a pseudonym means nothing once the
+	// process that minted it has restarted.
+	Pseudonym string
 	State     Player
 	// Pending are commands received but not yet stepped. Drained on the tick
 	// rather than applied on arrival, so the simulation advances on its own
@@ -92,7 +99,7 @@ func NewOffice() *Office {
 // first: dropping the running one would throw away a shift somebody is in the
 // middle of on their other tab, and nothing here can tell which one they meant.
 // The client's answer is the quit button.
-func (o *Office) Join(accountID, shiftID string, now time.Time) error {
+func (o *Office) Join(accountID, shiftID, pseudonym string, now time.Time) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if _, ok := o.occupants[accountID]; ok {
@@ -104,11 +111,130 @@ func (o *Office) Join(accountID, shiftID string, now time.Time) error {
 	o.occupants[accountID] = &Occupant{
 		AccountID: accountID,
 		ShiftID:   shiftID,
-		State:     NewPlayer(),
+		Pseudonym: pseudonym,
+		State:     NewPlayerAt(o.spawnPoint()),
 		StartedAt: now,
 		LastSeen:  now,
 	}
 	return nil
+}
+
+// How a spawn is drawn. Called with the lock held.
+const (
+	// spawnTries bounds the rejection sampler. A LOOP WITH NO FLOOR IS A LOOP
+	// THAT CAN HANG A 20 Hz TICK, and Join runs under the same mutex the
+	// simulation does — so this terminates in a bounded number of draws and
+	// falls back to a point that is legal by construction.
+	spawnTries = 48
+	// spawnFromEachOther is how much room two Карена get. Two player radii is
+	// touching; this is enough that a joiner is visibly beside somebody rather
+	// than inside them.
+	spawnFromEachOther = 1.5
+	// spawnFromBoss is the head start a shift opens with, and GrinRange is not
+	// it. He walks at BossSpeed and the room is only OfficeH long, so "outside
+	// the range he smiles from" is 6 m, which he covers in about a second and a
+	// half — a shift that ends before the splash has faded. The catalogue's own
+	// spawn is 16.5 m from his, about 3.8 s; twelve keeps most of that (2.7 s)
+	// while leaving a usable share of the floor to draw from.
+	//
+	// It is a threshold to STOP looking at, not a hard filter — see spawnPoint.
+	spawnFromBoss = 12.0
+)
+
+// spawnPoint draws where somebody joining stands.
+//
+// ITERATION 1 SPAWNED EVERYBODY ON ONE FIXED TILE, which is correct for one
+// player and wrong in two ways the moment there are two. Join while somebody is
+// playing and you materialise INSIDE them, on the one spot the bald man is
+// already walking towards. And dying became a free teleport: die, rejoin, and
+// you are the length of the room from a man who is now busy with your colleague.
+// Neither is a rendering problem, so neither could be fixed by drawing peers.
+//
+// The rule a drawn point has to satisfy: inside the walls, out of the furniture,
+// clear of everybody already working, and further from the лысый than he can be
+// seen smiling from — that last one being the same invariant the fixed spawn was
+// chosen to satisfy, so the shift still opens with him a walk away rather than
+// on top of you.
+//
+// The randomness is crypto/rand, matching the yard's habit rather than because a
+// spawn is a secret: this package has one reader, and a second generator here
+// would be a second thing to reason about for nothing. It lives HERE and not in
+// Step — Step is pure, draws no randomness and is pinned to its TypeScript port
+// by golden vectors, and a spawn the client could compute is a spawn the client
+// could choose.
+func (o *Office) spawnPoint() Vec2 {
+	free := func(at Vec2) bool {
+		for _, d := range Desks {
+			if insideDesk(d, at, PlayerRadius) {
+				return false
+			}
+		}
+		// HE CANNOT WALK ROUND A DESK — see clearLine, which is a measurement
+		// rather than a guess: from a point in a desk's shadow he took up to 90 s
+		// to arrive against a still player, and from one with a clear line, 4.75.
+		// A shift must not OPEN in a spot he cannot get to.
+		if !clearLine(at, o.boss.Pos, PlayerRadius) {
+			return false
+		}
+		// Map iteration is fine here and only here: this reads every occupant to
+		// answer one boolean, so the ORDER cannot reach the result. Anything that
+		// produces a value walks keys() instead.
+		for _, occ := range o.occupants {
+			if math.Hypot(occ.State.Pos.X-at.X, occ.State.Pos.Y-at.Y) < spawnFromEachOther {
+				return false
+			}
+		}
+		return true
+	}
+	// KEEP THE BEST SAMPLE RATHER THAN THE FIRST ACCEPTABLE ONE, because
+	// distance from the bald man is a preference and not a filter. Mid-shift he
+	// is wherever he has chased somebody to, and from the middle of the room
+	// almost nothing is spawnFromBoss away — a hard filter would reject every
+	// draw and fall through to a fixed point that could be right next to him,
+	// which is the worst answer available. Taking the farthest legal point seen
+	// degrades to "as far as we could find" instead, and short-circuits the
+	// moment a draw is comfortably clear so the usual case costs one sample.
+	best, bestGap := Vec2{}, -1.0
+	for i := 0; i < spawnTries; i++ {
+		at := Vec2{
+			X: PlayerRadius + unitRand()*(OfficeW-2*PlayerRadius),
+			Y: PlayerRadius + unitRand()*(OfficeH-2*PlayerRadius),
+		}
+		if !free(at) {
+			continue
+		}
+		gap := math.Hypot(o.boss.Pos.X-at.X, o.boss.Pos.Y-at.Y)
+		if gap >= spawnFromBoss {
+			return at
+		}
+		if gap > bestGap {
+			best, bestGap = at, gap
+		}
+	}
+	if bestGap >= 0 {
+		return best
+	}
+	// Not one draw was legal — reachable only with the floor unusually crowded.
+	// The catalogue's own spawn is legal by construction and pinned by
+	// TestBothSpawnsAreOnTheFloorAndOutOfTheFurniture, so it is the one answer
+	// that cannot be wrong about the geometry. It may put two people together,
+	// which is the lesser fault: overlapping is untidy, off the floor is broken.
+	return Vec2{X: PlayerSpawnX, Y: PlayerSpawnY}
+}
+
+// unitRand is a number in 0..1 from crypto/rand.
+//
+// Quantised to a thousand steps — far finer than a plane sixteen metres wide can
+// resolve on a phone — which keeps the draw one bounded integer rather than a
+// float assembled out of bytes. A read error is unreachable in practice (Go's
+// crypto/rand panics internally rather than returning one) and answers with the
+// middle of the range, which is a legal number rather than a NaN.
+func unitRand() float64 {
+	n, err := rand.Int(rand.Reader, big.NewInt(1000))
+	if err != nil {
+		return 0.5
+	}
+	return float64(n.Int64()) / 1000
 }
 
 // Leave ends a shift on purpose and takes the occupant out of the world,
@@ -333,12 +459,53 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 			G: grinByte(o.boss.Grin),
 			P: BossLine(o.boss.Grin, o.tick),
 		},
+		Pr: o.peersFor(accountID),
 	}
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return nil, false
 	}
 	return raw, true
+}
+
+// peersFor is everybody in the office except the account being addressed.
+// Called with the lock held.
+//
+// Built per addressee rather than once per tick, which is O(occupants²) at 10 Hz
+// — nine cheap comparisons a second at MaxOccupants, and the alternative is a
+// shared slice that would have to be filtered per recipient anyway.
+//
+// A DEAD OCCUPANT IS OMITTED. The tick that catches somebody deletes them, so
+// this is only reachable in the instant between the two, and drawing a figure
+// that is no longer in the simulation is worse than drawing nothing.
+func (o *Office) peersFor(accountID string) []PeerFrame {
+	if len(o.occupants) < 2 {
+		return nil
+	}
+	peers := make([]PeerFrame, 0, len(o.occupants)-1)
+	// keys() rather than the map: a slice's ORDER is part of the value, and a
+	// randomised one would make two consecutive frames differ for no reason —
+	// which is a diff on the wire, a re-render on the client, and a test that
+	// passes four times in five.
+	for _, k := range o.keys() {
+		if k == accountID {
+			continue
+		}
+		occ := o.occupants[k]
+		if !occ.State.Alive {
+			continue
+		}
+		peers = append(peers, PeerFrame{
+			I: occ.Pseudonym,
+			X: cm(occ.State.Pos.X),
+			Y: cm(occ.State.Pos.Y),
+			P: KarenLine(occ.State, o.tick),
+		})
+	}
+	if len(peers) == 0 {
+		return nil
+	}
+	return peers
 }
 
 // ShiftOf is which shift an account is working, if any.

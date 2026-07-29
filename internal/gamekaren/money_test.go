@@ -46,14 +46,14 @@ func TestStandingStillAccruesTheBaseRateAtTheCurrentMultiplier(t *testing.T) {
 	// One step of stillness from cold: the streak grows first, then the money is
 	// paid at the multiplier that streak has just earned. The order is the
 	// specification, so the number below is what pins it.
-	p := stand(NewPlayer(), 1)
+	p := stand(atSpawn(), 1)
 	want := BasePerSecond * Multiplier(testDt) * testDt
 	if math.Abs(p.Salary-want) > 1e-9 {
 		t.Fatalf("one still step paid %v, want %v", p.Salary, want)
 	}
 
 	// A full ramp, then a second at the cap.
-	p = stand(NewPlayer(), int(RampSeconds*SimHz))
+	p = stand(atSpawn(), int(RampSeconds*SimHz))
 	before := p.Salary
 	p = stand(p, SimHz)
 	if got := p.Salary - before; math.Abs(got-BasePerSecond*MaxMultiplier) > 1e-6 {
@@ -62,7 +62,7 @@ func TestStandingStillAccruesTheBaseRateAtTheCurrentMultiplier(t *testing.T) {
 }
 
 func TestMovingResetsTheStreakButOnlyAfterTheGraceWindow(t *testing.T) {
-	full := stand(NewPlayer(), int(RampSeconds*SimHz))
+	full := stand(atSpawn(), int(RampSeconds*SimHz))
 	if math.Abs(Multiplier(full.Streak)-MaxMultiplier) > 1e-9 {
 		t.Fatalf("the setup never reached the cap: streak %v", full.Streak)
 	}
@@ -89,7 +89,7 @@ func TestMovingResetsTheStreakButOnlyAfterTheGraceWindow(t *testing.T) {
 func TestTheGraceWindowIsClampedRatherThanGrowing(t *testing.T) {
 	// A player who walks for a minute must not owe a minute of stillness before
 	// the grace is available again. It is a reprieve, not a debt.
-	long := walk(NewPlayer(), 20*SimHz)
+	long := walk(atSpawn(), 20*SimHz)
 	if long.MoveGrace != GraceSeconds {
 		t.Fatalf("twenty seconds of walking banked %v of grace, cap is %v", long.MoveGrace, GraceSeconds)
 	}
@@ -100,8 +100,8 @@ func TestTheGraceWindowIsClampedRatherThanGrowing(t *testing.T) {
 }
 
 func TestMovingEarnsNothing(t *testing.T) {
-	p := walk(stand(NewPlayer(), int(RampSeconds*SimHz)), SimHz)
-	before := stand(NewPlayer(), int(RampSeconds*SimHz)).Salary
+	p := walk(stand(atSpawn(), int(RampSeconds*SimHz)), SimHz)
+	before := stand(atSpawn(), int(RampSeconds*SimHz)).Salary
 	if p.Salary != before {
 		t.Fatalf("a second of walking paid %v", p.Salary-before)
 	}
@@ -110,7 +110,7 @@ func TestMovingEarnsNothing(t *testing.T) {
 func TestADashNeverResetsTheStreakAndNeverEarns(t *testing.T) {
 	// THE ASYMMETRY THE WHOLE SKILL CEILING RESTS ON. A dash is not working, so
 	// it pays nothing; but it is not slacking either, so it costs nothing.
-	full := stand(NewPlayer(), int(RampSeconds*SimHz))
+	full := stand(atSpawn(), int(RampSeconds*SimHz))
 	pay, streak := full.Salary, full.Streak
 
 	// Request it, then hold the stick down for exactly as long as the dash runs.
@@ -147,7 +147,7 @@ func TestADashNeverResetsTheStreakAndNeverEarns(t *testing.T) {
 func TestADashMovesAtDashSpeedOnTheStepItIsRequested(t *testing.T) {
 	// The button must not feel like it missed. A dash granted on this step is a
 	// dash that moves on this step.
-	p := NewPlayer()
+	p := atSpawn()
 	p.Pos = Vec2{X: 8, Y: 8}
 	got := Step(nil, p, Command{Dt: testDt, MX: 1, Dash: true})
 	if want := 8 + DashSpeed*testDt; math.Abs(got.Pos.X-want) > 1e-9 {
@@ -157,7 +157,7 @@ func TestADashMovesAtDashSpeedOnTheStepItIsRequested(t *testing.T) {
 }
 
 func TestTheDashCannotBeRetriggeredInsideItsCooldown(t *testing.T) {
-	p := NewPlayer()
+	p := atSpawn()
 	p.Pos = Vec2{X: 8, Y: 8}
 	p = Step(Desks, p, Command{Dt: testDt, MX: 1, Dash: true})
 	if math.Abs(p.DashCooldown-(DashCooldown-testDt)) > 1e-9 {
@@ -187,7 +187,7 @@ func TestTheDashCannotBeRetriggeredInsideItsCooldown(t *testing.T) {
 }
 
 func TestTheDashLastsExactlyDashSeconds(t *testing.T) {
-	p := NewPlayer()
+	p := atSpawn()
 	p.Pos = Vec2{X: 8, Y: 8}
 	steps := 0
 	c := Command{Dt: testDt, MX: 1, Dash: true}
@@ -211,7 +211,7 @@ func TestTheDashLastsExactlyDashSeconds(t *testing.T) {
 func TestAThumbRestingOnTheStickIsStandingStill(t *testing.T) {
 	// An analogue stick never returns exactly zero, and a player whose thumb is
 	// resting on it is standing still as far as anybody watching is concerned.
-	p := stand(NewPlayer(), 1)
+	p := stand(atSpawn(), 1)
 	twitch := Step(Desks, p, Command{Dt: testDt, MX: IdleThreshold / 2})
 	if twitch.Salary <= p.Salary {
 		t.Fatal("a stick below the idle threshold stopped the money")
@@ -230,7 +230,7 @@ func TestAThumbRestingOnTheStickIsStandingStill(t *testing.T) {
 // per-command covered 0.50 m of its 5.20 m, and covered a DIFFERENT fraction on
 // the client, which is what threw the player back and forth.
 func TestADashCoversItsWholeDistanceWithNoFurtherInput(t *testing.T) {
-	p := NewPlayer()
+	p := atSpawn()
 	from := p.Pos
 	// One command carrying the dash and its direction, then silence. DOWN the
 	// clear central lane: the spawn is only 3.65 m from the top wall and a dash
@@ -260,7 +260,7 @@ func TestADashCoversItsWholeDistanceWithNoFurtherInput(t *testing.T) {
 // same dash covers the same ground however the thumb wanders during it.
 func TestADashIgnoresTheStickOnceCommitted(t *testing.T) {
 	run := func(during Command) Vec2 {
-		p := NewPlayer()
+		p := atSpawn()
 		p = Step(Desks, p, Command{Seq: 1, Dt: 0.025, MX: 0, MY: 1, Dash: true})
 		for p.DashLeft > 0 {
 			c := during

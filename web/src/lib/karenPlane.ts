@@ -283,3 +283,52 @@ export function rampFraction(streakMs: number, rampSeconds: number): number {
   if (!(rampSeconds > 0)) return 1;
   return clamp01(Math.max(0, streakMs) / 1000 / rampSeconds);
 }
+
+/**
+ * A hue in 0..359 for a peer's handle, so two colleagues are told apart at a
+ * glance without a name on the plane.
+ *
+ * IT IS DERIVED RATHER THAN SENT. The handle is already on every frame (ADR-037)
+ * and a colour is a pure function of it, so the wire carries nothing extra and
+ * both people see each other in the same colour without agreeing on one. The
+ * yard does the same thing with the same `*31` hash — re-implemented here rather
+ * than imported, because a game owns its own lib (ADR-028).
+ */
+export function hueFor(handle: string): number {
+  let hash = 0;
+  for (let i = 0; i < handle.length; i++) {
+    hash = (hash * 31 + handle.charCodeAt(i)) >>> 0;
+  }
+  return hash % 360;
+}
+
+/** The shirt a peer is drawn in. */
+export function peerColour(handle: string): string {
+  return `hsl(${hueFor(handle)} 55% 42%)`;
+}
+
+/** One other Карен, as the plane needs him: who he is and what he is saying. */
+export interface PeerLook {
+  id: string;
+  line: number;
+}
+
+/**
+ * Whether two rosters describe the same people saying the same things.
+ *
+ * THIS IS WHAT KEEPS THE PEERS OUT OF THE FRAME LOOP. Membership and speech are
+ * reactive — they are a `v-for` and a text node — but they arrive on a payload
+ * that repeats ten times a second, and assigning a fresh array each time would
+ * be a scheduler pass and a vdom patch per peer per frame to produce markup that
+ * is usually identical. Positions never enter reactivity at all: they are CSS
+ * custom properties written straight to the element (see applyFigure), which is
+ * the yard's rule and the reason a plane full of figures costs the compositor
+ * and not Vue.
+ */
+export function sameRoster(a: readonly PeerLook[], b: readonly PeerLook[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].line !== b[i].line) return false;
+  }
+  return true;
+}

@@ -179,7 +179,7 @@ func buildGolden() goldenFile {
 	// and then staying there while the money keeps coming.
 	{
 		c := goldenCase{Name: "idle-ramp", Desks: Desks, Commands: still(8 * SimHz)}
-		c.run(NewPlayer())
+		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
 
@@ -193,7 +193,7 @@ func buildGolden() goldenFile {
 		cmds = append(cmds, walking(8, 1, 0)...) // 0.40 s — past
 		cmds = append(cmds, still(40)...)
 		c := goldenCase{Name: "grace-window", Desks: Desks, Commands: cmds}
-		c.run(NewPlayer())
+		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
 
@@ -210,14 +210,14 @@ func buildGolden() goldenFile {
 		cmds = append(cmds, goldenCmd{Dt: testDt, MX: 0, MY: -1, Dash: true}) // granted
 		cmds = append(cmds, walking(10, 0, -1)...)
 		c := goldenCase{Name: "dash-cycle", Desks: Desks, Commands: cmds}
-		c.run(NewPlayer())
+		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
 
 	// Straight into the side of a desk, then along it, then round the end: the
 	// push-out and the slide.
 	{
-		start := NewPlayer()
+		start := atSpawn()
 		start.Pos = Vec2{X: 8, Y: 3.6}
 		var cmds []goldenCmd
 		cmds = append(cmds, walking(40, -1, 0)...)
@@ -230,7 +230,7 @@ func buildGolden() goldenFile {
 
 	// Into a corner and held there: the floor clamp, on both axes at once.
 	{
-		start := NewPlayer()
+		start := atSpawn()
 		start.Pos = Vec2{X: 8, Y: 18}
 		var cmds []goldenCmd
 		cmds = append(cmds, walking(60, -1, 1)...)
@@ -249,7 +249,7 @@ func buildGolden() goldenFile {
 		cmds = append(cmds, walking(20, 0.5, 0)...)
 		cmds = append(cmds, walking(20, 0.3, -0.4)...)
 		c := goldenCase{Name: "diagonal-and-analogue", Desks: Desks, Commands: cmds}
-		c.run(NewPlayer())
+		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
 
@@ -265,7 +265,7 @@ func buildGolden() goldenFile {
 			{Dt: 0.5, MY: 1},
 			{Dt: testDt},
 		}}
-		c.run(NewPlayer())
+		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
 
@@ -285,7 +285,7 @@ func buildGolden() goldenFile {
 			})
 		}
 		c := goldenCase{Name: "wander", Desks: Desks, Commands: cmds}
-		c.run(NewPlayer())
+		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
 

@@ -496,6 +496,69 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     expect(box.font, 'the balloon text did not get smaller').toBeLessThan(9.9);
   });
 
+  test('the other people in the office are on the plane, each in his own shirt', async ({
+    page,
+  }) => {
+    // THE WHOLE POINT OF CO-OP VISIBILITY, and the stub is what makes it
+    // testable without a second browser: the office is multi-occupant on the
+    // server from day one, so this suite can simply say there are two of them.
+    const socket = await enterOffice(page);
+    await expect(page.getByTestId('karen-peer')).toHaveCount(0);
+
+    await socket.snapshot({
+      pr: [
+        { i: 'AbCdEfGhIjKl', x: 300, y: 600, p: 2 },
+        { i: 'MnOpQrStUvWx', x: 900, y: 1500 },
+      ],
+    });
+    const peers = page.getByTestId('karen-peer');
+    await expect(peers).toHaveCount(2);
+
+    // Placed where the frame said, in the same 0..1 plane coordinates every
+    // other figure uses — centimetres over the office's metres.
+    const at = async (handle: string) =>
+      page.locator(`[data-peer="${handle}"]`).evaluate((el) => ({
+        x: (el as HTMLElement).style.getPropertyValue('--x'),
+        y: (el as HTMLElement).style.getPropertyValue('--y'),
+        body: (el as HTMLElement).style.getPropertyValue('--body'),
+      }));
+    await expect
+      .poll(async () => (await at('AbCdEfGhIjKl')).x, {
+        message: 'the first colleague was never placed',
+      })
+      .toBe(String(3 / CONFIG.office.w));
+
+    const one = await at('AbCdEfGhIjKl');
+    const two = await at('MnOpQrStUvWx');
+    expect(one.y).toBe(String(6 / CONFIG.office.h));
+    expect(two.x).toBe(String(9 / CONFIG.office.w));
+    // Different shirts, so two colleagues are told apart with no name on the
+    // plane and nothing extra on the wire.
+    expect(one.body).not.toBe('');
+    expect(one.body).not.toBe(two.body);
+
+    // The line over his head comes from the catalogue by INDEX, exactly as
+    // yours and his do — these are the stub's words, so a hardcoded balloon
+    // fails here.
+    await expect(page.getByTestId('karen-peer-say').first()).toHaveText('НА ВСТРЕЧУ, СТЕНД');
+
+    // And somebody who leaves the office leaves the plane.
+    await socket.snapshot({ pr: [{ i: 'MnOpQrStUvWx', x: 900, y: 1500 }] });
+    await expect(peers).toHaveCount(1);
+    await socket.snapshot({});
+    await expect(peers).toHaveCount(0);
+  });
+
+  test('you are never drawn twice — the peer array is everybody else', async ({ page }) => {
+    // The frame already says where YOU are at the top level and the client
+    // PREDICTS that, so a self-entry would draw a second, laggier copy of you
+    // standing on yourself. The server omits it; this is the client half.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ pr: [] });
+    await expect(page.getByTestId('karen-peer')).toHaveCount(0);
+    await expect(page.getByTestId('karen-me')).toHaveCount(1);
+  });
+
   test('a balloon rides the man rather than being placed beside him', async ({ page }) => {
     // It is a CHILD of the figure, so the transform that moves him every
     // animation frame carries it too — no second write, and no chance of the

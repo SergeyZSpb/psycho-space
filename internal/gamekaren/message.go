@@ -168,6 +168,39 @@ type Snapshot struct {
 	P int `json:"p,omitempty"`
 	// The bald man.
 	B BossFrame `json:"b"`
+	// Pr is everybody else in the office — at most two, because MaxOccupants is
+	// three and one of them is you.
+	//
+	// `pr` rather than `p`, which the balloon index above already spent. Absent
+	// when you are alone, which is the common case and costs nothing: this game
+	// is playable solo by design, and an empty array would be two bytes ten
+	// times a second forever to say "there is nobody here".
+	Pr []PeerFrame `json:"pr,omitempty"`
+}
+
+// PeerFrame is another Карен, quantised exactly as you are.
+//
+// `I` IS A PSEUDONYM, NOT AN ACCOUNT ID, and there is no name and no picture on
+// it (ADR-037). The handle is HMAC(process key, account) truncated, so it is
+// stable for as long as the office is and meaningless after a restart; a face is
+// fetched once by that handle over cached HTTP, because a ~250-character avatar
+// URL riding a frame that repeats ten times a second per viewer is about a
+// megabit a second at ten players and this frame is the wrong place for anything
+// that never changes.
+//
+// What it deliberately does NOT carry: a display name, a salary, a multiplier or
+// a streak. Another Карен's money is his own business, and none of it is
+// drawable — the plane shows a figure and a balloon, so the frame carries a
+// position and a balloon.
+type PeerFrame struct {
+	I string `json:"i"`
+	// Centimetres, like everything else on this frame.
+	X int `json:"x"`
+	Y int `json:"y"`
+	// Which line is over his head — an index into KarenLines, omitted at zero,
+	// and zero is «Я КАРЕН». The same rule as yours, so two people watching the
+	// same office read the same words at the same instant.
+	P int `json:"p,omitempty"`
 }
 
 // BossFrame is him, quantised: centimetres, a grin in 0..255, and which of his

@@ -52,7 +52,7 @@ func TestHeNeverEndsInsideADeskOrOutsideTheFloor(t *testing.T) {
 			t.Fatalf("step %d put him outside the floor at %+v", i, b.Pos)
 		}
 		for j, d := range Desks {
-			if insideRect(d, b.Pos, BossRadius) {
+			if insideDesk(d, b.Pos, BossRadius) {
 				t.Fatalf("step %d put him inside desk %d at %+v", i, j, b.Pos)
 			}
 		}

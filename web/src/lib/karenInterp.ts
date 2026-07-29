@@ -35,8 +35,30 @@
  * jitter and packet loss without waiting for one.
  */
 
-/** A sampled entity: where it was, and how pleased it was about it. */
+/**
+ * A sampled entity: where it was, and — if it is the лысый — how pleased it was
+ * about it.
+ *
+ * `grin` is OPTIONAL because this interpolator now runs for peers too, and
+ * another Карен has no grin: the widening smile is the bald man's readout of how
+ * much trouble you are in, and nobody else draws one. Absent reads as 0, which
+ * is a figure with a straight face rather than a missing custom property.
+ */
 export interface InterpSample {
+  x: number;
+  y: number;
+  grin?: number;
+}
+
+/**
+ * What comes back out: the same thing with the grin RESOLVED.
+ *
+ * In and out are different types on purpose. A caller may push a peer with no
+ * grin at all, but every read has to answer with a number the renderer can write
+ * into a custom property — `grinOf` settles it once, here, rather than at each
+ * of the four places a sample is returned or each of the callers.
+ */
+export interface InterpPoint {
   x: number;
   y: number;
   grin: number;
@@ -62,6 +84,11 @@ const BUFFER = 8;
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+/** A missing grin is a straight face, not a missing value. */
+function grinOf(s: InterpSample): number {
+  return s.grin ?? 0;
 }
 
 /**
@@ -102,15 +129,15 @@ export function createInterpolator(periodMs: number) {
      * whose position is unknown must not be guessed at a default and then
      * snapped, and one frame of absence at the start of a shift is invisible.
      */
-    at(nowMs: number): InterpSample | null {
+    at(nowMs: number): InterpPoint | null {
       if (buf.length === 0) return null;
-      if (buf.length === 1) return { x: buf[0].x, y: buf[0].y, grin: buf[0].grin };
+      if (buf.length === 1) return { x: buf[0].x, y: buf[0].y, grin: grinOf(buf[0]) };
 
       const target = nowMs - delay;
 
       // Older than anything held — a long stall. Hold the oldest rather than
       // extrapolating backwards into a past nobody sampled.
-      if (target <= buf[0].at) return { x: buf[0].x, y: buf[0].y, grin: buf[0].grin };
+      if (target <= buf[0].at) return { x: buf[0].x, y: buf[0].y, grin: grinOf(buf[0]) };
 
       for (let i = buf.length - 1; i > 0; i--) {
         const b = buf[i];
@@ -118,7 +145,11 @@ export function createInterpolator(periodMs: number) {
         if (target >= a.at && target <= b.at) {
           const span = b.at - a.at;
           const t = span > 0 ? (target - a.at) / span : 1;
-          return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), grin: lerp(a.grin, b.grin, t) };
+          return {
+            x: lerp(a.x, b.x, t),
+            y: lerp(a.y, b.y, t),
+            grin: lerp(grinOf(a), grinOf(b), t),
+          };
         }
       }
 
@@ -127,7 +158,7 @@ export function createInterpolator(periodMs: number) {
       // keeps walking on a guess and is then corrected is worse than one who
       // pauses, because the guess is what the player is dodging.
       const newest = buf[buf.length - 1];
-      return { x: newest.x, y: newest.y, grin: newest.grin };
+      return { x: newest.x, y: newest.y, grin: grinOf(newest) };
     },
 
     /** Drops everything, for when a shift ends. */

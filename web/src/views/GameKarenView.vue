@@ -108,6 +108,22 @@
               <span class="karen-boss-grin" />
             </span>
           </span>
+          <span
+            v-for="peer in peers"
+            :key="peer.id"
+            :ref="(el) => setPeerEl(peer.id, el as Element | null)"
+            class="karen-peer"
+            data-testid="karen-peer"
+            :data-peer="peer.id"
+            :style="{ '--body': peerColour(peer.id) }"
+            aria-hidden="true"
+          >
+            <span v-if="sayFor(karenLines, peer.line)" class="karen-say" data-testid="karen-peer-say">{{
+              sayFor(karenLines, peer.line)
+            }}</span>
+            <span class="karen-fig-body" />
+            <span class="karen-fig-head"><span class="karen-fig-hair" /></span>
+          </span>
           <span ref="meEl" class="karen-me" data-testid="karen-me" aria-hidden="true">
             <span v-if="meSays" class="karen-say" data-testid="karen-me-say">{{ meSays }}</span>
             <span class="karen-fig-body" />
@@ -205,6 +221,9 @@ import { KAREN_DISCLAIMER, KAREN_LORE, buildRules, endingFor } from '../lib/kare
 import {
   applyBoss,
   applyFigure,
+  peerColour,
+  sameRoster,
+  type PeerLook,
   decimal,
   deskBox,
   sayFor,
@@ -264,6 +283,19 @@ const bossLine = ref(0);
 const link = ref<'connecting' | 'open' | 'lost'>('connecting');
 const over = ref<{ cause: string; pay: number; secs: number } | null>(null);
 
+/**
+ * The other people in the office.
+ *
+ * MEMBERSHIP IS REACTIVE AND POSITIONS ARE NOT, which is the yard's rule and it
+ * matters more here, not less. This list changes when somebody joins, leaves or
+ * starts saying something else — a `v-for` and a text node, a few times a shift.
+ * Where they are STANDING changes ten times a second and never touches Vue: it
+ * goes to CSS custom properties on the element, written from the draw loop, so a
+ * plane full of figures costs the compositor rather than the scheduler.
+ */
+const peers = ref<PeerLook[]>([]);
+const karenLines = computed(() => config.value?.karen_lines);
+
 const meSays = computed(() => sayFor(config.value?.karen_lines, meLine.value));
 const bossSays = computed(() => sayFor(config.value?.boss_lines, bossLine.value));
 
@@ -299,6 +331,17 @@ let bossAt: { x: number; y: number } | null = null;
 // he is drawn in the recent past between two samples that have both already
 // arrived. See karenInterp.
 let bossInterp: Interpolator | null = null;
+/**
+ * The peers' elements and their interpolators, both plain Maps and neither
+ * reactive — this is the imperative tier, and nothing here is ever read during a
+ * render.
+ *
+ * One interpolator EACH rather than one for all of them: createInterpolator is a
+ * factory over closure state, a peer is an independent stream of samples, and a
+ * shared buffer would make one person's stall smear across everybody.
+ */
+const peerEls = new Map<string, HTMLElement>();
+const peerInterp = new Map<string, Interpolator>();
 /** The grin state currently written on the boss, so the class is not rewritten. */
 let bossGrin = '';
 
@@ -488,6 +531,9 @@ function teardownPlay(): void {
   predictor = null;
   constants = null;
   outbox = [];
+  peers.value = [];
+  peerEls.clear();
+  peerInterp.clear();
   stickPointer = null;
   axes = { mx: 0, my: 0 };
   knob.value = { dx: 0, dy: 0 };
@@ -527,6 +573,7 @@ function drawFrame(now: number): void {
     predictor.tick(dt);
     placeMe();
     placeBoss(now);
+    placePeers(now);
   }
 
   frameHandle = requestAnimationFrame(drawFrame);
@@ -570,6 +617,51 @@ function placeBoss(now: number): void {
   if (state !== bossGrin) {
     bossGrin = state;
     el.dataset.grin = state;
+  }
+}
+
+/**
+ * Collects a peer's element as Vue creates it, and drops it when Vue removes it.
+ *
+ * The `=== node` guard is load-bearing and the yard shipped the bug once: Vue
+ * invokes a function ref on EVERY patch, not only when the element changes, so
+ * without it the first-placement branch below would run on every re-render and
+ * fight the draw loop for the position.
+ */
+function setPeerEl(id: string, el: Element | null): void {
+  if (!el) {
+    peerEls.delete(id);
+    return;
+  }
+  const node = el as HTMLElement;
+  if (peerEls.get(id) === node) return;
+  peerEls.set(id, node);
+  // Place it immediately if a sample has already arrived, so a figure cannot be
+  // painted for one frame at the plane's default corner and then jump. Through
+  // the same writer the loop uses, so it cannot arrive holding a position
+  // without the depth that belongs with it.
+  const at = peerInterp.get(id)?.at(performance.now());
+  if (at && constants) {
+    applyFigure(node, toPlane(at.x, at.y, constants.officeW, constants.officeH));
+  }
+}
+
+/**
+ * Draws everybody else, from the same interpolation buffer the лысый uses and at
+ * the same served delay.
+ *
+ * A peer is INTERPOLATED and never predicted: his intent is not ours to guess.
+ * That is the whole difference between this and placeMe, and it is why the two
+ * are separate functions rather than a loop over "figures".
+ */
+function placePeers(now: number): void {
+  if (!constants) return;
+  for (const [id, el] of peerEls) {
+    const at = peerInterp.get(id)?.at(now);
+    // Nothing has arrived for this one yet — draw nothing rather than guess a
+    // position and then snap it.
+    if (!at) continue;
+    applyFigure(el, toPlane(at.x, at.y, constants.officeW, constants.officeH));
   }
 }
 
@@ -655,6 +747,54 @@ function applySnapshot(frame: RealtimeFrame): void {
     // and a dropped frame cost nothing.
     bossInterp?.push({ x: bossAt.x, y: bossAt.y, grin }, performance.now());
   }
+
+  applyPeers(frame.pr);
+}
+
+/**
+ * Folds the office's other occupants into the two tiers.
+ *
+ * `pr` is OMITTED when you are alone, which is the common case and the reason it
+ * costs nothing on the wire — so absent means "nobody here", never "unchanged".
+ * Read the other way a colleague who walked out would stand in the office for
+ * the rest of the shift.
+ */
+function applyPeers(raw: unknown): void {
+  const list = Array.isArray(raw) ? raw : [];
+  const now = performance.now();
+  const roster: PeerLook[] = [];
+  const live = new Set<string>();
+
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue;
+    const p = entry as Record<string, unknown>;
+    const id = typeof p.i === 'string' ? p.i : '';
+    if (!id) continue;
+    live.add(id);
+    roster.push({ id, line: num(p.p) });
+    let interp = peerInterp.get(id);
+    if (!interp) {
+      // Same period as the лысый's, from the same served rate, so everybody who
+      // is not predicted is drawn at the same instant in the past.
+      interp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
+      peerInterp.set(id, interp);
+    }
+    // Buffered, never drawn here — see placePeers.
+    interp.push({ x: num(p.x) / 100, y: num(p.y) / 100 }, now);
+  }
+
+  // Somebody who is no longer on the frame has been promoted or walked out. The
+  // element goes with the roster below; the buffer has to be dropped explicitly
+  // or a handle that came back would be interpolated from where it died.
+  for (const id of peerInterp.keys()) {
+    if (!live.has(id)) peerInterp.delete(id);
+  }
+
+  // THE GUARD IS THE POINT. This runs ten times a second and almost every call
+  // describes the same people saying the same things; assigning a fresh array
+  // each time would be a scheduler pass and a patch per peer per frame to
+  // produce identical markup.
+  if (!sameRoster(peers.value, roster)) peers.value = roster;
 }
 
 function finish(result: { cause: string; pay: number; secs: number }): void {
@@ -1067,7 +1207,8 @@ function onDash(): void {
    `translate3d` only and `will-change: transform`, so a position write is a
    compositor job and never a layout one. */
 .karen-me,
-.karen-boss {
+.karen-boss,
+.karen-peer {
   position: absolute;
   left: 0;
   top: 0;

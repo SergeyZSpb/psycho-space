@@ -68,7 +68,7 @@ func TestBothSpawnsAreOnTheFloorAndOutOfTheFurniture(t *testing.T) {
 			t.Fatalf("%s spawns outside the floor at %+v", tc.name, tc.pos)
 		}
 		for i, d := range Desks {
-			if insideRect(d, tc.pos, tc.r) {
+			if insideDesk(d, tc.pos, tc.r) {
 				t.Fatalf("%s spawns inside desk %d", tc.name, i)
 			}
 		}

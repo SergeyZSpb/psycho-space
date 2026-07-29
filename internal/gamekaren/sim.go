@@ -88,9 +88,91 @@ type Player struct {
 	Alive bool
 }
 
-// NewPlayer puts somebody at the spawn with nothing earned.
-func NewPlayer() Player {
-	return Player{Pos: Vec2{X: PlayerSpawnX, Y: PlayerSpawnY}, Alive: true}
+// NewPlayerAt puts somebody down at a given point with nothing earned.
+//
+// It takes the position rather than reading a constant because WHERE somebody
+// starts is a decision the office makes and this is not the office — a shift now
+// spawns at a drawn point clear of the desks, of the bald man and of whoever is
+// already working, and only the office knows any of that. See Office.spawnPoint.
+func NewPlayerAt(at Vec2) Player {
+	return Player{Pos: at, Alive: true}
+}
+
+// insideDesk reports whether a disc's centre is strictly inside a desk expanded
+// by its radius — the condition the resolver exists to make false, and the
+// condition a spawn has to avoid rather than resolve.
+func insideDesk(d Rect, p Vec2, r float64) bool {
+	const eps = 1e-9
+	return p.X > d.X-r+eps && p.X < d.X+d.W+r-eps &&
+		p.Y > d.Y-r+eps && p.Y < d.Y+d.H+r-eps
+}
+
+// clearLine reports whether a disc of radius r could travel straight from a to b
+// without meeting a desk.
+//
+// IT EXISTS BECAUSE THE BALD MAN CANNOT WALK ROUND ANYTHING. StepBoss is naive
+// pursuit — head at the target, then get pushed out of whatever you ended up
+// inside — so a desk between him and a player is not cover he goes around, it is
+// a wall he grinds along, and which way the push sends him has nothing to do
+// with where he is trying to get. Measured on the real simulation with a player
+// standing perfectly still: from a point with a clear line he arrives in at most
+// 4.75 s, and from one in a desk's shadow it took as long as 90 s, with about a
+// sixth of the floor over ten seconds.
+//
+// So this is the predicate a SPAWN is chosen by (Office.spawnPoint). It is not a
+// fix for the pursuit itself: a player can still walk into a shadow mid-shift and
+// buy himself a very long time, which is a real defect this measurement found and
+// which belongs to whichever iteration gives him a way round a desk. What it does
+// is stop a shift OPENING in one.
+//
+// Liang–Barsky against each desk grown by r, which is the standard segment/box
+// clip and is exact — no sampling along the segment, so a thin desk cannot be
+// stepped over.
+func clearLine(a, b Vec2, r float64) bool {
+	for _, d := range Desks {
+		if segmentHitsRect(a, b, d, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// segmentHitsRect is Liang–Barsky: does the segment a..b meet the rectangle d
+// grown by r on every side?
+func segmentHitsRect(a, b Vec2, d Rect, r float64) bool {
+	minX, minY := d.X-r, d.Y-r
+	maxX, maxY := d.X+d.W+r, d.Y+d.H+r
+	t0, t1 := 0.0, 1.0
+	dx, dy := b.X-a.X, b.Y-a.Y
+	for _, e := range [4][2]float64{{-dx, a.X - minX}, {dx, maxX - a.X}, {-dy, a.Y - minY}, {dy, maxY - a.Y}} {
+		p, q := e[0], e[1]
+		if p == 0 {
+			// Parallel to this edge: outside it means the segment misses the box
+			// entirely, and no later edge can bring it back.
+			if q < 0 {
+				return false
+			}
+			continue
+		}
+		t := q / p
+		switch {
+		case p < 0:
+			if t > t1 {
+				return false
+			}
+			if t > t0 {
+				t0 = t
+			}
+		default:
+			if t < t0 {
+				return false
+			}
+			if t < t1 {
+				t1 = t
+			}
+		}
+	}
+	return true
 }
 
 // Sanitise clamps every attacker-controlled field into the range the server is

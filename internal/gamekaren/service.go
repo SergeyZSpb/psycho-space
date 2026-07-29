@@ -2,6 +2,10 @@ package gamekaren
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -34,6 +38,15 @@ const (
 // produce.
 const savesBuffer = 64
 
+// pseudonymBytes is how much of the HMAC becomes a handle: nine bytes, which is
+// twelve base64url characters.
+//
+// It is a display handle rather than a secret, so the bar is collision
+// resistance across an office of three — nine bytes is vastly past that. What it
+// must NOT be is short enough to enumerate back to an account, which is why it
+// is not four.
+const pseudonymBytes = 9
+
 // Transport is the narrow slice of the realtime hub this game uses. It is an
 // interface so the tests drive the whole service without a socket, and it is
 // deliberately two methods wide: this game addresses its frames to connections
@@ -54,6 +67,9 @@ type Service struct {
 	room      string
 	q         db.DBTX
 	repo      Repository
+	// pseudonymKey turns an account id into the handle other occupants see.
+	// Read-only after construction, so it needs no lock. See pseudonym.
+	pseudonymKey []byte
 
 	mu sync.Mutex
 	// office is nil when nobody is working. It is built by the first StartShift
@@ -74,13 +90,41 @@ type Service struct {
 // NewService builds the game.
 func NewService(t Transport, room string, q db.DBTX, repo Repository) *Service {
 	return &Service{
-		transport: t,
-		room:      room,
-		q:         q,
-		repo:      repo,
-		saves:     make(chan Shift, savesBuffer),
-		done:      make(chan struct{}),
+		transport:    t,
+		room:         room,
+		q:            q,
+		repo:         repo,
+		saves:        make(chan Shift, savesBuffer),
+		done:         make(chan struct{}),
+		pseudonymKey: randomKey(),
 	}
+}
+
+// randomKey mints the per-process key the pseudonyms are derived from.
+func randomKey() []byte {
+	k := make([]byte, 32)
+	// crypto/rand.Read is documented never to fail, and panics internally if the
+	// system source is broken — so there is nothing to handle here that has not
+	// already brought the process down.
+	_, _ = rand.Read(k)
+	return k
+}
+
+// pseudonym is the handle an account is known by to the OTHER occupants:
+// HMAC-SHA256(process key, account id), base64url, truncated.
+//
+// This is ADR-037. An account id is a durable identifier for a person and it
+// never reaches another player's browser; the key is minted at startup and held
+// only in memory, so a handle is stable for exactly as long as the office it
+// describes and means nothing after a restart — which is the same lifetime the
+// office itself has, and therefore costs nothing.
+//
+// Re-derived per call rather than cached: it is one HMAC, it happens on join,
+// and a map from account to handle would be a second place for the truth to live.
+func (s *Service) pseudonym(accountID string) string {
+	mac := hmac.New(sha256.New, s.pseudonymKey)
+	_, _ = mac.Write([]byte(accountID))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:pseudonymBytes])
 }
 
 // Done is closed once Run has returned and the last write has been attempted, so
@@ -289,7 +333,7 @@ func (s *Service) StartShift(_ context.Context, accountID string) (string, error
 		s.office = NewOffice()
 	}
 	shiftID := uuid.New().String()
-	if err := s.office.Join(accountID, shiftID, now); err != nil {
+	if err := s.office.Join(accountID, shiftID, s.pseudonym(accountID), now); err != nil {
 		// A refusal must not leave an empty office behind, or the bald man would
 		// be left standing wherever the last shift ended.
 		if s.office.Empty() {

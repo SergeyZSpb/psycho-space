@@ -12,7 +12,7 @@ import (
 const testDt = 1.0 / SimHz
 
 func TestWalkingMovesAtWalkSpeed(t *testing.T) {
-	p := NewPlayer()
+	p := atSpawn()
 	p.Pos = Vec2{X: 8, Y: 8}
 	got := Step(nil, p, Command{Dt: 0.5, MX: 1})
 	if want := 8 + WalkSpeed*0.5; math.Abs(got.Pos.X-want) > 1e-9 {
@@ -28,7 +28,7 @@ func TestADiagonalIsNotFasterThanAStraightLine(t *testing.T) {
 	// corner must not outrun one holding it sideways. Sanitise is what
 	// normalises it, which is why this test goes through Sanitise rather than
 	// straight into Step — the office does the same.
-	p := NewPlayer()
+	p := atSpawn()
 	p.Pos = Vec2{X: 8, Y: 8}
 
 	straight := Step(nil, p, Sanitise(Command{Dt: 0.5, MX: 1}))
@@ -45,7 +45,7 @@ func TestAHalfPressedStickStaysAnalogue(t *testing.T) {
 	// Normalising only when the vector is longer than one is what keeps a gentle
 	// nudge gentle. A stick that snapped to full speed would make standing still
 	// on a phone almost impossible, which is the entire game.
-	p := NewPlayer()
+	p := atSpawn()
 	p.Pos = Vec2{X: 8, Y: 8}
 	got := Step(nil, p, Sanitise(Command{Dt: MaxStepSeconds, MX: 0.5}))
 	if want := 8 + WalkSpeed*0.5*MaxStepSeconds; math.Abs(got.Pos.X-want) > 1e-9 {
@@ -58,7 +58,7 @@ func TestNobodyEverLeavesTheFloorOrEndsInsideADesk(t *testing.T) {
 	// the test that would catch a push-out that shoves somebody through a wall,
 	// which is why content_test also pins the clearance that makes it impossible.
 	r := rand.New(rand.NewPCG(1, 2))
-	p := NewPlayer()
+	p := atSpawn()
 	for i := 0; i < 10000; i++ {
 		c := Sanitise(Command{
 			Dt:   r.Float64() * 2,   // beyond MaxStepSeconds on purpose
@@ -72,27 +72,27 @@ func TestNobodyEverLeavesTheFloorOrEndsInsideADesk(t *testing.T) {
 			t.Fatalf("step %d left the floor at %+v", i, p.Pos)
 		}
 		for j, d := range Desks {
-			if insideRect(d, p.Pos, PlayerRadius) {
+			if insideDesk(d, p.Pos, PlayerRadius) {
 				t.Fatalf("step %d ended inside desk %d at %+v", i, j, p.Pos)
 			}
 		}
 	}
 }
 
-// insideRect reports whether a disc's centre is strictly inside a desk expanded
-// by its radius — the condition the resolver exists to make false.
-func insideRect(d Rect, p Vec2, r float64) bool {
-	const eps = 1e-9
-	return p.X > d.X-r+eps && p.X < d.X+d.W+r-eps &&
-		p.Y > d.Y-r+eps && p.Y < d.Y+d.H+r-eps
-}
+// atSpawn is a player standing on the canonical spawn point.
+//
+// Production draws a spawn instead (Office.spawnPoint), so this is the tests'
+// fixed starting position — every unit test and every golden vector wants a
+// KNOWN point, and the golden vectors in particular would be meaningless from a
+// random one.
+func atSpawn() Player { return NewPlayerAt(Vec2{X: PlayerSpawnX, Y: PlayerSpawnY}) }
 
 func TestADeskIsPushedOutOfAlongTheShortestAxis(t *testing.T) {
 	// Walking into the top edge of a desk puts you back on top of it, not around
 	// the side. That is what makes furniture read as furniture rather than as an
 	// invisible current.
 	d := Desks[0]
-	p := NewPlayer()
+	p := atSpawn()
 	p.Pos = Vec2{X: d.X + d.W/2, Y: d.Y - PlayerRadius - 0.01}
 	got := Step([]Rect{d}, p, Command{Dt: 0.1, MY: 1})
 	if math.Abs(got.Pos.Y-(d.Y-PlayerRadius)) > 1e-9 {
@@ -143,7 +143,7 @@ func TestStepIsDeterministic(t *testing.T) {
 		})
 	}
 	run := func() Player {
-		p := NewPlayer()
+		p := atSpawn()
 		for _, c := range cmds {
 			p = Step(Desks, p, c)
 		}
@@ -158,7 +158,7 @@ func TestStepDoesNotResurrectAnybody(t *testing.T) {
 	// Alive is the office's business. Step carries it and never changes it,
 	// which is what lets a caught player be stepped one last time on the tick
 	// they are removed without coming back to life.
-	p := NewPlayer()
+	p := atSpawn()
 	p.Alive = false
 	if Step(Desks, p, Command{Dt: testDt, MX: 1}).Alive {
 		t.Fatal("stepping a dead player brought him back")
