@@ -70,13 +70,29 @@ found=0
 for entry in "${patterns[@]}"; do
   name="${entry%%|*}"
   regex="${entry#*|}"
+  # -e, and it is load-bearing rather than tidiness. Without it grep reads a
+  # pattern that STARTS WITH A DASH as options — which the private-key pattern
+  # does, `-----BEGIN … PRIVATE KEY-----` — so grep errored, `2>/dev/null` hid
+  # the message, `|| true` swallowed the status, and `${hits:-0}` turned the
+  # empty output into a clean zero. That check reported "no match" on every run
+  # it had ever been asked about, including runs containing an actual key block,
+  # and it did it silently. The most valuable pattern here was the one disabled:
+  # DEPLOY_SSH_KEY is a PEM and bootstrap.sh prints one.
+  #
+  # A grep failure is now fatal rather than absorbed, for the same reason: a
+  # security check that cannot run must say so, not pass.
   # -c only: the count and the pattern name are safe to print; the match is not.
-  hits="$(grep -Ec "$regex" "$log" 2>/dev/null || true)"
+  hits="$(grep -Ec -e "$regex" "$log")"
+  rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "ci-check-secrets: grep failed on pattern '$name' (exit $rc) — the check did NOT run" >&2
+    exit 2
+  fi
   if [ "${hits:-0}" -gt 0 ]; then
     echo "LEAK? $name — $hits matching line(s)" >&2
     # Point at the step, not the text. Step names come from the workflow and are
     # not secret; the log line itself is withheld on purpose.
-    grep -En "$regex" "$log" 2>/dev/null | head -5 | cut -d: -f1 | while read -r n; do
+    grep -En -e "$regex" "$log" 2>/dev/null | head -5 | cut -d: -f1 | while read -r n; do
       step="$(sed -n "${n}p" "$log" | cut -f1 | head -1)"
       echo "    line $n${step:+, step: $step}" >&2
     done
