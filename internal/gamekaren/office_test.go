@@ -1060,7 +1060,7 @@ func TestWalkingIntoTheBottleBuysHimARound(t *testing.T) {
 	// streak with it.
 	o := NewOffice()
 	join(t, o, "a", "s1")
-	place(t, o, "a", Vec2{X: BottleX, Y: BottleY})
+	place(t, o, "a", BottleSpots[spotOf(o)])
 	advance(o, 1)
 
 	if drunkOf(o) <= 0 {
@@ -1078,14 +1078,14 @@ func TestTheBottleIsNotAButtonYouCanHold(t *testing.T) {
 	// the strongest in the game, so the cooldown is the whole balance of it.
 	o := NewOffice()
 	join(t, o, "a", "s1")
-	place(t, o, "a", Vec2{X: BottleX, Y: BottleY})
+	place(t, o, "a", BottleSpots[spotOf(o)])
 	advance(o, 1)
 	first := drunkOf(o)
 
 	// Stand on the spot for a while: no second round, and he sobers up on
 	// schedule rather than being topped up.
 	for i := 0; i < int(DrunkSeconds*SimHz)+4; i++ {
-		place(t, o, "a", Vec2{X: BottleX, Y: BottleY})
+		place(t, o, "a", BottleSpots[spotOf(o)])
 		advance(o, 1)
 	}
 	if drunkOf(o) > 0 {
@@ -1112,8 +1112,64 @@ func TestABottleNobodyHasReachedIsStillThere(t *testing.T) {
 	}
 }
 
+// parkBoss stands the bald man back at his spawn.
+//
+// For tests that need a long run and are not about the chase. Since he learned
+// to route around the furniture there is nowhere on this floor a pinned player
+// survives two minutes, so a test that wants two minutes has to stop him rather
+// than hide from him.
+func parkBoss(o *Office) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.boss.Pos = Vec2{X: BossSpawnX, Y: BossSpawnY}
+}
+
+// spotOf is which spot the bottle is currently on.
+func spotOf(o *Office) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.bottleSpot
+}
+
 func drunkOf(o *Office) float64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.boss.Drunk
+}
+
+func TestTheBottleComesBackSomewhereElse(t *testing.T) {
+	// It MOVES, and that is what stops fetch-and-spend being a button you stand
+	// next to. Ten seconds is short enough to be a thing you watch for; a bottle
+	// that came back where it was would just be a lever with a timer.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	seen := map[int]bool{}
+	for round := 0; round < 12; round++ {
+		was := spotOf(o)
+		seen[was] = true
+		parkBoss(o)
+		place(t, o, "a", BottleSpots[was])
+		advance(o, 1)
+		if drunkOf(o) <= 0 {
+			t.Fatalf("round %d: standing on the bottle did not get him drunk", round)
+		}
+		// Walk away and wait it out, so nothing is picked up the instant it lands.
+		place(t, o, "a", Vec2{X: OfficeW / 2, Y: 1})
+		for i := 0; i < int(BottleReturn*SimHz)+2; i++ {
+			parkBoss(o)
+			place(t, o, "a", Vec2{X: OfficeW / 2, Y: 1})
+			advance(o, 1)
+		}
+		if now := spotOf(o); now == was {
+			t.Fatalf("round %d: it came back on the same spot (%d)", round, was)
+		}
+		// And the frame names the spot by INDEX, never by a coordinate.
+		s := snapOf(t, o, "a")
+		if s.Bs != spotOf(o) {
+			t.Fatalf("the frame says spot %d, the office says %d", s.Bs, spotOf(o))
+		}
+	}
+	if len(seen) < 3 {
+		t.Fatalf("twelve bottles only ever used %d spots", len(seen))
+	}
 }

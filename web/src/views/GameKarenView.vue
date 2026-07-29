@@ -366,11 +366,21 @@ const redirectMs = ref(0);
 /** How long until another bottle stands in the office. Zero means one is there. */
 const bottleMs = ref(0);
 
-/** Where the bottle stands, in plane coordinates, from the catalogue. */
+/** Which of the catalogue's spots it is on. Absent means the first, like every index here. */
+const bottleSpot = ref(0);
+
+/**
+ * Where the bottle stands, in plane coordinates.
+ *
+ * From the catalogue by INDEX, never from a coordinate on the frame: it moves
+ * every ten seconds, and two positions ten times a second per viewer would be
+ * twenty bytes forever to say something that changes once in a hundred frames.
+ */
 const bottleAt = computed(() => {
-  const b = config.value?.bottle;
-  if (!b || !constants) return null;
-  return toPlane(b.x, b.y, constants.officeW, constants.officeH);
+  const spots = config.value?.bottle?.spots;
+  if (!spots || !spots.length || !constants) return null;
+  const at = spots[Math.min(bottleSpot.value, spots.length - 1)];
+  return at ? toPlane(at.x, at.y, constants.officeW, constants.officeH) : null;
 });
 
 const bottleStyle = computed(() => {
@@ -660,6 +670,7 @@ function teardownPlay(): void {
   brokenFaces.value = new Set();
   redirectMs.value = 0;
   bottleMs.value = 0;
+  bottleSpot.value = 0;
   peerEls.clear();
   peerInterp.clear();
   stickPointer = null;
@@ -852,6 +863,7 @@ function applySnapshot(frame: RealtimeFrame): void {
   // Omitted when ready, like `dc` — absent means zero, never "unchanged".
   redirectMs.value = num(frame.rc);
   bottleMs.value = num(frame.bt);
+  bottleSpot.value = num(frame.bs);
 
   if (!predictor) {
     // The first authoritative position is what the predictor is seeded with —

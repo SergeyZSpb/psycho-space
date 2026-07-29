@@ -958,8 +958,8 @@ export interface KarenConfig {
   };
   /** «Набухать лысого» — where the bottle stands and what drinking it does. */
   bottle?: {
-    x: number;
-    y: number;
+    /** Every place one can appear; a frame names which by index. */
+    spots: { x: number; y: number }[];
     reach: number;
     drunk_ms: number;
     return_ms: number;

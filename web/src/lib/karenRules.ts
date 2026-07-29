@@ -176,7 +176,9 @@ export function buildRules(config: KarenConfig | null): RuleBlock[] {
         },
         {
           label: '🚶 но он всё равно идёт',
-          text: `Шатается, а не стоит. Следующая бутылка через ${decimal(bottle.return_ms / 1000)} с.`,
+          text:
+            `Шатается, а не стоит. Через ${decimal(bottle.return_ms / 1000)} с ` +
+            `появится новая — в другом месте.`,
         },
       ],
     });

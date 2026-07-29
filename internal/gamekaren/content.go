@@ -207,7 +207,42 @@ var Endings = []Ending{
 // BossLines is the flat pool the wire indexes into, built from two named runs so
 // the browser never learns the layout — which run a state maps to is server-side
 // and changes without a client deploy. Exactly the arrangement KarenLines uses.
-var BossLines = append(append([]string{}, bossFar...), bossClosing...)
+var BossLines = slices.Concat(bossFar, bossClosing, bossDrunkLines, bossRedirectLines)
+
+// bossDrunkLines and bossRedirectLines are what he says when something has just
+// HAPPENED to him, and they exist to break the two-second rotation rather than
+// to join it.
+//
+// The rotation is the office idling: a man working through the afternoon, one
+// sentence every two seconds, in no particular order. These are events — he has
+// been bought a drink, or somebody has just pointed him at a colleague — and an
+// event that waited politely for the next slot would not read as one. So the run
+// changes the instant the state does, mid-slot, which is the whole point.
+//
+// The register is deliberate: he is a micromanager who has had two drinks and
+// loves everybody, and a micromanager who has just been told that somebody ELSE
+// is free. Neither is angry. That is what makes it worse.
+var bossDrunkLines = []string{
+	"Я ЧУТЬ-ЧУТЬ",
+	"МЫ ЖЕ КОМАНДА",
+	"Я ВАС ВСЕХ ОЧЕНЬ ЦЕНЮ",
+	"ЭТО БЕЗАЛКОГОЛЬНОЕ",
+	"ТЫ МЕНЯ УВАЖАЕШЬ?",
+	"ЗАВТРА ДЕЙЛИК В ДЕВЯТЬ",
+	"Я НЕ ПЬЯНЫЙ, Я ВОВЛЕЧЁННЫЙ",
+	"ДАВАЙ НА ТЫ, Я ЖЕ СВОЙ",
+	"У НАС ТУТ СЕМЬЯ, А НЕ РАБОТА",
+	"Я ТЕБЯ КАК СЫНА ЛЮБЛЮ",
+}
+
+var bossRedirectLines = []string{
+	"А, ТОЧНО, ТЫ ЖЕ ЗАНЯТ",
+	"ТОГДА Я К НЕМУ",
+	"СПАСИБО, ЧТО ПОДСКАЗАЛ",
+	"ВОТ ЭТО КОМАНДНАЯ РАБОТА",
+	"ОН ГОВОРИЛ, ЧТО СВОБОДЕН",
+	"ХОРОШО, ЧТО СПРОСИЛ У ТЕБЯ",
+}
 
 // bossFar is what he says from across the office, and it EXISTS so that he
 // rotates while he is far away.
@@ -284,6 +319,27 @@ var karenRedirect = []string{
 	"ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО",
 }
 
+// BottleSpots is everywhere a bottle can appear.
+//
+// A LIST IN THE CATALOGUE RATHER THAN A DRAWN COORDINATE, and that is what keeps
+// it cheap on the wire: the frame carries which spot it is on as one small
+// integer, exactly as a balloon carries which line it is on, instead of two
+// positions ten times a second forever (ADR-037's rule, applied to a prop). It
+// also means every spot is a place somebody has decided is reachable, rather
+// than a point a sampler thought was legal.
+//
+// Spread around the floor on purpose: the mechanic is fetch-and-spend, so where
+// the next one lands has to change what you do about it. All of them are clear
+// of the furniture, which TestEveryBottleSpotIsSomewhereYouCanStand pins.
+var BottleSpots = []Vec2{
+	{X: 2.2, Y: 6.0},
+	{X: 13.8, Y: 6.0},
+	{X: 8.0, Y: 2.0},
+	{X: 2.2, Y: 15.5},
+	{X: 13.8, Y: 15.5},
+	{X: 8.0, Y: 11.0},
+}
+
 var karenStill = []string{
 	"Я КАРЕН",
 	"Я ДУМАЮ",
@@ -357,9 +413,14 @@ const (
 	// RedirectCooldown is the wait between uses, and it is the WHOLE price of
 	// the verb today. The design charges +ПОДОЗРЕНИЕ as well, because it is loud
 	// and Claude hears it — but that meter arrives with Claude in iteration 4,
-	// so until then this is a free betrayal with a long timer on it. Stated here
+	// so until then this is a free betrayal with a timer on it. Stated here
 	// rather than discovered later.
-	RedirectCooldown = 20.0
+	//
+	// Eight seconds, owner-directed, down from twenty. Twenty meant that in a
+	// two-minute shift you got it about six times and spent most of the shift
+	// looking at a dead button; eight makes it something you are actually
+	// deciding about while dodging, which is where this game wants your thumb.
+	RedirectCooldown = 8.0
 	// RedirectSaySeconds is how long the line stays over your head afterwards.
 	// It is deliberately longer than one balloon slot: the whole point of the
 	// verb is that your colleague sees who did it to him.
@@ -374,17 +435,7 @@ const (
 // costs a walk to a fixed spot — which means leaving wherever you were standing,
 // and therefore the streak, which is the whole currency of the game.
 const (
-	// BottleX and BottleY are where it stands. A fixed spot, in the catalogue,
-	// like everything else about this office: fetch-and-spend only means
-	// anything if the fetching is somewhere you have to go.
-	// Off to one side and at the same end of the room the draw puts you in, so
-	// fetching it is a LATERAL walk rather than a sprint into the man chasing
-	// you. Mid-floor was tried first and is effectively unreachable: he closes
-	// from the far wall at BossSpeed while you walk at WalkSpeed, so a bottle
-	// at the midpoint is one he arrives at first. The price is meant to be the
-	// streak, not the shift.
-	BottleX = 2.2
-	BottleY = 6.0
+	// (The bottle no longer has a fixed position — see BottleSpots.)
 	// BottleReach is how close you have to be to pick it up. Generous, because
 	// the streak is the price and fighting the collision resolver for the last
 	// twenty centimetres is not.
@@ -400,9 +451,14 @@ const (
 	DrunkWobble = 1.1
 	// DrunkWobbleHz is how fast the weave oscillates.
 	DrunkWobbleHz = 1.7
-	// BottleReturn is how long until another one appears. It is the cooldown of
-	// the whole mechanic, and it is long: see the note above about strength.
-	BottleReturn = 45.0
+	// BottleReturn is how long until another one appears, SOMEWHERE ELSE.
+	//
+	// Ten seconds, owner-directed, against the forty-five it shipped with. The
+	// long version made it a once-a-shift event you either happened to be near or
+	// never used; ten makes it a thing on the floor you keep an eye on. What
+	// stops that being free is that it moves: the walk is the price, and the walk
+	// is a different walk every time.
+	BottleReturn = 10.0
 )
 
 // KarenSlot is how long he holds one line before moving to the next, in ticks.
@@ -560,6 +616,33 @@ const (
 // to have started he begins working through the afternoon-enders, one per
 // BossSlot, wrapping — so what he is saying keeps changing while he closes,
 // which is the whole of the tension made audible.
+// BossState is what has most recently happened to him, which decides WHICH run
+// he is speaking from. It is not on the wire: the frame carries the resulting
+// index, and the browser never learns the layout.
+type BossState int
+
+const (
+	BossIdle BossState = iota
+	BossDrunk
+	BossRedirected
+)
+
+// BossSays is which line belongs over him, given what has happened to him.
+//
+// The two event runs OUTRANK the rotation and change the instant the state does
+// — see the note on bossDrunkLines. Inside a run it is the same hashed,
+// out-of-order pick everything else on this plane uses.
+func BossSays(state BossState, grin float64, tick uint64) int {
+	switch state {
+	case BossDrunk:
+		return pickLine(len(bossFar)+len(bossClosing), bossDrunkLines, tick, BossSlot)
+	case BossRedirected:
+		return pickLine(len(bossFar)+len(bossClosing)+len(bossDrunkLines), bossRedirectLines, tick, BossSlot)
+	default:
+		return BossLine(grin, tick)
+	}
+}
+
 func BossLine(grin float64, tick uint64) int {
 	// THE STATE PICKS THE RUN AND THE TICK PICKS THE LINE, which is exactly what
 	// KarenLine does — and the reason this is not simply `grin >= BossQuiet ? …`
@@ -603,8 +686,8 @@ type Config struct {
 // where it actually stands and the cheatsheet can state the rule without typing
 // a number.
 type BottleConfig struct {
-	X        float64 `json:"x"`
-	Y        float64 `json:"y"`
+	// Spots is every place one can appear; a frame names which by index.
+	Spots    []Vec2  `json:"spots"`
 	Reach    float64 `json:"reach"`
 	DrunkMs  int     `json:"drunk_ms"`
 	ReturnMs int     `json:"return_ms"`
@@ -715,8 +798,7 @@ func BuildConfig() Config {
 		KarenLines:   append([]string(nil), KarenLines...),
 		MaxOccupants: MaxOccupants,
 		Bottle: BottleConfig{
-			X:        BottleX,
-			Y:        BottleY,
+			Spots:    append([]Vec2(nil), BottleSpots...),
 			Reach:    BottleReach,
 			DrunkMs:  int(DrunkSeconds * 1000),
 			ReturnMs: int(BottleReturn * 1000),

@@ -228,7 +228,7 @@ func TestSnapshotStaysSmall(t *testing.T) {
 		// Somebody bought him a round moments ago: he is still wobbling AND the
 		// bottle has not come back. Both present at once is the real worst case,
 		// even though it only lasts as long as he stays drunk.
-		Bt: 45000,
+		Bt: 10000, Bs: len(BottleSpots) - 1,
 		// A FULL OFFICE, which is the worst case and is now most of the frame.
 		// MaxOccupants is three, so two peers; twelve-character handles, both in
 		// the far corner, both on the widest line index in the pool.
@@ -282,7 +282,15 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// Both at once is the eleven-byte overlap measured above. Neither is on a
 	// frame in the state this game spends most of its time in, which is a sober
 	// bald man and a bottle standing on the floor.
-	const budget = 280
+	//
+	// 280 -> 288, for the bottle MOVING. `,"bs":5` is seven bytes, and it is
+	// seven rather than twenty because the frame names which of the catalogue's
+	// spots it is on rather than where the spot is — the same trick a balloon
+	// plays with a sentence (ADR-037). The alternative, two quantised positions,
+	// is about twenty bytes ten times a second per viewer, forever, to describe
+	// something that changes once every ten seconds. Omitted on spot zero, like
+	// every other index here.
+	const budget = 288
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}

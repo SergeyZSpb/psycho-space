@@ -216,6 +216,12 @@ type Snapshot struct {
 	// OMITTED WHILE ONE IS THERE — which is the common case, so the plane draws
 	// it on an absent field and costs nothing to say so.
 	Bt int `json:"bt,omitempty"`
+	// Bs is WHICH of the catalogue's BottleSpots it is standing on — an index,
+	// never a coordinate, exactly as a balloon is an index and never a sentence
+	// (ADR-037). Two positions on a frame that repeats ten times a second per
+	// viewer is twenty bytes forever to say something that changes once every ten
+	// seconds; one small integer is four. Omitted at zero like everything else.
+	Bs int `json:"bs,omitempty"`
 	// The bald man.
 	B BossFrame `json:"b"`
 	// Pr is everybody else in the office — at most two, because MaxOccupants is

@@ -118,6 +118,10 @@ type Office struct {
 	// one is standing there now, which is the common case and therefore the one
 	// that costs nothing on the wire.
 	bottleGone float64
+	// bottleSpot is which of BottleSpots it is standing on. It MOVES: a bottle
+	// that always came back to the same place would be a lever you stand next
+	// to, and the walk is supposed to be the price.
+	bottleSpot int
 }
 
 // NewOffice opens the floor with the bald man at the far wall and nobody in it.
@@ -492,8 +496,13 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// arriving on the same tick is settled the same way his choice of victim is.
 	if o.bottleGone > 0 {
 		o.bottleGone = math.Max(0, o.bottleGone-dt)
+		if o.bottleGone == 0 {
+			// It comes back SOMEWHERE ELSE. Drawn rather than cycled, because a
+			// rotation would be a pattern to learn and then to stand in front of.
+			o.bottleSpot = o.drawBottleSpot()
+		}
 	} else {
-		bottle := Vec2{X: BottleX, Y: BottleY}
+		bottle := BottleSpots[o.bottleSpot]
 		for _, k := range keys {
 			occ := o.occupants[k]
 			if !occ.State.Alive {
@@ -564,10 +573,11 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 			X: cm(o.boss.Pos.X),
 			Y: cm(o.boss.Pos.Y),
 			G: grinByte(o.boss.Grin),
-			P: BossLine(o.boss.Grin, o.tick),
+			P: BossSays(o.bossState(), o.boss.Grin, o.tick),
 			D: msUp(o.boss.Drunk),
 		},
 		Bt: msUp(o.bottleGone),
+		Bs: o.bottleSpot,
 		Pr: o.peersFor(accountID),
 	}
 	raw, err := json.Marshal(s)
@@ -655,6 +665,38 @@ func (o *Office) Redirect(accountID, targetHandle string) bool {
 		return true
 	}
 	return false
+}
+
+// bossState is what has most recently happened to him. Called with the lock held.
+//
+// Drunk outranks redirected, because being drunk is the louder thing to be and
+// because a man who is both is funnier saying the drink lines.
+func (o *Office) bossState() BossState {
+	switch {
+	case o.boss.Drunk > 0:
+		return BossDrunk
+	case o.redirectLeft > 0:
+		return BossRedirected
+	default:
+		return BossIdle
+	}
+}
+
+// drawBottleSpot picks where the next bottle stands. Called with the lock held.
+//
+// Never the one it was just on: a bottle that reappeared under your feet would
+// make the whole mechanic a button rather than a walk, and "somewhere else" is
+// the entire point of it moving.
+func (o *Office) drawBottleSpot() int {
+	if len(BottleSpots) < 2 {
+		return 0
+	}
+	//nolint:gosec // bounded by len(BottleSpots)-1, which is a handful
+	next := int(unitRand() * float64(len(BottleSpots)-1))
+	if next >= o.bottleSpot {
+		next++
+	}
+	return clampInt(next, 0, len(BottleSpots)-1)
 }
 
 // AvatarFor is the picture to draw on the peer a frame calls handle, and whether

@@ -1112,8 +1112,14 @@ func TestKarenBuyingHimARoundIsVisibleToTheWholeOffice(t *testing.T) {
 		f := waitForKarenFrame(t, framesA, tick, clock, "karen_snap", 15*time.Second)
 		x, _ := f["x"].(float64)
 		y, _ := f["y"].(float64)
-		dx := gamekaren.BottleX - x/100
-		dy := gamekaren.BottleY - y/100
+		// Where the bottle is NOW: it moves, and the frame names which of the
+		// catalogue's spots it is on rather than where that spot is.
+		spot := gamekaren.BottleSpots[0]
+		if bs, ok := f["bs"].(float64); ok && int(bs) < len(gamekaren.BottleSpots) {
+			spot = gamekaren.BottleSpots[int(bs)]
+		}
+		dx := spot.X - x/100
+		dy := spot.Y - y/100
 		d := math.Hypot(dx, dy)
 		n++
 		if d > 1e-6 && n%2 == 0 {

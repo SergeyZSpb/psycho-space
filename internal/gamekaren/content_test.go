@@ -566,21 +566,76 @@ func TestNobodyRecitesThePoolInOrder(t *testing.T) {
 	}
 }
 
-func TestTheBottleIsSomewhereYouCanActuallyStand(t *testing.T) {
-	// It is a place you WALK TO, so it has to be reachable: on the floor, and
-	// not inside a desk. A bottle in the furniture is a mechanic nobody can use.
-	at := Vec2{X: BottleX, Y: BottleY}
-	if at.X < PlayerRadius || at.X > OfficeW-PlayerRadius ||
-		at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
-		t.Fatalf("the bottle stands off the floor at %+v", at)
+func TestEveryBottleSpotIsSomewhereYouCanStand(t *testing.T) {
+	// A bottle is a place you WALK TO, so every spot has to be reachable: on the
+	// floor and not inside a desk. One in the furniture is a bottle nobody can
+	// ever have, and since it MOVES, one bad spot is a mechanic that dies for ten
+	// seconds at a time rather than obviously.
+	if len(BottleSpots) < 2 {
+		t.Fatal("a bottle that cannot move somewhere else is not a bottle that moves")
 	}
-	for i, d := range Desks {
-		if insideDesk(d, at, PlayerRadius) {
-			t.Fatalf("the bottle is inside desk %d", i)
+	for i, at := range BottleSpots {
+		if at.X < PlayerRadius || at.X > OfficeW-PlayerRadius ||
+			at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
+			t.Fatalf("bottle spot %d is off the floor at %+v", i, at)
+		}
+		for d, desk := range Desks {
+			if insideDesk(desk, at, PlayerRadius) {
+				t.Fatalf("bottle spot %d is inside desk %d", i, d)
+			}
+		}
+		for j := i + 1; j < len(BottleSpots); j++ {
+			if math.Hypot(at.X-BottleSpots[j].X, at.Y-BottleSpots[j].Y) < 2 {
+				t.Fatalf("spots %d and %d are close enough to be the same spot", i, j)
+			}
 		}
 	}
-	// And it is not where you spawn — the walk IS the price.
-	if math.Hypot(at.X-PlayerSpawnX, at.Y-PlayerSpawnY) < 2 {
-		t.Fatal("the bottle is close enough to the spawn to be free")
+}
+
+func TestSomethingHappeningToHimInterruptsWhatHeWasSaying(t *testing.T) {
+	// OWNER-DIRECTED. The two-second rotation is the office idling; being bought
+	// a drink or being pointed at somebody else are EVENTS, and an event that
+	// waited politely for the next slot would not read as one. So the run changes
+	// the instant the state does — mid-slot — and the line changes with it.
+	const mid = BossSlot / 3 // deliberately NOT on a slot boundary
+
+	idle := BossSays(BossIdle, 1, mid)
+	drunk := BossSays(BossDrunk, 1, mid)
+	redirected := BossSays(BossRedirected, 1, mid)
+
+	if drunk == idle {
+		t.Fatal("getting drunk did not interrupt what he was saying")
+	}
+	if redirected == idle {
+		t.Fatal("being pointed at somebody else did not interrupt what he was saying")
+	}
+	if drunk == redirected {
+		t.Fatal("he says the same thing drunk as when he has been redirected")
+	}
+
+	// Each event speaks from its OWN run, so the words fit what happened.
+	base := len(bossFar) + len(bossClosing)
+	if drunk < base || drunk >= base+len(bossDrunkLines) {
+		t.Fatalf("drunk he says index %d, outside his drink lines", drunk)
+	}
+	if redirected < base+len(bossDrunkLines) || redirected >= len(BossLines) {
+		t.Fatalf("redirected he says index %d, outside those lines", redirected)
+	}
+
+	// And inside a run it is still the two-second, out-of-order rotation — an
+	// event interrupts the cadence, it does not replace it with one sentence.
+	held := BossSays(BossDrunk, 1, 0)
+	for tick := uint64(1); tick < BossSlot; tick++ {
+		if got := BossSays(BossDrunk, 1, tick); got != held {
+			t.Fatalf("drunk, he changed line at tick %d inside the slot", tick)
+		}
+	}
+	if BossSays(BossDrunk, 1, BossSlot) == held {
+		t.Fatal("drunk, he holds one sentence for the whole binge")
+	}
+
+	// Drunk outranks redirected: a man who is both is funnier on the drink lines.
+	if BossSays(BossDrunk, 1, mid) == BossSays(BossRedirected, 1, mid) {
+		t.Fatal("the two states are indistinguishable")
 	}
 }

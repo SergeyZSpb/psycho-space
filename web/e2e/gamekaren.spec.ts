@@ -72,7 +72,16 @@ const CONFIG = {
   max_occupants: 3,
   // Marked like everything else in this stub, so a client that hardcoded the
   // label or the timers cannot pass the assertions below.
-  bottle: { x: 3, y: 9, reach: 0.9, drunk_ms: 8500, return_ms: 44000, slow_pct: 45 },
+  bottle: {
+    spots: [
+      { x: 3, y: 9 },
+      { x: 9, y: 4 },
+    ],
+    reach: 0.9,
+    drunk_ms: 8500,
+    return_ms: 9500,
+    slow_pct: 45,
+  },
   redirect: {
     label: 'ЭТО К НЕМУ, СТЕНД',
     say: 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО',
@@ -636,7 +645,14 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     await socket.snapshot();
     const bottle = page.getByTestId('karen-bottle');
     await expect(bottle).toHaveCount(1);
-    await expect(bottle).toHaveCSS('--x', String(CONFIG.bottle.x / CONFIG.office.w));
+    await expect(bottle).toHaveCSS('--x', String(CONFIG.bottle.spots[0].x / CONFIG.office.w));
+
+    // It MOVES: the frame names WHICH spot by index, and the plane looks the
+    // coordinates up in the catalogue it already fetched. A position on a frame
+    // that repeats ten times a second would be twenty bytes forever to say
+    // something that changes once every ten seconds.
+    await socket.snapshot({ bs: 1 });
+    await expect(bottle).toHaveCSS('--x', String(CONFIG.bottle.spots[1].x / CONFIG.office.w));
 
     // Somebody drank it: it is gone, and he is drunk.
     await socket.snapshot({ bt: 44000, b: { x: 300, y: 1500, g: 40, d: 8500 } });
