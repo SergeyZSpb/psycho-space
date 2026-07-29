@@ -6,6 +6,7 @@ import {
   STICK_DEADZONE,
   buildInputFrame,
   createEmitter,
+  dashAxes,
   createPredictor,
   stickVector,
 } from '../lib/karenPredict';
@@ -375,5 +376,49 @@ describe('the drawn position advances every frame, not every command', () => {
     p.viewAhead(0.02, AXES);
     expect(p.view()).toEqual(before);
     expect(p.pendingCount()).toBe(0);
+  });
+});
+
+describe('a dash always has a direction', () => {
+  // THE WORST BUG THIS GAME HAS HAD. The whole game is played standing
+  // perfectly still, so a neutral stick is the DEFAULT state and it is exactly
+  // the state you dash out of. Sending the axes as they were meant sending
+  // (0, 0): the dash started, burned its entire cooldown, and moved the player
+  // nowhere. Measured at 0.000 m.
+  const IDLE = 0.05;
+  const still = { mx: 0, my: 0 };
+
+  it('obeys the stick whenever the stick is saying anything', () => {
+    const pushed = { mx: 0.6, my: -0.8 };
+    expect(dashAxes(pushed, { mx: 1, my: 0 }, { dx: -1, dy: 0 }, IDLE)).toEqual(pushed);
+  });
+
+  it('falls back to the last way the player actually went', () => {
+    expect(dashAxes(still, { mx: -1, my: 0 }, { dx: 0, dy: 5 }, IDLE)).toEqual({ mx: -1, my: 0 });
+  });
+
+  it('dashes away from the лысый when there is nothing else to go on', () => {
+    // He is below-left, so away is up-and-right, normalised.
+    const got = dashAxes(still, null, { dx: 3, dy: -4 }, IDLE);
+    expect(got.mx).toBeCloseTo(0.6, 6);
+    expect(got.my).toBeCloseTo(-0.8, 6);
+    expect(Math.hypot(got.mx, got.my)).toBeCloseTo(1, 6);
+  });
+
+  it('never returns nothing, which is the whole point', () => {
+    for (const last of [null, still]) {
+      for (const away of [null, { dx: 0, dy: 0 }]) {
+        const got = dashAxes(still, last, away, IDLE);
+        expect(Math.hypot(got.mx, got.my)).toBeGreaterThan(IDLE);
+      }
+    }
+  });
+
+  it('a still player who taps РЫВОК actually moves', () => {
+    const p = predictor();
+    const from = p.view();
+    const dir = dashAxes(still, { mx: 0, my: 1 }, null, IDLE);
+    p.apply({ dt: 0.025, mx: dir.mx, my: dir.my, dash: true });
+    expect(Math.hypot(p.view().x - from.x, p.view().y - from.y)).toBeCloseTo(K.dashSpeed * 0.025, 6);
   });
 });

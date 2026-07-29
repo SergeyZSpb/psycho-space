@@ -206,6 +206,7 @@ import {
   REDUNDANT_COMMANDS,
   buildInputFrame,
   createEmitter,
+  dashAxes,
   createPredictor,
   stickVector,
   type Emitter,
@@ -265,6 +266,11 @@ let seenTick = 0;
 let startedAtMs = 0;
 /** A dash asked for and not yet carried by a command. Cleared when one takes it. */
 let dashPending = false;
+// The last way the thumb actually went, and where the лысый was on the last
+// snapshot. Both exist only to give a dash a direction when the stick is
+// neutral — which, in this game, is most of the time. See dashAxes.
+let lastDir: { mx: number; my: number } | null = null;
+let bossAt: { x: number; y: number } | null = null;
 /** The grin state currently written on the boss, so the class is not rewritten. */
 let bossGrin = '';
 
@@ -457,6 +463,8 @@ function teardownPlay(): void {
   axes = { mx: 0, my: 0 };
   knob.value = { dx: 0, dy: 0 };
   dashPending = false;
+  lastDir = null;
+  bossAt = null;
 }
 
 // --- the two clocks --------------------------------------------------------
@@ -467,7 +475,11 @@ function drawFrame(now: number): void {
   lastFrameMs = now;
 
   if (predictor && emitter) {
-    const due = emitter.due(now, axes, dashPending);
+    const idle = constants ? constants.idleThreshold : 0.05;
+    if (Math.hypot(axes.mx, axes.my) > idle) lastDir = { mx: axes.mx, my: axes.my };
+    const me = predictor.view();
+    const away = bossAt ? { dx: me.x - bossAt.x, dy: me.y - bossAt.y } : null;
+    const due = emitter.due(now, axes, dashPending, dashAxes(axes, lastDir, away, idle));
     for (const cmd of due) {
       // Applied locally the instant it exists, and queued for sending unchanged.
       // Predicting one thing and sending another is the one mistake this whole
@@ -575,6 +587,7 @@ function applySnapshot(frame: RealtimeFrame): void {
   const el = bossEl.value;
   if (b && el) {
     const grin = num(b.g) / 255;
+    bossAt = { x: num(b.x) / 100, y: num(b.y) / 100 };
     applyBoss(el, toPlane(num(b.x) / 100, num(b.y) / 100, constants.officeW, constants.officeH), grin);
     // Written as an attribute only when it CHANGES: the smile widens from
     // `--grin`, which the compositor interpolates, but the colour steps, and

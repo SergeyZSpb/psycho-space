@@ -273,6 +273,48 @@ export interface KarenAxes {
  * It takes its clock as an argument rather than reading one, so a test drives a
  * whole second without waiting for one.
  */
+/**
+ * Which way a dash goes when the thumb is not saying.
+ *
+ * THE WHOLE GAME IS PLAYED STANDING PERFECTLY STILL, so a neutral stick is not
+ * an edge case here — it is the default state, and it is exactly the state you
+ * dash out of. The first build sent the dash with the axes as they were, which
+ * for a still player is `(0, 0)`: dash speed times no direction is no movement,
+ * so the button started the dash, burned the whole cooldown and moved the player
+ * nowhere. Pressing the dodge and not moving is the worst thing a control can
+ * do, and it did it in the commonest case there is.
+ *
+ * So a dash always has a direction, in this order:
+ *
+ *  1. **The stick**, whenever it is being pushed — the player asked, and the
+ *     player is never overruled.
+ *  2. **The last way they went**, which is what "dodge" means after any movement
+ *     at all and needs no explanation on a control with one stick.
+ *  3. **Directly away from the лысый**, for the one dash a shift where neither
+ *     exists — you have not moved yet, and the only thing worth dashing from is
+ *     walking at you.
+ *
+ * It stays on the client on purpose: the command carries `mx`/`my` like any
+ * other, so the server sees an ordinary dash in a direction and needs to know
+ * nothing about where it came from — and prediction stays exact, because what is
+ * predicted is what is sent.
+ */
+export function dashAxes(
+  axes: KarenAxes,
+  last: KarenAxes | null,
+  awayFrom: { dx: number; dy: number } | null,
+  idleThreshold: number,
+): KarenAxes {
+  if (Math.hypot(axes.mx, axes.my) > idleThreshold) return axes;
+  if (last && Math.hypot(last.mx, last.my) > idleThreshold) return last;
+  if (awayFrom) {
+    const mag = Math.hypot(awayFrom.dx, awayFrom.dy);
+    if (mag > 1e-6) return { mx: awayFrom.dx / mag, my: awayFrom.dy / mag };
+  }
+  // Nothing to go on at all — up the plane, away from where he starts.
+  return { mx: 0, my: -1 };
+}
+
 export function createEmitter(opts: EmitterOptions) {
   const period = 1000 / opts.hz;
   let last: number | null = null;
@@ -290,7 +332,7 @@ export function createEmitter(opts: EmitterOptions) {
      * asking until one comes back carrying it, so a tap during a frame that
      * produced no command is not silently lost.
      */
-    due(nowMs: number, axes: KarenAxes, dash: boolean): StepCommand[] {
+    due(nowMs: number, axes: KarenAxes, dash: boolean, forDash?: KarenAxes): StepCommand[] {
       if (last === null) {
         last = nowMs;
         return [];
@@ -310,10 +352,15 @@ export function createEmitter(opts: EmitterOptions) {
         budget -= 1;
         const pushing = Math.hypot(axes.mx, axes.my) > opts.idleThreshold;
         if (!pushing && !dashLeft) continue;
+        // The command that CARRIES the dash takes the resolved direction, which
+        // for a still player is not the stick — see dashAxes. Every other
+        // command takes the stick as it is, because a neutral stick means stand
+        // still and that is the point of the game.
+        const use = dashLeft && forDash ? forDash : axes;
         const cmd: StepCommand = {
           dt: Math.min(opts.maxStepSeconds, period / 1000),
-          mx: axes.mx,
-          my: axes.my,
+          mx: use.mx,
+          my: use.my,
         };
         if (dashLeft) {
           cmd.dash = true;
