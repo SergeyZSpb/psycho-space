@@ -178,6 +178,33 @@ export function createPredictor(opts: PredictorOptions) {
     },
 
     /**
+     * Where to DRAW the player, carried forward over the time that has elapsed
+     * since the last command but has not yet become one.
+     *
+     * This is the difference between a figure that moves and a figure that
+     * flickers. `predicted` only advances inside `apply`, which happens forty
+     * times a second, while this is called every animation frame — so without
+     * the carry the player is redrawn in the same place two or three times and
+     * then teleported, forty times a second, for ever.
+     *
+     * **It is not extrapolation and it cannot drift.** The step is over time
+     * that has already passed, using the axes the thumb is on *now*, and it runs
+     * against a COPY — so when the real command arrives a moment later it starts
+     * from the untouched `predicted` and lands exactly where this had already
+     * drawn him. Release the stick and the carry is simply zero, so there is
+     * nothing to snap back from either.
+     *
+     * A dash in progress carries at dash speed, because the copy still holds the
+     * dash timer and `step` reads it. That is the whole point: the burst is nine
+     * commands long, so it is the one move that was almost entirely stepping.
+     */
+    viewAhead(dt: number, axes: { mx: number; my: number }): { x: number; y: number } {
+      if (!(dt > 0)) return this.view();
+      const ahead = step(desks, predicted, { seq: 0, dt, mx: axes.mx, my: axes.my }, constants);
+      return { x: ahead.x + errX, y: ahead.y + errY };
+    },
+
+    /**
      * The commands the server has not acknowledged, newest last.
      *
      * Sent again in each frame up to `max`; see REDUNDANT_COMMANDS.
@@ -299,6 +326,27 @@ export function createEmitter(opts: EmitterOptions) {
       // server would refuse anyway.
       if (owed > period * opts.maxPerWake) owed = 0;
       return out;
+    },
+
+    /**
+     * Time that has elapsed but has not yet become a command, in seconds.
+     *
+     * THE RENDERER NEEDS THIS AND NOTHING ELSE DOES. Commands exist at a fixed
+     * forty a second because merging them would break prediction, but the screen
+     * refreshes at sixty, ninety or a hundred and twenty — so drawing the player
+     * at the last command's endpoint holds him still for one to three frames and
+     * then jumps him. At a walk that is 8 cm a step; **during a dash it is 22 cm,
+     * nine times, which is what a dash entirely consists of**, and it reads as
+     * the burst stuttering rather than firing.
+     *
+     * Handing the leftover to the renderer closes the gap without inventing
+     * anything: it is time that has genuinely passed and that the very next
+     * command will claim, so the figure drawn here is exactly where `apply` is
+     * about to put him. It is a rendering detail and never a simulated one —
+     * nothing derived from it is sent, stored, or folded into prediction.
+     */
+    residualSeconds(): number {
+      return Math.min(owed, period) / 1000;
     },
 
     /** Drops everything, for when a shift ends. */

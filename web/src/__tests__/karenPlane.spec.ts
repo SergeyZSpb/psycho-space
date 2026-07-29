@@ -3,6 +3,7 @@ import {
   BAND_PROPERTY,
   DEPTH_PROPERTY,
   DEPTH_SCALES,
+  depthScaleFor,
   GRIN_PROPERTY,
   X_PROPERTY,
   Y_PROPERTY,
@@ -96,7 +97,12 @@ describe('writing a figure onto its element', () => {
     expect(el.props.get(X_PROPERTY)).toBe('0.25');
     expect(el.props.get(Y_PROPERTY)).toBe('0.8');
     expect(el.props.get(BAND_PROPERTY)).toBe('3');
-    expect(el.props.get(DEPTH_PROPERTY)).toBe(String(DEPTH_SCALES[3]));
+    // The band still steps, because paint order has no half-way — but the
+    // SCALE is read from the continuous ramp, so a figure at 0.8 is sized
+    // between the knots rather than snapped to the top one.
+    expect(el.props.get(DEPTH_PROPERTY)).toBe(String(depthScaleFor(0.8)));
+    expect(Number(el.props.get(DEPTH_PROPERTY))).toBeGreaterThan(DEPTH_SCALES[2]);
+    expect(Number(el.props.get(DEPTH_PROPERTY))).toBeLessThan(DEPTH_SCALES[3]);
   });
 
   it('gives the boss his grin along with his position', () => {
@@ -197,5 +203,36 @@ describe('reading the wire', () => {
 
   it('shows a full bar rather than dividing by a ramp of zero', () => {
     expect(rampFraction(1000, 0)).toBe(1);
+  });
+});
+
+describe('the depth ramp is continuous', () => {
+  // Regression: the scale used to be read off DEPTH_SCALES[bandFor(v)], so a
+  // figure crossing the office changed size in three visible jerks. Paint order
+  // still steps — that one genuinely has no half-way — but size must not.
+  it('never jumps, however finely the plane is walked', () => {
+    let prev = depthScaleFor(0);
+    for (let i = 1; i <= 2000; i++) {
+      const s = depthScaleFor(i / 2000);
+      expect(s).toBeGreaterThanOrEqual(prev);
+      // One two-thousandth of the plane may not change size by more than a
+      // thousandth of the whole ramp. A banded ramp fails this at every knot.
+      expect(s - prev).toBeLessThan(0.001);
+      prev = s;
+    }
+  });
+
+  it('keeps the ends and the knots the bands chose', () => {
+    expect(depthScaleFor(0)).toBeCloseTo(DEPTH_SCALES[0], 10);
+    expect(depthScaleFor(1)).toBeCloseTo(DEPTH_SCALES[DEPTH_SCALES.length - 1], 10);
+    for (let i = 0; i < DEPTH_SCALES.length; i++) {
+      expect(depthScaleFor(i / (DEPTH_SCALES.length - 1))).toBeCloseTo(DEPTH_SCALES[i], 10);
+    }
+  });
+
+  it('survives nonsense without becoming nonsense', () => {
+    expect(depthScaleFor(Number.NaN)).toBe(DEPTH_SCALES[0]);
+    expect(depthScaleFor(-5)).toBeCloseTo(DEPTH_SCALES[0], 10);
+    expect(depthScaleFor(5)).toBeCloseTo(DEPTH_SCALES[DEPTH_SCALES.length - 1], 10);
   });
 });

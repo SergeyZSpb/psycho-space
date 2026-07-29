@@ -325,3 +325,55 @@ describe('the stick', () => {
     expect(STICK_DEADZONE).toBeGreaterThan(K.idleThreshold);
   });
 });
+
+describe('the drawn position advances every frame, not every command', () => {
+  // Regression, and it is what a dash is made of. `predicted` only moves inside
+  // apply(), which happens 40x a second, while the screen refreshes at 60-120 —
+  // so drawing view() held the figure still for one to three frames and then
+  // jumped him. At a walk that is 8 cm a step; at dash speed it is 22 cm, nine
+  // times, which is the entire burst.
+  const AXES = { mx: 0, my: -1 };
+
+  const fresh = predictor;
+
+  it('carries the player forward over time that has not become a command yet', () => {
+    const p = fresh();
+    const still = p.view();
+    const drawn = p.viewAhead(0.02, AXES);
+    expect(drawn.y).toBeLessThan(still.y);
+    // Exactly a walk over that slice — not a guess, not a smoothing lag.
+    expect(still.y - drawn.y).toBeCloseTo(K.walkSpeed * 0.02, 6);
+  });
+
+  it('does not drift: the real command lands where the carry had already drawn', () => {
+    const p = fresh();
+    const drawnAt = p.viewAhead(0.025, AXES);
+    p.apply({ dt: 0.025, mx: AXES.mx, my: AXES.my });
+    const after = p.view();
+    expect(after.x).toBeCloseTo(drawnAt.x, 9);
+    expect(after.y).toBeCloseTo(drawnAt.y, 9);
+  });
+
+  it('carries at DASH speed while a dash is running, which is the point', () => {
+    const p = fresh();
+    p.apply({ dt: 0.001, mx: AXES.mx, my: AXES.my, dash: true });
+    const from = p.view();
+    const drawn = p.viewAhead(0.02, AXES);
+    expect(from.y - drawn.y).toBeCloseTo(K.dashSpeed * 0.02, 6);
+  });
+
+  it('has nothing to snap back from when the stick is released', () => {
+    const p = fresh();
+    const held = p.view();
+    expect(p.viewAhead(0.02, { mx: 0, my: 0 })).toEqual(held);
+  });
+
+  it('leaves prediction untouched — it draws against a copy', () => {
+    const p = fresh();
+    const before = p.view();
+    p.viewAhead(0.02, AXES);
+    p.viewAhead(0.02, AXES);
+    expect(p.view()).toEqual(before);
+    expect(p.pendingCount()).toBe(0);
+  });
+});

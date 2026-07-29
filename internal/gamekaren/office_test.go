@@ -426,3 +426,90 @@ func TestEnqueueIgnoresAnAccountThatIsNotWorking(t *testing.T) {
 		t.Fatal("sending input started a shift")
 	}
 }
+
+// TestDriftDoesNotEatTheDash pins the guard on the idle fill.
+//
+// The fill exists because a still client sends nothing at all, so the server has
+// to advance the shift itself or standing still would earn nothing. But a client
+// that IS sending under-fills the tick by a millisecond or two of ordinary
+// browser clock drift, and filling THAT gap with a still step is not free: Step
+// reads DashLeft, so a still step during a dash decrements the dash timer at
+// dash speed while moving the player nowhere. The burst quietly lost distance to
+// drift on most ticks, and the client — which predicted all of it — was
+// corrected at the end of every one.
+//
+// The timer is what the test reads, because it is what actually differs. With
+// the guard the dash is spent only by time the player claimed; without it every
+// tick also charges the unclaimed remainder.
+func TestDriftDoesNotEatTheDash(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	o := NewOffice()
+	if err := o.Join("a", "shift-a", now); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+
+	// 40 ms claimed out of every 50 ms tick — a browser timer does not tile a
+	// tick evenly, and this is an ordinary amount of drift rather than a bad one.
+	const claimed = 0.04
+	o.Enqueue("a", []Command{{Seq: 1, Dt: claimed, MX: 0, MY: -1, Dash: true}}, now)
+	o.Advance(SimStep.Seconds(), now)
+
+	seq := uint32(2)
+	for i := 0; i < 3; i++ {
+		o.Enqueue("a", []Command{{Seq: seq, Dt: claimed, MX: 0, MY: -1}}, now)
+		seq++
+		now = now.Add(SimStep)
+		o.Advance(SimStep.Seconds(), now)
+	}
+
+	// Four claimed sub-steps have been simulated, so exactly that much of the
+	// dash is gone. Charging the unclaimed 10 ms of each tick as well would leave
+	// 0.02 here instead.
+	want := DashSeconds - 4*claimed
+	if got := o.dashLeftOf(t, "a"); math.Abs(got-want) > 1e-9 {
+		t.Fatalf("dash has %.4f s left, want %.4f s — drift is being charged to the dash", got, want)
+	}
+}
+
+// TestStandingPerfectlyStillStillEarns is the other half: the guard must not
+// break the case the fill exists for. A client that sends nothing at all is a
+// player standing still, and that is the whole game.
+func TestStandingPerfectlyStillStillEarns(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	o := NewOffice()
+	if err := o.Join("a", "shift-a", now); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		now = now.Add(SimStep)
+		o.Advance(SimStep.Seconds(), now)
+	}
+	if got := o.salaryOf(t, "a"); got <= 0 {
+		t.Fatalf("a player who stood perfectly still earned %.2f — the fill is not running", got)
+	}
+}
+
+// dashLeftOf and salaryOf read one occupant's simulated state. Test-only, and
+// deliberately here rather than as methods on Office: nothing in production has
+// any reason to reach inside an occupant.
+func (o *Office) dashLeftOf(t *testing.T, accountID string) float64 {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	occ, ok := o.occupants[accountID]
+	if !ok {
+		t.Fatalf("no occupant %q", accountID)
+	}
+	return occ.State.DashLeft
+}
+
+func (o *Office) salaryOf(t *testing.T, accountID string) float64 {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	occ, ok := o.occupants[accountID]
+	if !ok {
+		t.Fatalf("no occupant %q", accountID)
+	}
+	return occ.State.Salary
+}

@@ -235,7 +235,26 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		// It consumes the budget too, so quiet time cannot be BANKED and then
 		// spent on movement — earning the ramp and hoarding simulated seconds to
 		// dodge with would be having it both ways.
-		if idle := dt - spent; idle > 0 {
+		// ONLY WHEN THE CLIENT CLAIMED NOTHING AT ALL, and the guard is the
+		// whole correctness of it. A client that is standing still sends no
+		// frame whatsoever, so `spent == 0` is exactly the state this exists
+		// for. A client that IS sending has merely under-filled the tick by a
+		// millisecond or two of ordinary clock drift — a browser timer does not
+		// tile a 50 ms tick evenly — and fabricating stillness in that gap is
+		// inventing input the player did not give.
+		//
+		// It was doing precisely that, and the dash is where it showed. A still
+		// step is not free while a dash is running: `Step` reads DashLeft, so it
+		// decrements the dash timer at dash speed and moves the player nowhere.
+		// The burst therefore lost a slice of its distance to drift on most
+		// ticks, the client predicted the full nine steps, and the difference
+		// arrived as a correction at the end of every dash — the one move in the
+		// game that must feel exact.
+		//
+		// Nothing is lost by skipping it: money accrues only while standing
+		// still, so an unclaimed sliver during movement was never worth
+		// anything, and the budget carries it to the next tick regardless.
+		if idle := dt - spent; idle > 0 && spent == 0 {
 			occ.State = Step(Desks, occ.State, Command{Dt: idle})
 			occ.Budget = math.Max(0, occ.Budget-idle)
 		}

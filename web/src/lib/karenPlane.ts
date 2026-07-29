@@ -75,6 +75,31 @@ export function bandFor(v: number): number {
   return Math.min(DEPTH_SCALES.length - 1, Math.max(0, band));
 }
 
+/**
+ * How much bigger a figure is at this height — CONTINUOUS, not banded.
+ *
+ * The band is still the right shape for anything that genuinely steps, and paint
+ * order is the reason it exists: two figures either overlap one way or the other
+ * and there is no half-way. **Scale is not that kind of quantity.** Reading it
+ * off `DEPTH_SCALES[bandFor(v)]` made a figure walking from the back of the
+ * office to the front change size in three visible jerks — the yard gets away
+ * with exactly that because its people amble at 5 Hz behind a CSS transition,
+ * and here you are staring at the one figure you are steering while it crosses a
+ * band boundary mid-dash.
+ *
+ * The curve is the same one the bands describe, just not sampled: piecewise
+ * linear through those knots, evenly spaced across 0..1. So the artist-chosen
+ * shape — a gentle ramp that accelerates slightly, because a strong one reads as
+ * the room being funnel-shaped — is preserved exactly, and only the stepping is
+ * gone.
+ */
+export function depthScaleFor(v: number): number {
+  if (!Number.isFinite(v)) return DEPTH_SCALES[0];
+  const t = clamp01(v) * (DEPTH_SCALES.length - 1);
+  const i = Math.min(DEPTH_SCALES.length - 2, Math.floor(t));
+  return DEPTH_SCALES[i] + (DEPTH_SCALES[i + 1] - DEPTH_SCALES[i]) * (t - i);
+}
+
 /** A point on the plane, normalised to 0..1 on each axis. */
 export interface PlanePoint {
   u: number;
@@ -117,7 +142,9 @@ export function applyFigure(el: StyleTarget, at: PlanePoint): void {
   el.style.setProperty(X_PROPERTY, String(at.u));
   el.style.setProperty(Y_PROPERTY, String(at.v));
   el.style.setProperty(BAND_PROPERTY, String(band));
-  el.style.setProperty(DEPTH_PROPERTY, String(DEPTH_SCALES[band]));
+  // The band picks the paint order, which steps; the scale is read from the
+  // continuous ramp, which does not. See depthScaleFor.
+  el.style.setProperty(DEPTH_PROPERTY, String(depthScaleFor(at.v)));
 }
 
 /** How pleased he is, as a state the stylesheet can key off. */

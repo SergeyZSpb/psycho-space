@@ -510,7 +510,11 @@ function sendInput(): void {
 function placeMe(): void {
   const el = meEl.value;
   if (!el || !predictor || !constants) return;
-  const v = predictor.view();
+  // Carried over the time that has passed since the last command but has not yet
+  // become one — see viewAhead. Without it the figure advances at the command
+  // rate rather than the frame rate, which is visible at a walk and is most of
+  // what a dash is made of.
+  const v = predictor.viewAhead(emitter ? emitter.residualSeconds() : 0, axes);
   applyFigure(el, toPlane(v.x, v.y, constants.officeW, constants.officeH));
 }
 
