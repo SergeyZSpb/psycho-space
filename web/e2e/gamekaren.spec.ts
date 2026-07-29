@@ -210,6 +210,24 @@ test.describe('«СИМУЛЯТОР КАРЕНА» splash', () => {
     await expect(rules).toContainText('Лысый подходит и здоровается');
   });
 
+  test('and it says the cast is invented, which is the one line that is not a joke', async ({
+    page,
+  }) => {
+    // The game is named after somebody and the лысый is recognisably somebody,
+    // and it is played by the handful of people who would know both. Asserted on
+    // the splash rather than trusted to a constant, and asserted BEFORE the
+    // catalogue lands too — it sits outside the `v-else`, so a slow or failing
+    // `/config` cannot be what takes it off the screen.
+    await stubBackend(page);
+    await seedClient(page, 'dark');
+    await page.goto('/app/game-karen');
+    const note = page.getByTestId('karen-disclaimer');
+    await expect(note).toBeVisible();
+    await expect(note).toHaveText('Все персонажи вымышлены, любые совпадения случайны.');
+    await expect(page.getByTestId('karen-rules')).toBeVisible();
+    await expect(note).toBeVisible();
+  });
+
   test('the cheatsheet is laid out as blocks, so a rule can be found', async ({ page }) => {
     await openSplash(page);
     await expect(page.getByTestId('karen-rule-block').first()).toBeVisible();

@@ -58,6 +58,10 @@
       </template>
 
       <p v-if="error" class="karen-error" data-testid="karen-error">{{ error }}</p>
+
+      <!-- Last on the screen and outside the `v-else`, so it is there while the
+           catalogue is still loading and there is nothing else to read. -->
+      <p class="karen-disclaimer" data-testid="karen-disclaimer">{{ KAREN_DISCLAIMER }}</p>
     </section>
 
     <!-- PLAYING — a fixed-height column: readouts, the office, the controls.
@@ -195,7 +199,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { gameKarenApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import type { KarenConfig, KarenRect, KarenShift, KarenShiftRow, KarenTopRow } from '../api/types';
-import { KAREN_LORE, buildRules, endingFor } from '../lib/karenRules';
+import { KAREN_DISCLAIMER, KAREN_LORE, buildRules, endingFor } from '../lib/karenRules';
 import {
   applyBoss,
   applyFigure,
@@ -761,6 +765,16 @@ function onDash(): void {
   font-size: 0.95rem;
   line-height: 1.45;
   opacity: 0.85;
+}
+
+/* Quiet, and at the very bottom. It has to be legible — that is the whole point
+   of it — so it is dimmed rather than shrunk past reading. */
+.karen-disclaimer {
+  margin: 4px 0 0;
+  max-width: 34rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  opacity: 0.55;
 }
 
 .karen-rules,

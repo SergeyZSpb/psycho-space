@@ -173,6 +173,21 @@ export const KAREN_LORE =
   'ходит лысый и очень тебе рад.';
 
 /**
+ * The disclaimer, and it is the one line on this screen that is not a joke.
+ *
+ * The game is named after somebody, the лысый is recognisably somebody, and the
+ * whole thing is played by the handful of people who would recognise both. So it
+ * says plainly that the cast is invented — no wordplay, no undercutting punch
+ * line, because a disclaimer that reads as part of the bit is not a disclaimer.
+ *
+ * A CLIENT CONSTANT RATHER THAN A SERVED ONE, following `KAREN_LORE` directly
+ * above it: the catalogue serves what can be RETUNED without a deploy — the
+ * speeds, the ramp, the endings, his lines — and this is prose that will never
+ * change. A config key with exactly one possible value is not a config key.
+ */
+export const KAREN_DISCLAIMER = 'Все персонажи вымышлены, любые совпадения случайны.';
+
+/**
  * The ending the catalogue describes for this cause, or nothing.
  *
  * THE TITLE AND THE SUB COME FROM THE SERVER, ALWAYS. The client knows the cause
