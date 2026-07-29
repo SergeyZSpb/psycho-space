@@ -855,7 +855,7 @@ export interface VanyadumRunRow {
 }
 
 // ---------------------------------------------------------------------------
-// «СИМУЛЯТОР КАРЕНА» — game four, the office.
+// «СИМУЛЯТОР ФИНТЕХА» — game four, the office.
 //
 // The catalogue carries the whole office, and that is the load-bearing
 // simplification against «ВАНЯДУМ»: there is one office, it is always the same
@@ -870,7 +870,7 @@ export interface VanyadumRunRow {
 // ---------------------------------------------------------------------------
 
 /** An axis-aligned rectangle in office metres. Origin top-left, +Y downward. */
-export interface KarenRect {
+export interface FintechRect {
   x: number;
   y: number;
   w: number;
@@ -878,16 +878,16 @@ export interface KarenRect {
 }
 
 /** The room itself: its size in metres, its furniture, and who fits through it. */
-export interface KarenOfficeConfig {
+export interface FintechOfficeConfig {
   w: number;
   h: number;
-  desks: KarenRect[];
+  desks: FintechRect[];
   player_radius: number;
   boss_radius: number;
 }
 
 /** The money ramp — the core feel of the game, and the whole reason to stand still. */
-export interface KarenMoneyConfig {
+export interface FintechMoneyConfig {
   base_per_second: number;
   ramp_seconds: number;
   max_multiplier: number;
@@ -901,7 +901,7 @@ export interface KarenMoneyConfig {
  * `input_hz` and `max_commands` are not advice: the socket rate-limits a client
  * that sends faster, and the server drops sub-steps beyond the cap.
  */
-export interface KarenMoveConfig {
+export interface FintechMoveConfig {
   walk_speed: number;
   dash_speed: number;
   dash_ms: number;
@@ -911,38 +911,38 @@ export interface KarenMoveConfig {
 }
 
 /** The bald man. He walks at you and smiles wider as he closes. */
-export interface KarenBossConfig {
+export interface FintechBossConfig {
   speed: number;
   catch_radius: number;
   /** Metres over which the grin ramps from nothing to everything. */
   grin_range: number;
 }
 
-export interface KarenSimConfig {
+export interface FintechSimConfig {
   hz: number;
   snapshot_hz: number;
 }
 
 /** How a shift can end. The client shows the title and sub; it never writes one. */
-export interface KarenEnding {
+export interface FintechEnding {
   key: string;
   title: string;
   sub: string;
 }
 
-export interface KarenConfig {
+export interface FintechConfig {
   game_key: string;
   title: string;
-  office: KarenOfficeConfig;
-  money: KarenMoneyConfig;
-  move: KarenMoveConfig;
-  boss: KarenBossConfig;
-  sim: KarenSimConfig;
-  endings: KarenEnding[];
+  office: FintechOfficeConfig;
+  money: FintechMoneyConfig;
+  move: FintechMoveConfig;
+  boss: FintechBossConfig;
+  sim: FintechSimConfig;
+  endings: FintechEnding[];
   /** What he says. Carried from iteration 1 so the shape is right; drawn later. */
   boss_lines: string[];
   /** What YOU say. The wire carries an index into this, never the words. */
-  karen_lines: string[];
+  player_lines: string[];
   max_occupants: number;
   /**
    * The one verb a second Карен makes possible: point the лысый at somebody
@@ -968,14 +968,14 @@ export interface KarenConfig {
 }
 
 /** A started or resumed shift. No level — the office is in the catalogue. */
-export interface KarenShift {
+export interface FintechShift {
   shift_id: string;
   /** The realtime room to open the socket in. Taken from here, never hardcoded. */
   room: string;
 }
 
 /** One of your own finished shifts, as the splash lists them. */
-export interface KarenShiftRow {
+export interface FintechShiftRow {
   cause: string;
   salary: number;
   seconds: number;
@@ -983,7 +983,7 @@ export interface KarenShiftRow {
 }
 
 /** One row of the leaderboard: the best shift per account, never the best rows. */
-export interface KarenTopRow {
+export interface FintechTopRow {
   name: string;
   salary: number;
   seconds: number;

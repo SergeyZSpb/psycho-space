@@ -11,7 +11,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/gamekhimki/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
 - **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*` — **two reads (`config`, `state`) and nothing that writes**, because a verb travels over the socket as a `vanyagotchi_do` frame and cannot be curl'd (ADR-043) — view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and every phrase pool are in `content.go`, not the database — so retuning, renaming, adding a regular or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from **five disjoint pools** (a test enforces the disjointness, so a line can only ever mean one thing) and they say different things about him: `tiredSays` — he gave up on a walk; `idleSays` — he is just standing about; `shySays` — he lost his nerve and the verb did nothing; `reekSays` — **somebody else** relieved himself near him; `enviousSays` — **somebody else** found the keys. The last two are the only lines another player's action puts in your mouth, and the regulars get them too. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep; the two reactions are held in memory with an expiry and dropped by the tick that finds them stale.
-- **game 4 («Симулятор Карена»):** package `internal/gamekaren/`, table `game_karen_shifts` (`migrations/013_game_karen.sql`), routes `/api/game-karen/*`, realtime room `karen`, view `GameKarenView.vue` at `/app/game-karen`. **No LLM on any path.** Debugging it is unlike every game above in one way that dominates: **almost nothing is stored.** The office, the positions, the boss, the streak and the salary live in process memory and are lost on any restart; Postgres gets **one summary row when a shift ends** and nothing else, so there is no table to look at while somebody is playing. A shift shorter than `MinShiftSeconds` is deliberately **dropped rather than written**, which is the first thing to check when somebody swears they played and there is no row. `cause` is `promoted` (the лысый reached you) or `left` (you walked out, or your socket was gone past the abandon grace) — plain `text`, so a later ending is not a migration. Every rule — the static office and its desks, the walk and dash speeds, the base rate, the ×1→×3 ramp, the grace window, the boss's speed and catch radius, the ending titles — is in `content.go`, **served** at `GET /api/game-karen/config`, and the splash screen's cheatsheet is generated from that same payload, so the rules on screen cannot drift from the rules enforced. Playing happens entirely on the socket (`karen_input` up, `karen_snap` down at 10 Hz) and cannot be curl'd; the HTTP surface is only the edges of a shift. **Every defect it has had so far has been the client and the server disagreeing about how far something moved**, and none of them was found by reading the code — see "«It teleports / stutters / doesn't move» — measuring a netcode complaint" for the two procedures that did find them (drive the real stack from `web/e2e-stack/` and record the socket frames beside the drawn CSS position; or track the figure in the owner's phone recording, calibrating metres per pixel off the desks). See "Working on «Симулятор Карена» (the office)" below.
+- **game 4 («Симулятор финтеха»):** package `internal/gamefintech/`, table `game_fintech_shifts` (created by `migrations/013_game_karen.sql`, renamed by `014_game_fintech_rename.sql`), routes `/api/game-fintech/*`, realtime room `fintech`, view `GameFintechView.vue` at `/app/game-fintech`. **It was «СИМУЛЯТОР КАРЕНА» until 2026-07-30**, so anything older than that — a log line, a saved query, a bookmark — uses `gamekaren` / `game_karen_shifts` / `/api/game-karen/*` / room `karen` / the `karen_*` frame types. **013 keeps its old filename on purpose** (the migrator keys `schema_migrations` on it, so a renamed 013 re-runs and recreates an empty `game_karen_shifts`), and the `game_key` value is still `karen` because a `game_key` value is data, not a name. **No LLM on any path.** Debugging it is unlike every game above in one way that dominates: **almost nothing is stored.** The office, the positions, the boss, the streak and the salary live in process memory and are lost on any restart; Postgres gets **one summary row when a shift ends** and nothing else, so there is no table to look at while somebody is playing. A shift shorter than `MinShiftSeconds` is deliberately **dropped rather than written**, which is the first thing to check when somebody swears they played and there is no row. `cause` is `promoted` (the лысый reached you) or `left` (you walked out, or your socket was gone past the abandon grace) — plain `text`, so a later ending is not a migration. Every rule — the static office and its desks, the walk and dash speeds, the base rate, the ×1→×3 ramp, the grace window, the boss's speed and catch radius, the ending titles — is in `content.go`, **served** at `GET /api/game-fintech/config`, and the splash screen's cheatsheet is generated from that same payload, so the rules on screen cannot drift from the rules enforced. Playing happens entirely on the socket (`fintech_input` up, `fintech_snap` down at 10 Hz) and cannot be curl'd; the HTTP surface is only the edges of a shift. **Every defect it has had so far has been the client and the server disagreeing about how far something moved**, and none of them was found by reading the code — see "«It teleports / stutters / doesn't move» — measuring a netcode complaint" for the two procedures that did find them (drive the real stack from `web/e2e-stack/` and record the socket frames beside the drawn CSS position; or track the figure in the owner's phone recording, calibrating metres per pixel off the desks). See "Working on «Симулятор финтеха» (the office)" below.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
 - **login:** two providers, VK ID and Яндекс ID, sharing everything after the exchange. Redirect URLs are SPA **pages**, never API endpoints: `/auth/redirect` (VK) and `/auth/yandex/redirect` (Yandex). VK needs **three** copies of its URL to match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app list); Yandex needs only **two** because the server builds its authorize URL (ADR-055). A **405 on either `/api/auth/*/callback`** means something points at the API again. See "Login — the redirect URL, and what a 405 means".
@@ -376,7 +376,7 @@ and that is by design rather than a bug. The *pose* is not cached — it is deri
 from the cached pairs on every tick, so a Ваня visibly deteriorates without
 anything being refreshed.
 
-### Working on «Симулятор Карена» (the office)
+### Working on «Симулятор финтеха» (the office)
 
 **Almost nothing about this game is in the database, and that is the property to
 hold in your head before debugging it.** The office, where everybody is standing,
@@ -391,7 +391,7 @@ flight during a deploy is simply lost, exactly as an in-flight «ВАНЯДУМ�
 ssh psycho "sudo -u postgres psql psychospace -c \"
   SELECT id, account_id, cause, round(salary::numeric) AS pay,
          round(seconds::numeric, 1) AS secs, created_at
-    FROM game_karen_shifts WHERE deleted_at IS NULL
+    FROM game_fintech_shifts WHERE deleted_at IS NULL
    ORDER BY created_at DESC LIMIT 20\""
 ```
 
@@ -411,24 +411,24 @@ shift does not fill the whole board. That is in the SQL, not in the client:
 ```sql
 -- what /shifts/top is actually computing
 SELECT DISTINCT ON (account_id) account_id, salary, seconds, cause
-  FROM game_karen_shifts WHERE deleted_at IS NULL
+  FROM game_fintech_shifts WHERE deleted_at IS NULL
  ORDER BY account_id, salary DESC;
 ```
 
-**Every rule of the game is in `internal/gamekaren/content.go`, not in the
+**Every rule of the game is in `internal/gamefintech/content.go`, not in the
 database and not in the client.** The office layout, the desks, the walk and dash
 speeds, the base rate, the ramp, the grace window, the boss's speed and catch
 radius, and the ending titles all ship with the binary and are **served** at
-`GET /api/game-karen/config` — which is also what the splash screen's rules
+`GET /api/game-fintech/config` — which is also what the splash screen's rules
 cheatsheet is generated from. So retuning the game is a backend deploy with no
 migration and no frontend change, and the rules on the splash screen cannot drift
 from the rules the server enforces. If the cheatsheet says something the game does
-not do, the bug is in `karenRules.ts` deriving it, never in a number typed twice.
+not do, the bug is in `fintechRules.ts` deriving it, never in a number typed twice.
 
 **To see what a player is told:**
 
 ```bash
-curl -fsS -b "psycho_session=<token>" https://psycho-space.ru/api/game-karen/config | jq .
+curl -fsS -b "psycho_session=<token>" https://psycho-space.ru/api/game-fintech/config | jq .
 ```
 
 **The office is static.** There is no generator, no seed and no per-shift level —
@@ -437,7 +437,7 @@ catalogue above rather than on any frame or in any start response. So "the desks
 moved" is not a thing that can happen.
 
 **Nothing about a shift can be curl'd while it is running.** Movement travels over
-the socket as `karen_input` frames and the world comes back as `karen_snap` ten
+the socket as `fintech_input` frames and the world comes back as `fintech_snap` ten
 times a second — the HTTP surface is only the *edges* of a shift (start, resume,
 walk out) plus the two reads. That is deliberate and matches the yard's rule that
 a verb is not an endpoint.
@@ -466,12 +466,12 @@ where the figure was actually painted on every animation frame.
 ```ts
 // what the client sent and what the server answered
 page.on('websocket', (s) => {
-  s.on('framesent', (f) => log('OUT', f.payload));      // karen_input: q, dt, mx, my, d
-  s.on('framereceived', (f) => log('IN', f.payload));   // karen_snap:  k, ack, x, y, dc
+  s.on('framesent', (f) => log('OUT', f.payload));      // fintech_input: q, dt, mx, my, d
+  s.on('framereceived', (f) => log('IN', f.payload));   // fintech_snap:  k, ack, x, y, dc
 });
 // where the figure was actually drawn, every frame — --x/--y are fractions of the office
 await page.evaluate(() => {
-  const el = document.querySelector('[data-testid="karen-me"]') as HTMLElement;
+  const el = document.querySelector('[data-testid="fintech-me"]') as HTMLElement;
   const tick = (now: number) => {
     (window as any).__samples.push([now,
       parseFloat(el.style.getPropertyValue('--x')), parseFloat(el.style.getPropertyValue('--y'))]);
@@ -851,7 +851,7 @@ SELECT (SELECT count(*) FROM wishlist_items    WHERE account_id = '<uuid>') AS i
        (SELECT count(*) FROM wishlist_comments WHERE account_id = '<uuid>') AS comments,
        (SELECT count(*) FROM game_khimki_runs  WHERE account_id = '<uuid>') AS khimki_runs,
        (SELECT count(*) FROM game_vanyadum_runs WHERE account_id = '<uuid>') AS dum_runs,
-       (SELECT count(*) FROM game_karen_shifts  WHERE account_id = '<uuid>') AS karen_shifts;
+       (SELECT count(*) FROM game_fintech_shifts  WHERE account_id = '<uuid>') AS fintech_shifts;
 ```
 
 Confirm it worked:

@@ -8,12 +8,12 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **status:** Accepted · 2026-07-29
 - **summary:** one paragraph in [ARCHITECTURE.md §8.4](../ARCHITECTURE.md#adr-057--a-dom-game-may-own-a-fixed-step-simulation) — this file is the detail behind it.
 - **related:** [ADR-038](./ADR-038-time-varying-state-is-computed-on-read-never.md) · [ADR-042](./ADR-042-everything-that-moves-is-a-function-of.md) · [ADR-046](./ADR-046-the-shared-plane-is-dom-and-css-never-a.md) · [ADR-047](./ADR-047-vanyadum-renders-in-webgl-and-only-the.md) · [ADR-048](./ADR-048-the-simulation-is-a-server-owned-fixed-step.md) · [ADR-052](./ADR-052-the-netcode-is-built-multiplayer-complete.md) · [ADR-056](./ADR-056-the-office-is-one-process-wide-arena-not-one.md)
-- **code:** `internal/gamekaren/sim.go` — the pure `Step` · `boss.go` — `StepBoss`, the pursuit that is not closed form · `service.go` — the 20 Hz loop · `web/src/views/GameKarenView.vue` — the plane, in real elements · `web/src/lib/karenStep.ts` — the same `Step` in the browser, pinned by golden vectors
+- **code:** `internal/gamefintech/sim.go` — the pure `Step` · `boss.go` — `StepBoss`, the pursuit that is not closed form · `service.go` — the 20 Hz loop · `web/src/views/GameFintechView.vue` — the plane, in real elements · `web/src/lib/fintechStep.ts` — the same `Step` in the browser, pinned by golden vectors
 - **re-examine when:** somebody proposes a `<canvas>` for this game, or argues that owning a tick obliges a game to abandon DOM — and when the DOM element budget is finally measured on a real phone.
 
 ---
 
-«СИМУЛЯТОР КАРЕНА» is drawn in **DOM and CSS** and simulated by a **server-owned fixed-step tick at 20 Hz**. It is the first thing in this project to combine those two, and this record exists because the combination looks like a contradiction of two records that both still stand.
+«СИМУЛЯТОР ФИНТЕХА» is drawn in **DOM and CSS** and simulated by a **server-owned fixed-step tick at 20 Hz**. It is the first thing in this project to combine those two, and this record exists because the combination looks like a contradiction of two records that both still stand.
 
 _The two records it appears to break, and why it breaks neither._ [ADR-046](./ADR-046-the-shared-plane-is-dom-and-css-never-a.md) says the shared plane is DOM and CSS, never a game engine, and names its own flip triggers. [ADR-048](./ADR-048-the-simulation-is-a-server-owned-fixed-step.md) says a simulation is server-owned and fixed-step, and buys that exception with collision. What the pair had accidentally implied — because «ВАНЯДУМ» flipped both at once — is that **rendering technology and update model are one decision**. They are not. They are independent axes, and this game picks the yard's answer on one and the shooter's on the other.
 

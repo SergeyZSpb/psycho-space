@@ -13,10 +13,10 @@ import type {
   GameKhimkiRun,
   GameKhimkiStats,
   GameKhimkiTurnResult,
-  KarenConfig,
-  KarenShift,
-  KarenShiftRow,
-  KarenTopRow,
+  FintechConfig,
+  FintechShift,
+  FintechShiftRow,
+  FintechTopRow,
   LoginResult,
   VanyadumConfig,
   VanyadumRun,
@@ -207,15 +207,15 @@ export const gameVanyadumApi = {
   myRuns: () => apiFetch<{ runs: VanyadumRunRow[] }>('/api/game-vanyadum/runs/me'),
 };
 
-// «СИМУЛЯТОР КАРЕНА». Its own block, like every game, and — like «ВАНЯДУМ»'s —
+// «СИМУЛЯТОР ФИНТЕХА». Its own block, like every game, and — like «ВАНЯДУМ»'s —
 // deliberately only the EDGES of a shift: standing still, walking and dashing
 // all travel on the socket, because they happen ten times a second.
-export const gameKarenApi = {
+export const gameFintechApi = {
   // The catalogue: the office and its desks, the money ramp, the dash, the boss
   // and both endings. The splash's rules cheatsheet is generated from this, so
   // retuning a constant on the server changes what the player is told with no
   // frontend deploy.
-  config: () => apiFetch<KarenConfig>('/api/game-karen/config'),
+  config: () => apiFetch<FintechConfig>('/api/game-fintech/config'),
 
   // Clocks in. 409 `shift_in_progress` when one is already going — a refusal
   // rather than a silent replacement, because dropping the old occupant would
@@ -225,25 +225,25 @@ export const gameKarenApi = {
   // No level comes back and none is needed: the office is static and already in
   // the catalogue. Nothing is written to Postgres here either — a shift is one
   // row, written once, when it ends.
-  start: () => apiFetch<KarenShift>('/api/game-karen/shifts', { method: 'POST' }),
+  start: () => apiFetch<FintechShift>('/api/game-fintech/shifts', { method: 'POST' }),
 
   // The shift already in progress, or 404 `no_shift`. This is the reload path:
   // after a refresh the browser has a session, a socket and no shift id.
-  current: () => apiFetch<KarenShift>('/api/game-karen/shifts/current'),
+  current: () => apiFetch<FintechShift>('/api/game-fintech/shifts/current'),
 
   // Walks out. Unlike «ВАНЯДУМ», this DOES write the shift — leaving is an
   // ending («ТЫ ПРОСТО УШЁЛ»), not an abandonment.
-  leave: () => apiFetch<void>('/api/game-karen/shifts/current', { method: 'DELETE' }),
+  leave: () => apiFetch<void>('/api/game-fintech/shifts/current', { method: 'DELETE' }),
 
   // Your own recent shifts. It exists so that "the shift was written" is
   // something a person can check without opening a database.
   myShifts: (limit = 10) =>
-    apiFetch<{ shifts: KarenShiftRow[] }>(`/api/game-karen/shifts/me?limit=${limit}`),
+    apiFetch<{ shifts: FintechShiftRow[] }>(`/api/game-fintech/shifts/me?limit=${limit}`),
 
   // The board: the best shift per account, not the best rows, or one good shift
   // fills the whole thing.
   topShifts: (limit = 10) =>
-    apiFetch<{ shifts: KarenTopRow[] }>(`/api/game-karen/shifts/top?limit=${limit}`),
+    apiFetch<{ shifts: FintechTopRow[] }>(`/api/game-fintech/shifts/top?limit=${limit}`),
 };
 
 export const adminApi = {

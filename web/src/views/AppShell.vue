@@ -15,10 +15,10 @@
           value="game-vanyadum"
         />
         <v-list-item
-          :to="{ name: 'game-karen' }"
+          :to="{ name: 'game-fintech' }"
           prepend-icon="mdi-briefcase-remove-outline"
-          title="СИМУЛЯТОР КАРЕНА"
-          value="game-karen"
+          title="СИМУЛЯТОР ФИНТЕХА"
+          value="game-fintech"
         />
         <v-list-item
           :to="{ name: 'game-khimki' }"

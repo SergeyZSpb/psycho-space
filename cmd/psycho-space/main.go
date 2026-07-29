@@ -18,7 +18,7 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/crypto"
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
-	"github.com/SergeyZSpb/psycho-space/internal/gamekaren"
+	"github.com/SergeyZSpb/psycho-space/internal/gamefintech"
 	"github.com/SergeyZSpb/psycho-space/internal/gamekhimki"
 	"github.com/SergeyZSpb/psycho-space/internal/gamevanyadum"
 	"github.com/SergeyZSpb/psycho-space/internal/gamevanyagotchi"
@@ -143,7 +143,7 @@ func main() {
 	defer vanyadumTicker.Stop()
 	go gameVanyadumSvc.Run(hubCtx, vanyadumTicker.C)
 
-	// «СИМУЛЯТОР КАРЕНА» — the fourth game, and the second simulation. It runs
+	// «СИМУЛЯТОР ФИНТЕХА» — the fourth game, and the second simulation. It runs
 	// the same twenty-hertz shape as the shooter above with one difference that
 	// matters here: there is ONE office for the whole process rather than one
 	// world per run, so this ticker advances a single shared world however many
@@ -151,10 +151,10 @@ func main() {
 	//
 	// The ticker is injected for the same reason both games above inject theirs —
 	// the tests drive the loop from a channel and never sleep.
-	gameKarenSvc := gamekaren.NewService(hub, gamekaren.Room, pool, gamekaren.NewPostgresRepository(), accounts)
-	karenTicker := time.NewTicker(gamekaren.SimStep)
-	defer karenTicker.Stop()
-	go gameKarenSvc.Run(hubCtx, karenTicker.C)
+	gameFintechSvc := gamefintech.NewService(hub, gamefintech.Room, pool, gamefintech.NewPostgresRepository(), accounts)
+	fintechTicker := time.NewTicker(gamefintech.SimStep)
+	defer fintechTicker.Stop()
+	go gameFintechSvc.Run(hubCtx, fintechTicker.C)
 
 	vkClient := vk.New(cfg.VK.BaseURL, cfg.VK.AppID, cfg.VK.ServiceToken, cfg.VK.RedirectURI)
 	yandexClient := yandex.New(cfg.Yandex.OAuthBaseURL, cfg.Yandex.InfoURL,
@@ -184,7 +184,7 @@ func main() {
 		// socket via RealtimeHandlers below.
 		GameVanyagotchi: gameVanyagotchiSvc,
 		GameVanyadum:    gameVanyadumSvc,
-		GameKaren:       gameKarenSvc,
+		GameFintech:     gameFintechSvc,
 		GameAssets:      gameAssetsSvc,
 		Settings:        settingsSvc,
 		VKVerifier:      vkVerifier,
@@ -198,7 +198,7 @@ func main() {
 		RealtimeHandlers: map[string]realtime.Handler{
 			httpapi.DefaultRoom: gameVanyagotchiSvc,
 			gamevanyadum.Room:   gameVanyadumSvc,
-			gamekaren.Room:      gameKarenSvc,
+			gamefintech.Room:    gameFintechSvc,
 		},
 	})
 	httpServer := httpapi.NewHTTPServer(cfg.HTTPAddr, srv.Handler(), httpapi.DefaultTimeouts())
@@ -256,9 +256,9 @@ func main() {
 	// itself is in memory and survives nothing, so that one row is the only
 	// thing a restart can preserve.
 	select {
-	case <-gameKarenSvc.Done():
+	case <-gameFintechSvc.Done():
 	case <-time.After(5 * time.Second):
-		slog.Warn("gamekaren did not finish saving shifts in time")
+		slog.Warn("gamefintech did not finish saving shifts in time")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

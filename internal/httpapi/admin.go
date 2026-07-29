@@ -231,12 +231,12 @@ func (s *Server) forgetInGames(id string) {
 			s.d.GameVanyadum.AbandonRun(uid)
 		}
 	}
-	if s.d.GameKaren != nil {
+	if s.d.GameFintech != nil {
 		// Drops the occupant out of the office without writing the shift, for
 		// the same reason. It is deliberately safe to call twice and safe for an
 		// account the office has never seen, because this function IS called
 		// twice — once before the anonymising statement and once after it.
-		s.d.GameKaren.PurgeAccount(id)
+		s.d.GameFintech.PurgeAccount(id)
 	}
 }
 
