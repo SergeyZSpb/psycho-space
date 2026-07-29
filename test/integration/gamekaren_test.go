@@ -210,6 +210,32 @@ func karenWork(t *testing.T, tick chan time.Time, clock *karenClock, d time.Dura
 	}
 }
 
+// karenAgeWithoutTheChase makes a shift OLD ENOUGH TO RECORD without making it
+// long enough for the bald man to end it.
+//
+// The two clocks come apart here, and that is the whole point. MinShiftSeconds
+// is a WALL-CLOCK rule — a shift is worth a row if it lasted that long by
+// StartedAt — while the chase advances only on SIMULATED ticks. karenWork paces
+// ticks at real time so the two run together, which was safe while everybody
+// spawned 16.5 m from him (3.8 s of head start) and is not now that a spawn is
+// DRAWN: the floor is spawnFromBoss, so pumping a full 3.7 s of simulation raced
+// him and lost. CI caught it as a 404 on the leave, the shift having already
+// ended as `promoted`.
+//
+// So this spends one simulated second — enough that standing still has earned
+// something, which is what the test then asserts — and lets the rest of the wall
+// clock pass with the office standing still.
+func karenAgeWithoutTheChase(t *testing.T, tick chan time.Time, clock *karenClock, d time.Duration) {
+	t.Helper()
+	started := time.Now()
+	for i := 0; i < gamekaren.SimHz; i++ {
+		karenStep(t, tick, clock)
+	}
+	if rest := d - time.Since(started); rest > 0 {
+		time.Sleep(rest)
+	}
+}
+
 // waitForKarenFrame pumps the office until a frame of the given type arrives.
 //
 // Bounded by TIME, never by a count of iterations: a bound on how hard it tries
@@ -467,8 +493,7 @@ func TestKarenWalkingOutWritesTheShift(t *testing.T) {
 	clock := newKarenClock()
 
 	startShift(t, cli, srv.URL)
-	// Long enough to be worth writing down, on both clocks — see karenWork.
-	karenWork(t, tick, clock, karenLongEnough())
+	karenAgeWithoutTheChase(t, tick, clock, karenLongEnough())
 
 	if code := leaveShift(t, cli, srv.URL); code != http.StatusNoContent {
 		t.Fatalf("leave: status %d, want 204", code)
@@ -619,12 +644,18 @@ func TestKarenTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 		t.Fatalf("a snapshot with no bald man in it: %v", first)
 	}
 
-	// Walk UP the central lane, which is clear of desks all the way — the test is
-	// about the simulation answering, not about the push-out resolver, which has
-	// its own unit tests. AWAY from the bald man rather than towards him, which
-	// is not squeamishness: he closes at BossSpeed from the far wall, and every
-	// metre this test puts between them is more ticks it can spend pumping before
-	// the shift ends underneath it and the snapshots stop.
+	// Walk DOWN the plane, INTO the room. It used to walk up, away from the bald
+	// man, which was right while everybody spawned mid-floor at a known point —
+	// and is wrong now that a spawn is drawn. The draw has to leave a head start
+	// of spawnFromBoss, and he stands at the far wall, so a spawn is always in the
+	// band at the OPPOSITE end: walking "away" now means walking into the wall
+	// that is a few centimetres behind you, which moves nobody. That is exactly
+	// how this failed — "thirty-two steps of walking moved nobody from 930/35",
+	// 35 cm being hard against the top edge.
+	//
+	// Down is into open floor from anywhere the draw can put you, and it is safe
+	// despite being towards him: this walks about five metres out of a head start
+	// of fifteen, so the shift cannot end underneath the assertions.
 	//
 	// BATCHED, exactly as the browser batches: the socket allows ten frames a
 	// second and one frame per sub-step trips the platform's rate limiter, which
@@ -641,7 +672,7 @@ func TestKarenTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 			// below what it has already folded in.
 			seq := i*perFrame + j + 1
 			cmds = append(cmds, map[string]any{
-				"q": seq, "dt": gamekaren.SimStep.Seconds(), "mx": 0, "my": -1,
+				"q": seq, "dt": gamekaren.SimStep.Seconds(), "mx": 0, "my": 1,
 			})
 		}
 		msg, _ := json.Marshal(map[string]any{"t": "karen_input", "k": 0, "cmds": cmds})

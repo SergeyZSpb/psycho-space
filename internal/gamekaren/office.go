@@ -125,20 +125,37 @@ const (
 	// THAT CAN HANG A 20 Hz TICK, and Join runs under the same mutex the
 	// simulation does — so this terminates in a bounded number of draws and
 	// falls back to a point that is legal by construction.
-	spawnTries = 48
+	//
+	// The count is sized against a MEASUREMENT rather than picked: with the
+	// clear-line rule and the spawnFromBoss floor below, 8.4 % of the legal floor
+	// qualifies, so 48 draws would miss about once in seventy joins and take the
+	// fallback — which is exactly the near-the-boss spawn the floor exists to
+	// prevent. At 240 the miss rate is about one in forty million. They are
+	// arithmetic on a join, which happens once a shift and never on a tick.
+	spawnTries = 240
 	// spawnFromEachOther is how much room two Карена get. Two player radii is
 	// touching; this is enough that a joiner is visibly beside somebody rather
 	// than inside them.
 	spawnFromEachOther = 1.5
-	// spawnFromBoss is the head start a shift opens with, and GrinRange is not
-	// it. He walks at BossSpeed and the room is only OfficeH long, so "outside
-	// the range he smiles from" is 6 m, which he covers in about a second and a
-	// half — a shift that ends before the splash has faded. The catalogue's own
-	// spawn is 16.5 m from his, about 3.8 s; twelve keeps most of that (2.7 s)
-	// while leaving a usable share of the floor to draw from.
+	// spawnHeadStart is the shortest chase a shift may OPEN with, and it is tied
+	// to MinShiftSeconds on purpose: a shift shorter than that is dropped rather
+	// than written, so a spawn that lets him arrive sooner can produce a shift
+	// that ended and left no trace of itself. Half a second of margin over it,
+	// because he does not have to walk in a straight line to get there.
+	spawnHeadStart = MinShiftSeconds + 0.5
+	// spawnFromBoss is that head start expressed as a distance, which is what a
+	// spawn can actually be tested against.
 	//
-	// It is a threshold to STOP looking at, not a hard filter — see spawnPoint.
-	spawnFromBoss = 12.0
+	// DERIVED RATHER THAN PICKED. Every number in it is a constant this game
+	// already tunes — his speed, the radius at which he catches you, yours — so
+	// retuning any of them keeps this true instead of silently invalidating it.
+	// At today's values it is 15.2 m, against the old fixed spawn's 16.5.
+	//
+	// It is a HARD filter with a fallback, not a preference, and that distinction
+	// is what CI caught: as a preference the sampler kept the best of its draws
+	// and the measured worst was 8 m — a 1.7 s head start, shorter than
+	// MinShiftSeconds, so an unlucky shift ended before it was worth recording.
+	spawnFromBoss = spawnHeadStart*BossSpeed + CatchRadius + PlayerRadius
 )
 
 // spawnPoint draws where somebody joining stands.
@@ -186,14 +203,15 @@ func (o *Office) spawnPoint() Vec2 {
 		}
 		return true
 	}
-	// KEEP THE BEST SAMPLE RATHER THAN THE FIRST ACCEPTABLE ONE, because
-	// distance from the bald man is a preference and not a filter. Mid-shift he
-	// is wherever he has chased somebody to, and from the middle of the room
-	// almost nothing is spawnFromBoss away — a hard filter would reject every
-	// draw and fall through to a fixed point that could be right next to him,
-	// which is the worst answer available. Taking the farthest legal point seen
-	// degrades to "as far as we could find" instead, and short-circuits the
-	// moment a draw is comfortably clear so the usual case costs one sample.
+	// A HARD FLOOR, WITH THE BEST LEGAL POINT AS THE FALLBACK. Taking the first
+	// draw that clears spawnFromBoss is what gives the head start a floor rather
+	// than a distribution — and the floor is what stops a shift ending before
+	// MinShiftSeconds. But the filter cannot be the whole rule: mid-shift he is
+	// wherever he has chased somebody to, and from the middle of the room almost
+	// nothing is 12 m away, so rejecting everything would fall through to a fixed
+	// point that could be right beside him. Keeping the farthest legal point seen
+	// degrades to "as far as we could find" instead, which is the best answer
+	// available when the good one does not exist.
 	best, bestGap := Vec2{}, -1.0
 	for i := 0; i < spawnTries; i++ {
 		at := Vec2{

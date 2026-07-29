@@ -624,31 +624,28 @@ func TestNobodySpawnsOnTopOfSomebodyAlreadyWorking(t *testing.T) {
 }
 
 func TestASpawnKeepsItsDistanceFromHimWhereItCan(t *testing.T) {
-	// TWO CLAIMS, because spawnFromBoss is a PREFERENCE and not a filter — the
-	// sampler short-circuits on the first draw that is comfortably clear and
-	// otherwise keeps the best it saw, so a run of unlucky draws legitimately
-	// lands inside it. Rejecting outright is the worse design: mid-shift he can
-	// stand where almost nothing is 12 m away, and a hard filter would reject
-	// every draw and fall through to a fixed point that could be beside him.
+	// A FLOOR, NOT A DISTRIBUTION, and the difference is what CI caught.
 	//
-	// Both numbers are measured over 3000 draws into an empty office: the
-	// smallest gap seen was 8.02 m and 0.17 % were inside the preference. The
-	// bars below are those with room — a hard floor at GrinRange, which is the
-	// distance that decides whether the shift opens with him already smiling at
-	// you, and 95 % against a measured 99.8 %.
-	const draws = 400
-	inside := 0
-	for i, at := range spawnsOf(t, draws) {
+	// While spawnFromBoss was a preference the sampler kept the best of its
+	// draws, and the worst seen over 3000 was 8.02 m — a 1.7 s head start, which
+	// is SHORTER THAN MinShiftSeconds. So an unlucky shift could be over before
+	// it was long enough to be written down, and the integration test that walks
+	// out after MinShiftSeconds raced him and lost.
+	//
+	// It is a hard filter now, so in an empty office — where he is at his own
+	// spawn and most of the floor qualifies — every draw clears it. The fallback
+	// exists for the case this test cannot make: him standing mid-room, with
+	// nothing 12 m from anywhere. See TestACrowdedFloorStillProducesALegalSpawn.
+	for i, at := range spawnsOf(t, 400) {
 		gap := math.Hypot(at.X-BossSpawnX, at.Y-BossSpawnY)
-		if gap <= GrinRange {
-			t.Fatalf("draw %d spawned %.2f m from him — inside the range he smiles from (%v)", i, gap, GrinRange)
-		}
 		if gap < spawnFromBoss {
-			inside++
+			t.Fatalf("draw %d spawned %.2f m from him, inside the %v m floor", i, gap, spawnFromBoss)
 		}
-	}
-	if got := float64(draws-inside) / draws; got < 0.95 {
-		t.Fatalf("only %.1f%% of draws kept %v m from him", 100*got, spawnFromBoss)
+		// And the floor is worth what it claims: long enough to be a shift.
+		if head := (gap - CatchRadius - PlayerRadius) / BossSpeed; head < MinShiftSeconds {
+			t.Fatalf("draw %d gives a %.2f s head start, shorter than MinShiftSeconds (%v)",
+				i, head, MinShiftSeconds)
+		}
 	}
 }
 
