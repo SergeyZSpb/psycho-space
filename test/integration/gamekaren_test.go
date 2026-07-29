@@ -961,3 +961,86 @@ func TestKarenTwoShiftsDoNotStartOnTheSameTile(t *testing.T) {
 		return
 	}
 }
+
+func TestKarenPointingHimAtAColleagueOverTheSocket(t *testing.T) {
+	// The verb, end to end: two accounts, two real sockets, one office, and the
+	// bald man changing his mind because somebody said so.
+	app, tick, _ := buildAppKaren(t, karenVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cliA := loginAs(t, srv.URL, "920014", "user")
+	cliB := loginAs(t, srv.URL, "920015", "user")
+	clock := newKarenClock()
+
+	startShift(t, cliA, srv.URL)
+	startShift(t, cliB, srv.URL)
+
+	connA, _, err := dialKaren(t, srv.URL, cookieHeader(t, cliA, srv.URL), gamekaren.Room)
+	if err != nil {
+		t.Fatalf("dial a: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialKaren(t, srv.URL, cookieHeader(t, cliB, srv.URL), gamekaren.Room)
+	if err != nil {
+		t.Fatalf("dial b: %v", err)
+	}
+	defer connB.CloseNow()
+	framesA, framesB := readFrames(t, connA), readFrames(t, connB)
+
+	ctx := context.Background()
+	for _, c := range []*websocket.Conn{connA, connB} {
+		if err := c.Write(ctx, websocket.MessageText, []byte(`{"t":"karen_hello"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Learn what A calls B — a pseudonym, which is the only name A has for him.
+	var target string
+	deadline := time.Now().Add(20 * time.Second)
+	for target == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("a never saw b in the office")
+		}
+		f := waitForKarenFrame(t, framesA, tick, clock, "karen_snap", 15*time.Second)
+		if raw, ok := f["pr"].([]any); ok && len(raw) > 0 {
+			target, _ = raw[0].(map[string]any)["i"].(string)
+		}
+	}
+
+	// Fire it, naming him by that handle and nothing else.
+	verb := `{"t":"karen_do","v":"redirect","tg":"` + target + `"}`
+	if err := connA.Write(ctx, websocket.MessageText, []byte(verb)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A's own frame shows the cooldown running and the line over his head, which
+	// is how any client knows the office accepted it — there is no reply.
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("the office never acknowledged the verb")
+		}
+		f := waitForKarenFrame(t, framesA, tick, clock, "karen_snap", 15*time.Second)
+		rc, _ := f["rc"].(float64)
+		p, _ := f["p"].(float64)
+		if rc > 0 && int(p) == gamekaren.RedirectLine {
+			break
+		}
+	}
+
+	// And his COLLEAGUE sees who did it: the same index, on the peer entry.
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("b never saw what a said about him")
+		}
+		f := waitForKarenFrame(t, framesB, tick, clock, "karen_snap", 15*time.Second)
+		raw, ok := f["pr"].([]any)
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		if p, _ := raw[0].(map[string]any)["p"].(float64); int(p) == gamekaren.RedirectLine {
+			break
+		}
+	}
+}

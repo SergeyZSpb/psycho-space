@@ -70,6 +70,14 @@ const CONFIG = {
   boss_lines: ['Я ЛЫСЫЙ, СТЕНД', 'А ГДЕ, СТЕНД?'],
   karen_lines: ['Я КАРЕН, СТЕНД', 'ВОДЫ, СТЕНД', 'НА ВСТРЕЧУ, СТЕНД', LONG_SAY],
   max_occupants: 3,
+  // Marked like everything else in this stub, so a client that hardcoded the
+  // label or the timers cannot pass the assertions below.
+  redirect: {
+    label: 'ЭТО К НЕМУ, СТЕНД',
+    say: 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО',
+    seconds_ms: 7000,
+    cooldown_ms: 21000,
+  },
 };
 
 const SHIFT = { shift_id: 'shift-e2e', room: 'karen' };
@@ -517,7 +525,9 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     // Placed where the frame said, in the same 0..1 plane coordinates every
     // other figure uses — centimetres over the office's metres.
     const at = async (handle: string) =>
-      page.locator(`[data-peer="${handle}"]`).evaluate((el) => ({
+      // Scoped to the FIGURE: `data-peer` is on his button too now, and an
+      // unscoped selector matches both.
+      page.locator(`[data-testid="karen-peer"][data-peer="${handle}"]`).evaluate((el) => ({
         x: (el as HTMLElement).style.getPropertyValue('--x'),
         y: (el as HTMLElement).style.getPropertyValue('--y'),
         body: (el as HTMLElement).style.getPropertyValue('--body'),
@@ -557,6 +567,62 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     await socket.snapshot({ pr: [] });
     await expect(page.getByTestId('karen-peer')).toHaveCount(0);
     await expect(page.getByTestId('karen-me')).toHaveCount(1);
+  });
+
+  test('there is a redirect control per colleague, and none at all when you are alone', async ({
+    page,
+  }) => {
+    // SOLO IS A FIRST-CLASS CASE, NOT A DEGRADED ONE. The catalogue publishes
+    // the verb whatever the office holds, and the client hides the control when
+    // there is nobody to point him at — so the server needs no second code path
+    // and the HUD carries no greyed-out button explaining that you have no
+    // friends.
+    const socket = await enterOffice(page);
+    await socket.snapshot();
+    await expect(page.getByTestId('karen-redirect')).toHaveCount(0);
+
+    await socket.snapshot({
+      pr: [
+        { i: 'AbCdEfGhIjKl', x: 300, y: 600 },
+        { i: 'MnOpQrStUvWx', x: 900, y: 1500 },
+      ],
+    });
+    const buttons = page.getByTestId('karen-redirect');
+    await expect(buttons).toHaveCount(2);
+    // The LABEL comes from the catalogue, so a hardcoded one fails here.
+    await expect(buttons.first()).toContainText('ЭТО К НЕМУ, СТЕНД');
+    // And every control on this plane is a real tap target.
+    for (const box of await buttons.all()) {
+      const b = (await box.boundingBox())!;
+      expect(b.height).toBeGreaterThanOrEqual(44);
+    }
+
+    // Pressing one sends the verb over the SOCKET, naming the colleague by the
+    // pseudonym his frame carried — never an account, which this client has
+    // never been told.
+    await buttons.first().dispatchEvent('pointerdown');
+    await expect
+      .poll(() => socket.sent().some((m) => m.includes('"karen_do"')))
+      .toBe(true);
+    const sent = socket.sent().find((m) => m.includes('"karen_do"'))!;
+    expect(JSON.parse(sent)).toMatchObject({ t: 'karen_do', v: 'redirect', tg: 'AbCdEfGhIjKl' });
+
+    // A colleague who leaves takes his button with him.
+    await socket.snapshot({ pr: [{ i: 'MnOpQrStUvWx', x: 900, y: 1500 }] });
+    await expect(buttons).toHaveCount(1);
+  });
+
+  test('the redirect button is dead while the office says it is cooling down', async ({ page }) => {
+    // The office judges the verb and the frame carries the cooldown, so the
+    // button follows the SERVER rather than running its own timer — a client
+    // that decided for itself would offer a verb the office is about to refuse.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], rc: 12000 });
+    const button = page.getByTestId('karen-redirect').first();
+    await expect(button).toBeDisabled();
+
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }] });
+    await expect(button).toBeEnabled();
   });
 
   test('a balloon rides the man rather than being placed beside him', async ({ page }) => {

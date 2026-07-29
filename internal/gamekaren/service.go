@@ -498,6 +498,19 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 	switch t, cmds := ParseInbound(payload); t {
 	case TypeHello:
 		s.hello(ctx, m)
+	case TypeDo:
+		verb, target := ParseVerb(payload)
+		if verb != VerbRedirect {
+			return
+		}
+		s.mu.Lock()
+		office := s.office
+		s.mu.Unlock()
+		if office != nil {
+			// The outcome is not replied to: it arrives as the next snapshot,
+			// which is what stops a client believing a verb the office refused.
+			office.Redirect(m.AccountID, target)
+		}
 	case TypeInput:
 		now := time.Now()
 		s.mu.Lock()

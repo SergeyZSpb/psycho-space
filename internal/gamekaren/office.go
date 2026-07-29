@@ -72,6 +72,15 @@ type Occupant struct {
 	// a player standing perfectly still sends nothing at all and is the most
 	// present person in the game.
 	LastSeen time.Time
+	// RedirectCool is seconds until this occupant may point the bald man at
+	// somebody again, and Announce is seconds of still saying so.
+	//
+	// BOTH ON THE OCCUPANT AND NEITHER ON Player, deliberately. Player is pinned
+	// to its TypeScript port by the golden vectors, and neither of these is
+	// something Step reads or the client predicts — they are facts about the
+	// office, so they live where the office keeps its facts.
+	RedirectCool float64
+	Announce     float64
 	// Ended and Cause are set by the tick that finishes this shift, in the
 	// instant between the office deciding it is over and the service writing the
 	// row.
@@ -94,6 +103,17 @@ type Office struct {
 	occupants map[string]*Occupant
 	boss      Boss
 	tick      uint64
+	// redirectTo is the account the bald man has been POINTED at, overriding his
+	// standing rule of walking at whoever is nearest, and redirectLeft is how
+	// much of that override is left.
+	//
+	// ON THE OFFICE RATHER THAN ON THE BOSS: who he is chasing is a fact about
+	// the room, not a property of the man, and Boss is a pure value that StepBoss
+	// takes and returns. Keeping it here means the override is expressed by
+	// giving StepBoss a shorter list of targets — no second pursuit rule, and
+	// nothing about the boss changes at all.
+	redirectTo   string
+	redirectLeft float64
 }
 
 // NewOffice opens the floor with the bald man at the far wall and nobody in it.
@@ -431,6 +451,35 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 			targets = append(targets, occ.State.Pos)
 		}
 	}
+
+	// THE REDIRECT IS EXPRESSED AS A SHORTER TARGET LIST, not as a second
+	// pursuit rule. StepBoss walks at the nearest of whatever it is given, so
+	// handing it exactly one target IS "walk at him regardless of who is nearer"
+	// — the boss needs no knowledge of the verb, and there is one pursuit
+	// implementation rather than two that have to agree.
+	if o.redirectLeft > 0 {
+		o.redirectLeft -= dt
+		if occ, ok := o.occupants[o.redirectTo]; ok && occ.State.Alive && o.redirectLeft > 0 {
+			targets = []Vec2{occ.State.Pos}
+		} else {
+			// He has been promoted, walked out, or the window closed. Back to
+			// whoever is nearest, immediately.
+			o.redirectTo, o.redirectLeft = "", 0
+		}
+	}
+
+	// The verb's timers, which are the office's rather than the simulation's —
+	// see the fields on Occupant.
+	for _, k := range keys {
+		occ := o.occupants[k]
+		if occ.RedirectCool > 0 {
+			occ.RedirectCool = math.Max(0, occ.RedirectCool-dt)
+		}
+		if occ.Announce > 0 {
+			occ.Announce = math.Max(0, occ.Announce-dt)
+		}
+	}
+
 	o.boss = StepBoss(Desks, o.boss, targets, dt)
 
 	var ended []*Occupant
@@ -479,7 +528,8 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 		// because both are pure functions of state this frame already carries —
 		// so nothing has to be kept in sync, nothing expires, and two people
 		// looking at the same office are told the same thing by construction.
-		P: KarenLine(occ.State, o.tick),
+		P:  o.lineFor(occ),
+		Rc: msUp(occ.RedirectCool),
 		B: BossFrame{
 			X: cm(o.boss.Pos.X),
 			Y: cm(o.boss.Pos.Y),
@@ -493,6 +543,19 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 		return nil, false
 	}
 	return raw, true
+}
+
+// lineFor is which line is over an occupant's head.
+//
+// The announcement OUTRANKS the rotation: for RedirectSaySeconds after pointing
+// the bald man at somebody, that is what you are saying, because the whole point
+// of the verb is that your colleague can see who did it to him. Everything else
+// is the ordinary two-second rotation. Called with the lock held.
+func (o *Office) lineFor(occ *Occupant) int {
+	if occ.Announce > 0 {
+		return RedirectLine
+	}
+	return KarenLine(occ.State, o.tick)
 }
 
 // peersFor is everybody in the office except the account being addressed.
@@ -526,13 +589,40 @@ func (o *Office) peersFor(accountID string) []PeerFrame {
 			I: occ.Pseudonym,
 			X: cm(occ.State.Pos.X),
 			Y: cm(occ.State.Pos.Y),
-			P: KarenLine(occ.State, o.tick),
+			P: o.lineFor(occ),
 		})
 	}
 	if len(peers) == 0 {
 		return nil
 	}
 	return peers
+}
+
+// Redirect points the bald man at somebody else for RedirectSeconds.
+//
+// Returns whether it fired. It is refused — silently, like every other bad
+// frame — when the caller is not working, is on cooldown, names somebody who is
+// not in the office, or names himself. A refusal is not an error: the client
+// disables the button from the cooldown the snapshot carries, so a refused verb
+// means the two disagreed for a frame, which is not worth a reply.
+func (o *Office) Redirect(accountID, targetHandle string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	caller, ok := o.occupants[accountID]
+	if !ok || !caller.State.Alive || caller.RedirectCool > 0 {
+		return false
+	}
+	for _, k := range o.keys() {
+		occ := o.occupants[k]
+		if occ.Pseudonym != targetHandle || k == accountID || !occ.State.Alive {
+			continue
+		}
+		o.redirectTo, o.redirectLeft = k, RedirectSeconds
+		caller.RedirectCool = RedirectCooldown
+		caller.Announce = RedirectSaySeconds
+		return true
+	}
+	return false
 }
 
 // AvatarFor is the picture to draw on the peer a frame calls handle, and whether

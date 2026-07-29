@@ -192,3 +192,26 @@ describe('the colleagues block', () => {
     expect(blocks.find((b) => b.title === 'Коллеги')).toBeUndefined();
   });
 });
+
+describe('the redirect verb on the cheatsheet', () => {
+  it('takes its label, its words and both timers from the catalogue', () => {
+    const blocks = buildRules({
+      ...config,
+      redirect: { label: 'ЭТО К НЕМУ', say: 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО', seconds_ms: 6000, cooldown_ms: 20000 },
+    });
+    const verb = blocks.find((b) => b.title === 'ЭТО К НЕМУ');
+    expect(verb).toBeDefined();
+    const text = verb!.lines.map((l) => l.text).join(' ');
+    expect(text).toContain('6');
+    expect(text).toContain('20');
+    expect(text).toContain('ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО');
+  });
+
+  it('says nothing about it when the server does not publish it', () => {
+    // A server a version behind the browser is a supported state; a splash that
+    // threw would take the start button down with it.
+    const partial = { ...config } as Record<string, unknown>;
+    delete partial.redirect;
+    expect(buildRules(partial as never).some((b) => b.title === 'ЭТО К НЕМУ')).toBe(false);
+  });
+});

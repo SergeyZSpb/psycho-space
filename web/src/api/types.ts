@@ -944,6 +944,18 @@ export interface KarenConfig {
   /** What YOU say. The wire carries an index into this, never the words. */
   karen_lines: string[];
   max_occupants: number;
+  /**
+   * The one verb a second Карен makes possible: point the лысый at somebody
+   * else for a few seconds, overriding his standing rule of walking at whoever
+   * is nearest. Served rather than hardcoded, so the label, the line and both
+   * timers can be retuned without a client deploy.
+   */
+  redirect?: {
+    label: string;
+    say: string;
+    seconds_ms: number;
+    cooldown_ms: number;
+  };
 }
 
 /** A started or resumed shift. No level — the office is in the catalogue. */

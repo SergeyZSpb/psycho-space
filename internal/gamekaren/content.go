@@ -277,6 +277,13 @@ var bossClosing = []string{
 // never idle — he is thinking, he is in context, he is almost done. The first
 // line of the first run is «Я КАРЕН» because an absent index means zero (see
 // the note above BossLines).
+// karenRedirect is what you say while pointing him at somebody else. Owner's
+// words, and a run of its own so the balloon is unmistakable — a colleague has
+// to be able to tell that this is what just happened to him.
+var karenRedirect = []string{
+	"ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО",
+}
+
 var karenStill = []string{
 	"Я КАРЕН",
 	"Я ДУМАЮ",
@@ -312,7 +319,15 @@ var karenDashing = []string{
 }
 
 // KarenLines is the three runs above, in order, as the catalogue serves them.
-var KarenLines = slices.Concat(karenStill, karenMoving, karenDashing)
+var KarenLines = slices.Concat(karenStill, karenMoving, karenDashing, karenRedirect)
+
+// RedirectLine is the index of «ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО» in the flat pool.
+//
+// Picked by the OFFICE rather than by KarenLine, because "I have just pointed
+// him at somebody" is a fact about the office and not about the simulated
+// player — putting it on Player would force a golden-vector regeneration and a
+// client change for a value Step never reads.
+var RedirectLine = len(karenStill) + len(karenMoving) + len(karenDashing)
 
 // BossSlot is how long he holds one of his sentences before moving to the next.
 //
@@ -328,6 +343,28 @@ const BossSlot = 40 // ticks, at SimHz — 2 s
 // himself. It is the same number the client's «far» face uses, so what he says
 // and what his face does change together rather than a beat apart.
 const BossQuiet = 0.35
+
+// The redirect verb — «ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО».
+//
+// The one thing a second Карен changes about the office, and the design's
+// «перевод стрелок»: the лысый walks at the NEAREST person, and this overrides
+// that for a few seconds regardless of who is nearer.
+const (
+	// RedirectSeconds is how long he stays pointed at somebody else. Long enough
+	// to walk out of trouble, short enough that it is a reprieve rather than an
+	// answer — he comes back, and he is nearer than he was.
+	RedirectSeconds = 6.0
+	// RedirectCooldown is the wait between uses, and it is the WHOLE price of
+	// the verb today. The design charges +ПОДОЗРЕНИЕ as well, because it is loud
+	// and Claude hears it — but that meter arrives with Claude in iteration 4,
+	// so until then this is a free betrayal with a long timer on it. Stated here
+	// rather than discovered later.
+	RedirectCooldown = 20.0
+	// RedirectSaySeconds is how long the line stays over your head afterwards.
+	// It is deliberately longer than one balloon slot: the whole point of the
+	// verb is that your colleague sees who did it to him.
+	RedirectSaySeconds = 3.0
+)
 
 // KarenSlot is how long he holds one line before moving to the next, in ticks.
 //
@@ -519,6 +556,25 @@ type Config struct {
 	BossLines    []string     `json:"boss_lines"`
 	KarenLines   []string     `json:"karen_lines"`
 	MaxOccupants int          `json:"max_occupants"`
+	Redirect     VerbConfig   `json:"redirect"`
+}
+
+// VerbConfig publishes a verb: what it does and what it costs, so the control
+// and the splash cheatsheet are both generated rather than typed.
+//
+// It withholds nothing, because there is nothing here a client could abuse: the
+// office judges every use, and a client that lied about its own cooldown would
+// simply have its frame refused.
+type VerbConfig struct {
+	// Label is what the control says.
+	Label string `json:"label"`
+	// Say is the line that appears over your head, so the cheatsheet can quote
+	// it without the client hardcoding a string from the pool.
+	Say string `json:"say"`
+	// SecondsMs is how long he stays pointed at somebody else; CooldownMs is the
+	// wait between uses.
+	SecondsMs  int `json:"seconds_ms"`
+	CooldownMs int `json:"cooldown_ms"`
 }
 
 // OfficeConfig is the room, which is all the client needs to draw the plane.
@@ -606,5 +662,11 @@ func BuildConfig() Config {
 		BossLines:    append([]string(nil), BossLines...),
 		KarenLines:   append([]string(nil), KarenLines...),
 		MaxOccupants: MaxOccupants,
+		Redirect: VerbConfig{
+			Label:      "ЭТО К НЕМУ",
+			Say:        karenRedirect[0],
+			SecondsMs:  int(RedirectSeconds * 1000),
+			CooldownMs: int(RedirectCooldown * 1000),
+		},
 	}
 }

@@ -222,7 +222,7 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// not quietly stop being the worst case the day somebody adds a joke.
 	s := Snapshot{
 		T: TypeSnapshot, Tick: 36000, Ack: 71999,
-		X: 1565, Y: 2165, Pay: 648000, M: 300, St: 30000, Dc: 4000,
+		X: 1565, Y: 2165, Pay: 648000, M: 300, St: 30000, Dc: 4000, Rc: 20000,
 		P: len(KarenLines) - 1,
 		B: BossFrame{X: 1560, Y: 2160, G: 255, P: len(BossLines) - 1},
 		// A FULL OFFICE, which is the worst case and is now most of the frame.
@@ -260,7 +260,18 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	//
 	// SOLO IS UNCHANGED: `pr` is omitempty and a lone occupant has no peers, so
 	// the commonest frame in this game did not grow by a byte.
-	const budget = 248
+	//
+	// 248 -> 260, for the redirect verb's cooldown. `,"rc":20000` is eleven
+	// bytes and lands on this frame only while somebody is actually cooling
+	// down, which is twenty seconds in every shift with two people in it and
+	// never at all in a solo one — it is omitempty like `dc`, for the same
+	// reason. Measured at 256, so the bound keeps its few bytes of headroom.
+	//
+	// It buys the alternative shapes being avoided: a reply frame to say the
+	// verb was accepted (a second message type, and a client that could believe
+	// a verb the office refused), or a client-side timer (which would offer the
+	// button back before the office would honour it).
+	const budget = 260
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}

@@ -161,6 +161,36 @@
           <span class="karen-stick-knob" :style="knobStyle" />
         </div>
 
+        <!-- ONE CONTROL PER COLLEAGUE, and none at all when you are alone.
+             The design said "tap the colleague on the plane"; a figure is a
+             ~40 px cut-out that moves, is drawn behind the man chasing it, and
+             can be under your own thumb — a sub-44 px moving target, which the
+             mobile rules forbid outright. A fixed control is stationary, sized,
+             and can show a cooldown. It also wears his face, which is how you
+             tell two colleagues apart.
+             Rendered from the same reactive roster as the figures, so it
+             appears and disappears with them and never needs its own guard. -->
+        <div v-if="config?.redirect" class="karen-verbs">
+          <button
+            v-for="peer in peers"
+            :key="peer.id"
+            class="karen-verb"
+            type="button"
+            data-testid="karen-redirect"
+            :data-peer="peer.id"
+            :style="{ '--body': peerColour(peer.id) }"
+            :disabled="redirectMs > 0"
+            :aria-label="config.redirect.label"
+            @pointerdown.prevent="onRedirect(peer.id)"
+            @click.prevent
+          >
+            <img v-if="peer.avatar" class="karen-verb-face" :src="peer.avatar" alt="" referrerpolicy="no-referrer" />
+            <span class="karen-verb-label">{{
+              redirectMs > 0 ? formatSeconds(redirectMs) : config.redirect.label
+            }}</span>
+          </button>
+        </div>
+
         <button
           class="karen-dash"
           type="button"
@@ -320,6 +350,9 @@ const peers = ref<PeerShown[]>([]);
  */
 const brokenFaces = ref(new Set<string>());
 
+/** The redirect verb's cooldown, milliseconds, straight off the snapshot. */
+const redirectMs = ref(0);
+
 /** A peer as the template needs him: identity, speech, and a face if he has one. */
 interface PeerShown extends PeerLook {
   avatar?: string;
@@ -336,6 +369,23 @@ interface PeerShown extends PeerLook {
 function sameFaces(a: readonly PeerShown[], b: readonly PeerShown[]): boolean {
   if (a.length !== b.length) return false;
   return a.every((p, i) => p.avatar === b[i].avatar);
+}
+
+/**
+ * Points the bald man at a colleague.
+ *
+ * A VERB TRAVELS OVER THE SOCKET AND IS ANSWERED WITH STATE, never with a
+ * response body — the same rule the yard settled (ADR-043). The office judges
+ * it, and the caller learns the outcome from the next snapshot exactly as
+ * everybody else does, which is what stops this client believing a verb the
+ * server refused.
+ *
+ * The cooldown is checked here only to keep the button honest; the office checks
+ * it too, and the office is the one that decides.
+ */
+function onRedirect(peerID: string): void {
+  if (!shift || redirectMs.value > 0) return;
+  realtimeClient(shift.room).send({ t: 'karen_do', v: 'redirect', tg: peerID });
 }
 
 function onPeerFaceError(id: string): void {
@@ -582,6 +632,7 @@ function teardownPlay(): void {
   outbox = [];
   peers.value = [];
   brokenFaces.value = new Set();
+  redirectMs.value = 0;
   peerEls.clear();
   peerInterp.clear();
   stickPointer = null;
@@ -771,6 +822,8 @@ function applySnapshot(frame: RealtimeFrame): void {
   // Read as "unchanged" a figure would stick on the last interesting thing it
   // said for the rest of the shift.
   meLine.value = num(frame.p);
+  // Omitted when ready, like `dc` — absent means zero, never "unchanged".
+  redirectMs.value = num(frame.rc);
 
   if (!predictor) {
     // The first authoritative position is what the predictor is seeded with —
@@ -1539,6 +1592,54 @@ function onDash(): void {
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.32);
   pointer-events: none;
+}
+
+/* The colleague buttons, stacked above the dash on the right — the thumb that
+   reaches РЫВОК is the thumb that reaches these, and they are used in the same
+   breath as a dodge. Column-reverse so the first colleague sits nearest the
+   thumb rather than furthest from it. */
+.karen-verbs {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.karen-verb {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* ≥ 44 px, like every control on this plane. */
+  min-height: 44px;
+  padding: 4px 10px 4px 4px;
+  border-radius: 22px;
+  border: 2px solid var(--body, #4a5a6a);
+  background: rgba(12, 14, 18, 0.72);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  touch-action: manipulation;
+}
+
+.karen-verb:disabled {
+  opacity: 0.45;
+}
+
+/* His face ON the button, which is what makes two colleagues distinguishable
+   without a name — the same picture the plane draws beside his head. */
+.karen-verb-face {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.karen-verb-label {
+  white-space: nowrap;
 }
 
 .karen-dash {

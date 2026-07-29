@@ -46,6 +46,15 @@ const (
 	TypeHello = "karen_hello"
 	// TypeInput is the batch of sub-steps described on Command.
 	TypeInput = "karen_input"
+	// TypeDo is a verb: something that happens once rather than continuously.
+	//
+	// SEPARATE FROM INPUT because it is a different shape of thing. Input is a
+	// stream of sub-steps with sequences and redundancy, judged by the
+	// simulation; a verb is one event with a target, judged by the office. It
+	// gets no reply — the caller learns the outcome from the next snapshot, the
+	// same way everybody else does, which is what stops a client believing a
+	// verb the server refused.
+	TypeDo = "karen_do"
 
 	// TypeReady confirms which shift this socket is now attached to.
 	TypeReady = "karen_ready"
@@ -82,6 +91,36 @@ type inputFrame struct {
 	Cmds []Command `json:"cmds"`
 }
 
+// doFrame is one client→server verb.
+//
+// `tg` is a PSEUDONYM, which is the only name this client has for anybody else —
+// it never learns an account id (ADR-037), so it cannot name one here even by
+// accident. The office resolves it, and an unknown handle is simply refused.
+type doFrame struct {
+	V  string `json:"v"`
+	Tg string `json:"tg"`
+}
+
+// Verb names, as they arrive on a doFrame.
+const VerbRedirect = "redirect"
+
+// ParseVerb decodes a verb frame into its name and target. It is separate from
+// ParseInbound because a verb carries strings rather than commands, and giving
+// ParseInbound a third return value that is nil for every other message type
+// would be a parameter set by nobody on all but one path.
+func ParseVerb(payload []byte) (verb, target string) {
+	var f doFrame
+	if err := json.Unmarshal(payload, &f); err != nil {
+		return "", ""
+	}
+	// Bounded before anything looks at it: a target is a twelve-character
+	// handle, and a megabyte of `tg` must not become a map key or a log line.
+	if len(f.Tg) > 64 || len(f.V) > 32 {
+		return "", ""
+	}
+	return f.V, f.Tg
+}
+
 // ParseInbound decodes a frame, returning its type and — for an input frame —
 // the commands it carried.
 //
@@ -100,6 +139,10 @@ func ParseInbound(payload []byte) (string, []Command) {
 	switch env.T {
 	case TypeHello:
 		return TypeHello, nil
+	case TypeDo:
+		// The verb and its target are read by ParseVerb, which the handler calls
+		// on the same payload — this only has to say what kind of frame it is.
+		return TypeDo, nil
 	case TypeInput:
 		var f inputFrame
 		if err := json.Unmarshal(payload, &f); err != nil {
@@ -166,6 +209,9 @@ type Snapshot struct {
 	// documents above, and for the same reason: read as "unchanged" a client
 	// would stick on the last interesting thing it was told for ever.
 	P int `json:"p,omitempty"`
+	// Rc is the redirect verb's cooldown, milliseconds, rounded up and omitted
+	// when it is ready — the same rule and the same reason as `dc`.
+	Rc int `json:"rc,omitempty"`
 	// The bald man.
 	B BossFrame `json:"b"`
 	// Pr is everybody else in the office — at most two, because MaxOccupants is

@@ -849,3 +849,153 @@ func TestAFaceGoesWhenItsOwnerDoes(t *testing.T) {
 		t.Fatal("a face outlived the shift it belonged to")
 	}
 }
+
+// --- «ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО» -----------------------------------------
+
+// redirected reports who the bald man is currently walking at, by seeing which
+// occupant he closes on over a few ticks. Read off behaviour rather than off the
+// field, because the field is the mechanism and the behaviour is the claim.
+func closesOn(t *testing.T, o *Office, a, b string) string {
+	t.Helper()
+	da0 := math.Hypot(posOf(t, o, a).X-bossOf(o).X, posOf(t, o, a).Y-bossOf(o).Y)
+	db0 := math.Hypot(posOf(t, o, b).X-bossOf(o).X, posOf(t, o, b).Y-bossOf(o).Y)
+	advance(o, 10)
+	da1 := math.Hypot(posOf(t, o, a).X-bossOf(o).X, posOf(t, o, a).Y-bossOf(o).Y)
+	db1 := math.Hypot(posOf(t, o, b).X-bossOf(o).X, posOf(t, o, b).Y-bossOf(o).Y)
+	if da0-da1 > db0-db1 {
+		return a
+	}
+	return b
+}
+
+func bossOf(o *Office) Vec2 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.boss.Pos
+}
+
+func TestPointingHimAtSomebodyElseOverridesWhoIsNearest(t *testing.T) {
+	// The whole verb, and the whole of co-op's betrayal half: he walks at the
+	// NEAREST person, and this says otherwise for a few seconds.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	// `a` is much closer to him, so without the verb he is `a`'s problem.
+	place(o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
+	place(o, "b", Vec2{X: 2, Y: 2})
+	if got := closesOn(t, o, "a", "b"); got != "a" {
+		t.Fatalf("without the verb he closed on %s, not the nearer one", got)
+	}
+
+	if !o.Redirect("a", "p-b") {
+		t.Fatal("the verb was refused")
+	}
+	if got := closesOn(t, o, "a", "b"); got != "b" {
+		t.Fatalf("after the redirect he is still closing on %s", got)
+	}
+}
+
+func TestTheRedirectWearsOffAndHeComesBack(t *testing.T) {
+	// A reprieve rather than an answer — and he is nearer than he was.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	place(o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
+	place(o, "b", Vec2{X: 2, Y: 2})
+	if !o.Redirect("a", "p-b") {
+		t.Fatal("the verb was refused")
+	}
+	// Run past the window. Positions are pinned each tick so the test is about
+	// the TIMER and not about anybody walking.
+	for i := 0; i < int(RedirectSeconds*SimHz)+2; i++ {
+		place(o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
+		place(o, "b", Vec2{X: 2, Y: 2})
+		advance(o, 1)
+	}
+	if got := closesOn(t, o, "a", "b"); got != "a" {
+		t.Fatalf("the redirect never wore off — he is still on %s", got)
+	}
+}
+
+func TestTheRedirectIsRefusedWhenItWouldBeFree(t *testing.T) {
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+
+	if o.Redirect("a", "p-a") {
+		t.Fatal("somebody pointed the bald man at himself")
+	}
+	if o.Redirect("a", "nobody") {
+		t.Fatal("a handle nobody has resolved to a target")
+	}
+	if o.Redirect("not-working", "p-b") {
+		t.Fatal("somebody who is not on a shift used a verb")
+	}
+	if !o.Redirect("a", "p-b") {
+		t.Fatal("the first, legitimate use was refused")
+	}
+	// AND IT COSTS SOMETHING. The cooldown is the whole price today — the
+	// design's +ПОДОЗРЕНИЕ arrives with Claude — so without this the verb is
+	// free and there is no reason not to hold the button down.
+	if o.Redirect("a", "p-b") {
+		t.Fatal("it fired twice with no cooldown")
+	}
+}
+
+func TestTheCallerSaysWhatHeDidAndTheFrameCarriesTheCooldown(t *testing.T) {
+	// A colleague has to be able to see who did it to him, so the announcement
+	// outranks the ordinary two-second rotation for a few seconds.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	if !o.Redirect("a", "p-b") {
+		t.Fatal("the verb was refused")
+	}
+
+	sa := snapOf(t, o, "a")
+	if sa.P != RedirectLine {
+		t.Fatalf("the caller says line %d, want the redirect line %d", sa.P, RedirectLine)
+	}
+	if KarenLines[sa.P] != "ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО" {
+		t.Fatalf("the redirect line is %q", KarenLines[sa.P])
+	}
+	if sa.Rc <= 0 {
+		t.Fatal("the frame does not carry the cooldown, so no client can disable the button")
+	}
+	// And his colleague SEES it — the peer entry carries the same index.
+	sb := snapOf(t, o, "b")
+	if len(sb.Pr) != 1 || sb.Pr[0].P != RedirectLine {
+		t.Fatalf("the colleague cannot see who did it: %+v", sb.Pr)
+	}
+	// It is an ANNOUNCEMENT, not a permanent state: it wears off.
+	for i := 0; i < int(RedirectSaySeconds*SimHz)+2; i++ {
+		advance(o, 1)
+	}
+	if got := snapOf(t, o, "a").P; got == RedirectLine {
+		t.Fatal("the caller is still announcing it a shift later")
+	}
+}
+
+func TestARedirectedColleagueWhoLeavesGivesHimBack(t *testing.T) {
+	// He must not keep walking at somebody who is no longer in the office —
+	// StepBoss with a target list of one that has gone would leave him homing on
+	// a corpse's last position.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	place(o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
+	place(o, "b", Vec2{X: 2, Y: 2})
+	if !o.Redirect("a", "p-b") {
+		t.Fatal("the verb was refused")
+	}
+	if _, ok := o.Leave("b"); !ok {
+		t.Fatal("leave failed")
+	}
+	advance(o, 5)
+	before := math.Hypot(posOf(t, o, "a").X-bossOf(o).X, posOf(t, o, "a").Y-bossOf(o).Y)
+	advance(o, 10)
+	after := math.Hypot(posOf(t, o, "a").X-bossOf(o).X, posOf(t, o, "a").Y-bossOf(o).Y)
+	if after >= before {
+		t.Fatalf("he did not come back to the only person left: %.2f then %.2f", before, after)
+	}
+}

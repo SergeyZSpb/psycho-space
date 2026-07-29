@@ -143,6 +143,24 @@ export function buildRules(config: KarenConfig | null): RuleBlock[] {
     });
   }
 
+  // The verb, generated from what the server publishes — the label, the words
+  // and both timers — so retuning any of them updates the screen by itself.
+  const redirect = config.redirect;
+  if (redirect && has(redirect.seconds_ms) && has(redirect.cooldown_ms)) {
+    blocks.push({
+      title: redirect.label,
+      lines: [
+        {
+          label: '🫱 перевести стрелки',
+          text:
+            `Ткни в коллегу — и лысый пойдёт к нему ${decimal(redirect.seconds_ms / 1000)} с, ` +
+            `кто бы ни был ближе. Перезарядка ${decimal(redirect.cooldown_ms / 1000)} с.`,
+        },
+        { label: '🗣 и все услышат', text: `Над тобой загорится «${redirect.say}».` },
+      ],
+    });
+  }
+
   const endings = Array.isArray(config.endings) ? config.endings : [];
   const endingLines = endings
     .filter((e) => e && typeof e.title === 'string' && e.title.length > 0)
