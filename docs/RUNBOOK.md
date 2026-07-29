@@ -540,14 +540,31 @@ the relieve fail chance): that is test-only machinery in a production path, whic
 forbids outright. Determinism comes from **direct DB setup** instead — `vanyagotchi-db.ts`
 already writes stats and crate stock that way, and that is the sanctioned seam.
 
-**A suite can also fail because it is testing an old build.** Both Playwright configs set
-`reuseExistingServer: !process.env.CI`, so **locally** a `vite preview` left running from an
-earlier `./dev.sh e2e` is reused rather than replaced — and it goes on serving the bundle it
-started with. A test written for code you just changed then fails against code that does not
-contain it, which looks exactly like a flake and is not one. Seen once during the mouse-look
-change: the gate's layout run stopped after 67 tests, and the same suite passed 201/201 on a
-clean re-run a minute later with nothing changed. If a suite fails once and then passes
-untouched, check for a stray preview before believing either result:
+**A suite can also fail because it is testing an old build — and the layout suite no longer
+can.** `playwright.config.ts` now sets `reuseExistingServer: false`, and that is the fix for a
+whole class rather than a preference. The reasoning, because it cost four commit attempts:
+
+The layout suite serves the built SPA out of the same directory the pre-commit gate's `web`
+step rebuilds moments earlier. With reuse on, a server left alive by an earlier invocation
+went on serving that directory **while it was being rewritten underneath it** — so a chunk
+404s during boot and the app never starts. What that looks like is not a slow page:
+
+* a **sixty-second wait for a button**, not an assertion failure, and
+* a screenshot of a **completely blank page**, and
+* **a different test every time**, because the casualty is whichever lazily-routed view the
+  run happened to reach first.
+
+That last property is the trap. Four failures on four different tests, each passing alone and
+in full saturated re-runs, reads exactly like marginal timing and is not — so it invites
+raising timeouts, which does nothing, because nothing is slow. **Read the artefact before
+believing the pattern**: `web/test-results/<test>/error-context.md` names the wait and
+`test-failed-1.png` shows the blank page, and either one identifies it in seconds.
+
+Always starting fresh costs nothing — the `webServer` command rebuilds on every invocation
+anyway, so reuse only ever saved a process spawn — and a leftover server now fails loudly on
+the port instead of quietly serving yesterday's bundle. `playwright.stack.config.ts` keeps
+reuse: it runs its own script and embeds the SPA into the Go binary, so it has no directory to
+race. If you are ever chasing this by hand:
 
 ```bash
 ss -ltnp | grep -E '4173|8081'      # 4173 = vite preview, 8081 = the full-stack server
