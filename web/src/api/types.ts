@@ -941,6 +941,8 @@ export interface KarenConfig {
   endings: KarenEnding[];
   /** What he says. Carried from iteration 1 so the shape is right; drawn later. */
   boss_lines: string[];
+  /** What YOU say. The wire carries an index into this, never the words. */
+  karen_lines: string[];
   max_occupants: number;
 }
 

@@ -16,6 +16,7 @@ import {
   formatMultiplier,
   formatSeconds,
   grinState,
+  sayFor,
   rampFraction,
   toPlane,
   type StyleTarget,
@@ -234,5 +235,29 @@ describe('the depth ramp is continuous', () => {
     expect(depthScaleFor(Number.NaN)).toBe(DEPTH_SCALES[0]);
     expect(depthScaleFor(-5)).toBeCloseTo(DEPTH_SCALES[0], 10);
     expect(depthScaleFor(5)).toBeCloseTo(DEPTH_SCALES[DEPTH_SCALES.length - 1], 10);
+  });
+});
+
+describe('a balloon is an index and a catalogue, never words on the wire', () => {
+  const POOL = ['Я КАРЕН', 'Я ПРОСТО ВОДЫ ПОПИТЬ', 'Я НА ВСТРЕЧУ'];
+
+  it('reads the line the index names', () => {
+    expect(sayFor(POOL, 0)).toBe('Я КАРЕН');
+    expect(sayFor(POOL, 2)).toBe('Я НА ВСТРЕЧУ');
+  });
+
+  it('falls back to the default rather than to nothing', () => {
+    // A figure with no balloon reads as broken; a figure saying the wrong thing
+    // reads as this game. Reachable both ways across a deploy — an older client
+    // against a newer catalogue and the reverse.
+    expect(sayFor(POOL, 99)).toBe('Я КАРЕН');
+    expect(sayFor(POOL, -1)).toBe('Я КАРЕН');
+    expect(sayFor(POOL, Number.NaN)).toBe('Я КАРЕН');
+    expect(sayFor(POOL, 1.7)).toBe('Я ПРОСТО ВОДЫ ПОПИТЬ');
+  });
+
+  it('says nothing at all when the catalogue has nothing to say', () => {
+    expect(sayFor([], 0)).toBe('');
+    expect(sayFor(undefined, 0)).toBe('');
   });
 });

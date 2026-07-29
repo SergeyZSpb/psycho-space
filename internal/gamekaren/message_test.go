@@ -201,8 +201,8 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	//
 	// The arithmetic, from the design's §5: a snapshot goes out at
 	// SimHz/SnapshotEvery = 10 Hz, to every viewer, for as long as the shift
-	// lasts. At the 140-byte budget that is 1.4 kB/s per viewer, and with the
-	// office's three occupants 4.2 kB/s out of this box — an order inside the
+	// lasts. At the 152-byte budget that is 1.5 kB/s per viewer, and with the
+	// office's three occupants 4.6 kB/s out of this box — an order inside the
 	// platform's 4 KiB frame limit and nowhere near the ten-messages-a-second
 	// inbound bound this design fits inside rather than loosening.
 	//
@@ -216,17 +216,24 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// The values below are a deliberately expensive frame: half an hour into a
 	// shift (36 000 ticks), a five-figure command sequence, a position in the
 	// far corner, six figures of salary, the multiplier capped, a thirty-second
-	// streak, and the dash on cooldown so `dc` is present rather than omitted.
+	// streak, the dash on cooldown so `dc` is present rather than omitted, and
+	// BOTH balloons off their default so both `p` fields are present too.
 	s := Snapshot{
 		T: TypeSnapshot, Tick: 36000, Ack: 71999,
-		X: 1565, Y: 2165, Pay: 648000, M: 300, St: 30000, Dc: 4000,
-		B: BossFrame{X: 1560, Y: 2160, G: 255},
+		X: 1565, Y: 2165, Pay: 648000, M: 300, St: 30000, Dc: 4000, P: 2,
+		B: BossFrame{X: 1560, Y: 2160, G: 255, P: 8},
 	}
 	raw, err := json.Marshal(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const budget = 140
+	// 140 -> 152. The two balloon indexes cost `,"p":2` and `,"p":8` — six bytes
+	// each, twelve in total, and only on a frame where somebody is not saying
+	// their default line. MEASURED AND RAISED DELIBERATELY, per the paragraph
+	// above: the alternative shape, putting the words themselves on the frame,
+	// is what this pays for — `,"p":8` against `,"say":"ПРОСТО ПОСМОТРИ,
+	// НИЧЕГО НЕ ДЕЛАЙ"` is 6 bytes against 72, ten times a second, per viewer.
+	const budget = 152
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}

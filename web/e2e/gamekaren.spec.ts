@@ -51,7 +51,10 @@ const CONFIG = {
     { key: 'promoted', title: 'ТЕБЯ ПОВЫСИЛИ, СТЕНД', sub: 'теперь ты за это отвечаешь.' },
     { key: 'left', title: 'ТЫ ПРОСТО УШЁЛ, СТЕНД', sub: 'никто не заметил.' },
   ],
-  boss_lines: ['А ГДЕ?'],
+  // Marked like everything else here, so a client that hardcoded a balloon
+  // instead of reading the catalogue cannot pass the assertions below.
+  boss_lines: ['Я ЛЫСЫЙ, СТЕНД', 'А ГДЕ, СТЕНД?'],
+  karen_lines: ['Я КАРЕН, СТЕНД', 'ВОДЫ, СТЕНД', 'НА ВСТРЕЧУ, СТЕНД'],
   max_occupants: 3,
 };
 
@@ -371,6 +374,50 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     }
     // And the man himself is what moved: three states, three different heads.
     expect(new Set(seen).size).toBe(3);
+  });
+
+  test('both figures always have something over their head, from the catalogue', async ({
+    page,
+  }) => {
+    // SERVER-OWNED AND ALWAYS THERE. The frame carries an INDEX and the words
+    // come from the catalogue the client fetched once (ADR-037), which is what
+    // makes two people in one office read the same line — and what keeps a
+    // Cyrillic sentence off a payload that repeats ten times a second forever.
+    // These strings are the STUB's, so a hardcoded balloon fails here.
+    const socket = await enterOffice(page);
+    await socket.snapshot();
+    // Nothing said means index 0, the default line for each — never an empty
+    // balloon and never a stale one.
+    await expect(page.getByTestId('karen-me-say')).toHaveText('Я КАРЕН, СТЕНД');
+    await expect(page.getByTestId('karen-boss-say')).toHaveText('Я ЛЫСЫЙ, СТЕНД');
+  });
+
+  test('and what they say follows the snapshot, index by index', async ({ page }) => {
+    const socket = await enterOffice(page);
+    await socket.snapshot({ p: 2, b: { x: 300, y: 900, g: 200, p: 1 } });
+    await expect(page.getByTestId('karen-me-say')).toHaveText('НА ВСТРЕЧУ, СТЕНД');
+    await expect(page.getByTestId('karen-boss-say')).toHaveText('А ГДЕ, СТЕНД?');
+    // AND BACK. Absent means index 0, never "unchanged" — read the other way a
+    // figure sticks on the last interesting thing it said for the whole shift.
+    await socket.snapshot({ p: undefined, b: { x: 300, y: 900, g: 200, p: undefined } });
+    await expect(page.getByTestId('karen-me-say')).toHaveText('Я КАРЕН, СТЕНД');
+    await expect(page.getByTestId('karen-boss-say')).toHaveText('Я ЛЫСЫЙ, СТЕНД');
+  });
+
+  test('a balloon rides the man rather than being placed beside him', async ({ page }) => {
+    // It is a CHILD of the figure, so the transform that moves him every
+    // animation frame carries it too — no second write, and no chance of the
+    // words being a frame behind the man saying them.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ b: { x: 300, y: 900, g: 40 } });
+    const inside = await page
+      .getByTestId('karen-boss-say')
+      .evaluate((el) => !!el.closest('[data-testid="karen-boss"]'));
+    expect(inside).toBe(true);
+    const boss = (await page.getByTestId('karen-boss').boundingBox())!;
+    const say = (await page.getByTestId('karen-boss-say').boundingBox())!;
+    // Above his head, not over his face.
+    expect(say.y + say.height).toBeLessThanOrEqual(boss.y + 1);
   });
 
   test('the client says hello the moment the socket opens', async ({ page }) => {

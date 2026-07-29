@@ -152,15 +152,32 @@ type Snapshot struct {
 	// READY, which is the common case — the button spends most of the shift
 	// available.
 	Dc int `json:"dc,omitempty"`
+	// P is which line is over your head: an INDEX into the catalogue's
+	// KarenLines, never the words themselves.
+	//
+	// This is ADR-037 applied to speech. A Cyrillic sentence is two bytes a
+	// character, this frame repeats ten times a second per viewer for the whole
+	// of a shift, and the client already fetched every line once with the
+	// catalogue — so what crosses the wire is one digit. OMITTED AT ZERO, which
+	// is «Я КАРЕН» and is what somebody playing this game properly says almost
+	// all of the time, so the common case costs nothing at all.
+	//
+	// Absent therefore means INDEX 0, never "unchanged" — the same rule `dc`
+	// documents above, and for the same reason: read as "unchanged" a client
+	// would stick on the last interesting thing it was told for ever.
+	P int `json:"p,omitempty"`
 	// The bald man.
 	B BossFrame `json:"b"`
 }
 
-// BossFrame is him, quantised: centimetres and a grin in 0..255.
+// BossFrame is him, quantised: centimetres, a grin in 0..255, and which of his
+// lines he is on. `P` follows the same rule as the player's — an index into the
+// catalogue's BossLines, omitted at zero, and zero is «Я ЛЫСЫЙ».
 type BossFrame struct {
 	X int `json:"x"`
 	Y int `json:"y"`
 	G int `json:"g"`
+	P int `json:"p,omitempty"`
 }
 
 // Over ends a shift. It is sent once, and the client stops sending input.

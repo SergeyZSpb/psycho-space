@@ -322,10 +322,16 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 		M:    hundredths(Multiplier(occ.State.Streak)),
 		St:   ms(occ.State.Streak),
 		Dc:   msUp(occ.State.DashCooldown),
+		// The balloons, as indexes. Both are derived here rather than stored,
+		// because both are pure functions of state this frame already carries —
+		// so nothing has to be kept in sync, nothing expires, and two people
+		// looking at the same office are told the same thing by construction.
+		P: KarenLine(occ.State),
 		B: BossFrame{
 			X: cm(o.boss.Pos.X),
 			Y: cm(o.boss.Pos.Y),
 			G: grinByte(o.boss.Grin),
+			P: BossLine(o.boss.Grin, o.tick),
 		},
 	}
 	raw, err := json.Marshal(s)

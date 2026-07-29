@@ -260,3 +260,93 @@ func TestEveryPassageFitsTheWidestThingThatMustUseIt(t *testing.T) {
 		}
 	}
 }
+
+// The balloons. Index 0 of each pool is what an omitted `p` means, so the first
+// line of each is a contract rather than a preference.
+func TestTheDefaultLinesAreFirst(t *testing.T) {
+	if BossLines[0] != "Я ЛЫСЫЙ" {
+		t.Fatalf("an absent `p` means BossLines[0], which is %q", BossLines[0])
+	}
+	if KarenLines[0] != "Я КАРЕН" {
+		t.Fatalf("an absent `p` means KarenLines[0], which is %q", KarenLines[0])
+	}
+	// And every index the two selectors can return has to exist, or a balloon is
+	// a blank rectangle over somebody's head.
+	if len(KarenLines) < 3 {
+		t.Fatalf("KarenLine returns up to 2 and there are %d lines", len(KarenLines))
+	}
+	if len(BossLines) < 2 {
+		t.Fatalf("BossLine returns 1.. and there are %d lines", len(BossLines))
+	}
+	for name, pool := range map[string][]string{"BossLines": BossLines, "KarenLines": KarenLines} {
+		seen := map[string]bool{}
+		for i, line := range pool {
+			if line == "" {
+				t.Fatalf("%s[%d] is empty", name, i)
+			}
+			if seen[line] {
+				t.Fatalf("%s says %q twice, so an index no longer identifies a line", name, line)
+			}
+			seen[line] = true
+		}
+	}
+}
+
+func TestWhatKarenIsSaying(t *testing.T) {
+	// A readout of what the simulation thinks you are doing, so each arm is a
+	// state that actually occurs rather than a decoration.
+	still := Player{}
+	if got := KarenLine(still); got != 0 {
+		t.Fatalf("standing perfectly still says %d (%q), want the default", got, KarenLines[got])
+	}
+	moving := Player{MoveGrace: 0.05}
+	if got := KarenLine(moving); got != 1 {
+		t.Fatalf("moving inside the grace window says %d", got)
+	}
+	// A dash outranks moving: it IS moving, and it is the one movement that
+	// costs nothing, so saying the same thing as an ordinary walk would be a lie
+	// about the rule the whole game rests on.
+	dashing := Player{MoveGrace: 0.05, DashLeft: 0.1}
+	if got := KarenLine(dashing); got != 2 {
+		t.Fatalf("dashing says %d", got)
+	}
+}
+
+func TestWhatTheBaldManIsSaying(t *testing.T) {
+	// Far away he introduces himself, and does so at every tick — the tick must
+	// not leak into the quiet answer, or he would mutter to himself across the
+	// room.
+	for _, tick := range []uint64{0, 1, 49, 50, 51, 12345} {
+		if got := BossLine(0, tick); got != 0 {
+			t.Fatalf("at grin 0, tick %d, he says %d", tick, got)
+		}
+	}
+	if got := BossLine(BossQuiet-0.001, 0); got != 0 {
+		t.Fatalf("just below the grin threshold he says %d", got)
+	}
+	// Close enough to smile, and he starts working through the afternoon.
+	first := BossLine(BossQuiet, 0)
+	if first != 1 {
+		t.Fatalf("the first thing he says on arrival is %d", first)
+	}
+	// He HOLDS a line for a whole slot rather than flickering, and then moves on.
+	if got := BossLine(1, BossSlot-1); got != first {
+		t.Fatalf("he changed line inside one slot: %d then %d", first, got)
+	}
+	if got := BossLine(1, BossSlot); got == first {
+		t.Fatalf("he is still on %d after a whole slot", got)
+	}
+	// And he wraps rather than running off the end of the pool.
+	for _, tick := range []uint64{0, BossSlot * 7, BossSlot * 8, BossSlot * 999} {
+		got := BossLine(1, tick)
+		if got < 1 || got >= len(BossLines) {
+			t.Fatalf("at tick %d he says index %d, out of %d lines", tick, got, len(BossLines))
+		}
+	}
+	// Never the default while he is close: index 0 is who he is, not a threat.
+	for tick := uint64(0); tick < BossSlot*uint64(len(BossLines))*2; tick += BossSlot {
+		if BossLine(1, tick) == 0 {
+			t.Fatalf("he introduced himself at tick %d while standing over you", tick)
+		}
+	}
+}

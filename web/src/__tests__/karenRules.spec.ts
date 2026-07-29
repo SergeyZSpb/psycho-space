@@ -38,6 +38,7 @@ const config: KarenConfig = {
     { key: 'left', title: 'ТЫ ПРОСТО УШЁЛ', sub: 'смена засчитана. никто не заметил.' },
   ],
   boss_lines: ['А ГДЕ?'],
+  karen_lines: ['Я КАРЕН', 'Я ПРОСТО ВОДЫ ПОПИТЬ', 'Я НА ВСТРЕЧУ'],
   max_occupants: 3,
 };
 
@@ -138,8 +139,8 @@ describe('buildRules', () => {
 });
 
 describe('the hand-written copy', () => {
-  it('is three lines and says what each of them has to', () => {
-    expect(KAREN_PROSE).toHaveLength(3);
+  it('is four lines and says what each of them has to', () => {
+    expect(KAREN_PROSE).toHaveLength(4);
     const text = KAREN_PROSE.map((l) => l.text).join(' ');
     // The controls, which the server has no opinion about and does not publish.
     expect(text).toContain('Стик слева');
@@ -147,6 +148,10 @@ describe('the hand-written copy', () => {
     // The shape of the game, which is not a number and never will be.
     expect(text).toContain('Стоишь — капает');
     expect(text).toContain('Лысый подходит и здоровается');
+    // What is over a head is a READOUT rather than decoration, and the splash
+    // has to say so — the words themselves are derived from the catalogue, but
+    // that they mean something is not a number and cannot be.
+    expect(text).toContain('Реплика — это индикатор');
   });
 
   it('sets up the joke before the numbers do', () => {

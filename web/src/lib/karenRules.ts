@@ -158,6 +158,16 @@ export const KAREN_PROSE: RuleLine[] = [
     label: 'Как это кончается',
     text: 'Лысый подходит и здоровается. Всё.',
   },
+  {
+    // NOT derivable, and it is a rule rather than flavour: what is over a head
+    // is a readout. Yours says what the simulation thinks you are doing — so
+    // «Я КАРЕН» means the money is running and anything else means it is not —
+    // and his changes the moment he is close enough to be a problem, which is
+    // the same instant his face does. The lines themselves ARE derived: they
+    // come from the catalogue's `karen_lines` and `boss_lines`.
+    label: 'Что над головой',
+    text: 'Реплика — это индикатор. Своя говорит, что с тобой сейчас, а лысый меняет свою, когда подошёл близко.',
+  },
 ];
 
 /**

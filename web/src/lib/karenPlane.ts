@@ -175,6 +175,27 @@ export function applyBoss(el: StyleTarget, at: PlanePoint, grin: number): void {
   el.style.setProperty(GRIN_PROPERTY, String(Number.isFinite(grin) ? clamp01(grin) : 0));
 }
 
+/**
+ * The line a balloon shows, from a pool and the index the server sent.
+ *
+ * THE WIRE CARRIES AN INDEX AND NEVER THE WORDS (ADR-037), so this is where the
+ * two are put back together. The catalogue was fetched once; the index costs a
+ * digit on a frame that repeats ten times a second per viewer, forever.
+ *
+ * TOTAL, because the alternative is a blank rectangle over somebody's head. An
+ * absent index is zero and zero is the default line, which is exactly what the
+ * `omitempty` on the wire means; anything out of range — an older client against
+ * a newer catalogue, or the reverse — falls back to the same place rather than
+ * to nothing, because a figure with no balloon reads as broken while a figure
+ * saying the wrong thing reads as this game.
+ */
+export function sayFor(lines: readonly string[] | undefined, index: number): string {
+  if (!lines || lines.length === 0) return '';
+  if (!Number.isFinite(index)) return lines[0];
+  const i = Math.trunc(index);
+  return i >= 0 && i < lines.length ? lines[i] : lines[0];
+}
+
 /** A desk's box on the plane, as fractions of it. */
 export interface DeskBox {
   left: number;

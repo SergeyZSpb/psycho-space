@@ -185,13 +185,25 @@ var Endings = []Ending{
 	{Key: CauseLeft, Title: "ТЫ ПРОСТО УШЁЛ", Sub: "смена засчитана. никто не заметил."},
 }
 
+// The balloons. Both figures always have one over their head, and WHICH one is
+// the server's decision — which is what makes two people in the same office see
+// the same words. The wire carries an INDEX into these pools and never the text
+// (ADR-037): a snapshot repeats ten times a second, per viewer, forever, and a
+// Cyrillic sentence on it is forty bytes of something the client already
+// fetched once with the catalogue.
+//
+// INDEX 0 IS LOAD-BEARING IN BOTH POOLS. The field is `omitempty`, so an absent
+// index means zero — which makes the first line of each pool the default, the
+// one drawn whenever nothing more interesting is true. Prepending a line to
+// either of these silently changes what everybody says when nothing is
+// happening, so `TestTheDefaultLinesAreFirst` pins both.
+
 // BossLines is what he says.
 //
-// Carried in the config from iteration 1 even though nothing draws a balloon
-// yet, because the SHAPE of the catalogue is what the client is written against
-// and adding an array to a live contract later is a coordinated deploy. They are
-// the eight sentences that end an afternoon.
+// The first is who he is; the rest are the eight sentences that end an
+// afternoon, and he starts using them once he is close enough to be a problem.
 var BossLines = []string{
+	"Я ЛЫСЫЙ",
 	"А ГДЕ?",
 	"НУ ЧТО, ПОСМОТРЕЛ?",
 	"ЗАЙДИ НА МИНУТКУ",
@@ -200,6 +212,73 @@ var BossLines = []string{
 	"Я ТЕБЕ В ЛИЧКУ НАПИСАЛ",
 	"ТЫ ЖЕ ГОВОРИЛ ЧТО СДЕЛАЛ",
 	"ПРОСТО ПОСМОТРИ, НИЧЕГО НЕ ДЕЛАЙ",
+}
+
+// KarenLines is what YOU say, and it is a readout as much as a joke: the line
+// over your head is a function of what the simulation thinks you are doing, so
+// it is the one place the streak rule states itself while you are playing
+// rather than on the splash screen you have already scrolled past.
+var KarenLines = []string{
+	"Я КАРЕН",              // standing perfectly still, which is the job
+	"Я ПРОСТО ВОДЫ ПОПИТЬ", // moving, and the streak is on the clock
+	"Я НА ВСТРЕЧУ",         // dashing, which costs nothing and keeps the ramp
+}
+
+// BossSlot is how long he holds one of his sentences before moving to the next.
+//
+// Derived from the TICK rather than from a timer or a random draw, so every
+// viewer of the same office computes the same line for the same instant without
+// anything being stored or synchronised — the tick is already on every frame.
+// Two and a half seconds is long enough to read on a phone while somebody is
+// walking at you, and short enough that the approach does not feel like one
+// sentence repeated.
+const BossSlot = 50 // ticks, at SimHz — 2.5 s
+
+// BossQuiet is how small his grin has to be before he goes back to introducing
+// himself. It is the same number the client's «far» face uses, so what he says
+// and what his face does change together rather than a beat apart.
+const BossQuiet = 0.35
+
+// KarenLine is which of KarenLines belongs over a player right now.
+//
+// PURE, AND DELIBERATELY NOT IN sim.go. `Step` is pinned to its TypeScript port
+// by the golden vectors, and a balloon is neither predicted nor simulated — it
+// is read off the state `Step` has already produced. Putting it on `Player`
+// would force a vector regeneration and a client change for a value the
+// simulation never reads.
+func KarenLine(p Player) int {
+	switch {
+	case p.DashLeft > 0:
+		return 2
+	case p.MoveGrace > 0:
+		// He has moved inside the grace window, so the streak is at risk even
+		// though it has not gone yet. That is exactly when it is worth saying.
+		return 1
+	default:
+		return 0
+	}
+}
+
+// BossLine is which of BossLines belongs over the bald man right now.
+//
+// Far away he is just a man with no hair. Once he is close enough for the grin
+// to have started he begins working through the afternoon-enders, one per
+// BossSlot, wrapping — so what he is saying keeps changing while he closes,
+// which is the whole of the tension made audible.
+func BossLine(grin float64, tick uint64) int {
+	// The afternoon-enders are everything after the introduction, so the length
+	// is taken once and guarded before it is used as a divisor. `len` is never
+	// negative, and the remainder is smaller than the pool, so neither
+	// conversion below can lose anything.
+	n := uint64(len(BossLines))
+	if !(grin >= BossQuiet) || n < 2 {
+		return 0
+	}
+	// The remainder is strictly less than n−1, which is the number of lines in
+	// the catalogue — nine of them. gosec cannot see that bound and flags every
+	// uint64→int conversion on principle.
+	//nolint:gosec // bounded by len(BossLines), guarded >= 2 immediately above
+	return 1 + int(tick/BossSlot%(n-1))
 }
 
 // Config is the whole catalogue as the browser receives it.
@@ -223,6 +302,7 @@ type Config struct {
 	Sim          SimConfig    `json:"sim"`
 	Endings      []Ending     `json:"endings"`
 	BossLines    []string     `json:"boss_lines"`
+	KarenLines   []string     `json:"karen_lines"`
 	MaxOccupants int          `json:"max_occupants"`
 }
 
@@ -309,6 +389,7 @@ func BuildConfig() Config {
 		},
 		Endings:      append([]Ending(nil), Endings...),
 		BossLines:    append([]string(nil), BossLines...),
+		KarenLines:   append([]string(nil), KarenLines...),
 		MaxOccupants: MaxOccupants,
 	}
 }

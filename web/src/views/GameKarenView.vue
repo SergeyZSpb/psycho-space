@@ -101,6 +101,7 @@
             :style="deskStyle(desk)"
           />
           <span ref="bossEl" class="karen-boss" data-testid="karen-boss" aria-hidden="true">
+            <span v-if="bossSays" class="karen-say" data-testid="karen-boss-say">{{ bossSays }}</span>
             <span class="karen-fig-body" />
             <span class="karen-fig-head">
               <span class="karen-fig-shine" />
@@ -108,6 +109,7 @@
             </span>
           </span>
           <span ref="meEl" class="karen-me" data-testid="karen-me" aria-hidden="true">
+            <span v-if="meSays" class="karen-say" data-testid="karen-me-say">{{ meSays }}</span>
             <span class="karen-fig-body" />
             <span class="karen-fig-head"><span class="karen-fig-hair" /></span>
           </span>
@@ -205,6 +207,7 @@ import {
   applyFigure,
   decimal,
   deskBox,
+  sayFor,
   formatMoney,
   formatMultiplier,
   formatSeconds,
@@ -252,8 +255,17 @@ const pay = ref(0);
 const mult = ref(100);
 const ramp = ref(0);
 const dashMs = ref(0);
+// WHICH LINE, not the line itself: the wire sends an index and the catalogue —
+// fetched once — holds the words (ADR-037). Reactive because they are text and
+// change at snapshot rate, which is exactly what reactivity is for; the two
+// POSITIONS beside them are the opposite and never come near it.
+const meLine = ref(0);
+const bossLine = ref(0);
 const link = ref<'connecting' | 'open' | 'lost'>('connecting');
 const over = ref<{ cause: string; pay: number; secs: number } | null>(null);
+
+const meSays = computed(() => sayFor(config.value?.karen_lines, meLine.value));
+const bossSays = computed(() => sayFor(config.value?.boss_lines, bossLine.value));
 
 const overTitle = computed(() => endingFor(config.value, over.value?.cause ?? '')?.title ?? 'СМЕНА ОКОНЧЕНА');
 const overSub = computed(() => endingFor(config.value, over.value?.cause ?? '')?.sub ?? '');
@@ -613,6 +625,10 @@ function applySnapshot(frame: RealtimeFrame): void {
   // Omitted when the dash is ready, so an absent field means zero rather than
   // "unchanged" — reading it any other way would leave the button dead forever.
   dashMs.value = num(frame.dc);
+  // Same rule for the balloons: absent is index 0, which is the default line.
+  // Read as "unchanged" a figure would stick on the last interesting thing it
+  // said for the rest of the shift.
+  meLine.value = num(frame.p);
 
   if (!predictor) {
     // The first authoritative position is what the predictor is seeded with —
@@ -631,6 +647,7 @@ function applySnapshot(frame: RealtimeFrame): void {
   const b = frame.b as Record<string, number> | undefined;
   const el = bossEl.value;
   if (b && el) {
+    bossLine.value = num(b.p);
     const grin = num(b.g) / 255;
     bossAt = { x: num(b.x) / 100, y: num(b.y) / 100 };
     // Buffered rather than drawn. The render loop reads him back out a beat
@@ -1169,6 +1186,37 @@ function onDash(): void {
 .karen-boss[data-grin='here'] {
   --skin: linear-gradient(180deg, #ff9f7a 0%, #e0644a 100%);
   --body: #a83b1f;
+}
+
+/* THE BALLOON, and it hangs off the figure rather than being placed beside it.
+   `.karen-me` / `.karen-boss` are already positioned every animation frame by a
+   transform, so a child anchored to the top of that box is carried along by the
+   compositor for nothing — no second write, no chance of the words being a frame
+   behind the man saying them.
+   `bottom: 100%` puts it above the head; the figure's box is feet-anchored, so
+   that is above him rather than over him. It does not scale with `--depth`,
+   deliberately: a far-away line would become unreadable exactly when the man
+   saying it is hardest to see. */
+.karen-say {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  margin-bottom: 4px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: rgba(12, 14, 18, 0.82);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  /* One line, however long the catalogue's sentence is — a balloon that wrapped
+     to three rows would cover the office it is standing in. The office is only
+     sixteen metres wide, so a long line is allowed to reach past the man. */
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
 
 /* The smile. Widens continuously with `--grin`, which is a number the compositor

@@ -69,6 +69,8 @@ test.describe('«СИМУЛЯТОР КАРЕНА»', () => {
       game_key: string;
       office: { w: number; h: number; desks: unknown[] };
       endings: { key: string }[];
+      boss_lines: string[];
+      karen_lines: string[];
     };
     // The load-bearing simplification: the office is STATIC and lives here, so
     // starting a shift sends no level and the client draws from this alone.
@@ -76,6 +78,13 @@ test.describe('«СИМУЛЯТОР КАРЕНА»', () => {
     expect(config.office.w).toBeGreaterThan(0);
     expect(config.office.desks.length).toBeGreaterThan(0);
     expect(config.endings.map((e) => e.key).sort()).toEqual(['left', 'promoted']);
+    // The balloons live here too, for the same reason: the frame carries an
+    // INDEX ten times a second and the words are fetched once (ADR-037). Index 0
+    // of each is what an omitted index means, so the two defaults are a contract
+    // and not a preference.
+    expect(config.karen_lines[0]).toBe('Я КАРЕН');
+    expect(config.boss_lines[0]).toBe('Я ЛЫСЫЙ');
+    expect(config.boss_lines.length).toBeGreaterThan(1);
   });
 
   test('a shift walked out of is written, and comes back from Postgres', async ({ page }) => {
