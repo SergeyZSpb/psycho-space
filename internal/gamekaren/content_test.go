@@ -195,3 +195,68 @@ func TestEveryBossLineIsSomethingHeWouldSay(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryPassageFitsTheWidestThingThatMustUseIt pins the level design.
+//
+// The gaps between the furniture ARE the level: they are what makes a desk cover
+// you use rather than something you catch on. The first layout had 2.0 m aisles,
+// which is 1.2 m of daylight once the лысый's width is removed — and it was
+// tuned before the player's speed was, so at 6.4 m/s you cross it in under a
+// fifth of a second and clipping a desk mid-dodge is likelier than choosing to.
+//
+// Measured against the BOSS rather than the player: he is the wider of the two,
+// and a gap he cannot follow you through is a gap that changes the game.
+func TestEveryPassageFitsTheWidestThingThatMustUseIt(t *testing.T) {
+	// Daylight left after the widest occupant, in metres. Room to steer, not just
+	// room to exist.
+	const wantDaylight = 1.5
+	widest := 2 * math.Max(PlayerRadius, BossRadius)
+
+	check := func(what string, gap float64) {
+		t.Helper()
+		if got := gap - widest; got < wantDaylight {
+			t.Errorf("%s is %.2f m, leaving %.2f m of daylight for a %.2f m body, want %.2f m",
+				what, gap, got, widest, wantDaylight)
+		}
+	}
+
+	left, right := math.Inf(1), math.Inf(1)
+	for _, d := range Desks {
+		left = math.Min(left, d.X)
+		right = math.Min(right, OfficeW-(d.X+d.W))
+	}
+	check("the left aisle", left)
+	check("the right aisle", right)
+
+	// The central lane: from the right edge of the left column to the left edge
+	// of the right column.
+	var leftEdge, rightEdge float64
+	for _, d := range Desks {
+		if d.X < OfficeW/2 {
+			leftEdge = math.Max(leftEdge, d.X+d.W)
+		}
+	}
+	rightEdge = OfficeW
+	for _, d := range Desks {
+		if d.X >= OfficeW/2 {
+			rightEdge = math.Min(rightEdge, d.X)
+		}
+	}
+	check("the central lane", rightEdge-leftEdge)
+
+	// And between the rows, for every pair in the same column.
+	for i, a := range Desks {
+		for j, b := range Desks {
+			if i >= j || a.X != b.X {
+				continue
+			}
+			lo, hi := a, b
+			if lo.Y > hi.Y {
+				lo, hi = hi, lo
+			}
+			if gap := hi.Y - (lo.Y + lo.H); gap > 0 && gap < OfficeH/2 {
+				check("the gap between two desks in a column", gap)
+			}
+		}
+	}
+}

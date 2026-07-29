@@ -62,6 +62,7 @@ const drawerScrim = (page: Page) => page.locator('.v-navigation-drawer__scrim');
 declare global {
   interface Window {
     __drawerStates?: boolean[];
+    __drawerStateTimes?: number[];
   }
 }
 
@@ -74,10 +75,16 @@ declare global {
 async function recordDrawerStates(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const states: boolean[] = [];
+    const at: number[] = [];
     window.__drawerStates = states;
+    window.__drawerStateTimes = at;
+    const t0 = performance.now();
     const record = () => {
       const open = !!document.querySelector('.v-navigation-drawer.v-navigation-drawer--active');
-      if (states.length === 0 || states[states.length - 1] !== open) states.push(open);
+      if (states.length === 0 || states[states.length - 1] !== open) {
+        states.push(open);
+        at.push(performance.now() - t0);
+      }
     };
     const start = () => {
       record();
@@ -92,6 +99,22 @@ async function recordDrawerStates(page: Page): Promise<void> {
     else document.addEventListener('DOMContentLoaded', start, { once: true });
   });
 }
+
+/**
+ * How long after the drawer FIRST APPEARS a change still counts as mounting
+ * rather than as motion.
+ *
+ * Anchored on the drawer's own arrival and not on page load, which is the whole
+ * subtlety. Under load the shell can take most of a second to mount — measured
+ * at 850 ms on a saturated machine — so any window measured from page start is
+ * either too short to cover mounting or long enough to swallow a real peek.
+ * Measured from the drawer appearing, mount churn is a frame or two and a peek
+ * is DRAWER_PEEK_MS, and nothing in between exists.
+ */
+const SETTLE_MS = Math.min(200, DRAWER_PEEK_MS / 2);
+
+const drawerStateTimes = (page: Page): Promise<number[]> =>
+  page.evaluate(() => window.__drawerStateTimes ?? []);
 
 const drawerStates = (page: Page): Promise<boolean[]> =>
   page.evaluate(() => window.__drawerStates ?? []);
@@ -446,9 +469,27 @@ for (const theme of THEMES) {
       if (hasPermanentDrawer(page)) {
         const opened = states.indexOf(true);
         expect(opened, `the permanent drawer never appeared (${states.join(',')})`).toBeGreaterThanOrEqual(0);
-        expect(states.slice(opened), 'the drawer closed by itself and took the nav with it').toEqual([
-          true,
-        ]);
+        // Every transition after the shell has SETTLED. The recorder starts at
+        // DOMContentLoaded, before the SPA has mounted, so the first few
+        // transitions are the app arriving rather than anything moving on its
+        // own: Vuetify renders the drawer and then resolves the `mdAndUp`
+        // breakpoint, and on a loaded machine that resolution can land after a
+        // paint in which the permanent drawer was already active — which reads
+        // as a close-and-reopen and is neither motion nor unrequested.
+        //
+        // Time is what tells the two apart, and it is what the preference is
+        // actually about. A peek is a deliberate animation lasting
+        // DRAWER_PEEK_MS; mount churn is over in a frame or two.
+        const times = await drawerStateTimes(page);
+        // Everything before the drawer exists is absence, not a close, and the
+        // first moments after it appears are the shell settling.
+        const closes = states
+          .map((open, i) => ({ open, at: times[i] }))
+          .filter((s, i) => i > opened && !s.open && s.at > times[opened] + SETTLE_MS);
+        expect(
+          closes,
+          `the drawer closed by itself after settling (${states.join(',')} at ${times.map(Math.round).join(',')}ms)`,
+        ).toEqual([]);
         await expect(drawer(page)).toHaveClass(DRAWER_OPEN);
       } else {
         expect(states, 'the drawer must never open by itself').toEqual([false]);

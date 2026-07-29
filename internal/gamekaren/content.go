@@ -71,10 +71,10 @@ type Vec2 struct{ X, Y float64 }
 // the push-out resolver be a single pass with no risk of shoving anybody through
 // a wall; content_test pins it.
 var Desks = []Rect{
-	{X: 2.0, Y: 3.0, W: 3.4, H: 1.2}, {X: 2.0, Y: 6.5, W: 3.4, H: 1.2},
-	{X: 2.0, Y: 10.0, W: 3.4, H: 1.2}, {X: 2.0, Y: 13.5, W: 3.4, H: 1.2},
-	{X: 10.6, Y: 3.0, W: 3.4, H: 1.2}, {X: 10.6, Y: 6.5, W: 3.4, H: 1.2},
-	{X: 10.6, Y: 10.0, W: 3.4, H: 1.2}, {X: 10.6, Y: 13.5, W: 3.4, H: 1.2},
+	{X: 2.8, Y: 3.0, W: 2.6, H: 1.0}, {X: 2.8, Y: 7.0, W: 2.6, H: 1.0},
+	{X: 2.8, Y: 11.0, W: 2.6, H: 1.0}, {X: 2.8, Y: 15.0, W: 2.6, H: 1.0},
+	{X: 10.6, Y: 3.0, W: 2.6, H: 1.0}, {X: 10.6, Y: 7.0, W: 2.6, H: 1.0},
+	{X: 10.6, Y: 11.0, W: 2.6, H: 1.0}, {X: 10.6, Y: 15.0, W: 2.6, H: 1.0},
 }
 
 // Movement.

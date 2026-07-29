@@ -97,9 +97,16 @@
             :style="deskStyle(desk)"
           />
           <span ref="bossEl" class="karen-boss" data-testid="karen-boss" aria-hidden="true">
-            <span class="karen-boss-grin" />
+            <span class="karen-fig-body" />
+            <span class="karen-fig-head">
+              <span class="karen-fig-shine" />
+              <span class="karen-boss-grin" />
+            </span>
           </span>
-          <span ref="meEl" class="karen-me" data-testid="karen-me" aria-hidden="true" />
+          <span ref="meEl" class="karen-me" data-testid="karen-me" aria-hidden="true">
+            <span class="karen-fig-body" />
+            <span class="karen-fig-head"><span class="karen-fig-hair" /></span>
+          </span>
         </div>
       </div>
 
@@ -1012,24 +1019,80 @@ function onDash(): void {
   z-index: var(--band, 0);
   will-change: transform;
   pointer-events: none;
-  border-radius: 40% 40% 30% 30%;
 }
 
 /* Placeholder shapes rather than art: iteration 1 ships with no uploaded assets
    at all, on purpose, and a missing sprite must be a shape and never a broken
    screen. */
 .karen-me {
-  background: linear-gradient(180deg, #7fc4ff 0%, #2f6ea8 100%);
-  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+  --skin: #f0d9bd;
+  --body: #2f6ea8;
   /* NO TRANSITION. This one is predicted and rewritten every animation frame, so
      a transition would be the compositor easing towards a value that has already
      been replaced — which reads as lag, which is the exact thing prediction is
      here to remove. */
 }
 
+/* A FIGURE IS A HEAD AND A BODY, and the head is deliberately far too big.
+   Both people on the plane are built the same way so the scene reads as two
+   people rather than as a person and a lozenge — the difference between them is
+   colour and what is on the head, which is the whole joke: he is bald and
+   smiling, and you are not.
+
+   Caricature proportions, not human ones: a head at 52% of the figure would be
+   grotesque on a body and is exactly right at 40 px on a phone, where anything
+   subtler is a smudge. The silhouette has to be readable at a glance while you
+   are judging a dodge, so the head is the thing that carries the identity and
+   the expression, and the body is a shape underneath it. */
+.karen-fig-body {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 74%;
+  height: 56%;
+  transform: translateX(-50%);
+  border-radius: 44% 44% 26% 26%;
+  background: var(--body, #8a6a3a);
+  box-shadow: inset 0 -0.35em 0.5em rgba(0, 0, 0, 0.22);
+}
+.karen-fig-head {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 92%;
+  aspect-ratio: 1;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: var(--skin, #e8d7b0);
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.35),
+    inset -0.18em -0.22em 0.5em rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+/* The bald shine. It is the only thing marking him as bald, and one soft
+   highlight reads as a scalp far better than drawing an absence of hair. */
+.karen-fig-shine {
+  position: absolute;
+  left: 26%;
+  top: 12%;
+  width: 34%;
+  height: 22%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  filter: blur(1px);
+}
+/* And you are not bald, which is the only reason this exists. */
+.karen-fig-hair {
+  position: absolute;
+  inset: -6% -4% auto -4%;
+  height: 46%;
+  border-radius: 50% 50% 34% 34%;
+  background: #2f2a26;
+}
+
 .karen-boss {
-  background: linear-gradient(180deg, #e8d7b0 0%, #8a6a3a 100%);
-  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+  --skin: #e8d7b0;
+  --body: #7a5a86;
   /* HE IS NOT PREDICTED — his intent is not ours to guess — so his position
      arrives ten times a second and is eased across the gap between two frames.
      100ms is exactly the snapshot period: long enough to be continuous, short
@@ -1050,15 +1113,23 @@ function onDash(): void {
 
 /* The smile. Widens continuously with `--grin`, which is a number the compositor
    can interpolate — unlike the colour above, which steps. */
+/* The smile, and it is the one thing on him that carries the whole joke: he is
+   delighted to see you, and more so the closer he gets. A wide thin ARC rather
+   than a filled blob — an arc reads as a mouth at 40 px and a blob reads as a
+   hole. It widens and deepens together from `--grin`, which the compositor
+   interpolates, and the interpolator feeds it a continuous value rather than one
+   that steps ten times a second. */
 .karen-boss-grin {
   position: absolute;
   left: 50%;
-  top: 30%;
-  height: 12%;
-  width: calc(12% + var(--grin, 0) * 56%);
-  transform: translate(-50%, -50%);
+  top: 54%;
+  width: calc(26% + var(--grin, 0) * 52%);
+  height: calc(14% + var(--grin, 0) * 26%);
+  transform: translateX(-50%);
   border-radius: 0 0 999px 999px;
-  background: rgba(30, 12, 6, 0.85);
+  border: solid rgba(40, 16, 10, 0.9);
+  border-width: 0 0 max(2px, 0.16em) 0;
+  background: rgba(60, 20, 14, calc(0.15 + var(--grin, 0) * 0.5));
 }
 
 /* --- controls -------------------------------------------------------------

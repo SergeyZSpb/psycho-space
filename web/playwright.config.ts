@@ -106,7 +106,20 @@ export default defineConfig({
   webServer: {
     command: 'npm run build && npm run preview -- --port 4173 --strictPort',
     url: BASE_URL,
-    reuseExistingServer: !process.env.CI,
+    // NEVER REUSE, and the runbook has a section on why. This suite serves the
+    // built SPA out of a directory that the `web` step of the same pre-commit
+    // run rebuilds moments earlier, so a server left alive by an earlier run is
+    // serving a directory being rewritten underneath it. What that produces is
+    // not a slow page, it is a BLANK one — a chunk that 404s while the app is
+    // booting — and it presents as a sixty-second wait for a button on
+    // whichever lazily-routed view the run happened to reach first, which is a
+    // different test every time and looks exactly like flakiness.
+    //
+    // The cost of always starting fresh is nothing: the webServer command
+    // rebuilds on every invocation anyway, so reuse only ever saved the process
+    // spawn. The benefit is that a leftover server now fails loudly on the port
+    // instead of quietly serving yesterday's bundle.
+    reuseExistingServer: false,
     timeout: 180_000,
     stdout: 'ignore',
     stderr: 'pipe',
