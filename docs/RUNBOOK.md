@@ -15,7 +15,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
 - **login:** two providers, VK ID and Яндекс ID, sharing everything after the exchange. Redirect URLs are SPA **pages**, never API endpoints: `/auth/redirect` (VK) and `/auth/yandex/redirect` (Yandex). VK needs **three** copies of its URL to match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app list); Yandex needs only **two** because the server builds its authorize URL (ADR-055). A **405 on either `/api/auth/*/callback`** means something points at the API again. See "Login — the redirect URL, and what a 405 means".
-- **flaky-tests:** see "A test that passes on its own and fails in CI". Every flake found so far was a defect in the *test*, of exactly four kinds — a loop bounded by an attempt count rather than a deadline; two round trips reading one 4-second speech balloon; an implicit 5 s `expect` shorter than that balloon plus a round trip; and a fixture that *plays the game* to reach its starting position (walking to a randomly-placed crate ate most of a 120 s budget, and surfaced as a bare `Test timeout exceeded`). Reproduce by saturating the CPU (`nproc − 1` spinners) and running the one spec; CI's only difference is that it is slower. **Never** fix one with `retries`, and never with an env flag that disables a game's random rolls — that is test-only machinery in a production path. Determinism comes from direct DB setup (`web/e2e-stack/vanyagotchi-db.ts`).
+- **flaky-tests:** see "A test that passes on its own and fails in CI". Every flake found so far was a defect in the *test*, of exactly four kinds — a loop bounded by an attempt count rather than a deadline; two round trips reading one 4-second speech balloon; an implicit 5 s `expect` shorter than that balloon plus a round trip; and a fixture that *plays the game* to reach its starting position (walking to a randomly-placed crate ate most of a 120 s budget, and surfaced as a bare `Test timeout exceeded` — the same kind bites again when a caller's budget contradicts the helper it calls, which is what broke CI on 2026-07-29). Reproduce by saturating the CPU (`nproc − 1` spinners) and running the one spec; CI's only difference is that it is slower. **Never** fix one with `retries`, and never with an env flag that disables a game's random rolls — that is test-only machinery in a production path. Determinism comes from direct DB setup (`web/e2e-stack/vanyagotchi-db.ts`).
 - **next:** keep this current as ops procedures are exercised; add a section whenever you work out a new procedure (read-before / write-after).
 - **constraints:** never commit the host/IP/port or any secret; never paste real personal data into shared places. The app log is PII-free by design; the DB and nginx access log are not — treat their contents as confidential.
 
@@ -586,6 +586,22 @@ keeps insisting may be right:
    anything. It is a `Test timeout exceeded` with no assertion named, which reads like a hang
    and is not. Move the fixture to the player instead (`standTheCrateBesideHim` writes
    `location_key`/`x`/`y`), and leave the walking to the one test whose subject *is* walking.
+
+   **The same kind bites a second way: a caller whose budget contradicts the helper it
+   calls.** `walkToTheCrate` is bounded by a 60 s deadline, and its own comment says it is
+   sized against callers with **120 s**. One caller — «Ванягоччи»'s *two accounts have two
+   Ваняs* — asked for 90 s while being the heaviest of the set (two browser contexts, two
+   logins, two pages, two yard entries and a reload, all outside the walk). It passed for
+   weeks and then failed in CI on 2026-07-29, and the artefacts said "hang": a bare timeout,
+   a trace whose last unfinished call is `click [data-test="shop"]`, and a screenshot of a
+   perfectly healthy yard. Nothing was slow and nothing was racy — the arithmetic simply did
+   not fit. **When a helper states the budget it needs, check the caller actually gives it
+   one**, and read the trace's unfinished call before believing the word "timeout":
+
+   ```bash
+   gh run download <run-id> -D artifacts        # test-failed-*.png + error-context.md + trace.zip
+   unzip -q trace.zip -d tr && ls tr/*.trace    # the last `before` with no `after` is where it hung
+   ```
 
 5. **…or the test was right and the product was racy.** This is the fifth kind and it broke
    the rule the other four established, so check the code before assuming the test is at

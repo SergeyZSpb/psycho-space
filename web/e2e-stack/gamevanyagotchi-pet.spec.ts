@@ -1260,7 +1260,17 @@ test('two accounts have two Ваняs, and an action on one does not touch the o
   // path is scoped by the caller's own account id. Both are invisible to a
   // single-player test — a service that ignored the account entirely and kept
   // one global pet would pass every other test in this file.
-  test.setTimeout(90_000);
+  //
+  // 120 s BECAUSE IT WALKS TO THE CRATE, which is the budget `walkToTheCrate`
+  // is explicitly sized against — it is allowed to spend 60 s on its own, and
+  // every other caller gives it 120. This one had 90, and it is the HEAVIEST of
+  // them: two browser contexts, two logins, two pages, two yard entries and a
+  // reload, all outside the walk. On a loaded runner the arithmetic simply does
+  // not fit, and it does not fail saying so — the walk is still converging when
+  // the budget runs out, so it surfaces as a bare `Test timeout exceeded` with
+  // a screenshot of a perfectly healthy yard. That is not slowness to wait out;
+  // it is a number that contradicted the helper it was calling.
+  test.setTimeout(120_000);
   const base = baseURL ?? 'http://127.0.0.1:8081';
   const seeded = await stack();
   forgetPet(seeded[PLAYER_A]);
