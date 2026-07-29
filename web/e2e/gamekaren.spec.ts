@@ -19,6 +19,20 @@ import { seedClient } from './fixtures';
  * proved: a hand-typed rules line cannot pass the assertions below.
  */
 
+/**
+ * A balloon line LONGER THAN THE OLD ONE-ROW BOUND, which was 32 runes, and
+ * inside the current two-row one, which is 48 (`content_test.go`,
+ * `TestNobodySaysMoreThanFitsOnAPhone`). It exists so the wrap has something to
+ * wrap: every other line in this stub fits on one row, so without it the whole
+ * two-line change would be invisible to this suite and `.karen-say` could go
+ * back to `nowrap` with every assertion still green.
+ *
+ * It is the shape of the co-op redirect line the pools are growing towards,
+ * carrying the stub's «СТЕНД» marker like everything else here so a client that
+ * hardcoded a balloon cannot pass by accident.
+ */
+const LONG_SAY = 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО КОЛЛЕГИ, СТЕНД';
+
 const CONFIG = {
   game_key: 'karen',
   title: 'СИМУЛЯТОР КАРЕНА',
@@ -54,7 +68,7 @@ const CONFIG = {
   // Marked like everything else here, so a client that hardcoded a balloon
   // instead of reading the catalogue cannot pass the assertions below.
   boss_lines: ['Я ЛЫСЫЙ, СТЕНД', 'А ГДЕ, СТЕНД?'],
-  karen_lines: ['Я КАРЕН, СТЕНД', 'ВОДЫ, СТЕНД', 'НА ВСТРЕЧУ, СТЕНД'],
+  karen_lines: ['Я КАРЕН, СТЕНД', 'ВОДЫ, СТЕНД', 'НА ВСТРЕЧУ, СТЕНД', LONG_SAY],
   max_occupants: 3,
 };
 
@@ -404,6 +418,84 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     await expect(page.getByTestId('karen-boss-say')).toHaveText('Я ЛЫСЫЙ, СТЕНД');
   });
 
+  test('a line past the old one-row bound wraps to two rows and keeps all of itself', async ({
+    page,
+  }) => {
+    // THE CLAIM THE TWO-LINE BALLOON EXISTS FOR. `.karen-say` was a single
+    // `white-space: nowrap` row, and that row is what held the Go pools down to
+    // 32 runes — under a short Russian sentence. Everything asserted here is a
+    // number that the old CSS fails: 43 runes on one row would be ~255 px wide
+    // and one line tall.
+    //
+    // 412 × 746 rather than this suite's 360 × 800, per the lesson two tests
+    // below: assert at a shape that can discriminate. Both shapes happen to
+    // work here, but the balloon's width bound is about a PHONE and the phone
+    // that the complaints arrive on is this one.
+    if (!isMobile(page)) test.skip();
+    await page.setViewportSize(PHONE);
+    const socket = await enterOffice(page);
+    await socket.snapshot({ p: 3 });
+    const say = page.getByTestId('karen-me-say');
+    await expect(say).toHaveText(LONG_SAY);
+    expect(
+      LONG_SAY.length,
+      'the long stub line stopped being longer than the one-row bound it exists to exceed',
+    ).toBeGreaterThan(32);
+
+    const box = await say.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        height: el.getBoundingClientRect().height,
+        // TWO WIDTHS, and they are different numbers on purpose. `offsetWidth`
+        // is what the balloon was LAID OUT at, so it is what `max-width` bounds;
+        // the client rect is what it is DRAWN at, which the figure's depth scale
+        // multiplies on the way up. Asserting the rect against 160 fails for a
+        // reason that has nothing to do with this change.
+        laid: (el as HTMLElement).offsetWidth,
+        drawn: el.getBoundingClientRect().width,
+        line: parseFloat(cs.lineHeight),
+        font: parseFloat(cs.fontSize),
+        // What the clamp WOULD have hidden. Equal means nothing was cut.
+        scroll: el.scrollHeight,
+        client: el.clientHeight,
+      };
+    });
+
+    // MEASURE THE ROW AGAINST THE BALLOON NEXT TO IT rather than dividing a
+    // height by a line height. The лысый is saying his 14-rune default, which is
+    // one row, and both balloons are the same element with the same padding and
+    // the same font — so the DIFFERENCE between the two heights is exactly the
+    // extra row and nothing else. Dividing instead means guessing at padding, at
+    // `-webkit-box`, and at whether the font's natural line box is really
+    // `line-height`; a subtraction between two things styled identically has
+    // none of those unknowns in it.
+    const oneRow = (await page.getByTestId('karen-boss-say').boundingBox())!.height;
+    const extra = box.height - oneRow;
+    // One extra row: not zero (the wrap never happened and `nowrap` is back) and
+    // not two (the clamp is not holding and the balloon covers the office it is
+    // standing in).
+    expect(extra, 'the balloon did not wrap — it is still one row').toBeGreaterThan(box.line * 0.7);
+    expect(extra, 'the balloon grew past two rows').toBeLessThan(box.line * 1.6);
+    // NOT CLIPPED. `line-clamp` is the backstop for a pool that outgrew its
+    // test, not the budget being spent — a line inside the Go bound must render
+    // whole, and this is the assertion that would catch the bound and the CSS
+    // drifting apart.
+    expect(box.scroll, 'the clamp is eating a line that is inside the bound').toBeLessThanOrEqual(
+      box.client + 1,
+    );
+    // Inside its stated max-width — `box-sizing` is border-box here, so 160 is
+    // the whole box and the padding is already in it.
+    expect(box.laid, 'the balloon is wider than the max-width it declares').toBeLessThanOrEqual(161);
+    // And inside the phone once the depth scale has had it. The figure ramp tops
+    // out at ×1.4, so the widest a full-width balloon can draw is 224 px — 62 %
+    // of a 360 px screen and 54 % of this 412 px one. 70 % is the bound, which
+    // catches a balloon that got wider or a depth ramp that got steeper without
+    // failing on the arithmetic that is already true.
+    expect(box.drawn).toBeLessThanOrEqual(PHONE.width * 0.7);
+    // Smaller than the one-row size it replaced: 0.62rem was 9.92 px.
+    expect(box.font, 'the balloon text did not get smaller').toBeLessThan(9.9);
+  });
+
   test('a balloon rides the man rather than being placed beside him', async ({ page }) => {
     // It is a CHILD of the figure, so the transform that moves him every
     // animation frame carries it too — no second write, and no chance of the
@@ -470,6 +562,34 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
       expect(box!.y, id).toBeGreaterThanOrEqual(0);
       expect(box!.y + box!.height, id).toBeLessThanOrEqual(viewport.height);
     }
+  });
+
+  test('the stick stands clear of the left edge, further in than the dash is from the right', async ({
+    page,
+  }) => {
+    // The stick used to start 16 px from the glass, which puts the half of it a
+    // thumb reaches FIRST inside the phone's own edge-swipe strip — a drag begun
+    // there argues with a system gesture instead of steering, and on a curved
+    // screen it is partly on the bezel.
+    //
+    // The assertion is deliberately RELATIVE as well as absolute. An absolute
+    // floor alone is passed by padding both sides equally, which would push the
+    // dash inward for no reason; the claim is that the two edges are treated
+    // DIFFERENTLY, because a drag and a tap do not want the same thing from an
+    // edge. So: the stick clears a real gesture strip, and it clears more of one
+    // than the dash does.
+    if (!isMobile(page)) test.skip();
+    await enterOffice(page);
+    const viewport = page.viewportSize()!;
+    const stick = (await page.getByTestId('karen-stick').boundingBox())!;
+    const dash = (await page.getByTestId('karen-dash').boundingBox())!;
+    const fromLeft = stick.x;
+    const fromRight = viewport.width - (dash.x + dash.width);
+    expect(fromLeft, 'the stick is back in the edge-swipe strip').toBeGreaterThanOrEqual(24);
+    expect(fromLeft, 'the stick is inset far enough to be worth moving').toBeGreaterThan(fromRight);
+    // And it did not buy that room by getting smaller — the size a thumb wants
+    // is the reason the padding moved instead of the circle.
+    expect(stick.width).toBeGreaterThanOrEqual(96);
   });
 
   test('the office is the whole screen, edge to edge', async ({ page }) => {

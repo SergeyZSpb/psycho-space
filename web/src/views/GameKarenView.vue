@@ -1207,14 +1207,53 @@ function onDash(): void {
   border-radius: 8px;
   background: rgba(12, 14, 18, 0.82);
   color: rgba(255, 255, 255, 0.92);
-  font-size: 0.62rem;
+  font-size: 0.54rem;
   font-weight: 700;
   letter-spacing: 0.02em;
   line-height: 1.2;
-  /* One line, however long the catalogue's sentence is — a balloon that wrapped
-     to three rows would cover the office it is standing in. The office is only
-     sixteen metres wide, so a long line is allowed to reach past the man. */
-  white-space: nowrap;
+  /* TWO lines, and the two numbers below are one measurement rather than two
+     tastes. A balloon used to be a single `nowrap` row, which is what forced
+     `TestNobodySaysMoreThanFitsOnAPhone` down to 32 runes — and 32 runes is
+     under a short Russian sentence, so the pools stayed blunt and the co-op
+     lines that are coming did not fit at all.
+
+     The arithmetic, at the bold uppercase Cyrillic these pools are written in
+     with `letter-spacing: 0.02em`: a rune costs about 0.6 × the font size, so
+     0.54rem ≈ 8.64px gives ~5.2px a rune and `max-width: 160px` holds ~30 of
+     them on a row. Two rows is ~61, and the pools are bounded at 48 to leave
+     room for a bad word split — the wrap is by word, so a line that would break
+     awkwardly still fits rather than being clipped. `line-clamp` is the
+     backstop, not the plan: a sentence past the bound is a red Go test, and the
+     ellipsis only exists so that a mistake degrades instead of covering the
+     office it is standing in.
+
+     Three things that must NOT change with it: this box still does not scale
+     with `--depth` (see above), it stays `pointer-events: none`, and two rows
+     at this size is ~25px, which is well clear of the readouts standing over
+     the top edge of the same plane. */
+  white-space: normal;
+  /* `width: max-content` IS LOAD-BEARING, and it is the thing `nowrap` was
+     hiding. This balloon is absolutely positioned inside the figure, so its
+     containing block is a ~40px positioning box — and an absolutely positioned
+     element shrink-to-fits against THAT, not against the screen. While it was
+     one `nowrap` row nothing could wrap, so the narrow containing block never
+     showed; the moment wrapping was allowed, every line broke against 40px and
+     a 14-rune balloon became three rows. `max-content` asks for the unwrapped
+     width and `max-width` is what actually bounds it. */
+  width: max-content;
+  max-width: 160px;
+  text-align: center;
+  /* Both spellings, and they are two browsers rather than one habit: the
+     unprefixed `line-clamp` is what current Chrome uses (it computes `display`
+     to `flow-root` itself, which is why the `-webkit-box` above does not survive
+     in devtools), and the `-webkit-` trio is the only clamp Safari understood
+     until 18. Neither is redundant while the audience is «whatever phone a
+     friend has». */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
   pointer-events: none;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
@@ -1261,7 +1300,19 @@ function onDash(): void {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  padding: 10px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+  /* The left padding is DELIBERATELY bigger than the right, and it is the stick
+     that earns the asymmetry. At 16px a side, a 104px stick starts 16px from the
+     glass — so the half of it a thumb reaches first sits in the phone's own
+     edge-swipe strip, where a drag that begins there is arguing with the system
+     gesture rather than steering, and on a curved screen it is partly on the
+     bezel. 30px clears that strip and centres the stick ~82px in, which on a
+     360px phone is a comfortable quarter of the width.
+     The dash keeps its 16px: it is a TAP, so its edge costs nothing, and
+     `justify-content: space-between` holds it against the right without being
+     told. Widening the stick instead was the other option and is the wrong one —
+     104px is already the size a thumb wants, and a bigger circle would eat the
+     office rather than move off its edge. */
+  padding: 10px 16px calc(18px + env(safe-area-inset-bottom, 0px)) 30px;
   gap: 12px;
   pointer-events: none;
 }

@@ -336,13 +336,22 @@ func TestWhatKarenIsSaying(t *testing.T) {
 	}
 }
 
-// A balloon is `white-space: nowrap` over a plane that is now the whole width of
-// a phone, so a sentence somebody could not resist is a sentence clipped by the
-// edge of the office. Both pools are catalogue data and adding to them is meant
-// to be cheap, which is exactly why the bound belongs in a test rather than in
-// somebody's memory.
+// A balloon holds TWO lines and clips what will not fit, so a sentence somebody
+// could not resist is a sentence cut off over the office. Both pools are
+// catalogue data and adding to them is meant to be cheap, which is exactly why
+// the bound belongs in a test rather than in somebody's memory.
+//
+// This number is a MEASUREMENT of the CSS and moves only with it. It was 32 while
+// `.karen-say` was a single `white-space: nowrap` row at 0.62rem, which is under a
+// short Russian sentence — the pools stayed blunt because of it. The balloon is
+// now two rows at 0.54rem inside `max-width: 160px`: bold uppercase Cyrillic with
+// `letter-spacing: 0.02em` costs about 0.6 × the font size a rune, so ~5.2px a
+// rune holds ~30 on a row and ~61 over two. The bound sits at 48 rather than 61
+// because the wrap is by WORD — a sentence whose split lands badly needs the
+// slack, and the `line-clamp` ellipsis is the backstop for a mistake rather than
+// the budget being spent.
 func TestNobodySaysMoreThanFitsOnAPhone(t *testing.T) {
-	const most = 32 // runes; ~190 px at the balloon's size, inside 360
+	const most = 48 // runes; two rows of ~30 inside 160 px, with room for a bad split
 	for name, pool := range map[string][]string{"BossLines": BossLines, "KarenLines": KarenLines} {
 		for i, line := range pool {
 			if n := len([]rune(line)); n > most {
