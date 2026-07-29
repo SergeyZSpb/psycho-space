@@ -1111,12 +1111,25 @@ function onDash(): void {
      exists to remove. */
 }
 
+/* HOW CLOSE HE IS, PAINTED ON THE MAN AND NOT ON HIS BOX.
+   `--skin` and `--body` are what `.karen-fig-head` and `.karen-fig-body` draw
+   themselves with, so the step lands on the two shapes that are actually him.
+   These rules used to set `background` on `.karen-boss` itself — which is the
+   figure's positioning box, a plain `--unit` × `--unit * 1.6` rectangle with
+   the head and body painted on top of it. The result was a filled orange
+   RECTANGLE appearing behind him the moment he got close, which read as a
+   selection box or a broken sprite rather than as a man getting nearer. The
+   colours below are the ones those gradients already carried; only the element
+   they land on has moved. Nothing may set `background` on `.karen-me` or
+   `.karen-boss` — a figure's box is a coordinate, not a surface. */
 .karen-boss[data-grin='closing'] {
-  background: linear-gradient(180deg, #f3c98a 0%, #9a5f2a 100%);
+  --skin: linear-gradient(180deg, #f3c98a 0%, #d99a52 100%);
+  --body: #9a5f2a;
 }
 
 .karen-boss[data-grin='here'] {
-  background: linear-gradient(180deg, #ff9f7a 0%, #a83b1f 100%);
+  --skin: linear-gradient(180deg, #ff9f7a 0%, #e0644a 100%);
+  --body: #a83b1f;
 }
 
 /* The smile. Widens continuously with `--grin`, which is a number the compositor

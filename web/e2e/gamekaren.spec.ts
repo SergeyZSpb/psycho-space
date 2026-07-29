@@ -309,6 +309,40 @@ test.describe('«СИМУЛЯТОР КАРЕНА» play', () => {
     await expect(boss).toHaveAttribute('data-grin', 'far');
   });
 
+  test('and the man is what changes colour, never a box around him', async ({ page }) => {
+    // A FIGURE'S BOX IS A COORDINATE, NOT A SURFACE. `.karen-boss` is the
+    // positioning element — a bare `--unit` × `--unit * 1.6` rectangle that the
+    // head and body are painted on top of — so a `background` on it draws a
+    // filled rectangle behind the man. It did, and the closer he got the more
+    // visible it was: at `here` a solid orange box appeared around him, which
+    // reads as a selection outline or a broken sprite rather than as somebody
+    // arriving. The step is real and stays; it just belongs on `--skin` and
+    // `--body`, which is what he is drawn with.
+    const socket = await enterOffice(page);
+    const boss = page.getByTestId('karen-boss');
+    const head = boss.locator('.karen-fig-head');
+    const painted = (l: typeof boss) =>
+      l.evaluate((el) => {
+        const s = getComputedStyle(el);
+        return `${s.backgroundColor}|${s.backgroundImage}`;
+      });
+
+    const seen: string[] = [];
+    for (const g of [10, 120, 250]) {
+      await socket.snapshot({ b: { x: 600, y: 900, g } });
+      // The state really did step, so this is not asserting an inert element.
+      await expect(boss).toHaveAttribute(
+        'data-grin',
+        g === 10 ? 'far' : g === 120 ? 'closing' : 'here',
+      );
+      // Nothing is painted on the positioning box, in any state.
+      expect(await painted(boss)).toBe('rgba(0, 0, 0, 0)|none');
+      seen.push(await painted(head));
+    }
+    // And the man himself is what moved: three states, three different heads.
+    expect(new Set(seen).size).toBe(3);
+  });
+
   test('the client says hello the moment the socket opens', async ({ page }) => {
     // It goes out on every OPEN, including reconnects, because the office
     // outlives a dropped socket and a returning client has to be re-attached to
@@ -494,3 +528,4 @@ test.describe('«СИМУЛЯТОР КАРЕНА» in the nav', () => {
     if ((page.viewportSize()?.width ?? 0) >= 960) await expect(entry).toBeVisible();
   });
 });
+
