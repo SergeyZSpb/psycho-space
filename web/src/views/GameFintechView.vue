@@ -209,6 +209,10 @@
               <span class="fintech-claude-stubble" />
               <span class="fintech-claude-cig" />
             </span>
+            <!-- The mark on his shirt. A stylised burst rather than the trademark:
+                 eight tapered spokes, which is what reads at thirty pixels and is
+                 what makes him recognisable as the tool he is. -->
+            <span class="fintech-claude-mark" />
           </span>
           <span
             v-for="peer in peers"
@@ -2345,8 +2349,8 @@ function onDash(): void {
   position: absolute;
   left: 50%;
   bottom: 18%;
-  width: calc(var(--unit) * 1.05);
-  height: calc(var(--unit) * 0.7);
+  width: calc(var(--unit) * 1.5);
+  height: calc(var(--unit) * 1.05);
   transform: translateX(-50%);
   border-radius: 50%;
   background: radial-gradient(
@@ -2393,6 +2397,30 @@ function onDash(): void {
   pointer-events: none;
 }
 
+/* THE MARK ON HIS SHIRT — a burst, so it is obvious whose tool he is.
+   Eight tapered spokes from a `repeating-conic-gradient`, which is one declaration
+   and reads at thirty pixels where a drawn glyph would be a smudge. Deliberately an
+   EVOCATION rather than the trademark: the shape and the terracotta together are the
+   whole reference, and there is no wordmark and no file.
+   It sits on the chest, so it scales with the body and rides the depth ramp with the
+   man. `mask` rather than a background so the shirt's colour shows through the gaps
+   instead of a second colour having to be kept in step with `--body`. */
+.fintech-claude-mark {
+  position: absolute;
+  left: 50%;
+  bottom: 22%;
+  width: 42%;
+  aspect-ratio: 1;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.93);
+  -webkit-mask: repeating-conic-gradient(
+    from 0deg,
+    #000 0deg 9deg,
+    transparent 9deg 45deg
+  );
+  mask: repeating-conic-gradient(from 0deg, #000 0deg 9deg, transparent 9deg 45deg);
+}
+
 /* The stubble: a band across the lower half of the face rather than drawn hairs,
    which is the only thing that reads at this size. */
 .fintech-claude-stubble {
@@ -2437,14 +2465,65 @@ function onDash(): void {
   position: absolute;
   left: 0;
   top: 0;
-  width: calc(var(--unit) * 0.34);
-  height: calc(var(--unit) * 0.5);
-  transform: translate3d(calc(var(--x, 0.5) * 100cqw - 50%), calc(var(--y, 0.5) * 100cqh - 50%), 0);
-  border-radius: 46% 46% 30% 30%;
-  background: linear-gradient(180deg, #d8c48f 0%, #a8842f 55%, #6b5320 100%);
-  box-shadow: 0 0 0 max(1px, calc(var(--unit) * 0.025)) rgba(0, 0, 0, 0.4);
+  /* TALLER AND NARROWER THAN THE BOTTLE, because it was drawn as one and read as
+     one. A кальян is a bowl on a stem on a base with a hose off the side, and at
+     this size that is four shapes rather than a silhouette. */
+  width: calc(var(--unit) * 0.4);
+  height: calc(var(--unit) * 0.78);
+  transform: translate3d(calc(var(--x, 0.5) * 100cqw - 50%), calc(var(--y, 0.5) * 100cqh - 70%), 0);
   pointer-events: none;
   z-index: 1;
+}
+
+/* The BASE — the wide glass bottom, which is the part that says кальян at a glance. */
+.fintech-hookah::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 100%;
+  height: 46%;
+  transform: translateX(-50%);
+  border-radius: 46% 46% 44% 44%;
+  background: linear-gradient(180deg, #7fc7d9 0%, #3f8fa8 55%, #1f5a70 100%);
+  box-shadow: 0 0 0 max(1px, calc(var(--unit) * 0.02)) rgba(0, 0, 0, 0.45);
+}
+
+/* The STEM and the BOWL on top of it, plus the hose leaving to one side — one
+   element carrying three gradients, because four positioned children for a thing
+   this size is markup nobody can read. */
+.fintech-hookah::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 100%;
+  height: 60%;
+  transform: translateX(-50%);
+  background:
+    /* the bowl */
+    radial-gradient(
+      ellipse 42% 26% at 50% 8%,
+      #c9743f 0%,
+      #a8562c 70%,
+      rgba(168, 86, 44, 0) 71%
+    ),
+    /* the stem */
+    linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0) 40%,
+      #d8c48f 40%,
+      #a8842f 60%,
+      rgba(0, 0, 0, 0) 60%
+    ),
+    /* the hose, leaving to the right and drooping */
+    radial-gradient(
+      circle at 118% 72%,
+      rgba(0, 0, 0, 0) 58%,
+      #6b5320 60%,
+      #6b5320 66%,
+      rgba(0, 0, 0, 0) 68%
+    );
 }
 
 /* BEHIND A CLOUD, and it is a property of the FIGURE for as long as it lasts —
@@ -2467,8 +2546,11 @@ function onDash(): void {
   position: absolute;
   left: 50%;
   bottom: 18%;
-  width: calc(var(--unit) * 1.15);
-  height: calc(var(--unit) * 0.8);
+  /* BIGGER THAN THE FIGURE, deliberately: a cloud that fits inside the man reads as
+     a puff of breath. This one is something you are hiding behind, which is what it
+     mechanically is. */
+  width: calc(var(--unit) * 1.9);
+  height: calc(var(--unit) * 1.35);
   transform: translateX(-50%);
   border-radius: 50%;
   background: radial-gradient(

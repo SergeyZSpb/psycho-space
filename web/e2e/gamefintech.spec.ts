@@ -1700,3 +1700,64 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — Серега and Тём
     for (const n of CONFIG.npcs) await expect(rules).toContainText(n.name);
   });
 });
+
+test.describe('«СИМУЛЯТОР ФИНТЕХА» — the three things that had to look right', () => {
+  test('Claude wears a burst on his shirt', async ({ page }) => {
+    // Whose tool he is, said by the shape rather than by a wordmark. It has to
+    // actually paint AND actually be masked into spokes — a solid square would pass
+    // a bare "is it there" check and read as a badge.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ cl: { x: 600, y: 900, c: 60 } });
+    const mark = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="fintech-claude"] .fintech-claude-mark')!;
+      const r = el.getBoundingClientRect();
+      const st = getComputedStyle(el);
+      return {
+        area: r.width * r.height,
+        square: Math.abs(r.width - r.height),
+        mask: st.maskImage || st.webkitMaskImage,
+      };
+    });
+    expect(mark.area).toBeGreaterThan(0);
+    // Square, so the spokes are evenly spaced rather than an ellipse of them.
+    expect(mark.square).toBeLessThan(1.5);
+    expect(mark.mask, 'the burst is a solid block rather than spokes').toContain('conic');
+  });
+
+  test('the кальян is a кальян and not a bottle', async ({ page }) => {
+    // It shipped drawn as a bottle and read as one. A кальян is a bowl on a stem on a
+    // wide base with a hose off the side: taller than it is wide, and both halves
+    // have to paint.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ hs: 0 });
+    const shape = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="fintech-hookah"]')!;
+      const r = el.getBoundingClientRect();
+      const bg = (pseudo: string) => getComputedStyle(el, pseudo).backgroundImage;
+      return { w: r.width, h: r.height, base: bg('::before'), top: bg('::after') };
+    });
+    expect(shape.h / shape.w, 'it is not taller than it is wide').toBeGreaterThan(1.5);
+    expect(shape.base, 'the glass base does not paint').not.toBe('none');
+    expect(shape.top, 'the bowl, stem and hose do not paint').not.toBe('none');
+    // Three gradients in the upper half: the bowl, the stem and the hose.
+    expect(shape.top.split('gradient').length - 1).toBeGreaterThanOrEqual(3);
+  });
+
+  test('the cloud is bigger than the man behind it', async ({ page }) => {
+    // A cloud that fits inside the figure reads as a puff of breath. This one is
+    // something you are hiding behind, which is what it mechanically is.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ iv: 9000 });
+    const sizes = await page.evaluate(() => {
+      const me = document.querySelector('[data-testid="fintech-me"]')!;
+      const cloud = getComputedStyle(me, '::before');
+      return {
+        cloudW: parseFloat(cloud.width),
+        cloudH: parseFloat(cloud.height),
+        figW: me.getBoundingClientRect().width,
+      };
+    });
+    expect(sizes.cloudW).toBeGreaterThan(sizes.figW);
+    expect(sizes.cloudH).toBeGreaterThan(sizes.figW);
+  });
+});
