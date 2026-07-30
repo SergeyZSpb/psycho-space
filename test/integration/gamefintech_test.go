@@ -1239,3 +1239,49 @@ func TestFintechWalkingToTheHookahPutsACloudOnTheWire(t *testing.T) {
 		t.Fatal("walking onto the кальян never put a cloud on the wire")
 	}
 }
+
+func TestFintechEveryShiftIsSomebodyElse(t *testing.T) {
+	// «Make each player receive random Карен / Андрюха / Саня / Даша, not fixed
+	// assignment.» The draw always existed, and nothing end-to-end asserted that it
+	// reached the client — which mattered, because for one deploy the served
+	// `personas` array was nil and every shift therefore looked identical whatever
+	// the server had drawn.
+	//
+	// Over real HTTP, through the real service, and asserted on DISTINCT VALUES rather
+	// than on any single one: two fair draws agree one time in four, so a single
+	// comparison would be flaky by construction.
+	app, _, _ := buildAppFintech(t, fintechVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cli := loginAs(t, srv.URL, "920030", "user")
+
+	cast := len(gamefintech.Personas)
+	seen := map[int]bool{}
+	// Enough shifts that four fair draws are overwhelmingly likely to show at least
+	// two distinct values: the chance of forty draws all agreeing is 4^-39.
+	for i := 0; i < 40 && len(seen) < cast; i++ {
+		got := startShift(t, cli, srv.URL)
+		persona, ok := got["persona"].(float64)
+		if !ok {
+			t.Fatalf("shift %d carried no persona: %v", i, got)
+		}
+		if persona < 0 || int(persona) >= cast {
+			t.Fatalf("shift %d drew persona %v, outside a cast of %d", i, persona, cast)
+		}
+		seen[int(persona)] = true
+
+		req, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/game-fintech/shifts/current", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := cli.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	if len(seen) < 2 {
+		t.Fatalf("forty shifts were all the same person: %v — the draw is not reaching the client", seen)
+	}
+	t.Logf("forty shifts drew %d of %d personas: %v", len(seen), cast, seen)
+}

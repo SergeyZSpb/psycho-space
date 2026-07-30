@@ -158,6 +158,31 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     await page.getByTestId('fintech-quit').click();
   });
 
+  test('the readouts name whoever the server drew you as', async ({ page }) => {
+    // THE OTHER HALF OF THE SAME GAP THE NON-PLAYERS FELL INTO. That the draw varies is
+    // proved over real HTTP in the integration suite; that the NAME reaches the screen
+    // was proved nowhere, and for one deploy it did not — the served `personas` array
+    // was nil, so the readout had no name to show and every shift looked identical
+    // whatever the server had drawn.
+    const res = await page.request.get('/api/game-fintech/config');
+    const cast = ((await res.json()) as { personas: string[] }).personas;
+    expect(cast.length).toBeGreaterThan(1);
+
+    await page.goto('/app/game-fintech');
+    await expect(page.getByTestId('fintech-splash')).toBeVisible();
+    await page.getByTestId('fintech-start').click();
+    await expect(page.getByTestId('fintech-play')).toBeVisible();
+
+    const who = page.getByTestId('fintech-who');
+    await expect(who).toHaveCount(1);
+    const said = ((await who.textContent()) ?? '').trim();
+    // One of the four, whichever was drawn — asserted as membership rather than as a
+    // fixed name, because the whole point is that it is not fixed.
+    expect(cast.some((n) => said.includes(n)), `the readout says «${said}»`).toBe(true);
+
+    await page.getByTestId('fintech-quit').click();
+  });
+
   test('a shift walked out of is written, and comes back from Postgres', async ({ page }) => {
     const before = await page.request.get('/api/game-fintech/shifts/me');
     expect(before.status()).toBe(200);

@@ -2390,6 +2390,19 @@ function onDash(): void {
   box-shadow: 0 calc(var(--unit) * 0.04) 0 rgba(0, 0, 0, 0.28);
 }
 
+/* AND ТЁМА'S WORDS START ABOVE HIS CANOPY, rather than inside it.
+   The canopy reaches 34 % of a figure's height above the box top and a balloon sits at
+   `bottom: 100%` — the box's own top edge — so the two shared a strip of air. Painting
+   the words over the canopy makes them readable; lifting them clear makes them
+   legible, which is not the same thing when the canopy is a warm gradient and the
+   words are white on near-black.
+   In `--unit`, so it holds at every width and down the depth ramp. Only Тёма needs it:
+   Серега wears a caption on his shirt, inside the box, and Claude's burst is on his
+   chest. */
+.fintech-npc[data-npc='tema'] .fintech-say {
+  margin-bottom: calc(var(--unit) * 0.72);
+}
+
 /* HIS OWN SMOKE, AND IT NEVER GOES OUT. He carries his own кальян, so there is no
    state to it and no flag on the frame — the cloud is simply part of what he looks
    like. Dimmer and smaller than a player's, because a player's means uncatchable and
@@ -2755,6 +2768,12 @@ function onDash(): void {
      with `--depth` (see above), it stays `pointer-events: none`, and two rows
      at this size is ~25px, which is well clear of the readouts standing over
      the top edge of the same plane. */
+  /* THE WORDS ARE ON TOP OF WHATEVER HE IS WEARING. A balloon is a readout, and a
+     figure's decoration is not — Тёма's paraglider is a later sibling and so painted
+     over his own words until this existed. One `z-index` inside the figure's own
+     stacking context, which is all it needs: it cannot escape him, because the figure
+     carries `z-index: var(--band)` and a transform. */
+  z-index: 1;
   white-space: normal;
   /* `width: max-content` IS LOAD-BEARING, and it is the thing `nowrap` was
      hiding. This balloon is absolutely positioned inside the figure, so its

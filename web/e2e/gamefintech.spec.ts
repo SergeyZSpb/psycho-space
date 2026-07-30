@@ -1835,3 +1835,40 @@ test('your own figure is outlined and no colleague is', async ({ page }) => {
   // drawn.
   expect(seen.boxOutline).toBe('none');
 });
+
+test('Тёма’s words clear his paraglider instead of hiding under it', async ({ page }) => {
+  // His canopy reaches above the figure's box and a balloon sits on that box's top
+  // edge, so the two shared a strip of air — and the canopy is a later sibling, so it
+  // painted over his own words. A balloon is a READOUT; what a figure is wearing is
+  // not, so the words win on both counts.
+  const socket = await enterOffice(page);
+  await socket.snapshot({
+    np: [
+      { x: 400, y: 900, p: 1 },
+      { x: 1000, y: 900, p: 1 },
+    ],
+  });
+  const seen = await page.evaluate(() => {
+    const tema = document.querySelector('[data-npc="tema"]')!;
+    const say = tema.querySelector('[data-testid="fintech-npc-say"]')!.getBoundingClientRect();
+    const mark = tema.querySelector('.fintech-npc-mark')!.getBoundingClientRect();
+    const figBox = tema.getBoundingClientRect();
+    return {
+      sayBottom: say.bottom,
+      sayHeight: say.height,
+      markTop: mark.top,
+      markHeight: mark.height,
+      figTop: figBox.top,
+      figHeight: figBox.height,
+      unit: getComputedStyle(tema).fontSize,
+      markArea: mark.width * mark.height,
+      sayZ: getComputedStyle(tema.querySelector('[data-testid="fintech-npc-say"]')!).zIndex,
+    };
+  });
+  expect(seen.sayHeight, 'he is not saying anything, so this proves nothing').toBeGreaterThan(0);
+  expect(seen.markArea, 'he has no paraglider, so this proves nothing').toBeGreaterThan(0);
+  // The balloon's bottom edge is above the canopy's top edge — they no longer overlap.
+  expect(seen.sayBottom).toBeLessThanOrEqual(seen.markTop + 1);
+  // And it would win the paint order anyway, which is the belt to that brace.
+  expect(Number(seen.sayZ)).toBeGreaterThan(0);
+});

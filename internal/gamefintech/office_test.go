@@ -1652,3 +1652,27 @@ func TestAnUnreachableTargetIsGivenUpOn(t *testing.T) {
 		t.Fatal("he is still walking at a spot inside a desk")
 	}
 }
+
+func TestEveryShiftDrawsItsOwnPersona(t *testing.T) {
+	// «Make each player receive random Карен / Андрюха / Саня / Даша, not fixed
+	// assignment.» It always was a draw — but nothing asserted it, and the draw was
+	// invisible for a deploy because the served `personas` array was nil, so the
+	// readout had no name to show and every shift looked identical. This is the test
+	// that says the draw reaches all four.
+	seen := map[int]int{}
+	for i := 0; i < 400; i++ {
+		seen[drawPersona()]++
+	}
+	if len(seen) != len(Personas) {
+		t.Fatalf("400 draws produced %d of %d personas: %v", len(seen), len(Personas), seen)
+	}
+	// And roughly evenly, so a draw that is technically random but practically Карен
+	// nine times in ten is caught too. A tenth of the fair share is a floor no fair
+	// draw fails and a stuck one cannot pass.
+	floor := 400 / len(Personas) / 10
+	for p, n := range seen {
+		if n < floor {
+			t.Fatalf("persona %d (%s) came up %d times in 400, want at least %d", p, Personas[p], n, floor)
+		}
+	}
+}
