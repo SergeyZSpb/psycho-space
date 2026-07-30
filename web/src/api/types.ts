@@ -921,6 +921,12 @@ export interface FintechBossConfig {
 export interface FintechSimConfig {
   hz: number;
   snapshot_hz: number;
+  /**
+   * How far into the past to draw everything that is not predicted, in
+   * milliseconds. Served rather than chosen: the office rewinds by exactly this
+   * much to resolve a catch against the world the victim was looking at.
+   */
+  render_delay_ms: number;
 }
 
 /** How a shift can end. The client shows the title and sub; it never writes one. */

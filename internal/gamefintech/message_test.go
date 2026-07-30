@@ -22,8 +22,8 @@ func TestParseInboundIgnoresEverythingItDoesNotUnderstand(t *testing.T) {
 		`[1,2,3]`,
 		`null`,
 	} {
-		if got, cmds := ParseInbound([]byte(payload)); got != "" || cmds != nil {
-			t.Fatalf("payload %q produced %q / %+v", payload, got, cmds)
+		if got, in := ParseInbound([]byte(payload)); got != "" || in.Cmds != nil {
+			t.Fatalf("payload %q produced %q / %+v", payload, got, in)
 		}
 	}
 }
@@ -31,22 +31,28 @@ func TestParseInboundIgnoresEverythingItDoesNotUnderstand(t *testing.T) {
 func TestParseInboundReadsHello(t *testing.T) {
 	// Deliberately empty: identity is the connection, so there is nothing in a
 	// hello to forge and nothing to validate.
-	got, cmds := ParseInbound([]byte(`{"t":"fintech_hello"}`))
-	if got != TypeHello || cmds != nil {
-		t.Fatalf("got %q / %+v", got, cmds)
+	got, in := ParseInbound([]byte(`{"t":"fintech_hello"}`))
+	if got != TypeHello || in.Cmds != nil {
+		t.Fatalf("got %q / %+v", got, in)
 	}
 }
 
 func TestParseInboundReadsAnInputFrame(t *testing.T) {
-	got, cmds := ParseInbound([]byte(
+	got, in := ParseInbound([]byte(
 		`{"t":"fintech_input","k":812,"cmds":[{"q":41,"dt":0.05,"mx":0,"my":-1,"d":true}]}`))
 	if got != TypeInput {
 		t.Fatalf("type %q", got)
 	}
-	if len(cmds) != 1 {
-		t.Fatalf("got %d commands", len(cmds))
+	// The tick this client says it had drawn, which is how its round trip is
+	// derived rather than reported — and which was decoded into nothing at all
+	// until the catch was lag-compensated.
+	if in.Seen != 812 {
+		t.Fatalf("the seen tick decoded to %d", in.Seen)
 	}
-	c := cmds[0]
+	if len(in.Cmds) != 1 {
+		t.Fatalf("got %d commands", len(in.Cmds))
+	}
+	c := in.Cmds[0]
 	if c.Seq != 41 || c.Dt != 0.05 || c.MX != 0 || c.MY != -1 || !c.Dash {
 		t.Fatalf("the frame decoded to %+v", c)
 	}
@@ -54,10 +60,10 @@ func TestParseInboundReadsAnInputFrame(t *testing.T) {
 	// Step can stay a pure function of valid input and the golden vectors can
 	// describe the simulation rather than the clamp.
 	_, hostile := ParseInbound([]byte(`{"t":"fintech_input","cmds":[{"q":1,"dt":1000,"mx":50}]}`))
-	if hostile[0].Dt != 1000 {
-		t.Fatalf("parsing clamped a field it should have left alone: %+v", hostile[0])
+	if hostile.Cmds[0].Dt != 1000 {
+		t.Fatalf("parsing clamped a field it should have left alone: %+v", hostile.Cmds[0])
 	}
-	if got := Sanitise(hostile[0]); got.Dt != MaxStepSeconds || got.MX > 1 {
+	if got := Sanitise(hostile.Cmds[0]); got.Dt != MaxStepSeconds || got.MX > 1 {
 		t.Fatalf("Sanitise did not clamp it either: %+v", got)
 	}
 }
@@ -67,8 +73,8 @@ func TestAFloatTooLargeForJSONDropsTheWholeFrame(t *testing.T) {
 	// sees it, so the frame is malformed rather than hostile — and malformed gets
 	// the same silence everything else does. Pinned because it is the one
 	// hostile value that never reaches Sanitise.
-	if got, cmds := ParseInbound([]byte(`{"t":"fintech_input","cmds":[{"dt":1e309}]}`)); got != "" || cmds != nil {
-		t.Fatalf("got %q / %+v", got, cmds)
+	if got, in := ParseInbound([]byte(`{"t":"fintech_input","cmds":[{"dt":1e309}]}`)); got != "" || in.Cmds != nil {
+		t.Fatalf("got %q / %+v", got, in)
 	}
 }
 
@@ -86,20 +92,20 @@ func TestASurplusOfCommandsIsTrimmedAndTheFrameIsStillAccepted(t *testing.T) {
 	}
 	b.WriteString(`]}`)
 
-	got, cmds := ParseInbound([]byte(b.String()))
+	got, in := ParseInbound([]byte(b.String()))
 	if got != TypeInput {
 		t.Fatalf("a forty-command frame was refused outright: %q", got)
 	}
-	if len(cmds) != MaxInboundCommands {
-		t.Fatalf("kept %d commands, cap is %d", len(cmds), MaxInboundCommands)
+	if len(in.Cmds) != MaxInboundCommands {
+		t.Fatalf("kept %d commands, cap is %d", len(in.Cmds), MaxInboundCommands)
 	}
 	if MaxInboundCommands != 10 {
 		t.Fatalf("the cap is %d — the client and the layout suite are written against 10", MaxInboundCommands)
 	}
 	// The FIRST ten, not the last: sequence order is what reconciliation runs
 	// on, and dropping the oldest would leave a hole the client never fills.
-	if cmds[0].Seq != 1 {
-		t.Fatalf("the surplus was trimmed from the wrong end: first seq is %d", cmds[0].Seq)
+	if in.Cmds[0].Seq != 1 {
+		t.Fatalf("the surplus was trimmed from the wrong end: first seq is %d", in.Cmds[0].Seq)
 	}
 }
 

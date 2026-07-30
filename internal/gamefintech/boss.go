@@ -120,8 +120,14 @@ func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64, elapsed float64)
 // The two discs touching, not their centres coinciding — which is about a metre
 // apart, the distance at which somebody has visibly arrived at your desk and it
 // is already too late.
-func Caught(b Boss, p Vec2) bool {
-	return math.Hypot(b.Pos.X-p.X, b.Pos.Y-p.Y) <= CatchRadius+PlayerRadius
+//
+// IT TAKES HIS POSITION AND NOT HIM, because the office resolves this against
+// where he was on the tick the victim's screen is showing rather than against
+// where he is now (Office.seenBy). A signature taking the whole Boss would have
+// to be handed a value assembled out of a past position and a present grin,
+// which is a thing that never existed.
+func Caught(bossPos, playerPos Vec2) bool {
+	return math.Hypot(bossPos.X-playerPos.X, bossPos.Y-playerPos.Y) <= CatchRadius+PlayerRadius
 }
 
 // nearest returns the first of the closest targets, or false if there are none.

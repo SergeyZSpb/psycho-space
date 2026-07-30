@@ -83,7 +83,7 @@ func TestHeSpawnsFurtherAwayThanHeCanBeSeenSmiling(t *testing.T) {
 	if d <= GrinRange {
 		t.Fatalf("he spawns %v away and starts smiling at %v", d, GrinRange)
 	}
-	if Caught(NewBoss(), Vec2{X: PlayerSpawnX, Y: PlayerSpawnY}) {
+	if Caught(NewBoss().Pos, Vec2{X: PlayerSpawnX, Y: PlayerSpawnY}) {
 		t.Fatal("he has already caught you at the spawn")
 	}
 }
@@ -160,7 +160,7 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 		`"move"`, `"walk_speed"`, `"dash_speed"`, `"dash_ms"`, `"dash_cooldown_ms"`,
 		`"input_hz"`, `"max_commands"`,
 		`"boss"`, `"speed"`, `"catch_radius"`, `"grin_range"`,
-		`"sim"`, `"hz"`, `"snapshot_hz"`,
+		`"sim"`, `"hz"`, `"snapshot_hz"`, `"render_delay_ms"`,
 		`"endings"`, `"key"`, `"sub"`,
 		`"boss_lines"`, `"personas"`, `"claude_lines"`, `"npcs"`, `"max_occupants"`,
 	} {
@@ -209,6 +209,16 @@ func TestTheConfigAgreesWithTheSimulation(t *testing.T) {
 	}
 	if c.Money.GraceMs != int(GraceSeconds*1000) {
 		t.Fatalf("the published grace window is %v ms, the simulation uses %v s", c.Money.GraceMs, GraceSeconds)
+	}
+	// The render delay is served because BOTH ends need it: the browser sizes its
+	// interpolation buffer with it and the office rewinds by it to resolve a catch
+	// against the world the victim saw. A client picking its own would be choosing
+	// how far behind the office believes it to be.
+	if want := int(math.Round(RenderDelaySeconds * 1000)); c.Sim.RenderDelayMs != want {
+		t.Fatalf("the served render delay is %d ms, want %d", c.Sim.RenderDelayMs, want)
+	}
+	if c.Sim.RenderDelayMs <= 0 {
+		t.Fatal("a render delay of zero would tell the client to draw the лысый in the present")
 	}
 	if c.Sim.Hz != SimHz || c.Sim.SnapshotHz != SimHz/SnapshotEvery {
 		t.Fatalf("the published rates are not the simulated ones: %+v", c.Sim)

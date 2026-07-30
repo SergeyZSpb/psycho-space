@@ -116,6 +116,39 @@ const (
 	// Three viewers of a 336-byte worst case is 20 kB/s for the whole game.
 	SnapshotEvery = 1
 
+	// RenderDelayPeriods is how far into the past the client draws everything it
+	// does NOT predict — the лысый, Claude, the colleagues — as a multiple of the
+	// snapshot period.
+	//
+	// IT LIVES ON THE SERVER BECAUSE THE SERVER HAS TO KNOW IT. The client needs
+	// the number to size its interpolation buffer, and the office needs the same
+	// number to resolve a catch against the world the victim was actually looking
+	// at. Two copies of one constant is two things to keep in agreement, so it is
+	// published in the catalogue as `render_delay_ms` and the browser obeys it.
+	//
+	// One period would be exactly enough if frames were perfectly spaced, which is
+	// the one thing they are not; the extra half absorbs ordinary jitter and a
+	// single dropped frame.
+	RenderDelayPeriods = 1.5
+
+	// RenderDelaySeconds is that delay as a duration. Derived rather than typed
+	// out, so changing the publish rate moves both ends of the compensation.
+	RenderDelaySeconds = RenderDelayPeriods / (SimHz / SnapshotEvery)
+
+	// CatchRewindMax bounds how far the office will rewind to resolve a catch, in
+	// seconds.
+	//
+	// THE REWIND IS DERIVED FROM A NUMBER THE CLIENT CONTROLS — the last snapshot
+	// tick it says it drew — so it needs a ceiling, or a client claiming an absurd
+	// latency would be permanently a metre further from the лысый than it really
+	// is. At his walking speed this is 1.2 m, which is one catch radius: the worst
+	// a dishonest client buys is being caught a third of a second later, and he is
+	// still walking at them the whole time.
+	//
+	// It is also comfortably above the honest case. A render delay of 75 ms plus a
+	// bad mobile round trip and a full input window is around 250 ms.
+	CatchRewindMax = 0.3
+
 	// InputHz is how often the client sends. It is published in the catalogue
 	// rather than chosen by the client, because it is half of the ratio below.
 	InputHz = 10

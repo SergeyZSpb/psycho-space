@@ -152,7 +152,7 @@ func TestQueuedInputDrainsAtRealTimeRatherThanAllAtOnce(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		cmds = append(cmds, Command{Seq: uint32(i), Dt: SimStep.Seconds(), MX: 1})
 	}
-	o.Enqueue("a", cmds, epoch)
+	o.Enqueue("a", Input{Cmds: cmds}, epoch)
 
 	advance(o, 1)
 	if got := snapOf(t, o, "a").Ack; got != 1 {
@@ -172,19 +172,19 @@ func TestACommandAlreadyAppliedIsDroppedRatherThanReplayed(t *testing.T) {
 	o := NewOffice()
 	join(t, o, "a", "s1")
 	c := Command{Seq: 1, Dt: SimStep.Seconds(), MX: 1}
-	o.Enqueue("a", []Command{c}, epoch)
+	o.Enqueue("a", Input{Cmds: []Command{c}}, epoch)
 	advance(o, 1)
 	moved := snapOf(t, o, "a").X
 
 	// The same command again, five times over, exactly as a lossy client would
 	// resend it.
-	o.Enqueue("a", []Command{c, c, c, c, c}, epoch)
+	o.Enqueue("a", Input{Cmds: []Command{c, c, c, c, c}}, epoch)
 	advance(o, 5)
 	if got := snapOf(t, o, "a").X; got != moved {
 		t.Fatalf("a resent command moved him again: %d → %d", moved, got)
 	}
 	// A zero sequence is "unset" and is dropped for the same reason.
-	o.Enqueue("a", []Command{{Dt: SimStep.Seconds(), MX: 1}}, epoch)
+	o.Enqueue("a", Input{Cmds: []Command{{Dt: SimStep.Seconds(), MX: 1}}}, epoch)
 	advance(o, 2)
 	if got := snapOf(t, o, "a").X; got != moved {
 		t.Fatalf("an unsequenced command was applied: %d → %d", moved, got)
@@ -216,11 +216,11 @@ func TestARedundantCommandStillWaitingInTheQueueIsDroppedToo(t *testing.T) {
 
 	// Frame one: four sub-steps, 100 ms of walking. One tick affords two of them,
 	// so three and four are still in the queue when the next frame lands.
-	o.Enqueue("a", frame(1, 4), epoch)
+	o.Enqueue("a", Input{Cmds: frame(1, 4)}, epoch)
 	advance(o, 1)
 	// Frame two, exactly as buildInputFrame produces it: the unacknowledged tail
 	// repeated, then the fresh sub-steps.
-	o.Enqueue("a", frame(1, 8), epoch)
+	o.Enqueue("a", Input{Cmds: frame(1, 8)}, epoch)
 	advance(o, 20)
 
 	moved := float64(snapOf(t, o, "a").X-start) / 100
@@ -242,7 +242,7 @@ func TestOnlyWhatWasActuallySimulatedIsAcknowledged(t *testing.T) {
 	start := snapOf(t, o, "a").X
 
 	// One command four ticks long. A single tick can afford none of it.
-	o.Enqueue("a", []Command{{Seq: 1, Dt: MaxStepSeconds, MX: 1}}, epoch)
+	o.Enqueue("a", Input{Cmds: []Command{{Seq: 1, Dt: MaxStepSeconds, MX: 1}}}, epoch)
 	advance(o, 1)
 	if got := snapOf(t, o, "a").Ack; got != 0 {
 		t.Fatalf("acknowledged seq %d after a tick that could not afford it", got)
@@ -276,7 +276,7 @@ func TestTheTimeBudgetCapsBankedSimulatedTime(t *testing.T) {
 	for i := 1; i <= maxPending; i++ {
 		cmds = append(cmds, Command{Seq: uint32(i), Dt: MaxStepSeconds, MX: 1})
 	}
-	o.Enqueue("a", cmds, epoch)
+	o.Enqueue("a", Input{Cmds: cmds}, epoch)
 	start := snapOf(t, o, "a").X
 
 	// One tick claiming a whole second — a stalled loop, a suspended process, or
@@ -316,13 +316,133 @@ func TestQuietTimeCannotBeBankedAndSpentOnMovement(t *testing.T) {
 	for i := 1; i <= maxPending; i++ {
 		cmds = append(cmds, Command{Seq: uint32(i), Dt: MaxStepSeconds, MX: 1})
 	}
-	o.Enqueue("a", cmds, epoch)
+	o.Enqueue("a", Input{Cmds: cmds}, epoch)
 	advance(o, 1)
 
 	moved := float64(snapOf(t, o, "a").X-start) / 100
 	if limit := WalkSpeed*SimStep.Seconds() + 1e-6; moved > limit {
 		t.Fatalf("five quiet seconds bought %v m of movement in one tick, a tick is worth %v m", moved, limit)
 	}
+}
+
+// --- lag compensation -------------------------------------------------------
+//
+// Your own Карен is predicted, so he is drawn in the present. The лысый cannot
+// be, so he is drawn from an interpolation buffer in the recent past. Resolving
+// the catch against the office's present compares two different instants, and
+// the two errors ADD while you run away — which is how a shift ended while he
+// was still drawn a couple of metres off.
+
+func TestTheRoundTripIsDerivedFromTheTickTheClientSaysItDrew(t *testing.T) {
+	// DERIVED, NEVER REPORTED. The tick rate is fixed, so the gap between the
+	// tick a client says it has and the tick the office is on IS the loop — and
+	// a client cannot inflate it without also claiming to be looking at a frame
+	// it has not received.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	advance(o, 5)
+
+	// Claims to have last drawn tick 3 while the office is on 5: two ticks, a
+	// tenth of a second.
+	o.Enqueue("a", Input{Seen: 3}, epoch)
+	if got := o.rttOf(t, "a"); math.Abs(got-0.1) > 1e-9 {
+		t.Fatalf("derived a round trip of %v, want 0.1", got)
+	}
+
+	// A frame carrying no commands at all still measures the loop: a player
+	// standing perfectly still is the most present person in the game.
+	advance(o, 1)
+	o.Enqueue("a", Input{Seen: 3}, epoch)
+	if got := o.rttOf(t, "a"); got <= 0.1 {
+		t.Fatalf("a command-free frame did not update the round trip: %v", got)
+	}
+}
+
+func TestAClaimedLatencyIsCappedAndAFutureOneIsIgnored(t *testing.T) {
+	// The client controls the number, so it needs a ceiling — otherwise claiming
+	// an absurd latency would leave somebody permanently further from the лысый
+	// than they really are.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	advance(o, 5)
+	o.Enqueue("a", Input{Seen: 1}, epoch)
+	if got := o.rttOf(t, "a"); got > CatchRewindMax+1e-9 {
+		t.Fatalf("a claim of %v was accepted past the %v cap", got, CatchRewindMax)
+	}
+
+	// A tick in the FUTURE is discarded rather than clamped: it is a client
+	// guessing, or the office having been rebuilt under it, and neither is a
+	// measurement.
+	o2 := NewOffice()
+	join(t, o2, "b", "s2")
+	advance(o2, 2)
+	o2.Enqueue("b", Input{Seen: 9999}, epoch)
+	if got := o2.rttOf(t, "b"); got != 0 {
+		t.Fatalf("a tick from the future measured %v", got)
+	}
+}
+
+func TestTheCatchIsResolvedAgainstTheWorldTheVictimSaw(t *testing.T) {
+	// He arrives on somebody whose screen is a third of a second behind. The
+	// shift must not end on the tick he arrives — on that occupant's screen he is
+	// still the better part of a metre away — but it must end once their screen
+	// has caught up. Being uncatchable is not the fix; being caught where you saw
+	// it happen is.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	advance(o, 8)
+	// The measured loop, through the production path. Capped at CatchRewindMax,
+	// which is six ticks.
+	o.Enqueue("a", Input{Seen: 1}, epoch)
+
+	o.mu.Lock()
+	o.boss.Pos = o.occupants["a"].State.Pos
+	o.mu.Unlock()
+
+	// He is standing on them NOW, and was nowhere near them on the tick they are
+	// looking at.
+	if ended := advance(o, 1); len(ended) != 0 {
+		t.Fatal("the shift ended on the tick he arrived, against a screen that had not seen him arrive")
+	}
+	// Six more ticks and the tick he arrived on is the one being drawn.
+	ended := advance(o, 6)
+	if len(ended) != 1 || ended[0].Cause != CausePromoted {
+		t.Fatalf("the rewind never expired: %+v", ended)
+	}
+}
+
+func TestAClientWithNoMeasuredLatencyStillGetsTheRenderDelay(t *testing.T) {
+	// The floor, and it is not zero. EVERY client draws the лысый
+	// RenderDelaySeconds in the past — that is the interpolation buffer's whole
+	// mechanism — so a brand-new occupant with no round trip yet is still two
+	// ticks behind, and resolving their catch in the present would be the same
+	// defect in miniature.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	advance(o, 4)
+	o.mu.Lock()
+	o.boss.Pos = o.occupants["a"].State.Pos
+	o.mu.Unlock()
+
+	if ended := advance(o, 1); len(ended) != 0 {
+		t.Fatal("caught in the present, with no allowance for the render delay at all")
+	}
+	if ended := advance(o, 2); len(ended) != 1 {
+		t.Fatalf("still not caught two ticks later: %+v", ended)
+	}
+}
+
+// rttOf reads one occupant's derived round trip. Test-only, like the two beside
+// it: nothing in production reaches inside an occupant.
+func (o *Office) rttOf(t *testing.T, accountID string) float64 {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	occ, ok := o.occupants[accountID]
+	if !ok {
+		t.Fatalf("no occupant %q", accountID)
+	}
+	return occ.RTT
 }
 
 func TestBeingCaughtEndsTheShiftAsAPromotion(t *testing.T) {
@@ -406,7 +526,7 @@ func TestASnapshotDescribesTheOccupantItIsAddressedTo(t *testing.T) {
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	// Move one of them and not the other.
-	o.Enqueue("a", []Command{{Seq: 1, Dt: SimStep.Seconds(), MX: 1}}, epoch)
+	o.Enqueue("a", Input{Cmds: []Command{{Seq: 1, Dt: SimStep.Seconds(), MX: 1}}}, epoch)
 	advance(o, 1)
 
 	sa, sb := snapOf(t, o, "a"), snapOf(t, o, "b")
@@ -466,8 +586,8 @@ func TestTwoOccupantsAreSteppedInADeterministicOrder(t *testing.T) {
 		join(t, o, "b", "s2")
 		// Both start on the same known point (join pins it), so the split below
 		// is symmetric and his choice is a pure tie — which is the whole claim.
-		o.Enqueue("a", []Command{{Seq: 1, Dt: MaxStepSeconds, MX: -1}}, epoch)
-		o.Enqueue("b", []Command{{Seq: 1, Dt: MaxStepSeconds, MX: 1}}, epoch)
+		o.Enqueue("a", Input{Cmds: []Command{{Seq: 1, Dt: MaxStepSeconds, MX: -1}}}, epoch)
+		o.Enqueue("b", Input{Cmds: []Command{{Seq: 1, Dt: MaxStepSeconds, MX: 1}}}, epoch)
 		// Comfortably inside the chase: determinism shows up in the first second
 		// and the shift ending mid-run would prove nothing — see snapOf.
 		advance(o, 40)
@@ -494,7 +614,7 @@ func TestPendingInputIsBounded(t *testing.T) {
 		for i := 0; i < MaxInboundCommands; i++ {
 			cmds = append(cmds, Command{Seq: uint32(frame*MaxInboundCommands + i + 1), Dt: MaxStepSeconds, MX: 1})
 		}
-		o.Enqueue("a", cmds, epoch)
+		o.Enqueue("a", Input{Cmds: cmds}, epoch)
 	}
 	// The newest maxPending commands survive; everything older was dropped
 	// before it could be simulated, so the position is bounded by REAL TIME and
@@ -518,7 +638,7 @@ func TestPendingInputIsBounded(t *testing.T) {
 
 func TestEnqueueIgnoresAnAccountThatIsNotWorking(t *testing.T) {
 	o := NewOffice()
-	o.Enqueue("nobody", []Command{{Seq: 1, Dt: 0.05, MX: 1}}, epoch)
+	o.Enqueue("nobody", Input{Cmds: []Command{{Seq: 1, Dt: 0.05, MX: 1}}}, epoch)
 	if !o.Empty() {
 		t.Fatal("sending input started a shift")
 	}
@@ -548,12 +668,12 @@ func TestDriftDoesNotEatTheDash(t *testing.T) {
 	// 40 ms claimed out of every 50 ms tick — a browser timer does not tile a
 	// tick evenly, and this is an ordinary amount of drift rather than a bad one.
 	const claimed = 0.04
-	o.Enqueue("a", []Command{{Seq: 1, Dt: claimed, MX: 0, MY: -1, Dash: true}}, now)
+	o.Enqueue("a", Input{Cmds: []Command{{Seq: 1, Dt: claimed, MX: 0, MY: -1, Dash: true}}}, now)
 	o.Advance(SimStep.Seconds(), now)
 
 	seq := uint32(2)
 	for i := 0; i < 3; i++ {
-		o.Enqueue("a", []Command{{Seq: seq, Dt: claimed, MX: 0, MY: -1}}, now)
+		o.Enqueue("a", Input{Cmds: []Command{{Seq: seq, Dt: claimed, MX: 0, MY: -1}}}, now)
 		seq++
 		now = now.Add(SimStep)
 		o.Advance(SimStep.Seconds(), now)
@@ -1414,7 +1534,11 @@ func TestClaudeSlowsYouDownRatherThanEndingTheShift(t *testing.T) {
 	o.claude.Pos = o.occupants["a"].State.Pos
 	o.mu.Unlock()
 
-	ended := advance(o, 1)
+	// THREE TICKS RATHER THAN ONE, because a landing is resolved against where he
+	// was on the tick this occupant's screen is showing — RenderDelaySeconds
+	// behind, which is two ticks at the published rate. Placing him and testing
+	// immediately asks whether he landed in a past he had not yet occupied.
+	ended := advance(o, 3)
 	if len(ended) != 0 {
 		t.Fatalf("Claude ended a shift: %+v", ended[0])
 	}
@@ -1436,7 +1560,9 @@ func TestTheSlowDoesNotStack(t *testing.T) {
 	o.claude.Pos = o.occupants["a"].State.Pos
 	o.mu.Unlock()
 
-	advance(o, 1)
+	// Three, for the reason the test above spends three: the landing is resolved
+	// against the rewound world.
+	advance(o, 3)
 	first := slowOf(o, "a")
 	advance(o, 1)
 	if second := slowOf(o, "a"); second > first {
@@ -1474,7 +1600,9 @@ func TestAColleagueSeesTheSlowToo(t *testing.T) {
 	o.mu.Lock()
 	o.claude.Pos = o.occupants["a"].State.Pos
 	o.mu.Unlock()
-	advance(o, 1)
+	// Three, so the rewound world has caught up with where he was put — see
+	// TestClaudeSlowsYouDownRatherThanEndingTheShift.
+	advance(o, 3)
 
 	peers := snapOf(t, o, "b").Pr
 	if len(peers) != 1 {

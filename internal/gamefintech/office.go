@@ -30,6 +30,23 @@ import (
 // build bytes; the service sends them after unlocking. Holding this mutex across
 // a hub write would couple the whole simulation to the hub's queue.
 
+// trailLen is how many ticks of both men's positions the office remembers, so a
+// catch can be resolved against the world the victim was looking at.
+//
+// Sized from CatchRewindMax rather than picked, plus two ticks of slack: the
+// rewind is capped there, so nothing can ever ask for an older frame than this
+// holds, and retuning the cap resizes the ring rather than silently outrunning
+// it.
+const trailLen = int(CatchRewindMax*SimHz) + 2
+
+// trailPoint is where both men were on one tick. Only positions: the grin and
+// the drink are display, and the client interpolates them alongside the position
+// they belong to, so nothing here needs them.
+type trailPoint struct {
+	boss   Vec2
+	claude Vec2
+}
+
 // maxPending bounds one occupant's command queue. Four frames' worth: enough
 // that a burst after a hiccup is not thrown away, small enough that a client
 // which floods cannot make the office hold an unbounded slice. What bounds how
@@ -102,6 +119,16 @@ type Occupant struct {
 	// stick is released, because the office is still working through a backlog of
 	// movement they only asked for once.
 	HighSeq uint32
+	// RTT is this occupant's smoothed round trip, in seconds, derived from the
+	// snapshot tick their frames say they had drawn.
+	//
+	// DERIVED AND NEVER REPORTED. The tick rate is fixed, so the gap between the
+	// tick a client says it has and the tick the office is on IS the loop, and a
+	// client cannot inflate it without also claiming to be looking at a frame it
+	// has not received. Smoothed with a slow exponential average, because one
+	// late frame is not a slower connection and rewinding by a spike would resolve
+	// a catch against a world nobody was ever looking at.
+	RTT float64
 	// Budget is the unspent client-claimed simulated time described on
 	// TimeBudgetCap.
 	Budget    float64
@@ -164,6 +191,21 @@ type Office struct {
 	// arrives is different, and an interface over two implementations with one
 	// common method would be a seam nobody asked to use.
 	claude Chaser
+	// trail is the recent past of both men, indexed by tick modulo its length.
+	//
+	// LAG COMPENSATION, AND THE REASON IT EXISTS HERE AT ALL. Your own Карен is
+	// predicted, so he is drawn in the present; the лысый cannot be, so he is
+	// drawn from an interpolation buffer in the recent past. Resolving the catch
+	// against the office's present compares two different instants, and the two
+	// errors ADD while you are running away — measured at 1.4–1.8 m against a
+	// catch radius of 1.2 m, which is how a shift ended while he was still drawn
+	// a couple of metres off.
+	//
+	// So the catch is resolved against where he WAS, by however far behind this
+	// occupant's screen is. It is the fourth Gambetta rung, and the claim that
+	// this game did not need one — «nothing here shoots» — was simply wrong about
+	// what a hit test is.
+	trail [trailLen]trailPoint
 	// npcs are Серега and Тёма. Deliberately NOT in `occupants`: the moment
 	// anything joins that map it becomes a chase target, a snapshot addressee and a
 	// slot against MaxOccupants — so a lazy player would be saved by a colleague
@@ -185,12 +227,18 @@ type Office struct {
 
 // NewOffice opens the floor with both men at the far wall and nobody in it.
 func NewOffice() *Office {
-	return &Office{
+	o := &Office{
 		occupants: make(map[string]*Occupant, MaxOccupants),
 		boss:      NewBoss(),
 		claude:    NewChaser(),
 		npcs:      NewNPCs(),
 	}
+	// Tick zero, seeded, so a rewind on the first few ticks reads where they
+	// actually were rather than the ring's zero value — which is the top-left
+	// corner, and would make both men unable to reach anybody for the first two
+	// ticks of every shift.
+	o.trail[0] = trailPoint{boss: o.boss.Pos, claude: o.claude.Pos}
+	return o
 }
 
 // Join puts an account to work.
@@ -421,10 +469,7 @@ func (o *Office) Seen(accountID string, now time.Time) {
 // rule's correctness — see the field. A command that is queued but not yet
 // simulated has been seen; deduplicating against what has been APPLIED lets
 // every one of those through a second time.
-func (o *Office) Enqueue(accountID string, cmds []Command, now time.Time) {
-	if len(cmds) == 0 {
-		return
-	}
+func (o *Office) Enqueue(accountID string, in Input, now time.Time) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	occ, ok := o.occupants[accountID]
@@ -432,7 +477,30 @@ func (o *Office) Enqueue(accountID string, cmds []Command, now time.Time) {
 		return
 	}
 	occ.LastSeen = now
-	for _, c := range cmds {
+
+	// THE ROUND TRIP, DERIVED FROM WHAT THE CLIENT SAYS IT HAS DRAWN. This runs
+	// even for a frame carrying no commands, because a frame is evidence of the
+	// loop's length whatever else is in it.
+	//
+	// A tick in the FUTURE is discarded rather than clamped: it is either a client
+	// guessing or the office having been rebuilt under it, and neither is a
+	// latency measurement.
+	if in.Seen > 0 && in.Seen <= o.tick {
+		sample := float64(o.tick-in.Seen) * SimStep.Seconds()
+		if sample > CatchRewindMax {
+			sample = CatchRewindMax
+		}
+		if occ.RTT == 0 {
+			occ.RTT = sample
+		} else {
+			occ.RTT = (occ.RTT*3 + sample) / 4
+		}
+	}
+
+	if len(in.Cmds) == 0 {
+		return
+	}
+	for _, c := range in.Cmds {
 		// Sequences are 1-based, so a zero is "unset" and is dropped along with
 		// everything already seen.
 		if c.Seq <= occ.HighSeq {
@@ -676,16 +744,27 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		o.npcs[i] = StepNPC(Desks, o.npcs[i], dt)
 	}
 
+	// RECORDED AFTER BOTH MEN HAVE STEPPED and before either is tested against
+	// anybody, so index `tick` is the world the snapshot about to go out
+	// describes. Recording before would leave the ring a tick behind everything
+	// that reads it.
+	o.trail[o.tick%uint64(trailLen)] = trailPoint{boss: o.boss.Pos, claude: o.claude.Pos}
+
 	// He LANDS rather than catches, and the difference is the whole point of him.
 	// Assigned rather than accumulated, exactly as the лысый's drink is: two
 	// applications would leave a walk at 4.096 m/s against his own 4.0, which is
 	// not an escape, and three would make the game unwinnable.
+	//
+	// REWOUND LIKE THE CATCH, and for the same reason rather than for consistency
+	// alone: he is drawn from the same interpolation buffer, so landing on
+	// somebody the player watched him miss is the identical complaint with a
+	// smaller consequence.
 	for _, k := range keys {
 		occ := o.occupants[k]
 		if !occ.State.Alive || occ.Invincible > 0 {
 			continue
 		}
-		if Landed(o.claude, occ.State.Pos) {
+		if Landed(o.seenBy(occ).claude, occ.State.Pos) {
 			occ.State.SlowLeft = SlowSeconds
 		}
 	}
@@ -698,7 +777,7 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		// invincible occupant who closed the tab would hold a slot in a
 		// three-person office until the process restarted, because the abandon
 		// branch below shares it. Being uncatchable is not being immortal.
-		case occ.Invincible <= 0 && Caught(o.boss, occ.State.Pos):
+		case occ.Invincible <= 0 && Caught(o.seenBy(occ).boss, occ.State.Pos):
 			occ.Ended, occ.Cause = true, CausePromoted
 			occ.State.Alive = false
 		case now.Sub(occ.LastSeen) > AbandonGrace:
@@ -985,6 +1064,37 @@ func (o *Office) Tick() uint64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.tick
+}
+
+// seenBy is where both men were on the office's last tick that this occupant
+// can actually have DRAWN. Called with the lock held.
+//
+// Two terms, and they are different things. The round trip is how stale the
+// newest frame in their browser is by the time their answer gets back here; the
+// render delay is how much further into the past that browser deliberately draws
+// everything it does not predict, which is the interpolation buffer's whole
+// mechanism. Add them and you have the instant on their screen.
+//
+// A brand-new occupant has no round trip yet and gets the render delay alone,
+// which is the right floor: every client draws at least that far behind, and
+// nobody's first frames should be resolved as though their connection were
+// perfect.
+func (o *Office) seenBy(occ *Occupant) trailPoint {
+	rewind := occ.RTT + RenderDelaySeconds
+	if rewind > CatchRewindMax {
+		rewind = CatchRewindMax
+	}
+	back := uint64(math.Round(rewind / SimStep.Seconds()))
+	if back >= uint64(trailLen) {
+		back = uint64(trailLen) - 1
+	}
+	// Early in a shift the ring is not full yet, so a rewind past the first tick
+	// reads a zero value — which would put both men in the corner and catch
+	// nobody. Clamped to the office's own age instead.
+	if back > o.tick {
+		back = o.tick
+	}
+	return o.trail[(o.tick-back)%uint64(trailLen)]
 }
 
 // keys is every occupant, sorted. Called with the lock held.

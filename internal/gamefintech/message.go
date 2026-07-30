@@ -77,17 +77,21 @@ type envelope struct {
 	T string `json:"t"`
 }
 
-// inputFrame is one client→server input message.
+// Input is one client→server input message, decoded.
 //
-// The `k` field §5 documents — the last snapshot tick the client had drawn — is
-// accepted and IGNORED in iteration 1. It is how a round trip would be derived
-// rather than reported, and the thing that would consume it is lag compensation,
-// which this game does not have: nothing here is rewound, because nothing here
-// is shot at. Decoding it into a field nothing reads would be a parameter set by
-// nobody, so it is simply not decoded; encoding/json ignores it, the client's
-// frames are unchanged, and the day a rewind buffer arrives this is where it
-// starts.
-type inputFrame struct {
+// `Seen` is the last snapshot tick the client had received when it built this
+// frame. IT IS HOW A ROUND TRIP IS DERIVED RATHER THAN REPORTED: the tick rate
+// is fixed, so the gap between that tick and the office's current one is the
+// whole loop — downlink, the client's own send window, uplink — and a client
+// cannot claim a latency it does not have without also claiming to be drawing a
+// frame it has not got.
+//
+// It was accepted and discarded until the catch was lag-compensated. The reason
+// given for discarding it was that nothing here is shot at, and that was wrong:
+// BEING CAUGHT IS A HIT TEST, resolved against a man the victim only ever sees
+// in the past.
+type Input struct {
+	Seen uint64    `json:"k"`
 	Cmds []Command `json:"cmds"`
 }
 
@@ -122,38 +126,44 @@ func ParseVerb(payload []byte) (verb, target string) {
 }
 
 // ParseInbound decodes a frame, returning its type and — for an input frame —
-// the commands it carried.
+// what it carried.
 //
-// A malformed, unknown or unparseable frame produces ("", nil): no reply, no
+// A malformed, unknown or unparseable frame produces ("", zero): no reply, no
 // error and no log line. Silence is the platform's policy for a bad frame,
 // because a log line per bad frame at the permitted ten a second is a flood
 // lever handed to any client.
 //
+// It returns a STRUCT rather than a second and third value, unlike ParseVerb,
+// and the distinction is worth stating because the two look alike. A verb's
+// target is a different KIND of thing from a command and is nil on every other
+// path, so it stays out; the seen tick and the commands are two halves of one
+// input frame and travel together.
+//
 // The commands come back UNSANITISED. Office.Enqueue is the single place that
 // clamps them, so there is exactly one such place and Step can stay pure.
-func ParseInbound(payload []byte) (string, []Command) {
+func ParseInbound(payload []byte) (string, Input) {
 	var env envelope
 	if err := json.Unmarshal(payload, &env); err != nil {
-		return "", nil
+		return "", Input{}
 	}
 	switch env.T {
 	case TypeHello:
-		return TypeHello, nil
+		return TypeHello, Input{}
 	case TypeDo:
 		// The verb and its target are read by ParseVerb, which the handler calls
 		// on the same payload — this only has to say what kind of frame it is.
-		return TypeDo, nil
+		return TypeDo, Input{}
 	case TypeInput:
-		var f inputFrame
+		var f Input
 		if err := json.Unmarshal(payload, &f); err != nil {
-			return "", nil
+			return "", Input{}
 		}
 		if len(f.Cmds) > MaxInboundCommands {
 			f.Cmds = f.Cmds[:MaxInboundCommands]
 		}
-		return TypeInput, f.Cmds
+		return TypeInput, f
 	default:
-		return "", nil
+		return "", Input{}
 	}
 }
 

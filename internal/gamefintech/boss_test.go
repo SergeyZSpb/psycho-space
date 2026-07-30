@@ -100,13 +100,13 @@ func TestTheGrinIsRecomputedEveryStep(t *testing.T) {
 func TestCaughtFiresWhenTheDiscsTouch(t *testing.T) {
 	const reach = CatchRadius + PlayerRadius
 	b := Boss{Pos: Vec2{X: 8, Y: 8}}
-	if !Caught(b, Vec2{X: 8 + reach, Y: 8}) {
+	if !Caught(b.Pos, Vec2{X: 8 + reach, Y: 8}) {
 		t.Fatalf("at exactly %v he had not caught anybody", reach)
 	}
-	if !Caught(b, Vec2{X: 8, Y: 8}) {
+	if !Caught(b.Pos, Vec2{X: 8, Y: 8}) {
 		t.Fatal("standing on him is not being caught")
 	}
-	if Caught(b, Vec2{X: 8 + reach + 0.01, Y: 8}) {
+	if Caught(b.Pos, Vec2{X: 8 + reach + 0.01, Y: 8}) {
 		t.Fatalf("he caught somebody a centimetre outside %v", reach)
 	}
 }

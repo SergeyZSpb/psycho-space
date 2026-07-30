@@ -32,6 +32,61 @@ import { loginAs } from './fixtures';
  * would make it true sooner.
  */
 const MIN_SHIFT_MS = 3_000;
+
+/**
+ * Picks a movement key whose walk has somewhere to go from where the spawn
+ * landed, plus the assertion that goes with it.
+ *
+ * A spawn is DRAWN, so no key is safe to hardcode: the draw keeps its distance
+ * from the лысый at the far wall, which puts most spawns in the band at the other
+ * end, where "up" is a wall. It takes the plane coordinates the figure is drawn
+ * with — both 0..1 across the office — and the served catalogue, which carries
+ * the office's size, its desks and the player's radius.
+ *
+ * `KeyW` is −Y and `KeyS` is +Y, because the office's +Y points DOWN and so does
+ * the screen's; there is no axis flip anywhere in this client, and asserting the
+ * direction is half of what this test is for.
+ */
+function clearKey(
+  cfg: {
+    office: { w: number; h: number; player_radius: number; desks: { x: number; y: number; w: number; h: number }[] };
+    move: { walk_speed: number };
+  },
+  from: { x: number; y: number },
+  axis: 'vertical' | 'horizontal',
+): { key: string; moved: (a: { x: number; y: number }, b: { x: number; y: number }) => boolean } {
+  const { w, h, player_radius: r, desks } = cfg.office;
+  // Enough clearance for the assertion and no more. The poll asks for 0.01 of the
+  // plane, which is about eleven centimetres, so eighty of them is seven times the
+  // margin — and demanding a whole half-second of walking (3.2 m) rejects most of
+  // the floor, which is how the first version of this helper threw instead of
+  // choosing.
+  const reach = 0.8;
+  const free = (mx: number, my: number) => {
+    if (mx < r || my < r || mx > w - r || my > h - r) return false;
+    return !desks.some((d) => mx > d.x - r && mx < d.x + d.w + r && my > d.y - r && my < d.y + d.h + r);
+  };
+  const walkable = (dx: number, dy: number) => {
+    for (let s = 0; s <= reach + 1e-9; s += 0.05) {
+      if (!free(from.x * w + dx * s, from.y * h + dy * s)) return false;
+    }
+    return true;
+  };
+  const options =
+    axis === 'vertical'
+      ? ([
+          { key: 'KeyW', dx: 0, dy: -1, moved: (a: { y: number }, b: { y: number }) => b.y < a.y - 0.01 },
+          { key: 'KeyS', dx: 0, dy: 1, moved: (a: { y: number }, b: { y: number }) => b.y > a.y + 0.01 },
+        ] as const)
+      : ([
+          { key: 'KeyD', dx: 1, dy: 0, moved: (a: { x: number }, b: { x: number }) => b.x > a.x + 0.01 },
+          { key: 'KeyA', dx: -1, dy: 0, moved: (a: { x: number }, b: { x: number }) => b.x < a.x - 0.01 },
+        ] as const);
+  for (const o of options) {
+    if (walkable(o.dx, o.dy)) return { key: o.key, moved: o.moved };
+  }
+  throw new Error(`no clear ${axis} walk from ${from.x}/${from.y}`);
+}
 /**
  * A little over the minimum, and deliberately NOT more.
  *
@@ -205,17 +260,31 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     await expect.poll(async () => Number.isFinite((await at()).y)).toBe(true);
     const before = await at();
 
+    // THE KEYS ARE CHOSEN FROM WHERE THE SPAWN LANDED, and that is not fussiness —
+    // it is how this test failed in CI. A spawn is DRAWN (Office.spawnPoint), and
+    // the draw keeps its distance from the лысый, who stands at the far wall — so
+    // a spawn is usually in the band at the OPPOSITE end, where "up" is a wall a
+    // few centimetres behind you. Pressing W there moves nobody, and a test that
+    // reads "he did not move" cannot tell that from a broken key handler.
+    //
+    // So: one vertical key and one horizontal key, each picked because the walk
+    // has somewhere to go. The claim — that WASD reaches the real office and that
+    // the axes are not swapped or flipped — is unchanged.
+    const cfg = await (await page.request.get('/api/game-fintech/config')).json();
+    const vertical = clearKey(cfg, before, 'vertical');
+    const horizontal = clearKey(cfg, before, 'horizontal');
+
     // Held, not tapped: a walk is a state, and the emitter samples the axes at the
     // served rate rather than per key event.
-    await page.keyboard.down('KeyW');
-    await expect.poll(async () => (await at()).y < before.y - 0.01, { timeout: 5_000 }).toBe(true);
-    await page.keyboard.up('KeyW');
+    await page.keyboard.down(vertical.key);
+    await expect.poll(async () => vertical.moved(before, await at()), { timeout: 5_000 }).toBe(true);
+    await page.keyboard.up(vertical.key);
 
     // And sideways, so the axis mapping is proved rather than just "something moved".
     const mid = await at();
-    await page.keyboard.down('KeyD');
-    await expect.poll(async () => (await at()).x > mid.x + 0.01, { timeout: 5_000 }).toBe(true);
-    await page.keyboard.up('KeyD');
+    await page.keyboard.down(horizontal.key);
+    await expect.poll(async () => horizontal.moved(mid, await at()), { timeout: 5_000 }).toBe(true);
+    await page.keyboard.up(horizontal.key);
 
     // Space dashes, and the readout says so — which is the office answering, since the
     // cooldown is on the snapshot rather than run locally.

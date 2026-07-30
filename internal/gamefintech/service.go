@@ -496,7 +496,7 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 	if room != s.room {
 		return
 	}
-	switch t, cmds := ParseInbound(payload); t {
+	switch t, in := ParseInbound(payload); t {
 	case TypeHello:
 		s.hello(ctx, m)
 	case TypeDo:
@@ -518,7 +518,7 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 		office := s.office
 		s.mu.Unlock()
 		if office != nil {
-			office.Enqueue(m.AccountID, cmds, now)
+			office.Enqueue(m.AccountID, in, now)
 		}
 	default:
 		// Malformed, unknown or invalid: no reply and no log line. A log per bad

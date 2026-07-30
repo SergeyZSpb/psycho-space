@@ -32,7 +32,7 @@ const config: FintechConfig = {
     max_commands: 4,
   },
   boss: { speed: 2.35, catch_radius: 0.85, grin_range: 6 },
-  sim: { hz: 20, snapshot_hz: 20 },
+  sim: { hz: 20, snapshot_hz: 20, render_delay_ms: 75 },
   endings: [
     { key: 'promoted', title: 'ТЕБЯ ПОВЫСИЛИ', sub: 'поздравляем. теперь ты за это отвечаешь.' },
     { key: 'left', title: 'ТЫ ПРОСТО УШЁЛ', sub: 'смена засчитана. никто не заметил.' },

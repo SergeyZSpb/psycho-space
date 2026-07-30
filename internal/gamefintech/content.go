@@ -1126,10 +1126,21 @@ type BossConfig struct {
 	GrinRange   float64 `json:"grin_range"`
 }
 
-// SimConfig is the two rates the client runs its own clocks against.
+// SimConfig is the rates the client runs its own clocks against, and how far
+// behind it is told to draw.
 type SimConfig struct {
 	Hz         int `json:"hz"`
 	SnapshotHz int `json:"snapshot_hz"`
+	// RenderDelayMs is how far into the past the client draws everything it does
+	// not predict — the лысый, Claude, the colleagues, the two who are not
+	// playing.
+	//
+	// SERVED RATHER THAN CHOSEN, because BOTH ends need the same number and one
+	// of them is authoritative. The browser sizes its interpolation buffer with
+	// it, and the office rewinds by it to resolve a catch against the world the
+	// victim was actually looking at — so a client picking its own would be
+	// choosing how far behind the office believes it to be.
+	RenderDelayMs int `json:"render_delay_ms"`
 }
 
 // BuildConfig assembles the served catalogue. It is a pure function of the
@@ -1166,8 +1177,9 @@ func BuildConfig() Config {
 			GrinRange:   GrinRange,
 		},
 		Sim: SimConfig{
-			Hz:         SimHz,
-			SnapshotHz: SimHz / SnapshotEvery,
+			Hz:            SimHz,
+			SnapshotHz:    SimHz / SnapshotEvery,
+			RenderDelayMs: int(math.Round(RenderDelaySeconds * 1000)),
 		},
 		Endings:      append([]Ending(nil), Endings...),
 		BossLines:    append([]string(nil), BossLines...),

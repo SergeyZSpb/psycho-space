@@ -480,6 +480,24 @@ const box = computed(() => {
   return planeBox(o?.w ?? 0, o?.h ?? 0);
 });
 
+/**
+ * How far into the past to draw everything that is NOT predicted — the лысый,
+ * Claude, the colleagues, the two who are not playing.
+ *
+ * SERVED, NOT COMPUTED. The office rewinds by exactly this much to decide
+ * whether he reached you (its `seenBy`), so both ends have to agree on it and
+ * only one of them can be authoritative. Choosing our own here would be choosing
+ * how far behind the office believes this browser to be.
+ *
+ * The fallback matters only if the catalogue never arrived, in which case the
+ * game is not playable anyway; it is the server's own value at today's rates
+ * rather than a guess, so a figure is drawn in roughly the right past rather than
+ * in the present.
+ */
+function renderDelayMs(): number {
+  return config.value?.sim.render_delay_ms ?? 75;
+}
+
 // --- what the server last told us ------------------------------------------
 // Read at ten hertz and rendered as text, which is exactly what reactivity is
 // for. Positions are the opposite and never come near it — see drawFrame.
@@ -994,8 +1012,8 @@ function enterPlay(): void {
   const client = realtimeClient(shift.room);
   release = client.subscribe({ frames: onFrame, status: onStatus });
 
-  bossInterp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 20));
-  claudeInterp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 20));
+  bossInterp = createInterpolator(renderDelayMs());
+  claudeInterp = createInterpolator(renderDelayMs());
   sendTimer = window.setInterval(sendInput, Math.round(1000 / config.value.move.input_hz));
   lastFrameMs = performance.now();
   frameHandle = requestAnimationFrame(drawFrame);
@@ -1181,7 +1199,7 @@ function applyNpcs(raw: unknown): void {
     shown.push({ key: kind.key, say: sayFor(kind.lines, num(f.p)) });
     let interp = npcInterp.get(kind.key);
     if (!interp) {
-      interp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 20));
+      interp = createInterpolator(renderDelayMs());
       npcInterp.set(kind.key, interp);
     }
     interp.push({ x: num(f.x) / 100, y: num(f.y) / 100, grin: 0 }, performance.now());
@@ -1490,7 +1508,7 @@ function applyPeers(raw: unknown): void {
     if (!interp) {
       // Same period as the лысый's, from the same served rate, so everybody who
       // is not predicted is drawn at the same instant in the past.
-      interp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 20));
+      interp = createInterpolator(renderDelayMs());
       peerInterp.set(id, interp);
     }
     // Buffered, never drawn here — see placePeers.

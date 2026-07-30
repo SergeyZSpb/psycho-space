@@ -69,22 +69,6 @@ interface Timed extends InterpSample {
   at: number;
 }
 
-/**
- * How far behind the newest sample to draw, as a multiple of the snapshot
- * period.
- *
- * One period would be exactly enough if frames were perfectly spaced, which is
- * the one thing they are not. A half period of slack absorbs ordinary jitter and
- * a single dropped frame.
- *
- * IT IS A MULTIPLE OF THE SERVED PERIOD AND NEVER A FIXED NUMBER OF
- * MILLISECONDS, which is what made the office's move to 20 Hz snapshots free on
- * this side: the same 1.5 periods went from 150 ms of staleness to 75 ms with no
- * edit here at all. At the лысый's walking speed that is 0.3 m rather than 0.6 m
- * of the catch radius spent on being behind.
- */
-export const DELAY_PERIODS = 1.5;
-
 /** How many samples to keep. Two are needed; the rest are slack for a stall. */
 const BUFFER = 8;
 
@@ -100,12 +84,19 @@ function grinOf(s: InterpSample): number {
 /**
  * Builds an interpolator for one entity.
  *
- * `periodMs` is the snapshot period, taken from the served catalogue rather than
- * hardcoded, so changing the publish rate on the server changes the delay here
- * with no client edit.
+ * `delayMs` is how far into the past to draw, and IT IS SERVED RATHER THAN
+ * COMPUTED HERE — `sim.render_delay_ms` from the catalogue. Both ends need the
+ * same number and only one of them can be authoritative: the office rewinds by
+ * exactly this much to decide whether the лысый reached you, so a client picking
+ * its own would be choosing how far behind the office believes it to be.
+ *
+ * The office derives it from its own publish rate (1.5 snapshot periods — one
+ * would be exactly enough if frames were perfectly spaced, which is the one thing
+ * they are not, and the extra half absorbs jitter and a single dropped frame), so
+ * changing that rate moves this and the compensation together.
  */
-export function createInterpolator(periodMs: number) {
-  const delay = Math.max(0, periodMs) * DELAY_PERIODS;
+export function createInterpolator(delayMs: number) {
+  const delay = Math.max(0, delayMs);
   let buf: Timed[] = [];
 
   return {

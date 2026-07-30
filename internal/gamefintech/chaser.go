@@ -72,6 +72,9 @@ func StepChaser(desks []Rect, c Chaser, targets []Vec2, dt float64) Chaser {
 // noticed by the лысый only needs him to arrive at your desk. It also means the two
 // of them converging on one person do not land on the same tick, which reads as two
 // separate things happening rather than one.
-func Landed(c Chaser, p Vec2) bool {
-	return math.Hypot(c.Pos.X-p.X, c.Pos.Y-p.Y) <= ChaserReach+PlayerRadius
+//
+// It takes his POSITION and not him, for the reason Caught does: the office
+// resolves this against where he was on the tick the victim's screen is showing.
+func Landed(chaserPos, playerPos Vec2) bool {
+	return math.Hypot(chaserPos.X-playerPos.X, chaserPos.Y-playerPos.Y) <= ChaserReach+PlayerRadius
 }
