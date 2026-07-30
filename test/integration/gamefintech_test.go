@@ -784,16 +784,25 @@ func TestFintechResendingUnacknowledgedInputDoesNotWalkYouTwice(t *testing.T) {
 	}
 	waitForFintechFrame(t, frames, tick, clock, "fintech_ready", 15*time.Second)
 	first := waitForFintechFrame(t, frames, tick, clock, "fintech_snap", 15*time.Second)
+	startX, _ := first["x"].(float64)
 	startY, _ := first["y"].(float64)
 
-	// Down the plane, for the reason the test above walks down: a spawn is drawn
-	// in the band furthest from him, so "away" is a wall a few centimetres back.
-	// The whole walk here is 1.28 m out of a head start of fifteen.
+	// THE DIRECTION IS CHOSEN FROM WHERE THE SPAWN ACTUALLY LANDED, and that is
+	// not fussiness — it is how this test first failed in CI. A spawn is DRAWN
+	// (Office.spawnPoint), so a hardcoded heading walks into a desk on some runs
+	// and a wall on others, and a walk cut short reads exactly like the defect
+	// under test read backwards: 36 cm where 128 cm was sent. The assertion is
+	// about distance, so the path has to be clear for the distance to mean
+	// anything.
 	const subStep = 0.025
+	const steps = 8
+	dist := steps * subStep * gamefintech.WalkSpeed
+	dirX, dirY := clearHeading(t, startX/100, startY/100, dist)
+
 	send := func(from, to int) {
 		cmds := make([]map[string]any, 0, to-from+1)
 		for q := from; q <= to; q++ {
-			cmds = append(cmds, map[string]any{"q": q, "dt": subStep, "mx": 0, "my": 1})
+			cmds = append(cmds, map[string]any{"q": q, "dt": subStep, "mx": dirX, "my": dirY})
 		}
 		msg, _ := json.Marshal(map[string]any{"t": "fintech_input", "k": 0, "cmds": cmds})
 		if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
@@ -837,12 +846,52 @@ func TestFintechResendingUnacknowledgedInputDoesNotWalkYouTwice(t *testing.T) {
 		}
 	}
 
+	endX, _ := done["x"].(float64)
 	endY, _ := done["y"].(float64)
 	// Centimetres on the wire; eight sub-steps of walking and not one more.
-	want := 8 * subStep * gamefintech.WalkSpeed * 100
-	if got := endY - startY; math.Abs(got-want) > 2 {
+	got := math.Hypot(endX-startX, endY-startY)
+	if want := dist * 100; math.Abs(got-want) > 2 {
 		t.Fatalf("walked %.0f cm where %.0f cm was sent — a queued command was applied twice", got, want)
 	}
+}
+
+// clearHeading is a unit vector from `at` along which `dist` metres of floor are
+// free of both the walls and the furniture.
+//
+// It exists because a spawn is DRAWN: any hardcoded heading is clear from some
+// spawns and blocked from others, which makes a distance assertion flaky in a way
+// that looks exactly like the bug it is asserting about. Four axis headings, the
+// first that is clear — the office is sixteen metres of floor with eight desks in
+// it, so from anywhere legal at least one of them is.
+//
+// Sampled every five centimetres rather than clipped exactly: this is a test
+// picking a direction, not the simulation resolving a collision, and a sample
+// finer than a tenth of the player's diameter cannot step over a desk.
+func clearHeading(t *testing.T, x, y, dist float64) (float64, float64) {
+	t.Helper()
+	const r = gamefintech.PlayerRadius
+	free := func(px, py float64) bool {
+		if px < r || py < r || px > gamefintech.OfficeW-r || py > gamefintech.OfficeH-r {
+			return false
+		}
+		for _, d := range gamefintech.Desks {
+			if px > d.X-r && px < d.X+d.W+r && py > d.Y-r && py < d.Y+d.H+r {
+				return false
+			}
+		}
+		return true
+	}
+	for _, dir := range [4][2]float64{{0, 1}, {0, -1}, {1, 0}, {-1, 0}} {
+		ok := true
+		for s := 0.0; s <= dist+1e-9 && ok; s += 0.05 {
+			ok = free(x+dir[0]*s, y+dir[1]*s)
+		}
+		if ok {
+			return dir[0], dir[1]
+		}
+	}
+	t.Fatalf("no clear %.2f m walk from %.2f/%.2f in any direction", dist, x, y)
+	return 0, 0
 }
 
 func TestFintechBeingCaughtWritesTheShift(t *testing.T) {
