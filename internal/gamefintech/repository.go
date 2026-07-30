@@ -52,8 +52,17 @@ type Repository interface {
 	// the splash screen shows, and it is what makes "the shift was written" a
 	// thing anybody can check in production without opening a database.
 	RecentShifts(ctx context.Context, q db.DBTX, accountID uuid.UUID, limit int) ([]Shift, error)
-	// TopShifts is the leaderboard: THE BEST SHIFT PER ACCOUNT, not the best
-	// rows. One good afternoon would otherwise fill the whole board, which is
-	// both boring and exactly the wrong incentive.
+	// TopShifts is the leaderboard by MONEY: the best shift per account, not the
+	// best rows. One good afternoon would otherwise fill the whole board, which
+	// is both boring and exactly the wrong incentive.
 	TopShifts(ctx context.Context, q db.DBTX, limit int) ([]Shift, error)
+	// TopShiftsBySeconds is the same board scored on the other dimension: the
+	// LONGEST shift per account.
+	//
+	// TWO BOARDS RATHER THAN ONE SORTED TWO WAYS, because they are two different
+	// games. Money rewards standing still through a ramp; length rewards
+	// surviving a floor that speeds up every twenty seconds, and the best way to
+	// do one is not the best way to do the other. A single board would quietly
+	// declare one of them the point.
+	TopShiftsBySeconds(ctx context.Context, q db.DBTX, limit int) ([]Shift, error)
 }

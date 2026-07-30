@@ -230,26 +230,53 @@ func (s *Server) handleGameFintechMyShifts(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"shifts": out})
 }
 
-// handleGameFintechTopShifts returns the best shift per account.
+// handleGameFintechTopShifts returns BOTH boards: the best shift per account by
+// money, and the longest shift per account.
 //
 // Per ACCOUNT rather than per row, decided in the SQL: one very good afternoon
 // would otherwise fill the whole board and the leaderboard would stop being a
 // list of people.
 //
-// The name is resolved here rather than joined in the query because a display
-// name is encrypted at rest and only the account service can read it. A lookup
-// that fails leaves the row nameless rather than failing the board — a board is
-// not worth a 500, and the numbers are the point.
+// TWO BOARDS IN ONE RESPONSE rather than a `?by=` parameter fetched twice. The
+// splash draws them side by side, so a client that had to issue two requests to
+// render one screen would be exactly the chattiness this project's client–server
+// rule exists to prevent. The keys are the metrics themselves — `salary` and
+// `seconds` — so a third dimension is a third key rather than a reshaped payload.
 func (s *Server) handleGameFintechTopShifts(w http.ResponseWriter, r *http.Request) {
 	if !s.gameFintechAvailable(w, r) {
 		return
 	}
-	shifts, err := s.d.GameFintech.TopShifts(r.Context(), fintechLimit(r))
+	limit := fintechLimit(r)
+	bySalary, err := s.d.GameFintech.TopShifts(r.Context(), limit)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "gamefintech: top shifts", "err", err)
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
+	bySeconds, err := s.d.GameFintech.TopShiftsBySeconds(r.Context(), limit)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "gamefintech: longest shifts", "err", err)
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"salary":  s.fintechBoard(r, bySalary),
+		"seconds": s.fintechBoard(r, bySeconds),
+	})
+}
+
+// fintechBoard turns shifts into board rows, resolving each player's name.
+//
+// The name is resolved HERE rather than joined in the query because a display
+// name is encrypted at rest and only the account service can read it. A lookup
+// that fails leaves the row nameless rather than failing the board — a board is
+// not worth a 500, and the numbers are the point.
+//
+// One account can appear on both boards, which costs a second lookup for it. That
+// is two boards of five on a screen somebody opens between shifts, against a
+// cache keyed on nothing in particular that would have to be invalidated by
+// anybody changing their name.
+func (s *Server) fintechBoard(r *http.Request, shifts []gamefintech.Shift) []fintechTopRow {
 	out := make([]fintechTopRow, 0, len(shifts))
 	for _, sh := range shifts {
 		name := ""
@@ -265,7 +292,7 @@ func (s *Server) handleGameFintechTopShifts(w http.ResponseWriter, r *http.Reque
 			Seconds: sh.Seconds,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"shifts": out})
+	return out
 }
 
 // handleGameFintechAvatar redirects to the picture to draw on a colleague.

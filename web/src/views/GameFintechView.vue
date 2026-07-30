@@ -9,7 +9,48 @@
         <v-progress-circular indeterminate size="28" />
       </div>
 
+      <!-- THE ORDER IS THE OWNER'S, and it is the order somebody actually uses
+           this screen in: the button first, because a returning player wants to
+           play and nothing above it should stand between them and the office; then
+           the boards, which are the reason to play again; then the guide, which is
+           read once; then your own shifts, which only you care about and which are
+           the natural bottom of the page. -->
       <template v-else>
+        <v-btn
+          class="fintech-start"
+          color="warning"
+          size="large"
+          data-testid="fintech-start"
+          :loading="starting"
+          @click="start"
+        >
+          НАЧАТЬ СМЕНУ
+        </v-btn>
+
+        <!-- TWO BOARDS, BECAUSE THE GAME SCORES TWO THINGS. Money rewards
+             standing still through the ramp; length rewards surviving a floor
+             that speeds up every twenty seconds — and the best way to do one is
+             not the best way to do the other. Every row shows both numbers, so
+             the two read as one scoreboard rather than as two lists of strangers. -->
+        <div v-if="hasBoards" class="fintech-boards" data-testid="fintech-top">
+          <div
+            v-for="board in boards"
+            :key="board.key"
+            class="fintech-list"
+            :data-testid="`fintech-top-${board.key}`"
+          >
+            <h2 class="fintech-rule-title">{{ board.title }}</h2>
+            <ol>
+              <li v-for="(shift, i) in board.rows" :key="i">
+                <span class="fintech-board-name">{{ shift.name || '—' }}</span>
+                <span class="fintech-board-score">
+                  {{ money(shift.salary) }} · {{ formatClock(shift.seconds) }}
+                </span>
+              </li>
+            </ol>
+          </div>
+        </div>
+
         <div class="fintech-rules" data-testid="fintech-rules">
           <section
             v-for="block in rules"
@@ -31,30 +72,10 @@
           <h2 class="fintech-rule-title">Твои смены</h2>
           <ul>
             <li v-for="(shift, i) in myShifts" :key="i">
-              {{ causeIcon(shift.cause) }} {{ money(shift.salary) }} · {{ seconds(shift.seconds) }} с
+              {{ causeIcon(shift.cause) }} {{ money(shift.salary) }} · {{ formatClock(shift.seconds) }}
             </li>
           </ul>
         </div>
-
-        <div v-if="topShifts.length" class="fintech-list" data-testid="fintech-top">
-          <h2 class="fintech-rule-title">Кто больше не работал</h2>
-          <ol>
-            <li v-for="(shift, i) in topShifts" :key="i">
-              {{ shift.name }} — {{ money(shift.salary) }}
-            </li>
-          </ol>
-        </div>
-
-        <v-btn
-          class="fintech-start"
-          color="warning"
-          size="large"
-          data-testid="fintech-start"
-          :loading="starting"
-          @click="start"
-        >
-          НАЧАТЬ СМЕНУ
-        </v-btn>
       </template>
 
       <p v-if="error" class="fintech-error" data-testid="fintech-error">{{ error }}</p>
@@ -367,7 +388,11 @@
       <h1 class="fintech-title" data-testid="fintech-over-title">{{ overTitle }}</h1>
       <p class="fintech-lore">{{ overSub }}</p>
       <p class="fintech-over-salary" data-testid="fintech-over-salary">{{ money(over?.pay ?? 0) }}</p>
-      <p class="fintech-over-secs">за {{ seconds(over?.secs ?? 0) }} с</p>
+      <!-- The same clock the strip counted up and the boards rank by, so the
+           number a player just watched is the number they are scored on. -->
+      <p class="fintech-over-secs" data-testid="fintech-over-secs">
+        за {{ formatClock(over?.secs ?? 0) }}
+      </p>
       <!-- WHO WAS WORKING. The ending is the one screen where the persona is worth
            repeating: the shift is over, the figure is gone, and «ты был Саня» is the
            whole of the reframe in three words. -->
@@ -424,7 +449,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { gameFintechApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
-import type { FintechConfig, FintechRect, FintechShift, FintechShiftRow, FintechTopRow } from '../api/types';
+import type {
+  FintechConfig,
+  FintechRect,
+  FintechShift,
+  FintechShiftRow,
+  FintechTopBoards,
+} from '../api/types';
 import {
   FINTECH_DISCLAIMER,
   FINTECH_LORE,
@@ -441,7 +472,6 @@ import {
   peerColour,
   sameRoster,
   type PeerLook,
-  decimal,
   deskBox,
   sayFor,
   withName,
@@ -484,7 +514,20 @@ const error = ref('');
 
 const config = ref<FintechConfig | null>(null);
 const myShifts = ref<FintechShiftRow[]>([]);
-const topShifts = ref<FintechTopRow[]>([]);
+/**
+ * BOTH LEADERBOARDS, as the one request served them.
+ *
+ * The titles live here rather than on the server: they are jokes about not
+ * working, not data — the server publishes what can be RETUNED (the rates, the
+ * ramp, the endings), and a config key with exactly one possible value is not a
+ * config key. The same rule the lore and the disclaimer follow.
+ */
+const topShifts = ref<FintechTopBoards>({ salary: [], seconds: [] });
+const boards = computed(() => [
+  { key: 'salary', title: 'Кто больше не работал', rows: topShifts.value.salary },
+  { key: 'seconds', title: 'Кто дольше не работал', rows: topShifts.value.seconds },
+]);
+const hasBoards = computed(() => boards.value.some((b) => b.rows.length > 0));
 const rules = computed(() => buildRules(config.value));
 const desks = computed<FintechRect[]>(() => config.value?.office.desks ?? []);
 /**
@@ -947,14 +990,10 @@ const knobStyle = computed(() => ({
 }));
 
 const money = (v: number) => formatMoney(v);
-/**
- * A shift's length, whole.
- *
- * The API serves `seconds` as a `double precision` column — a shift really did
- * last 4.7168 seconds — and printing that verbatim would put the simulation's
- * arithmetic on the splash screen. Nobody is racing to the millisecond.
- */
-const seconds = (v: number) => decimal(v, 0);
+// A shift's length is `formatClock` everywhere it appears now — the strip, both
+// boards, your own list and the ending — so the number a player watched counting
+// up is the number they are ranked by. The old `decimal(v, 0)` wrapper that
+// printed «73 с» went with the last screen that used it.
 
 /** How a finished shift is marked in the list. Presentation, not a rule. */
 function causeIcon(cause: string): string {
@@ -1015,7 +1054,13 @@ onBeforeUnmount(() => {
 async function loadLists(): Promise<void> {
   const [mine, top] = await Promise.allSettled([gameFintechApi.myShifts(), gameFintechApi.topShifts()]);
   myShifts.value = mine.status === 'fulfilled' ? mine.value.shifts : [];
-  topShifts.value = top.status === 'fulfilled' ? top.value.shifts : [];
+  // Both boards come from ONE request, and each half is defaulted separately: a
+  // server a version behind sends neither key, and the splash then simply has no
+  // boards rather than throwing on the way to the start button.
+  topShifts.value = {
+    salary: (top.status === 'fulfilled' ? top.value.salary : undefined) ?? [],
+    seconds: (top.status === 'fulfilled' ? top.value.seconds : undefined) ?? [],
+  };
 }
 
 async function start(): Promise<void> {
@@ -1894,6 +1939,45 @@ function onDash(): void {
 
 .fintech-list li {
   overflow-wrap: anywhere;
+}
+
+/* THE TWO BOARDS, side by side where there is room and stacked where there is
+   not — one column on a phone, two from 560 px up, which is where a 34 rem card
+   can hold two readable columns of «имя — деньги · время». `auto-fit` rather
+   than a media query, so a board that is absent (nobody has played that way yet)
+   leaves the other one full width instead of half of it. */
+.fintech-boards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 12px 18px;
+  width: 100%;
+  max-width: 34rem;
+}
+
+/* A NAME AND ITS SCORE ON ONE ROW, with the score pushed right and never
+   wrapped: the boards are read by scanning the numbers down a column, and a
+   «1 234 567 ₽ · 12:03» that broke across two lines would destroy that. The name
+   is the part allowed to shrink, because a long one is the author's own problem
+   and an ellipsis still identifies them. */
+.fintech-boards li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.fintech-board-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.fintech-board-score {
+  margin-left: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: #f0b429;
+  font-weight: 700;
 }
 
 .fintech-start,

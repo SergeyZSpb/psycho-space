@@ -1045,3 +1045,20 @@ export interface FintechTopRow {
   seconds: number;
   cause: string;
 }
+
+/**
+ * BOTH BOARDS, in one response.
+ *
+ * The game scores two dimensions — money earned and how long the shift lasted —
+ * and they are two different games: one rewards standing still through a ramp,
+ * the other rewards surviving a floor that speeds up every twenty seconds. So the
+ * splash shows a board for each, and they arrive together rather than as two
+ * requests for one screen.
+ *
+ * Every row carries BOTH numbers wherever it appears, so the two read as one
+ * scoreboard.
+ */
+export interface FintechTopBoards {
+  salary: FintechTopRow[];
+  seconds: FintechTopRow[];
+}

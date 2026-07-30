@@ -99,6 +99,10 @@ func (f *fakeRepo) RecentShifts(context.Context, db.DBTX, uuid.UUID, int) ([]Shi
 
 func (f *fakeRepo) TopShifts(context.Context, db.DBTX, int) ([]Shift, error) { return nil, nil }
 
+func (f *fakeRepo) TopShiftsBySeconds(context.Context, db.DBTX, int) ([]Shift, error) {
+	return nil, nil
+}
+
 // harness is a running service with a tick channel the test fires by hand.
 // fakeProfiles is the account service, reduced to the one thing this game asks
 // of it. Every account has the same picture, which is enough for "the peer got a

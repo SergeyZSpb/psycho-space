@@ -360,10 +360,18 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     expect(mine.cause).toBe('left');
     expect(mine.seconds).toBeGreaterThanOrEqual(3);
 
-    // And it is on the board, which is a different query over the same row.
+    // And it is on BOTH boards, which are two different queries over the same row —
+    // the game scores money and length, and one response carries each, because the
+    // splash draws them side by side.
     const top = (await (await page.request.get('/api/game-fintech/shifts/top')).json()) as {
-      shifts: { name: string; salary: number }[];
+      salary: { name: string; salary: number; seconds: number }[];
+      seconds: { name: string; salary: number; seconds: number }[];
     };
-    expect(top.shifts.length).toBeGreaterThan(0);
+    expect(top.salary.length).toBeGreaterThan(0);
+    expect(top.seconds.length).toBeGreaterThan(0);
+    // Every row carries both numbers wherever it appears, so the two read as one
+    // scoreboard rather than as two lists of unrelated figures.
+    expect(top.seconds[0].seconds).toBeGreaterThan(0);
+    expect(top.salary[0].seconds).toBeGreaterThan(0);
   });
 });

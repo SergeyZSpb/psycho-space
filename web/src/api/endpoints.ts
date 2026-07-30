@@ -16,7 +16,7 @@ import type {
   FintechConfig,
   FintechShift,
   FintechShiftRow,
-  FintechTopRow,
+  FintechTopBoards,
   LoginResult,
   VanyadumConfig,
   VanyadumRun,
@@ -240,10 +240,16 @@ export const gameFintechApi = {
   myShifts: (limit = 10) =>
     apiFetch<{ shifts: FintechShiftRow[] }>(`/api/game-fintech/shifts/me?limit=${limit}`),
 
-  // The board: the best shift per account, not the best rows, or one good shift
-  // fills the whole thing.
-  topShifts: (limit = 10) =>
-    apiFetch<{ shifts: FintechTopRow[] }>(`/api/game-fintech/shifts/top?limit=${limit}`),
+  // BOTH boards: the best shift per account by money, and the longest shift per
+  // account. Per account rather than per row, or one good shift fills the whole
+  // thing — and both in one response, because the splash draws them side by side
+  // and a screen that needed two requests to render would be exactly the
+  // chattiness this project's client–server rule forbids.
+  //
+  // Five by default rather than ten: it is a top five on a phone, above the guide,
+  // and a board long enough to scroll past is a board nobody reads.
+  topShifts: (limit = 5) =>
+    apiFetch<FintechTopBoards>(`/api/game-fintech/shifts/top?limit=${limit}`),
 };
 
 export const adminApi = {

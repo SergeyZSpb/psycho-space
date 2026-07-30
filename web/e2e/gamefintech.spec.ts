@@ -159,7 +159,9 @@ interface StubOptions {
   /** The session's own avatar, which is where your figure's face comes from. */
   avatar?: string;
   mine?: { cause: string; salary: number; seconds: number; created_at: string }[];
+  /** The money board, and — where a test cares — the length board beside it. */
   top?: { name: string; salary: number; seconds: number; cause: string }[];
+  topSeconds?: { name: string; salary: number; seconds: number; cause: string }[];
 }
 
 async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
@@ -201,7 +203,12 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
     }
     if (path === '/api/game-fintech/config') return json(200, CONFIG);
     if (path === '/api/game-fintech/shifts/me') return json(200, { shifts: opts.mine ?? [] });
-    if (path === '/api/game-fintech/shifts/top') return json(200, { shifts: opts.top ?? [] });
+    if (path === '/api/game-fintech/shifts/top') {
+      // TWO BOARDS IN ONE RESPONSE, keyed by the metric each is scored on — the
+      // splash draws them side by side and must not need a second request to
+      // render one screen.
+      return json(200, { salary: opts.top ?? [], seconds: opts.topSeconds ?? opts.top ?? [] });
+    }
     if (path === '/api/game-fintech/shifts/current' && method === 'GET') {
       return opts.resume
         ? json(200, SHIFT)
@@ -386,16 +393,56 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» splash', () => {
     await openSplash(page, {
       mine: [{ cause: 'promoted', salary: 51300, seconds: 91, created_at: '2026-07-29T10:00:00Z' }],
       top: [{ name: 'Карен', salary: 99900, seconds: 210, cause: 'left' }],
+      topSeconds: [{ name: 'Даша', salary: 4200, seconds: 640, cause: 'promoted' }],
     });
     const mine = page.getByTestId('fintech-runs');
     await expect(mine).toBeVisible();
     await expect(mine).toContainText('51 300');
-    await expect(mine).toContainText('91 с');
+    // A length is a CLOCK everywhere it appears now — the strip counts it up this
+    // way, the boards rank by it, and the ending repeats it.
+    await expect(mine).toContainText('1:31');
 
+    // TWO BOARDS, ONE PER SCORED DIMENSION, and each row carries both numbers so
+    // the two read as one scoreboard rather than as two lists of strangers.
     const top = page.getByTestId('fintech-top');
     await expect(top).toBeVisible();
-    await expect(top).toContainText('Карен');
-    await expect(top).toContainText('99 900');
+    const byMoney = page.getByTestId('fintech-top-salary');
+    await expect(byMoney).toContainText('Карен');
+    await expect(byMoney).toContainText('99 900');
+    await expect(byMoney).toContainText('3:30');
+
+    const byTime = page.getByTestId('fintech-top-seconds');
+    await expect(byTime).toContainText('Даша');
+    await expect(byTime).toContainText('10:40');
+    await expect(byTime).toContainText('4 200');
+    // The length board is a DIFFERENT board rather than the same one relabelled.
+    await expect(byTime).not.toContainText('Карен');
+  });
+
+  test('the splash is ordered button, boards, guide, your own shifts', async ({ page }) => {
+    // THE ORDER SOMEBODY ACTUALLY USES THIS SCREEN IN. A returning player wants to
+    // play, so nothing stands between them and the office; the boards are the
+    // reason to play again; the guide is read once; your own shifts are the
+    // natural bottom of the page. Asserted as document order rather than as pixel
+    // positions, so it survives a layout change that keeps the meaning.
+    await openSplash(page, {
+      mine: [{ cause: 'left', salary: 100, seconds: 30, created_at: '2026-07-29T10:00:00Z' }],
+      top: [{ name: 'Карен', salary: 99900, seconds: 210, cause: 'left' }],
+    });
+    await expect(page.getByTestId('fintech-runs')).toBeVisible();
+    const order = await page.evaluate(() => {
+      const ids = ['fintech-start', 'fintech-top', 'fintech-rules', 'fintech-runs'];
+      const nodes = ids.map((id) => document.querySelector(`[data-testid="${id}"]`)!);
+      return nodes.map((n, i) =>
+        i === 0
+          ? 0
+          : // 4 is DOCUMENT_POSITION_FOLLOWING: the later element comes after.
+            (nodes[i - 1].compareDocumentPosition(n) & 4) === 4
+            ? 0
+            : 1,
+      );
+    });
+    expect(order, 'the splash is out of order').toEqual([0, 0, 0, 0]);
   });
 
   test('the lists are absent rather than empty when there is nothing in them', async ({ page }) => {
@@ -416,6 +463,9 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» splash', () => {
     await openSplash(page, {
       mine: [{ cause: 'left', salary: 1234567, seconds: 12, created_at: '2026-07-29T10:00:00Z' }],
       top: [{ name: 'Человекснеприличнодлиннымименем', salary: 1234567, seconds: 9, cause: 'left' }],
+      topSeconds: [
+        { name: 'ЕщёОдинЧеловекСОченьДлиннымИменем', salary: 7, seconds: 98765, cause: 'promoted' },
+      ],
     });
     await expect(page.getByTestId('fintech-runs')).toBeVisible();
     expect(await overflow(page)).toBeLessThanOrEqual(0);
@@ -1201,7 +1251,10 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» ending', () => {
     await expect(page.getByTestId('fintech-over-title')).toHaveText('ТЕБЯ ПОВЫСИЛИ, СТЕНД');
     await expect(over).toContainText('теперь ты за это отвечаешь.');
     await expect(page.getByTestId('fintech-over-salary')).toContainText('42 800 ₽');
-    await expect(over).toContainText('73');
+    // The SAME clock the strip counted up and both boards rank by, rather than the
+    // raw «73 с» this screen used to print: the number a player just watched is
+    // the number they are scored on.
+    await expect(page.getByTestId('fintech-over-secs')).toContainText('1:13');
     await expect(page.getByTestId('fintech-retry')).toBeVisible();
   });
 

@@ -48,27 +48,57 @@ func (PostgresRepository) RecentShifts(ctx context.Context, q db.DBTX, accountID
 	return scanShifts(rows, limit, "recent")
 }
 
-// TopShifts is the leaderboard: the BEST SHIFT PER ACCOUNT.
+// TopShifts is the leaderboard by money: the BEST SHIFT PER ACCOUNT.
+func (r PostgresRepository) TopShifts(ctx context.Context, q db.DBTX, limit int) ([]Shift, error) {
+	return r.topShiftsBy(ctx, q, metricSalary, limit)
+}
+
+// TopShiftsBySeconds is the same board scored on how long the shift lasted.
+func (r PostgresRepository) TopShiftsBySeconds(ctx context.Context, q db.DBTX, limit int) ([]Shift, error) {
+	return r.topShiftsBy(ctx, q, metricSeconds, limit)
+}
+
+// The two things a shift is scored on. PACKAGE CONSTANTS, and that is what makes
+// the interpolation below safe: `metric` is chosen from these two by a method on
+// this type and never reaches here from a request, so there is no injection
+// surface — no caller can name a third string.
+const (
+	metricSalary  = "salary"
+	metricSeconds = "seconds"
+)
+
+// topShiftsBy is the leaderboard, scored on one column: the BEST SHIFT PER
+// ACCOUNT.
 //
 // DISTINCT ON is what makes that one statement rather than a window function and
 // a subquery — Postgres keeps the first row of each account_id group in the ORDER
 // BY, so the ordering has to lead with account_id and then with what "best"
-// means. The outer query then re-sorts those winners by salary, because the
-// board is read by money and not by account id.
-func (PostgresRepository) TopShifts(ctx context.Context, q db.DBTX, limit int) ([]Shift, error) {
+// means. The outer query then re-sorts those winners by the same column, because
+// the board is read by the score and not by account id.
+//
+// ONE FUNCTION RATHER THAN TWO NEARLY-IDENTICAL STATEMENTS. The DISTINCT ON shape
+// is the subtle part — the leading account_id, the tie-break on created_at, the
+// re-sort outside — and a copy of it would be a second place for that subtlety to
+// be got wrong the day either board is retuned. The only thing that varies is a
+// column name, and it comes from the pair above.
+//
+// No index exists for the seconds ordering and none is added: this table holds
+// one row per finished shift for a handful of friends, so the sort is a few
+// hundred rows in memory, and a migration is forever.
+func (PostgresRepository) topShiftsBy(ctx context.Context, q db.DBTX, metric string, limit int) ([]Shift, error) {
 	rows, err := q.Query(ctx,
 		`SELECT `+shiftColumns+`
 		   FROM (
 		     SELECT DISTINCT ON (account_id) `+shiftColumns+`
 		       FROM game_fintech_shifts
 		      WHERE deleted_at IS NULL
-		      ORDER BY account_id, salary DESC, created_at DESC
+		      ORDER BY account_id, `+metric+` DESC, created_at DESC
 		   ) best
-		  ORDER BY salary DESC, created_at ASC
+		  ORDER BY `+metric+` DESC, created_at ASC
 		  LIMIT $1`,
 		limit)
 	if err != nil {
-		return nil, fmt.Errorf("gamefintech: top shifts: %w", err)
+		return nil, fmt.Errorf("gamefintech: top shifts by %s: %w", metric, err)
 	}
 	return scanShifts(rows, limit, "top")
 }

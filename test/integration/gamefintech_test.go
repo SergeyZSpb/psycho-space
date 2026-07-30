@@ -318,6 +318,87 @@ func waitForFintechRow(t *testing.T, uid string, want int) {
 	t.Fatalf("the shift never reached Postgres: %d rows, want %d", fintechRows(t, uid), want)
 }
 
+func TestFintechTheTwoBoardsRankTheSamePeopleDifferently(t *testing.T) {
+	// THE POINT OF SCORING TWO DIMENSIONS, and it cannot be shown by playing: a
+	// shift's money and its length are correlated when both come out of the same
+	// simulation, so proving the boards are genuinely different needs a player who
+	// earned a lot quickly and one who earned little slowly.
+	//
+	// The rows are written straight to Postgres — direct DB setup rather than a
+	// flag that makes the game deterministic, which is the project's rule (no
+	// test-only machinery in a production path). Everything downstream of the
+	// INSERT is real: the DISTINCT ON, both orderings, the name lookup through the
+	// account service, and the JSON the splash reads.
+	app, _, _ := buildAppFintech(t, fintechVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	rich := loginAs(t, srv.URL, "920010", "user")
+	_ = loginAs(t, srv.URL, "920011", "user")
+	for _, row := range []struct {
+		uid     string
+		salary  float64
+		seconds float64
+	}{
+		// A fortune in a hurry, and a pittance over a long afternoon.
+		{"920010", 900_000, 30},
+		{"920011", 1_000, 900},
+	} {
+		if _, err := pool.Exec(context.Background(),
+			`INSERT INTO game_fintech_shifts (id, account_id, cause, salary, seconds)
+			 VALUES (gen_random_uuid(), $1::uuid, 'left', $2, $3)`,
+			accountIDByUID(t, row.uid), row.salary, row.seconds); err != nil {
+			t.Fatalf("seed shift for %s: %v", row.uid, err)
+		}
+	}
+
+	resp, err := rich.Get(srv.URL + "/api/game-fintech/shifts/top?limit=5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var board struct {
+		Salary []struct {
+			Name    string  `json:"name"`
+			Salary  float64 `json:"salary"`
+			Seconds float64 `json:"seconds"`
+		} `json:"salary"`
+		Seconds []struct {
+			Name    string  `json:"name"`
+			Salary  float64 `json:"salary"`
+			Seconds float64 `json:"seconds"`
+		} `json:"seconds"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&board); err != nil {
+		t.Fatal(err)
+	}
+	if len(board.Salary) == 0 || len(board.Seconds) == 0 {
+		t.Fatalf("a board came back empty: %+v", board)
+	}
+	// The man who earned 900 000 in half a minute tops the money board; the man
+	// who stood there for a quarter of an hour tops the other one. A single board
+	// sorted twice could not produce this.
+	if board.Salary[0].Salary != 900_000 {
+		t.Fatalf("the money board is led by %+v", board.Salary[0])
+	}
+	if board.Seconds[0].Seconds != 900 {
+		t.Fatalf("the length board is led by %+v", board.Seconds[0])
+	}
+	if board.Salary[0].Name == board.Seconds[0].Name {
+		t.Fatalf("both boards are led by the same person: %+v", board)
+	}
+	// And a row carries BOTH numbers wherever it appears, so the two boards read
+	// as one scoreboard rather than as two lists of unrelated figures.
+	if board.Seconds[0].Salary <= 0 || board.Salary[0].Seconds <= 0 {
+		t.Fatalf("a board row is missing the other dimension: %+v", board)
+	}
+	// The limit is honoured on both, since one client parameter now bounds two
+	// queries.
+	if len(board.Salary) > 5 || len(board.Seconds) > 5 {
+		t.Fatalf("?limit=5 returned %d and %d rows", len(board.Salary), len(board.Seconds))
+	}
+}
+
 func TestFintechConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 	app, _, _ := buildAppFintech(t, fintechVK(t))
 	srv := httptest.NewServer(app)
@@ -572,25 +653,46 @@ func TestFintechWalkingOutWritesTheShift(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer top.Body.Close()
+	// TWO BOARDS IN ONE RESPONSE, because the splash draws them side by side and a
+	// screen that needed two requests to render would be the chattiness the
+	// client–server rule exists to prevent. The keys are the metrics themselves.
+	type boardRow struct {
+		Name    string  `json:"name"`
+		Cause   string  `json:"cause"`
+		Salary  float64 `json:"salary"`
+		Seconds float64 `json:"seconds"`
+	}
 	var board struct {
-		Shifts []struct {
-			Name    string  `json:"name"`
-			Cause   string  `json:"cause"`
-			Salary  float64 `json:"salary"`
-			Seconds float64 `json:"seconds"`
-		} `json:"shifts"`
+		Salary  []boardRow `json:"salary"`
+		Seconds []boardRow `json:"seconds"`
 	}
 	if err := json.NewDecoder(top.Body).Decode(&board); err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, row := range board.Shifts {
-		if row.Name != "" && row.Salary > 0 {
-			found = true
+	for name, rows := range map[string][]boardRow{"salary": board.Salary, "seconds": board.Seconds} {
+		found := false
+		for _, row := range rows {
+			// Every row on both boards carries BOTH numbers, because a board that
+			// showed only its own metric would make the two unreadable together.
+			if row.Name != "" && row.Salary > 0 && row.Seconds > 0 {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("nobody on the %s board has a name and both numbers: %+v", name, rows)
 		}
 	}
-	if !found {
-		t.Fatalf("nobody on the board has a name and a salary: %+v", board.Shifts)
+	// And they are SORTED BY THEIR OWN METRIC, which is the only thing that makes
+	// them two boards rather than one payload printed twice.
+	for i := 1; i < len(board.Salary); i++ {
+		if board.Salary[i].Salary > board.Salary[i-1].Salary {
+			t.Fatalf("the money board is not ordered by money: %+v", board.Salary)
+		}
+	}
+	for i := 1; i < len(board.Seconds); i++ {
+		if board.Seconds[i].Seconds > board.Seconds[i-1].Seconds {
+			t.Fatalf("the length board is not ordered by length: %+v", board.Seconds)
+		}
 	}
 }
 

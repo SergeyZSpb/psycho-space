@@ -453,9 +453,15 @@ func (s *Service) RecentShifts(ctx context.Context, accountID string, limit int)
 	return s.repo.RecentShifts(ctx, s.q, id, clampLimit(limit))
 }
 
-// TopShifts is the leaderboard — the best shift per account.
+// TopShifts is the leaderboard by money — the best shift per account.
 func (s *Service) TopShifts(ctx context.Context, limit int) ([]Shift, error) {
 	return s.repo.TopShifts(ctx, s.q, clampLimit(limit))
+}
+
+// TopShiftsBySeconds is the leaderboard by how long the shift lasted — the
+// longest shift per account, which is the game's other scored dimension.
+func (s *Service) TopShiftsBySeconds(ctx context.Context, limit int) ([]Shift, error) {
+	return s.repo.TopShiftsBySeconds(ctx, s.q, clampLimit(limit))
 }
 
 func clampLimit(limit int) int {
