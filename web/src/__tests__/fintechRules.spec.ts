@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FINTECH_LORE, FINTECH_PROSE, buildRules, endingFor } from '../lib/fintechRules';
+import { FINTECH_LORE, FINTECH_PROSE, buffsFor, buildRules, endingFor } from '../lib/fintechRules';
 import type { FintechConfig } from '../api/types';
 
 /**
@@ -225,5 +225,35 @@ describe('the redirect verb on the cheatsheet', () => {
     const partial = { ...config } as Record<string, unknown>;
     delete partial.redirect;
     expect(buildRules(partial as never).some((b) => b.title === 'ЭТО К НЕМУ')).toBe(false);
+  });
+});
+
+describe('what is currently true of you', () => {
+  it('says nothing at all when nothing is running', () => {
+    // Absent rather than empty: the row is not drawn, so the office keeps the
+    // pixels — which is the common case for most of a shift.
+    expect(buffsFor({})).toEqual([]);
+    expect(buffsFor({ cloudMs: 0, drunkMs: 0 })).toEqual([]);
+  });
+
+  it('rounds up, so a running timer never reads zero', () => {
+    // The readout lies at the exact moment it matters if it floors: 200 ms left is
+    // still uncatchable, and «0 с» would say otherwise.
+    expect(buffsFor({ cloudMs: 200 })[0].secs).toBe(1);
+    expect(buffsFor({ cloudMs: 10_000 })[0].secs).toBe(10);
+  });
+
+  it('puts the longest first, so the row does not reorder itself as it runs down', () => {
+    const shown = buffsFor({ cloudMs: 3_000, drunkMs: 8_000 });
+    expect(shown.map((b) => b.key)).toEqual(['drunk', 'cloud']);
+    const later = buffsFor({ cloudMs: 9_000, drunkMs: 1_000 });
+    expect(later.map((b) => b.key)).toEqual(['cloud', 'drunk']);
+  });
+
+  it('names the bald man’s round as good news rather than as something against you', () => {
+    // A drunk лысый is the reward for a walk that cost a full ramp. Colouring it
+    // like a debuff would read as a warning.
+    const drunk = buffsFor({ drunkMs: 8_000 })[0];
+    expect(drunk.bad).toBeUndefined();
   });
 });

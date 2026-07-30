@@ -228,6 +228,23 @@ type Snapshot struct {
 	// viewer is twenty bytes forever to say something that changes once every ten
 	// seconds; one small integer is four. Omitted at zero like everything else.
 	Bs int `json:"bs,omitempty"`
+	// Iv is how long YOU are behind a cloud, in milliseconds, omitted at zero.
+	//
+	// The client needs it for the buff row and for the cloud over your own figure,
+	// and it does NOT predict from it: unlike the dash cooldown, nothing about
+	// movement depends on it, so a client that is a frame behind on it draws a
+	// cloud a frame late and never disagrees with the office about a position.
+	// Rounded UP for the same reason the dash cooldown is — a readout that says 0
+	// while the server still has milliseconds left is a readout that lies at the
+	// exact moment it matters.
+	Iv int `json:"iv,omitempty"`
+	// Hk is how long until another кальян appears, milliseconds, omitted while one
+	// is standing there — the bottle's arrangement exactly, and the common case.
+	Hk int `json:"hk,omitempty"`
+	// Hs is which of the catalogue's hookah spots it stands on. An index, for the
+	// bottle's reason: it moves once every twenty seconds and a position would be
+	// twenty bytes forever to say so.
+	Hs int `json:"hs,omitempty"`
 	// The bald man.
 	B BossFrame `json:"b"`
 	// Pr is everybody else in the office — at most two, because MaxOccupants is
@@ -263,6 +280,16 @@ type PeerFrame struct {
 	// and zero is «Я КАРЕН». The same rule as yours, so two people watching the
 	// same office read the same words at the same instant.
 	P int `json:"p,omitempty"`
+	// Iv is how long this colleague is behind a cloud, in milliseconds.
+	//
+	// IT RIDES A PEER'S FRAME BECAUSE A BUFF IS NOT PRIVATE. The office rule is
+	// that every screen shows every player's state — an effect only its owner can
+	// see is unfinished — and this one changes who the лысый will walk at, which is
+	// the single most useful thing to know about somebody else in the room.
+	// Omitted in the resting state, which is almost always, so an office where
+	// nobody has smoked costs nothing: four bytes of key and up to five of value,
+	// on at most two peers, ten times a second, only while a cloud is running.
+	Iv int `json:"iv,omitempty"`
 }
 
 // BossFrame is him, quantised: centimetres, a grin in 0..255, and which of his

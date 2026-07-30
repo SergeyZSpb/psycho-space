@@ -967,6 +967,14 @@ export interface FintechConfig {
     return_ms: number;
     slow_pct: number;
   };
+  /** «Кальян» — where it stands, and how long the cloud over you lasts. */
+  hookah?: {
+    /** Every place one can appear; a frame names which by index. */
+    spots: { x: number; y: number }[];
+    reach: number;
+    invincible_ms: number;
+    return_ms: number;
+  };
 }
 
 /** A started or resumed shift. No level — the office is in the catalogue. */

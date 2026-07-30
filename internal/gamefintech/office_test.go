@@ -1173,3 +1173,143 @@ func TestTheBottleComesBackSomewhereElse(t *testing.T) {
 		t.Fatalf("twelve bottles only ever used %d spots", len(seen))
 	}
 }
+
+func hookahSpotOf(o *Office) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.hookahSpot
+}
+
+func cloudOf(o *Office, accountID string) float64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if occ, ok := o.occupants[accountID]; ok {
+		return occ.Invincible
+	}
+	return 0
+}
+
+func TestWalkingToTheHookahPutsYouBehindACloud(t *testing.T) {
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
+	advance(o, 1)
+
+	if cloudOf(o, "a") <= 0 {
+		t.Fatal("standing on the кальян did not put a cloud over him")
+	}
+	// And the frame says so, on YOUR own field — the client needs it for the row
+	// above the office and for the cloud on the figure.
+	if got := snapOf(t, o, "a").Iv; got <= 0 {
+		t.Fatalf("the frame does not carry the cloud: %d", got)
+	}
+}
+
+func TestHeCannotCatchSomebodyBehindACloud(t *testing.T) {
+	// THE WHOLE MECHANIC. He is placed ON the player, which without the cloud ends
+	// the shift on the next tick.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
+	advance(o, 1)
+	if cloudOf(o, "a") <= 0 {
+		t.Fatal("no cloud, so this test proves nothing")
+	}
+	o.mu.Lock()
+	o.boss.Pos = o.occupants["a"].State.Pos
+	o.mu.Unlock()
+
+	if ended := advance(o, 2); len(ended) != 0 {
+		t.Fatalf("he caught somebody who was behind a cloud: %+v", ended[0])
+	}
+}
+
+func TestBeingUncatchableIsNotBeingImmortal(t *testing.T) {
+	// THE GUARD IS ON THE CAUGHT CASE ALONE, and this is why. If it were on the
+	// whole switch, an invincible occupant who closed the tab would hold a slot in
+	// a three-person office until the process restarted, because the abandon branch
+	// shares that switch.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
+	advance(o, 1)
+	if cloudOf(o, "a") <= 0 {
+		t.Fatal("no cloud, so this test proves nothing")
+	}
+	// Nobody has been connected for well past the grace.
+	o.mu.Lock()
+	o.occupants["a"].LastSeen = epoch.Add(-AbandonGrace - time.Minute)
+	o.mu.Unlock()
+
+	ended := advance(o, 1)
+	if len(ended) != 1 || ended[0].Cause != CauseLeft {
+		t.Fatalf("an abandoned shift behind a cloud was not recorded: %+v", ended)
+	}
+}
+
+func TestWhileHiddenHeLosesInterestAndSaysSo(t *testing.T) {
+	// Excluded from the target list rather than merely un-catchable, which is what
+	// makes the reprieve buy DISTANCE: he stops at the catch radius, so a guard
+	// alone would leave him standing on you when the cloud cleared.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
+	advance(o, 2)
+
+	o.mu.Lock()
+	state := o.bossState()
+	o.mu.Unlock()
+	if state != BossLost {
+		t.Fatalf("the office says he is in state %v, want BossLost", state)
+	}
+	// And the line over his head comes from the lost run.
+	said := BossLines[snapOf(t, o, "a").B.P]
+	if !strings.Contains(strings.Join(bossLostLines, "|"), said) {
+		t.Fatalf("he says %q, which is not one of his lost lines", said)
+	}
+}
+
+func TestAColleagueSeesTheCloudToo(t *testing.T) {
+	// A buff only its owner can see is unfinished — and which colleague the лысый
+	// can no longer walk at is the most useful thing to know about somebody else in
+	// the room.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
+	advance(o, 1)
+	if cloudOf(o, "a") <= 0 {
+		t.Fatal("no cloud, so this test proves nothing")
+	}
+
+	peers := snapOf(t, o, "b").Pr
+	if len(peers) != 1 {
+		t.Fatalf("b sees %d peers, want 1", len(peers))
+	}
+	if peers[0].Iv <= 0 {
+		t.Fatalf("b cannot see that a is behind a cloud: %+v", peers[0])
+	}
+}
+
+func TestTheHookahIsSpentAndComesBackSomewhereElse(t *testing.T) {
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	first := hookahSpotOf(o)
+	place(t, o, "a", HookahSpots[first])
+	advance(o, 1)
+
+	// Spent: standing on it a second time gives nothing until it returns.
+	o.mu.Lock()
+	o.occupants["a"].Invincible = 0
+	o.mu.Unlock()
+	advance(o, 1)
+	if cloudOf(o, "a") > 0 {
+		t.Fatal("the кальян was still there after somebody took it")
+	}
+
+	// And it comes back somewhere else, so the walk is a different walk.
+	advance(o, int(HookahReturn*SimHz)+2)
+	if got := hookahSpotOf(o); got == first {
+		t.Fatalf("it came back on the same spot %d", got)
+	}
+}

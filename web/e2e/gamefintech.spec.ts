@@ -79,7 +79,9 @@ const CONFIG = {
   ],
   // Marked like everything else here, so a client that hardcoded a balloon
   // instead of reading the catalogue cannot pass the assertions below.
-  boss_lines: ['Я ЛЫСЫЙ, СТЕНД', 'А ГДЕ, СТЕНД?'],
+  // Index 2 carries the name placeholder the client substitutes — appended rather
+  // than replacing a line, so the assertions about index 1 keep meaning what they did.
+  boss_lines: ['Я ЛЫСЫЙ, СТЕНД', 'А ГДЕ, СТЕНД?', 'ЧЕ ЗА ХЕРЬ, ГДЕ {} — СТЕНД'],
   player_lines: ['Я КАРЕН, СТЕНД', 'ВОДЫ, СТЕНД', 'НА ВСТРЕЧУ, СТЕНД', LONG_SAY, REDIRECT_SAY],
   // Marked like everything else here, so a client that hardcoded the cast instead
   // of reading it cannot pass the assertions below.
@@ -96,6 +98,16 @@ const CONFIG = {
     drunk_ms: 8500,
     return_ms: 9500,
     slow_pct: 45,
+  },
+  // Marked like everything else in this stub.
+  hookah: {
+    spots: [
+      { x: 6, y: 14 },
+      { x: 6, y: 4 },
+    ],
+    reach: 0.9,
+    invincible_ms: 11500,
+    return_ms: 19500,
   },
   redirect: {
     label: 'ЭТО К НЕМУ, СТЕНД',
@@ -1430,5 +1442,100 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — who you are this shift'
     await expect(page.getByTestId('fintech-splash')).toBeVisible();
     const rules = page.getByTestId('fintech-rules');
     for (const name of CONFIG.personas) await expect(rules).toContainText(name);
+  });
+});
+
+test.describe('«СИМУЛЯТОР ФИНТЕХА» — the кальян and the cloud', () => {
+  test('the кальян stands where the catalogue put it, and goes when it is taken', async ({
+    page,
+  }) => {
+    const socket = await enterOffice(page);
+    await socket.snapshot({ hs: 1 });
+    const hookah = page.getByTestId('fintech-hookah');
+    await expect(hookah).toHaveCount(1);
+    // From the catalogue by index, never from a coordinate on the frame.
+    await expect(hookah).toHaveCSS('--x', String(CONFIG.hookah.spots[1].x / CONFIG.office.w));
+    await expect(hookah).toHaveCSS('--y', String(CONFIG.hookah.spots[1].y / CONFIG.office.h));
+
+    // Absent while it is away, which is what an `hk` on the frame means.
+    await socket.snapshot({ hk: 19500, hs: 1 });
+    await expect(hookah).toHaveCount(0);
+  });
+
+  test('a cloud is drawn on you and on a colleague alike', async ({ page }) => {
+    // A buff only its owner can see is unfinished, and which colleague the лысый
+    // can no longer walk at is the most useful thing to know about somebody else.
+    const socket = await enterOffice(page);
+    await socket.snapshot({
+      iv: 9000,
+      pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600, iv: 4000 }],
+    });
+    const clouded = await page.evaluate(() => ({
+      me: document.querySelector('[data-testid="fintech-me"]')!.getAttribute('data-cloud'),
+      peer: document.querySelector('[data-testid="fintech-peer"]')!.getAttribute('data-cloud'),
+      mePaints: getComputedStyle(
+        document.querySelector('[data-testid="fintech-me"]')!,
+        '::before',
+      ).content,
+    }));
+    expect(clouded.me).toBe('1');
+    expect(clouded.peer).toBe('1');
+    // And it actually paints, rather than only setting an attribute — the lesson of
+    // the three CSS rules that were written and never landed.
+    expect(clouded.mePaints).not.toBe('none');
+  });
+
+  test('and it clears when the cloud does', async ({ page }) => {
+    const socket = await enterOffice(page);
+    await socket.snapshot({ iv: 9000 });
+    await expect(page.getByTestId('fintech-me')).toHaveAttribute('data-cloud', '1');
+    await socket.snapshot({ iv: undefined });
+    await expect(page.getByTestId('fintech-me')).not.toHaveAttribute('data-cloud', '1');
+  });
+
+  test('the row over the office says what is running and for how long', async ({ page }) => {
+    // A verb is marked where it happened and a buff is drawn on the figure — neither
+    // says HOW LONG, and ten seconds of being uncatchable is worth crossing the
+    // floor for while two seconds is not.
+    const socket = await enterOffice(page);
+    await expect(page.getByTestId('fintech-hud-buffs')).toHaveCount(0);
+
+    await socket.snapshot({ iv: 9200, b: { x: 300, y: 1500, g: 40, d: 3100 } });
+    const row = page.getByTestId('fintech-hud-buffs');
+    await expect(row).toHaveCount(1);
+    // Rounded UP, so a running timer never reads zero; longest first, so the row
+    // does not reorder itself as the timers run down past each other.
+    await expect(row).toContainText('10');
+    await expect(row).toContainText('4');
+    const order = await row.evaluate((el) =>
+      [...el.querySelectorAll('[data-buff]')].map((n) => n.getAttribute('data-buff')),
+    );
+    expect(order).toEqual(['cloud', 'drunk']);
+
+    // And gone when nothing is running, so the office keeps the pixels.
+    await socket.snapshot({ iv: undefined, b: { x: 300, y: 1500, g: 40 } });
+    await expect(row).toHaveCount(0);
+  });
+
+  test('he names the man who vanished, and only on that man’s screen', async ({ page }) => {
+    // The office knows who vanished; a name on a frame that repeats ten times a
+    // second to say something that changes once a shift is what ADR-037 refused. So
+    // the server sends the templated line to that occupant alone and the client
+    // fills it in from a persona it already knows.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ iv: 9000, b: { x: 300, y: 1500, g: 40, p: 2 } });
+    const said = page.getByTestId('fintech-boss-say');
+    await expect(said).toContainText(CONFIG.personas[2].toUpperCase());
+    // And never as a raw placeholder, whatever the pool says.
+    await expect(said).not.toContainText('{}');
+  });
+
+  test('the cheatsheet states the rule, from the served numbers', async ({ page }) => {
+    await openSplash(page);
+    await expect(page.getByTestId('fintech-splash')).toBeVisible();
+    const rules = page.getByTestId('fintech-rules');
+    // The stub's numbers, not production's — 11,5 s and 19,5 s.
+    await expect(rules).toContainText('11,5 с');
+    await expect(rules).toContainText('19,5 с');
   });
 });

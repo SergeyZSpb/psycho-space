@@ -325,6 +325,30 @@ export function sayFor(lines: readonly string[] | undefined, index: number): str
   return i >= 0 && i < lines.length ? lines[i] : lines[0];
 }
 
+/**
+ * The token the server leaves in a line for a name it will not send.
+ *
+ * The лысый's «where did he go» run contains one line that names whoever vanished.
+ * The office knows who that is; putting the name on a frame that repeats ten times a
+ * second to say something that changes once a shift is what ADR-037 refused. So the
+ * server sends the templated line only to the person who actually vanished — the one
+ * client that already knows its own persona's name — and this is what it replaces.
+ */
+export const NAME_PLACEHOLDER = '{}';
+
+/**
+ * Puts a name into a line that asked for one.
+ *
+ * `fallback` is for every screen that cannot know: a colleague's client is
+ * deliberately never told another player's persona, so it says «ОН» rather than
+ * guessing or rendering a `{}` at somebody.
+ */
+export function withName(line: string, name: string, fallback = 'ОН'): string {
+  if (!line.includes(NAME_PLACEHOLDER)) return line;
+  const use = name.trim() === '' ? fallback : name;
+  return line.split(NAME_PLACEHOLDER).join(use.toUpperCase());
+}
+
 /** A desk's box on the plane, as fractions of it. */
 export interface DeskBox {
   left: number;
@@ -440,6 +464,15 @@ export function peerColour(handle: string): string {
 export interface PeerLook {
   id: string;
   line: number;
+  /**
+   * Whether he is behind a cloud of hookah smoke.
+   *
+   * Part of the roster rather than written per frame because it is a MEMBERSHIP
+   * fact in the same sense his line is: it toggles a class, which is a vdom patch,
+   * and it changes twice in ten seconds rather than ten times a second. Compared
+   * in `sameRoster`, so a frame where nothing changed still costs nothing.
+   */
+  cloud?: boolean;
 }
 
 /**
@@ -458,6 +491,10 @@ export function sameRoster(a: readonly PeerLook[], b: readonly PeerLook[]): bool
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     if (a[i].id !== b[i].id || a[i].line !== b[i].line) return false;
+    // A cloud appearing or clearing on a colleague IS a roster change: it is a
+    // class on his figure, and without this the office would keep drawing him as
+    // catchable until something else about him happened to change.
+    if (!!a[i].cloud !== !!b[i].cloud) return false;
   }
   return true;
 }

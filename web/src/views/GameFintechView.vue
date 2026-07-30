@@ -91,6 +91,22 @@
         <span class="fintech-streak-fill" :style="{ '--fill': String(ramp) }" />
       </div>
 
+      <!-- WHAT IS CURRENTLY TRUE OF YOU. A verb is marked where it happened and a
+           buff is drawn on the figure carrying it — neither says how long, and a
+           state with a duration whose remaining time is invisible is a state you
+           cannot decide against. Absent when nothing is running, which is most of a
+           shift, so the office keeps the pixels. -->
+      <div v-if="buffs.length" class="fintech-buffs" data-testid="fintech-hud-buffs">
+        <span
+          v-for="b in buffs"
+          :key="b.key"
+          class="fintech-buff"
+          :data-buff="b.key"
+          :data-bad="b.bad ? '1' : undefined"
+          >{{ b.label }} {{ b.secs }}</span
+        >
+      </div>
+
       <p v-if="link !== 'open'" class="fintech-link" data-testid="fintech-link">
         {{ link === 'connecting' ? 'связь…' : 'связь потеряна, ждём…' }}
       </p>
@@ -127,6 +143,15 @@
             :style="bottleStyle"
             aria-hidden="true"
           />
+          <!-- The кальян. Same arrangement as the bottle: placed from the
+               catalogue, drawn only while it is there. -->
+          <span
+            v-if="hookahAt && hookahMs === 0"
+            class="fintech-hookah"
+            data-testid="fintech-hookah"
+            :style="hookahStyle"
+            aria-hidden="true"
+          />
           <!-- WHERE SOMETHING JUST HAPPENED. One short ring, keyed so that a
                second event re-mounts it and restarts the animation rather than
                being swallowed by the first. -->
@@ -155,6 +180,7 @@
             data-testid="fintech-peer"
             :data-peer="peer.id"
             :style="{ '--body': peerColour(peer.id) }"
+            :data-cloud="peer.cloud ? '1' : undefined"
             aria-hidden="true"
           >
             <span v-if="sayFor(playerLines, peer.line)" class="fintech-say" data-testid="fintech-peer-say">{{
@@ -177,7 +203,13 @@
               @error="onPeerFaceError(peer.id)"
             />
           </span>
-          <span ref="meEl" class="fintech-me" data-testid="fintech-me" aria-hidden="true">
+          <span
+            ref="meEl"
+            class="fintech-me"
+            data-testid="fintech-me"
+            :data-cloud="cloudMs > 0 ? '1' : undefined"
+            aria-hidden="true"
+          >
             <span v-if="meSays" class="fintech-say" data-testid="fintech-me-say">{{ meSays }}</span>
             <span class="fintech-fig-body" />
             <span class="fintech-fig-head"><span class="fintech-fig-hair" /></span>
@@ -328,7 +360,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { gameFintechApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import type { FintechConfig, FintechRect, FintechShift, FintechShiftRow, FintechTopRow } from '../api/types';
-import { FINTECH_DISCLAIMER, FINTECH_LORE, buildRules, endingFor } from '../lib/fintechRules';
+import { FINTECH_DISCLAIMER, FINTECH_LORE, buffsFor, buildRules, endingFor } from '../lib/fintechRules';
 import {
   applyBoss,
   applyFigure,
@@ -340,6 +372,7 @@ import {
   decimal,
   deskBox,
   sayFor,
+  withName,
   formatMoney,
   formatMultiplier,
   formatSeconds,
@@ -499,6 +532,35 @@ const bottleAt = computed(() => {
   return at ? toPlane(at.x, at.y, constants.officeW, constants.officeH) : null;
 });
 
+/** How long until another кальян stands in the office. Zero means one is there. */
+const hookahMs = ref(0);
+/** Which of the catalogue's hookah spots it is on. */
+const hookahSpot = ref(0);
+/** How long YOU are behind a cloud, in milliseconds. Zero means catchable. */
+const cloudMs = ref(0);
+/** How long the лысый stays drunk, for the row. */
+const drunkMs = ref(0);
+
+/** What is currently true of you, longest first. Absent when nothing is running. */
+const buffs = computed(() => buffsFor({ cloudMs: cloudMs.value, drunkMs: drunkMs.value }));
+
+/**
+ * Where the кальян stands, in plane coordinates — the bottle's arrangement
+ * exactly, and for the same reason: an index off the catalogue rather than a
+ * position on a frame that repeats ten times a second.
+ */
+const hookahAt = computed(() => {
+  const spots = config.value?.hookah?.spots;
+  if (!spots || !spots.length || !constants) return null;
+  const at = spots[Math.min(hookahSpot.value, spots.length - 1)];
+  return at ? toPlane(at.x, at.y, constants.officeW, constants.officeH) : null;
+});
+
+const hookahStyle = computed(() => {
+  const at = hookahAt.value;
+  return at ? { '--x': String(at.u), '--y': String(at.v) } : {};
+});
+
 const bottleStyle = computed(() => {
   const at = bottleAt.value;
   return at ? { '--x': String(at.u), '--y': String(at.v) } : {};
@@ -623,7 +685,14 @@ function onPeerFaceError(id: string): void {
 const playerLines = computed(() => config.value?.player_lines);
 
 const meSays = computed(() => sayFor(config.value?.player_lines, meLine.value));
-const bossSays = computed(() => sayFor(config.value?.boss_lines, bossLine.value));
+const bossSays = computed(() => {
+  const line = sayFor(config.value?.boss_lines, bossLine.value);
+  // HE NAMES WHOEVER VANISHED, and only the client that vanished can fill it in:
+  // the server sends the templated line to that occupant alone, and a persona is
+  // never sent for anybody else. Any other screen gets «ОН», which is what the
+  // fallback is for.
+  return withName(line, cloudMs.value > 0 ? personaName.value : '');
+});
 
 const overTitle = computed(() => endingFor(config.value, over.value?.cause ?? '')?.title ?? 'СМЕНА ОКОНЧЕНА');
 const overSub = computed(() => endingFor(config.value, over.value?.cause ?? '')?.sub ?? '');
@@ -670,6 +739,8 @@ const peerEls = new Map<string, HTMLElement>();
 const peerInterp = new Map<string, Interpolator>();
 /** Each colleague's last balloon index, so an announcement can be seen ARRIVING. */
 const peerLines = new Map<string, number>();
+// Who was behind a cloud on the previous frame, so the mark lands on the EDGE.
+const peerClouds = new Set<string>();
 /** Each colleague's last drawn position, which is how his speed — and so his dash — is known. */
 const peerSeen = new Map<string, { x: number; y: number; at: number }>();
 /** The grin state currently written on the boss, so the class is not rewritten. */
@@ -872,6 +943,9 @@ function teardownPlay(): void {
   meFaceBroken.value = false;
   redirectMs.value = 0;
   bottleMs.value = 0;
+  hookahMs.value = 0;
+  cloudMs.value = 0;
+  drunkMs.value = 0;
   bottleSpot.value = 0;
   peerEls.clear();
   peerInterp.clear();
@@ -1111,6 +1185,20 @@ function applySnapshot(frame: RealtimeFrame): void {
   }
   bottleSpot.value = num(frame.bs);
 
+  // THE CLOUD, marked on the EDGE and where it happened. A cloud is a buff rather
+  // than an event, so it is drawn on the figure for the whole ten seconds — but its
+  // ARRIVAL is a verb nobody can see, so it also gets the brief mark every other
+  // verb on this plane gets. Compared against the previous frame's value, before
+  // that value is overwritten, which is the mistake this view has already made
+  // once.
+  const hk = num(frame.hk);
+  const iv = num(frame.iv);
+  if (iv > 0 && cloudMs.value === 0) markAt('cloud', mePlace());
+  if (hk > 0 && hookahMs.value === 0) markAt('hookah', hookahAt.value);
+  cloudMs.value = iv;
+  hookahMs.value = hk;
+  hookahSpot.value = num(frame.hs);
+
   if (!predictor) {
     // The first authoritative position is what the predictor is seeded with —
     // see enterPlay for why there is nothing better to start from.
@@ -1135,6 +1223,10 @@ function applySnapshot(frame: RealtimeFrame): void {
     // a `background` on `.fintech-boss` paints the positioning rectangle and reads
     // as a broken sprite (§17.5 of the build plan, learned the hard way).
     const drunk = num(b.d) > 0;
+    // The ROW needs the number, not the boolean — and it is reactive where the
+    // class flip above deliberately is not: a readout is text and belongs in Vue,
+    // a class on a figure is a patch we avoid on every frame.
+    drunkMs.value = num(b.d);
     if (drunk && !bossDrunk) markAt('drunk', bossPlace());
     if (el && drunk !== bossDrunk) {
       bossDrunk = drunk;
@@ -1178,9 +1270,20 @@ function applyPeers(raw: unknown): void {
       markAt('redirect', toPlane(num(p.x) / 100, num(p.y) / 100, constants.officeW, constants.officeH));
     }
     peerLines.set(id, line);
+    const cloud = num(p.iv) > 0;
+    // A COLLEAGUE'S cloud, marked where HE is standing, on the edge — the same rule
+    // as his redirect. Somebody stepping out of the лысый's reach is the most
+    // useful thing that can happen to a colleague, and a mark only its owner saw
+    // would be exactly the asymmetry this office forbids.
+    if (cloud && !peerClouds.has(id) && constants) {
+      markAt('cloud', toPlane(num(p.x) / 100, num(p.y) / 100, constants.officeW, constants.officeH));
+    }
+    if (cloud) peerClouds.add(id);
+    else peerClouds.delete(id);
     roster.push({
       id,
       line,
+      cloud,
       // Derived from the handle, never sent with it (ADR-037). The browser
       // caches the answer, so this is one request per colleague per shift even
       // though the string is recomputed on every roster change.
@@ -1483,6 +1586,12 @@ function onDash(): void {
      the plane becomes bounded by height instead of width and the room draws ~7 %
      narrower with dead space down both sides. That trade is the wrong way round. */
   --fintech-hud-h: 66px;
+
+  /* WITH THE BUFF ROW, when one is running: 66 plus a ~24 px strip. It is a
+     separate property rather than a bigger `--fintech-hud-h`, because the row is
+     ABSENT most of the time and the «связь…» line should not sit lower for a state
+     that is not on screen. This is why the height was declared in one place. */
+  --fintech-hud-h-buffs: 90px;
 }
 
 /* IN FLOW, BUT OVER THE OFFICE. `.fintech-play` is no longer a column, so normal
@@ -1581,6 +1690,43 @@ function onDash(): void {
   transform-origin: 0 50%;
   transform: scaleX(var(--fill, 0));
   transition: transform 120ms linear;
+}
+
+/* THE BUFF ROW — the third in-flow thing at the top, under the streak bar.
+   `pointer-events: none` because it is a readout standing on the floor like the
+   rest of them: a tap that lands on «в дыму» has to reach the office.
+   The top strip is the only free one — the bottom third of the plane is asserted to
+   remain office so the thumbs have somewhere to rest, and the right-hand column
+   already grows upward as colleagues arrive. */
+.fintech-buffs {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 10px 4px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.fintech-buff {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(12, 14, 18, 0.66);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+}
+
+/* Anything working against you reads warm, so the row can be scanned rather than
+   read. Nothing sets this yet — the slow arrives with the second chaser — and it is
+   here because the row's shape is decided now rather than twice. */
+.fintech-buff[data-bad] {
+  border-color: rgba(224, 100, 74, 0.75);
+  color: #ffcbb8;
 }
 
 .fintech-link {
@@ -1945,6 +2091,77 @@ function onDash(): void {
   box-shadow: 0 0 0 max(1px, calc(var(--unit) * 0.025)) rgba(0, 0, 0, 0.4);
   pointer-events: none;
   z-index: 1;
+}
+
+/* THE КАЛЬЯН. A small thing on the floor you walk to, drawn at ground level and
+   NOT feet-anchored, because like the bottle it is not standing — it is sitting
+   there. Sized off `--unit` so it shrank with the world. */
+.fintech-hookah {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--unit) * 0.34);
+  height: calc(var(--unit) * 0.5);
+  transform: translate3d(calc(var(--x, 0.5) * 100cqw - 50%), calc(var(--y, 0.5) * 100cqh - 50%), 0);
+  border-radius: 46% 46% 30% 30%;
+  background: linear-gradient(180deg, #d8c48f 0%, #a8842f 55%, #6b5320 100%);
+  box-shadow: 0 0 0 max(1px, calc(var(--unit) * 0.025)) rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* BEHIND A CLOUD, and it is a property of the FIGURE for as long as it lasts —
+   drawn on you and on every colleague alike, because a buff only its owner can see
+   is unfinished, and which colleague the лысый can no longer walk at is the single
+   most useful thing to know about somebody else in the room.
+
+   The cloud is a `::before` so it can sit OVER the man without being a child of him
+   in the template — and it is deliberately not `z-index`ed above the balloon: the
+   words still have to be readable through it, since a hidden player is exactly the
+   one whose line («КУДА ПРОПАЛ ЭТОТ ЕБЛАН» is the лысый's, not his) is worth
+   reading. Feet-anchored like the figure, centred on the body.
+
+   Its opacity animates, and under `prefers-reduced-motion` it does not — it stays
+   at a legible middle instead of switching off, because somebody who asked for less
+   motion still has to be able to see that they are uncatchable. */
+.fintech-me[data-cloud]::before,
+.fintech-peer[data-cloud]::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  width: calc(var(--unit) * 1.15);
+  height: calc(var(--unit) * 0.8);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(232, 238, 245, 0.78) 0%,
+    rgba(210, 220, 232, 0.5) 55%,
+    rgba(200, 212, 226, 0) 100%
+  );
+  pointer-events: none;
+  animation: fintech-cloud 2.4s ease-in-out infinite;
+}
+
+@keyframes fintech-cloud {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: translateX(-50%) scale(1);
+  }
+  50% {
+    opacity: 0.95;
+    transform: translateX(-52%) scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fintech-me[data-cloud]::before,
+  .fintech-peer[data-cloud]::before {
+    animation: none;
+    opacity: 0.85;
+  }
 }
 
 /* Drunk: green, and it is the SKIN and the BODY that go green rather than the

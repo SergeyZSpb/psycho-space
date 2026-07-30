@@ -619,9 +619,9 @@ func TestSomethingHappeningToHimInterruptsWhatHeWasSaying(t *testing.T) {
 	// the instant the state does — mid-slot — and the line changes with it.
 	const mid = BossSlot / 3 // deliberately NOT on a slot boundary
 
-	idle := BossSays(BossIdle, 1, mid)
-	drunk := BossSays(BossDrunk, 1, mid)
-	redirected := BossSays(BossRedirected, 1, mid)
+	idle := BossSays(BossIdle, 1, mid, false)
+	drunk := BossSays(BossDrunk, 1, mid, false)
+	redirected := BossSays(BossRedirected, 1, mid, false)
 
 	if drunk == idle {
 		t.Fatal("getting drunk did not interrupt what he was saying")
@@ -644,18 +644,18 @@ func TestSomethingHappeningToHimInterruptsWhatHeWasSaying(t *testing.T) {
 
 	// And inside a run it is still the two-second, out-of-order rotation — an
 	// event interrupts the cadence, it does not replace it with one sentence.
-	held := BossSays(BossDrunk, 1, 0)
+	held := BossSays(BossDrunk, 1, 0, false)
 	for tick := uint64(1); tick < BossSlot; tick++ {
-		if got := BossSays(BossDrunk, 1, tick); got != held {
+		if got := BossSays(BossDrunk, 1, tick, false); got != held {
 			t.Fatalf("drunk, he changed line at tick %d inside the slot", tick)
 		}
 	}
-	if BossSays(BossDrunk, 1, BossSlot) == held {
+	if BossSays(BossDrunk, 1, BossSlot, false) == held {
 		t.Fatal("drunk, he holds one sentence for the whole binge")
 	}
 
 	// Drunk outranks redirected: a man who is both is funnier on the drink lines.
-	if BossSays(BossDrunk, 1, mid) == BossSays(BossRedirected, 1, mid) {
+	if BossSays(BossDrunk, 1, mid, false) == BossSays(BossRedirected, 1, mid, false) {
 		t.Fatal("the two states are indistinguishable")
 	}
 }
@@ -773,5 +773,111 @@ func TestAppendingPersonasDidNotMoveTheRedirectLine(t *testing.T) {
 	}
 	if personaIntroBase <= RedirectLine {
 		t.Fatalf("the persona intros start at %d, which is not after the redirect run at %d", personaIntroBase, RedirectLine)
+	}
+}
+
+func TestEveryHookahSpotIsSomewhereYouCanActuallyStand(t *testing.T) {
+	for i, at := range HookahSpots {
+		if at.X < PlayerRadius || at.X > OfficeW-PlayerRadius ||
+			at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
+			t.Fatalf("hookah spot %d (%+v) is not on the floor", i, at)
+		}
+		for j, d := range Desks {
+			// Reachable means a player disc can sit ON it, not merely near it: a
+			// spot inside a desk would be a prop you walk at forever while the
+			// collision resolver pushes you out.
+			if insideDesk(d, at, PlayerRadius) {
+				t.Fatalf("hookah spot %d (%+v) is inside desk %d", i, at, j)
+			}
+		}
+	}
+}
+
+func TestNoHookahSharesATileWithABottle(t *testing.T) {
+	// THE CROSS-LIST RULE, and it is the one this game had no need of before.
+	// `drawBottleSpot` and `drawHookahSpot` each avoid only their OWN previous
+	// index, so nothing else stops the two props landing on the same tile — and one
+	// walk collecting both would hand a player a drunk лысый AND ten seconds of
+	// being uncatchable for a single lost streak.
+	const apart = 2.0
+	for i, h := range HookahSpots {
+		for j, b := range BottleSpots {
+			if d := math.Hypot(h.X-b.X, h.Y-b.Y); d < apart {
+				t.Fatalf("hookah spot %d and bottle spot %d are %.2f m apart, want at least %.1f", i, j, d, apart)
+			}
+		}
+	}
+}
+
+func TestTheHookahMovesFarEnoughToBeADifferentWalk(t *testing.T) {
+	// A prop that reappeared next to where it was would make the walk free, which
+	// is the whole price of the mechanic.
+	if len(HookahSpots) < 2 {
+		t.Fatal("one spot is not a wander")
+	}
+	const apart = 3.0
+	for i := range HookahSpots {
+		for j := i + 1; j < len(HookahSpots); j++ {
+			if d := math.Hypot(HookahSpots[i].X-HookahSpots[j].X, HookahSpots[i].Y-HookahSpots[j].Y); d < apart {
+				t.Fatalf("hookah spots %d and %d are only %.2f m apart", i, j, d)
+			}
+		}
+	}
+}
+
+func TestHeOnlyNamesTheManWhoCanHearHisName(t *testing.T) {
+	// The templated line is the one that says «ГДЕ {}», and only the client that
+	// vanished can fill it in — a persona is never sent for anybody else. So the
+	// office sends it to that occupant and nobody else, and every other screen gets
+	// a line from the same run that names nobody.
+	var namedForMine, namedForOthers bool
+	for tick := uint64(0); tick < BossSlot*uint64(len(bossLostLines))*8; tick += BossSlot {
+		if strings.Contains(BossLines[BossSays(BossLost, 0, tick, true)], NamePlaceholder) {
+			namedForMine = true
+		}
+		if strings.Contains(BossLines[BossSays(BossLost, 0, tick, false)], NamePlaceholder) {
+			namedForOthers = true
+		}
+	}
+	if !namedForMine {
+		t.Fatal("the man who vanished is never named to himself, so the templated line is unreachable")
+	}
+	if namedForOthers {
+		t.Fatal("a colleague's screen was sent a line with a placeholder it cannot fill")
+	}
+}
+
+func TestLosingHisTargetIsItsOwnRunAndDidNotMoveTheOthers(t *testing.T) {
+	// Appended last, so every base that existed before it is untouched. Pinned
+	// against the STRINGS, because index-against-index arithmetic is wrong
+	// identically on both sides when a base goes stale.
+	lost := BossSays(BossLost, 0, 0, true)
+	if !strings.Contains(strings.Join(bossLostLines, "|"), BossLines[lost]) {
+		t.Fatalf("lost he says %q, which is not one of his lost lines", BossLines[lost])
+	}
+	if BossLines[bossLostBase] != bossLostLines[0] {
+		t.Fatalf("the lost run starts at %q, want %q", BossLines[bossLostBase], bossLostLines[0])
+	}
+	// And the runs before it still start where they did.
+	if BossLines[0] != bossFar[0] {
+		t.Fatalf("the flat pool no longer starts with the far run: %q", BossLines[0])
+	}
+	drunk := BossSays(BossDrunk, 1, BossSlot, false)
+	if BossLines[drunk] != bossDrunkLines[0] && !strings.Contains(strings.Join(bossDrunkLines, "|"), BossLines[drunk]) {
+		t.Fatalf("drunk he says %q, which is not one of his drink lines", BossLines[drunk])
+	}
+}
+
+func TestNoHookahIsBaitBesideTheBaldMan(t *testing.T) {
+	// A spot next to his spawn is not a reprieve, it is bait: a shift opens with the
+	// player at the far end of the room, so walking to it means walking into the one
+	// thing that ends the shift. The first version of this list put one at (8, 19.0),
+	// a metre and a half from him, and the integration test that walks a real player
+	// to a real кальян died on it every time.
+	const clear = 6.0
+	for i, at := range HookahSpots {
+		if d := math.Hypot(at.X-BossSpawnX, at.Y-BossSpawnY); d < clear {
+			t.Fatalf("hookah spot %d (%+v) is %.2f m from his spawn, want at least %.1f", i, at, d, clear)
+		}
 	}
 }

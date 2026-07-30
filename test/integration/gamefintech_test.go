@@ -1161,3 +1161,81 @@ func TestFintechBuyingHimARoundIsVisibleToTheWholeOffice(t *testing.T) {
 		}
 	}
 }
+
+func TestFintechWalkingToTheHookahPutsACloudOnTheWire(t *testing.T) {
+	// «Кальян» end to end: a real HTTP shift, a real socket, the real 20 Hz tick,
+	// and a player who actually walks there.
+	//
+	// DELIBERATELY SOLO, and the reason is the mechanic working rather than a
+	// limitation. A second idle client would be caught while the first was still
+	// walking — precisely BECAUSE the first goes untouchable, which hands the лысый
+	// the only other target in the room. That the whole office can see a colleague's
+	// cloud is pinned where it can be arranged exactly (TestAColleagueSeesTheCloudToo
+	// on the office, and the layout suite on the peer's figure); what only this suite
+	// can prove is that walking onto the thing over a real socket puts `iv` on a real
+	// frame.
+	app, tick, _ := buildAppFintech(t, fintechVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cli := loginAs(t, srv.URL, "920020", "user")
+	clock := newFintechClock()
+
+	startShift(t, cli, srv.URL)
+
+	conn, _, err := dialFintech(t, srv.URL, cookieHeader(t, cli, srv.URL), gamefintech.Room)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	frames := readFrames(t, conn)
+
+	ctx := context.Background()
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"t":"fintech_hello"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	var seq int
+	walk := func(mx, my float64) {
+		cmds := make([]map[string]any, 0, 4)
+		for j := 0; j < 4; j++ {
+			seq++
+			cmds = append(cmds, map[string]any{
+				"q": seq, "dt": gamefintech.SimStep.Seconds(), "mx": mx, "my": my,
+			})
+		}
+		raw, _ := json.Marshal(map[string]any{"t": "fintech_input", "cmds": cmds})
+		if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Steered on TIME rather than on a count of attempts, and at half the snapshot
+	// rate — steering on every frame sits exactly on the socket's ten-a-second
+	// limiter, which then closes the connection and presents as "no frame arrived".
+	deadline := time.Now().Add(25 * time.Second)
+	clouded, n := false, 0
+	for !clouded && time.Now().Before(deadline) {
+		f := waitForFintechFrame(t, frames, tick, clock, "fintech_snap", 15*time.Second)
+		x, _ := f["x"].(float64)
+		y, _ := f["y"].(float64)
+		// Where it is NOW: it moves, and the frame names which of the catalogue's
+		// spots it is on rather than where that spot is.
+		spot := gamefintech.HookahSpots[0]
+		if hs, ok := f["hs"].(float64); ok && int(hs) < len(gamefintech.HookahSpots) {
+			spot = gamefintech.HookahSpots[int(hs)]
+		}
+		dx := spot.X - x/100
+		dy := spot.Y - y/100
+		d := math.Hypot(dx, dy)
+		n++
+		if d > 1e-6 && n%2 == 0 {
+			walk(dx/d, dy/d)
+		}
+		if iv, ok := f["iv"].(float64); ok && iv > 0 {
+			clouded = true
+		}
+	}
+	if !clouded {
+		t.Fatal("walking onto the кальян never put a cloud on the wire")
+	}
+}

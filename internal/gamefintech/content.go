@@ -1,6 +1,9 @@
 package gamefintech
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // THE CATALOGUE.
 //
@@ -225,7 +228,39 @@ var Endings = []Ending{
 // BossLines is the flat pool the wire indexes into, built from two named runs so
 // the browser never learns the layout — which run a state maps to is server-side
 // and changes without a client deploy. Exactly the arrangement PlayerLines uses.
-var BossLines = slices.Concat(bossFar, bossClosing, bossDrunkLines, bossRedirectLines)
+var BossLines = slices.Concat(bossFar, bossClosing, bossDrunkLines, bossRedirectLines, bossLostLines)
+
+// bossLostLines are what he says when the man he was walking at is no longer
+// there — somebody took a hookah and went behind a cloud.
+//
+// APPENDED LAST, so every base index into BossLines that existed before this run
+// is arithmetically untouched. `bossLostBase` below is the written-out sum of the
+// lengths of every preceding run, which is the only form that survives a
+// reordering.
+//
+// NamePlaceholder is substituted BY THE CLIENT, and that is what keeps this free:
+// the office knows who vanished, but a name on a frame that repeats ten times a
+// second to say something that changes once a shift is exactly what ADR-037
+// refused. A frame is built per occupant, so the server sends this run's templated
+// line only to the person who actually vanished — who is the one client that
+// already knows its own persona's name.
+var bossLostLines = []string{
+	"А КУДА ОН ДЕЛСЯ",
+	"ЧЕ ЗА ХЕРЬ, ГДЕ " + NamePlaceholder,
+	"КУДА ПРОПАЛ ЭТОТ ЕБЛАН",
+	"Я ЖЕ ВИДЕЛ, ЧТО КТО-ТО СТОЯЛ",
+}
+
+// NamePlaceholder is the token a client replaces with a name.
+//
+// A token rather than a format string, because the client is TypeScript and the
+// server is Go: `%s` would invite one of them to try to format the other's
+// string. Anything that cannot name whoever vanished — a colleague's screen, which
+// is deliberately never told another player's persona — replaces it with «ОН».
+const NamePlaceholder = "{}"
+
+// bossLostBase is where bossLostLines starts in the flat pool.
+var bossLostBase = len(bossFar) + len(bossClosing) + len(bossDrunkLines) + len(bossRedirectLines)
 
 // bossDrunkLines and bossRedirectLines are what he says when something has just
 // HAPPENED to him, and they exist to break the two-second rotation rather than
@@ -521,6 +556,51 @@ const (
 	BottleReturn = 10.0
 )
 
+// «Кальян» — the second prop on the floor, and the only thing in this game that
+// makes you untouchable rather than making HIM slower.
+//
+// It is the mirror of the bottle and deliberately so: same reach, same
+// walk-to-it-and-lose-your-streak price, a spot that moves so the walk is a
+// different walk every time. What differs is who it acts on. The bottle is an
+// attack on the лысый; this is a way to stop existing for ten seconds, which is
+// long enough to cross the floor and stand somewhere better.
+const (
+	// HookahReach is how close you have to be. The bottle's number, for the same
+	// reason: the streak is the price, and fighting the collision resolver for the
+	// last twenty centimetres is not.
+	HookahReach = 0.9
+	// InvincibleSeconds is how long the cloud lasts. Owner-directed.
+	//
+	// Ten seconds against a boss who needs about four to cross the room is
+	// generous on purpose — the walk to the hookah costs a full ramp, so the
+	// reward has to be worth leaving a ×3 for.
+	InvincibleSeconds = 10.0
+	// HookahReturn is how long until another one appears, SOMEWHERE ELSE. Twice
+	// the bottle's wait: being uncatchable is the strongest effect in the game, and
+	// a shift should not be able to spend most of itself behind a cloud.
+	HookahReturn = 20.0
+)
+
+// HookahSpots is every place one can appear; a frame names which by index.
+//
+// FOUR RULES, and content_test pins all of them. Each spot is clear of every desk
+// by more than a player's radius, so walking to one is never a fight with the
+// collision resolver. They are far enough apart that the draw genuinely moves the
+// walk. And each is at least two metres from every BottleSpot — a cross-list rule
+// the bottle never needed, because `drawBottleSpot` only avoids its own previous
+// index, and two props on one tile would mean one walk collected both. And each is
+// well clear of the лысый's own spawn — a spot beside him is bait rather than a
+// reprieve, because a shift opens with the player at the far end of the room and
+// walking to it means walking into the one thing that ends the shift. The first
+// version put one at (8, 19.0), a metre and a half from where he starts, and the
+// integration test that walks a real player to a real кальян died on it every time.
+var HookahSpots = []Vec2{
+	{X: 8.0, Y: 6.0},
+	{X: 0.9, Y: 10.5},
+	{X: 15.1, Y: 10.5},
+	{X: 8.0, Y: 13.6},
+}
+
 // PlayerSlot is how long he holds one line before moving to the next, in ticks.
 //
 // THE SAME AS THE BALD MAN'S, at the owner's direction. It was twice his, on the
@@ -686,6 +766,9 @@ const (
 	BossIdle BossState = iota
 	BossDrunk
 	BossRedirected
+	// BossLost is «where did he go» — the man he was walking at is behind a cloud
+	// of hookah smoke and is not a target any more.
+	BossLost
 )
 
 // BossSays is which line belongs over him, given what has happened to him.
@@ -693,12 +776,23 @@ const (
 // The two event runs OUTRANK the rotation and change the instant the state does
 // — see the note on bossDrunkLines. Inside a run it is the same hashed,
 // out-of-order pick everything else on this plane uses.
-func BossSays(state BossState, grin float64, tick uint64) int {
+func BossSays(state BossState, grin float64, tick uint64, mine bool) int {
 	switch state {
 	case BossDrunk:
 		return pickLine(introLine, len(bossFar)+len(bossClosing), bossDrunkLines, tick, BossSlot)
 	case BossRedirected:
 		return pickLine(introLine, len(bossFar)+len(bossClosing)+len(bossDrunkLines), bossRedirectLines, tick, BossSlot)
+	case BossLost:
+		got := pickLine(introLine, bossLostBase, bossLostLines, tick, BossSlot)
+		// THE TEMPLATED LINE GOES ONLY TO THE PERSON WHO VANISHED, because it is
+		// the only client that can fill the name in — a persona is never sent for
+		// anybody else, so on a colleague's screen `{}` would either render as
+		// itself or be guessed at. Everybody else gets the next line in the run,
+		// which says the same thing without naming anybody.
+		if !mine && strings.Contains(BossLines[got], NamePlaceholder) {
+			return nextLine(introLine, bossLostBase, uint64(len(bossLostLines)), got)
+		}
+		return got
 	default:
 		return BossLine(grin, tick)
 	}
@@ -744,6 +838,20 @@ type Config struct {
 	MaxOccupants int          `json:"max_occupants"`
 	Redirect     VerbConfig   `json:"redirect"`
 	Bottle       BottleConfig `json:"bottle"`
+	Hookah       HookahConfig `json:"hookah"`
+}
+
+// HookahConfig is «кальян», published so the plane can draw it where it actually
+// stands and the cheatsheet can state the rule without typing a number.
+type HookahConfig struct {
+	// Spots is every place one can appear; a frame names which by index.
+	Spots []Vec2 `json:"spots"`
+	// Reach is how close you have to get.
+	Reach float64 `json:"reach"`
+	// InvincibleMs is how long the cloud lasts.
+	InvincibleMs int `json:"invincible_ms"`
+	// ReturnMs is how long until another one appears somewhere else.
+	ReturnMs int `json:"return_ms"`
 }
 
 // BottleConfig is «набухать лысого», published so the plane can draw the bottle
@@ -861,6 +969,12 @@ func BuildConfig() Config {
 		BossLines:    append([]string(nil), BossLines...),
 		PlayerLines:  append([]string(nil), PlayerLines...),
 		MaxOccupants: MaxOccupants,
+		Hookah: HookahConfig{
+			Spots:        slices.Clone(HookahSpots),
+			Reach:        HookahReach,
+			InvincibleMs: int(InvincibleSeconds * 1000),
+			ReturnMs:     int(HookahReturn * 1000),
+		},
 		Bottle: BottleConfig{
 			Spots:    append([]Vec2(nil), BottleSpots...),
 			Reach:    BottleReach,

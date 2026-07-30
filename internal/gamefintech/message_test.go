@@ -229,12 +229,17 @@ func TestSnapshotStaysSmall(t *testing.T) {
 		// bottle has not come back. Both present at once is the real worst case,
 		// even though it only lasts as long as he stays drunk.
 		Bt: 10000, Bs: len(BottleSpots) - 1,
+		// AND A CLOUD, on you and on both colleagues at once, with the кальян also
+		// gone and its next spot the widest index. Four fields that are all
+		// omitempty and are all present together only in the few seconds after
+		// somebody smokes — which is exactly what a worst case is for.
+		Iv: 10000, Hk: 20000, Hs: len(HookahSpots) - 1,
 		// A FULL OFFICE, which is the worst case and is now most of the frame.
 		// MaxOccupants is three, so two peers; twelve-character handles, both in
 		// the far corner, both on the widest line index in the pool.
 		Pr: []PeerFrame{
-			{I: "AbCdEfGhIjKl", X: 1565, Y: 2165, P: len(PlayerLines) - 1},
-			{I: "MnOpQrStUvWx", X: 1565, Y: 2165, P: len(PlayerLines) - 1},
+			{I: "AbCdEfGhIjKl", X: 1565, Y: 2165, P: len(PlayerLines) - 1, Iv: 10000},
+			{I: "MnOpQrStUvWx", X: 1565, Y: 2165, P: len(PlayerLines) - 1, Iv: 10000},
 		},
 	}
 	raw, err := json.Marshal(s)
@@ -290,7 +295,27 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// is about twenty bytes ten times a second per viewer, forever, to describe
 	// something that changes once every ten seconds. Omitted on spot zero, like
 	// every other index here.
-	const budget = 288
+	// 288 -> 336, for «кальян». Four new fields, all omitempty, and the arithmetic
+	// is worth writing out because they are not present together for long:
+	// `,"iv":10000` is twelve on your own frame, `,"hk":20000` is twelve, `,"hs":3`
+	// is seven, and `,"iv":10000` on each of two peers is twelve each. That is 55
+	// on a frame where all three occupants are simultaneously behind a cloud AND
+	// the hookah has not come back — a state that lasts ten seconds at most and
+	// requires everybody to have smoked at once.
+	//
+	// The state this game actually spends its time in has none of them: nobody
+	// invincible and a hookah standing on the floor is the resting frame, and it is
+	// the same size it was before this iteration. The peers' `iv` is the one that
+	// could have been avoided and deliberately was not — an effect only its owner
+	// can see is unfinished, and knowing which colleague the лысый can no longer
+	// walk at is the single most useful thing to know about somebody else in the
+	// room.
+	//
+	// Measured at 336 and budgeted at 344, keeping the few bytes of headroom this
+	// bound has always carried: the widest line index grows by a character the day
+	// a pool passes a hundred entries, and a bound with no slack would fail on a
+	// commit that added a joke rather than a field.
+	const budget = 344
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}

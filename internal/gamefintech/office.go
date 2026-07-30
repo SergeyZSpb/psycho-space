@@ -46,6 +46,16 @@ type Occupant struct {
 	// account id never reaches the wire, and a pseudonym means nothing once the
 	// process that minted it has restarted.
 	Pseudonym string
+	// Invincible is how long this occupant is behind a cloud of hookah smoke, in
+	// seconds. While it runs he is not a target the лысый can see and not somebody
+	// the лысый can catch.
+	//
+	// ON THE OCCUPANT RATHER THAN ON Player, like the persona and for the same
+	// reason: `Step` never reads it, so putting it there would force the golden
+	// vectors regenerated for a value that changes nothing about movement. It
+	// changes who the BOSS walks at, and he is the office's business.
+	Invincible float64
+
 	// Persona is which employee this occupant is — an index into Personas, drawn
 	// once when the shift starts.
 	//
@@ -124,6 +134,15 @@ type Office struct {
 	// nothing about the boss changes at all.
 	redirectTo   string
 	redirectLeft float64
+	// hookahGone and hookahSpot are the кальян's half of the same arrangement as
+	// the bottle's two fields below: zero `hookahGone` means one is standing on
+	// `hookahSpot` right now.
+	hookahGone float64
+	hookahSpot int
+	// lostTarget is true when the лысый had somebody to walk at and now has
+	// nobody, because everybody left standing is behind a cloud. It decides which
+	// run he speaks from and is recomputed every tick, so it never goes stale.
+	lostTarget bool
 	// bottleGone is how long until another bottle appears, in seconds. Zero means
 	// one is standing there now, which is the common case and therefore the one
 	// that costs nothing on the wire.
@@ -479,12 +498,31 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 
 	// Built in ascending account order, which is what makes his choice of victim
 	// deterministic when two people are equally close — see StepBoss.
+	// A CLOUD IS EXPRESSED AS A SHORTER TARGET LIST, which is the arrangement the
+	// redirect already established: StepBoss walks at the nearest of whatever it is
+	// given, so leaving somebody out IS "he cannot see you" — the boss needs no
+	// knowledge of the hookah and there is still one pursuit implementation.
+	//
+	// EXCLUDING rather than only refusing to catch is what makes the reprieve buy
+	// DISTANCE. He stops on arrival at the catch radius, so a guard alone would
+	// leave him standing on you, and the tick after the cloud cleared would end the
+	// shift. Excluded, he loses interest and walks at somebody else — or goes home.
 	targets := make([]Vec2, 0, len(keys))
+	standing := 0
 	for _, k := range keys {
-		if occ := o.occupants[k]; occ.State.Alive {
-			targets = append(targets, occ.State.Pos)
+		occ := o.occupants[k]
+		if !occ.State.Alive {
+			continue
 		}
+		standing++
+		if occ.Invincible > 0 {
+			continue
+		}
+		targets = append(targets, occ.State.Pos)
 	}
+	// He had somebody and now has nobody, which is a thing he says rather than a
+	// thing he does. Recomputed every tick, so it cannot go stale.
+	o.lostTarget = standing > 0 && len(targets) == 0
 
 	// THE REDIRECT IS EXPRESSED AS A SHORTER TARGET LIST, not as a second
 	// pursuit rule. StepBoss walks at the nearest of whatever it is given, so
@@ -511,6 +549,9 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		}
 		if occ.Announce > 0 {
 			occ.Announce = math.Max(0, occ.Announce-dt)
+		}
+		if occ.Invincible > 0 {
+			occ.Invincible = math.Max(0, occ.Invincible-dt)
 		}
 	}
 
@@ -540,6 +581,30 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		}
 	}
 
+	// THE KALYAN, checked in the same place and for the same reason as the bottle:
+	// a cloud taken this tick hides you on this tick rather than the next, and two
+	// people arriving together is settled in ascending account order like every
+	// other decision here. First taker only — one cloud per hookah.
+	if o.hookahGone > 0 {
+		o.hookahGone = math.Max(0, o.hookahGone-dt)
+		if o.hookahGone == 0 {
+			o.hookahSpot = o.drawHookahSpot()
+		}
+	} else {
+		spot := HookahSpots[o.hookahSpot]
+		for _, k := range keys {
+			occ := o.occupants[k]
+			if !occ.State.Alive {
+				continue
+			}
+			if math.Hypot(occ.State.Pos.X-spot.X, occ.State.Pos.Y-spot.Y) <= HookahReach+PlayerRadius {
+				occ.Invincible = InvincibleSeconds
+				o.hookahGone = HookahReturn
+				break
+			}
+		}
+	}
+
 	// Elapsed simulated time, which is what the wobble is a function of. Derived
 	// from the tick rather than from a clock, so it is the same number on every
 	// process that replays the same office.
@@ -549,7 +614,11 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	for _, k := range keys {
 		occ := o.occupants[k]
 		switch {
-		case Caught(o.boss, occ.State.Pos):
+		// THE GUARD IS ON THIS CASE ALONE, deliberately. Put it on the switch and an
+		// invincible occupant who closed the tab would hold a slot in a
+		// three-person office until the process restarted, because the abandon
+		// branch below shares it. Being uncatchable is not being immortal.
+		case occ.Invincible <= 0 && Caught(o.boss, occ.State.Pos):
 			occ.Ended, occ.Cause = true, CausePromoted
 			occ.State.Alive = false
 		case now.Sub(occ.LastSeen) > AbandonGrace:
@@ -597,11 +666,14 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 			X: cm(o.boss.Pos.X),
 			Y: cm(o.boss.Pos.Y),
 			G: grinByte(o.boss.Grin),
-			P: BossSays(o.bossState(), o.boss.Grin, o.tick),
+			P: BossSays(o.bossState(), o.boss.Grin, o.tick, occ.Invincible > 0),
 			D: msUp(o.boss.Drunk),
 		},
 		Bt: msUp(o.bottleGone),
 		Bs: o.bottleSpot,
+		Iv: msUp(occ.Invincible),
+		Hk: msUp(o.hookahGone),
+		Hs: o.hookahSpot,
 		Pr: o.peersFor(accountID),
 	}
 	raw, err := json.Marshal(s)
@@ -652,10 +724,11 @@ func (o *Office) peersFor(accountID string) []PeerFrame {
 			continue
 		}
 		peers = append(peers, PeerFrame{
-			I: occ.Pseudonym,
-			X: cm(occ.State.Pos.X),
-			Y: cm(occ.State.Pos.Y),
-			P: o.lineFor(occ),
+			I:  occ.Pseudonym,
+			X:  cm(occ.State.Pos.X),
+			Y:  cm(occ.State.Pos.Y),
+			P:  o.lineFor(occ),
+			Iv: msUp(occ.Invincible),
 		})
 	}
 	if len(peers) == 0 {
@@ -699,11 +772,34 @@ func (o *Office) bossState() BossState {
 	switch {
 	case o.boss.Drunk > 0:
 		return BossDrunk
+	// LOST OUTRANKS THE REDIRECT, because it outranks it mechanically too: a verb
+	// that points him at somebody who is behind a cloud has pointed him at nobody,
+	// and «тогда я к нему» would be a lie while he is standing in an empty room
+	// looking for a man who is not there.
+	case o.lostTarget:
+		return BossLost
 	case o.redirectLeft > 0:
 		return BossRedirected
 	default:
 		return BossIdle
 	}
+}
+
+// drawHookahSpot picks where the next кальян stands. Called with the lock held.
+//
+// Never the one it was just on, for the bottle's reason: a prop that reappeared
+// under your feet would hand you a second cloud for standing still, which is the
+// one thing this game already pays you for.
+func (o *Office) drawHookahSpot() int {
+	if len(HookahSpots) < 2 {
+		return 0
+	}
+	//nolint:gosec // bounded by len(HookahSpots)-1, which is a handful
+	next := int(unitRand() * float64(len(HookahSpots)-1))
+	if next >= o.hookahSpot {
+		next++
+	}
+	return clampInt(next, 0, len(HookahSpots)-1)
 }
 
 // drawBottleSpot picks where the next bottle stands. Called with the lock held.

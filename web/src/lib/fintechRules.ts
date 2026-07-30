@@ -164,6 +164,29 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
     });
   }
 
+  // «Кальян» — the same shape as the bottle's block below and derived the same
+  // way, so retuning the cloud or the wait updates the screen by itself.
+  const hookah = config.hookah;
+  if (hookah && has(hookah.invincible_ms) && Array.isArray(hookah.spots) && hookah.spots.length > 0) {
+    blocks.push({
+      title: 'Кальян',
+      lines: [
+        {
+          label: '💨 пропасть из виду',
+          text:
+            `Дойди до кальяна — и ${decimal(hookah.invincible_ms / 1000)} с тебя не видно и не поймать. ` +
+            `Лысый теряет тебя и идёт к кому-нибудь другому.`,
+        },
+        {
+          label: '⏳ и он один',
+          text:
+            `Новый появится через ${decimal((hookah.return_ms ?? 0) / 1000)} с — в другом месте. ` +
+            `Кто первый дошёл, того и облако.`,
+        },
+      ],
+    });
+  }
+
   // The verb, generated from what the server publishes — the label, the words
   // and both timers — so retuning any of them updates the screen by itself.
   const redirect = config.redirect;
@@ -293,4 +316,50 @@ export const FINTECH_DISCLAIMER = 'Все персонажи вымышлены,
 export function endingFor(config: FintechConfig | null, cause: string) {
   if (!config || !Array.isArray(config.endings)) return undefined;
   return config.endings.find((e) => e?.key === cause);
+}
+
+/** One entry in the buff/debuff row: what is running, and for how long. */
+export interface BuffShown {
+  /** A stable key, so the row can be a `v-for` without an index. */
+  key: string;
+  /** The icon and word the row draws. */
+  label: string;
+  /** Whole seconds remaining, rounded up so it never reads 0 while it is still on. */
+  secs: number;
+  /** True for anything working against you, so the row can colour it. */
+  bad?: boolean;
+}
+
+/**
+ * WHAT IS CURRENTLY TRUE OF YOU, for the row above the office.
+ *
+ * A verb is acknowledged where it happened and a buff is drawn on the figure that
+ * carries it — but neither says HOW LONG, and a state with a duration whose
+ * remaining time is invisible is a state you cannot make a decision against. Ten
+ * seconds of being uncatchable is worth crossing the floor for; two seconds is not,
+ * and until this row existed there was no way to tell those apart.
+ *
+ * LONGEST FIRST, so the thing with the most time left is the thing nearest the
+ * money — and so the row does not reorder itself as timers run down past each
+ * other, which would read as flicker.
+ *
+ * Absent rather than empty when nothing is running, which is almost always: the row
+ * is not drawn at all, so the office keeps the pixels.
+ *
+ * Pure, and unit-tested, for the reason every other derivation in this file is: the
+ * template renders rows and never decides what is in them.
+ */
+export function buffsFor(frame: { cloudMs?: number; drunkMs?: number }): BuffShown[] {
+  const out: BuffShown[] = [];
+  const secs = (ms: number) => Math.ceil(ms / 1000);
+  if ((frame.cloudMs ?? 0) > 0) {
+    out.push({ key: 'cloud', label: '💨 в дыму', secs: secs(frame.cloudMs!) });
+  }
+  if ((frame.drunkMs ?? 0) > 0) {
+    // HIS state rather than yours, and it belongs here anyway: it is a thing that
+    // is true of the office for a few seconds and the whole reason you walked to a
+    // bottle. Not `bad` — a drunk лысый is the best news the row can carry.
+    out.push({ key: 'drunk', label: '🍾 лысый плывёт', secs: secs(frame.drunkMs!) });
+  }
+  return out.sort((a, b) => b.secs - a.secs);
 }
