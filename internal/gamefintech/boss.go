@@ -55,7 +55,12 @@ func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64, elapsed float64)
 		aim = Vec2{X: BossSpawnX, Y: BossSpawnY}
 	}
 
-	speed := BossSpeed
+	// THE TEMPO FIRST, THE DRINK AFTER. The ramp scales his base speed (see
+	// TempoAt) and the bottle then takes a fraction of whatever that is — so a
+	// round bought at ×1,4 is worth the same proportion of his walk as one bought
+	// in the first twenty seconds, which is what keeps the prop useful late in a
+	// shift rather than decorative.
+	speed := BossSpeed * TempoAt(elapsed)
 	if b.Drunk > 0 {
 		b.Drunk = math.Max(0, b.Drunk-dt)
 		speed *= DrunkSpeed

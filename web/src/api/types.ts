@@ -999,6 +999,20 @@ export interface FintechConfig {
     invincible_ms: number;
     return_ms: number;
   };
+  /**
+   * The tempo ramp: the office speeds both chasers up by `step_pct` of their base
+   * speed every `every_ms`, for ever, and drops back only when the last occupant
+   * leaves and the office is torn down.
+   *
+   * SERVED SO THE CLIENT CAN COMPUTE IT rather than be told it. The HUD's
+   * multiplier and the cheatsheet's rule are both derived from these two numbers
+   * against the snapshot's own tick, so nothing about the ramp rides a repeating
+   * frame — see `tempoFor` in `lib/fintechRules.ts`.
+   */
+  tempo?: {
+    every_ms: number;
+    step_pct: number;
+  };
 }
 
 /** A started or resumed shift. No level — the office is in the catalogue. */

@@ -430,15 +430,16 @@ func (s *Service) LeaveShift(ctx context.Context, accountID string) error {
 	return nil
 }
 
-// CurrentShift is which shift an account is working, if any. It is the reload
+// CurrentShift is which shift an account is working, if any — its id, the
+// employee they are, and the office tick they clocked in on. It is the reload
 // path: a page that comes back finds its shift here rather than starting a
 // second one.
-func (s *Service) CurrentShift(accountID string) (string, int, bool) {
+func (s *Service) CurrentShift(accountID string) (string, int, uint64, bool) {
 	s.mu.Lock()
 	office := s.office
 	s.mu.Unlock()
 	if office == nil {
-		return "", 0, false
+		return "", 0, 0, false
 	}
 	return office.ShiftOf(accountID)
 }
@@ -534,11 +535,11 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 // that opened before the shift did, or one that outlived it, and the client's
 // own next move — pressing НАЧАТЬ СМЕНУ — is what fixes it.
 func (s *Service) hello(ctx context.Context, m realtime.Member) {
-	shiftID, persona, ok := s.CurrentShift(m.AccountID)
+	shiftID, persona, startTick, ok := s.CurrentShift(m.AccountID)
 	if !ok {
 		return
 	}
-	msg, err := json.Marshal(Ready{T: TypeReady, ShiftID: shiftID, Persona: persona})
+	msg, err := json.Marshal(Ready{T: TypeReady, ShiftID: shiftID, Persona: persona, K0: startTick})
 	if err != nil {
 		return
 	}

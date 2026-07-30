@@ -126,7 +126,11 @@ func (s *Server) handleGameFintechCurrent(w http.ResponseWriter, r *http.Request
 		writeError(w, r, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	shiftID, persona, ok := s.d.GameFintech.CurrentShift(acc.ID)
+	// The start tick is deliberately dropped here: it exists so a socket can draw
+	// how long the shift has lasted, and it arrives on the ready frame that the
+	// socket's own hello triggers. Putting it on this response as well would be two
+	// places to keep one number right.
+	shiftID, persona, _, ok := s.d.GameFintech.CurrentShift(acc.ID)
 	if !ok {
 		writeError(w, r, http.StatusNotFound, "no_shift")
 		return

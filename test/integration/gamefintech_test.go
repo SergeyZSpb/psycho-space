@@ -648,6 +648,13 @@ func TestFintechTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 	if ready["shift_id"] != body["shift_id"] {
 		t.Fatalf("attached to %v, started %v", ready["shift_id"], body["shift_id"])
 	}
+	// AND WHICH TICK THE SHIFT BEGAN ON, which is how the client draws its length
+	// without a byte on the snapshot. It is sent once, here, because it is constant
+	// for the life of a shift — so a missing field would leave the clock reading
+	// 0:00 for the whole of it.
+	if _, ok := ready["k0"].(float64); !ok {
+		t.Fatalf("the ready frame carries no k0, so the shift has no clock: %v", ready)
+	}
 
 	first := waitForFintechFrame(t, frames, tick, clock, "fintech_snap", 15*time.Second)
 	startX, startY := first["x"], first["y"]

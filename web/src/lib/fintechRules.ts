@@ -110,8 +110,12 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
       title: 'Лысый',
       lines: [
         {
+          // «МЕДЛЕННЕЕ ТВОЕГО ШАГА» IS NO LONGER TRUE FOR EVER, and a cheatsheet
+          // that says it is would be believed. The tempo ramp reaches a walk after
+          // a few minutes (see the «Темп» block below), so this line states the
+          // starting speed and says out loud that it is the starting speed.
           label: '👨‍🦲 скорость',
-          text: `${decimal(boss.speed)} м/с. Медленнее твоего шага — но он не устаёт.`,
+          text: `${decimal(boss.speed)} м/с в начале смены. Медленнее твоего шага — но он не устаёт и разгоняется.`,
         },
         {
           label: '🤝 радиус',
@@ -119,6 +123,39 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
         },
       ],
     });
+  }
+
+  // THE TEMPO, derived from the two numbers the catalogue publishes — so retuning
+  // the step or the interval rewrites this screen by itself, and the minute at
+  // which he matches a walk is computed rather than typed.
+  const tempo = config.tempo;
+  if (tempo && has(tempo.every_ms) && has(tempo.step_pct) && tempo.step_pct > 0) {
+    const lines: RuleLine[] = [
+      {
+        label: '⏱ офис разгоняется',
+        text:
+          `Каждые ${decimal(tempo.every_ms / 1000, 0)} с лысый и Клод становятся ` +
+          `быстрее на ${tempo.step_pct} % — и это не откатывается.`,
+      },
+      {
+        label: '🔁 когда сбросится',
+        text: 'Только когда в офисе не останется ни одного Карена. Ушёл последний — темп с нуля.',
+      },
+    ];
+    // WHEN HE MATCHES A WALK, which is the one number that turns the ramp from
+    // trivia into a plan. Only stated when both halves of it were served, and
+    // computed from them rather than typed — it moves the moment anybody retunes
+    // his speed, the step or the walk.
+    if (has(boss?.speed) && has(config.move?.walk_speed) && boss!.speed > 0) {
+      const levels = Math.ceil((config.move!.walk_speed / boss!.speed - 1) / (tempo.step_pct / 100));
+      lines.push({
+        label: '🏃 и догонит',
+        text:
+          `Примерно через ${decimal((levels * tempo.every_ms) / 1000 / 60, 1)} мин ` +
+          `он идёт с твою скорость. Дальше — быстрее тебя.`,
+      });
+    }
+    blocks.push({ title: 'Темп', lines });
   }
 
   // The office is SHARED, and until peers were drawn there was no way for a
@@ -359,6 +396,48 @@ export const FINTECH_DISCLAIMER = 'Все персонажи вымышлены,
 export function endingFor(config: FintechConfig | null, cause: string) {
   if (!config || !Array.isArray(config.endings)) return undefined;
   return config.endings.find((e) => e?.key === cause);
+}
+
+/** Where the office's tempo ramp has got to. */
+export interface TempoShown {
+  /** Which step of the ramp, counting from zero. */
+  level: number;
+  /** What both chasers' base speed is multiplied by right now. */
+  mult: number;
+}
+
+/**
+ * THE TEMPO, DERIVED FROM THE TICK THE FRAME ALREADY CARRIES.
+ *
+ * The office speeds both chasers up by `step_pct` every `every_ms`, and none of
+ * that rides the wire: a snapshot carries the office's tick `k`, the catalogue
+ * carries the rate and both constants, and this is the arithmetic that turns the
+ * three into the number over the player's head. A field saying «×1,3» would be
+ * bytes on a frame that repeats twenty times a second per viewer, for ever, to
+ * restate something two values already imply — which is the rule ADR-037 set for
+ * avatars and this game has followed since.
+ *
+ * IT IS THE PORT OF `TempoAt` IN `internal/gamefintech/content.go`, and the two
+ * are pinned to each other by `TestTheTempoRampsOnceEveryLevelAndNeverBetween`
+ * server-side and by this module's own spec here. They must agree: this decides
+ * what the player is TOLD and that one decides how fast the man actually walks.
+ *
+ * A catalogue that served no tempo — an older server, or one that stopped ramping
+ * — reads as level 0 and ×1, which is the game before the ramp existed rather
+ * than a `NaN` over the office.
+ */
+export function tempoFor(
+  tick: number,
+  hz: number | undefined,
+  everyMs: number | undefined,
+  stepPct: number | undefined,
+): TempoShown {
+  const rate = has(hz) && hz > 0 ? hz : 20;
+  const every = has(everyMs) && everyMs > 0 ? everyMs : 0;
+  const step = has(stepPct) ? stepPct : 0;
+  if (!every || !step || !has(tick) || tick <= 0) return { level: 0, mult: 1 };
+  const level = Math.floor(((tick / rate) * 1000) / every);
+  return { level, mult: 1 + (step / 100) * level };
 }
 
 /** One entry in the buff/debuff row: what is running, and for how long. */

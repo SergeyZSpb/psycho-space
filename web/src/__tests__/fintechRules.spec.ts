@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { FINTECH_LORE, FINTECH_PROSE, buffsFor, buildRules, endingFor } from '../lib/fintechRules';
+import {
+  FINTECH_LORE,
+  FINTECH_PROSE,
+  buffsFor,
+  buildRules,
+  endingFor,
+  tempoFor,
+} from '../lib/fintechRules';
 import type { FintechConfig } from '../api/types';
 
 /**
@@ -266,5 +273,71 @@ describe('the slow in the row', () => {
     expect(shown.map((b) => b.key)).toEqual(['cloud', 'slow', 'drunk']);
     expect(shown.find((b) => b.key === 'slow')!.bad).toBe(true);
     expect(shown.find((b) => b.key === 'cloud')!.bad).toBeUndefined();
+  });
+});
+
+describe('the tempo ramp', () => {
+  // The office speeds both chasers up for ever, and the browser is TOLD nothing
+  // about it: it derives the level from the office tick every snapshot already
+  // carries against the two served constants. These tests are the client half of
+  // the pair — the server half is `TestTheTempoRampsOnceEveryLevelAndNeverBetween`
+  // in `internal/gamefintech/content_test.go`, and the two must agree, because one
+  // decides what the player is told and the other decides how fast the man walks.
+  const tempo = { every_ms: 20_000, step_pct: 10 };
+
+  it('steps once per interval and never between', () => {
+    const at = (tick: number) => tempoFor(tick, 20, tempo.every_ms, tempo.step_pct);
+    // 20 Hz × 20 s = 400 ticks a level.
+    expect(at(0)).toEqual({ level: 0, mult: 1 });
+    expect(at(399).level).toBe(0);
+    expect(at(400).level).toBe(1);
+    expect(at(400).mult).toBeCloseTo(1.1, 10);
+    expect(at(1000).level).toBe(2);
+    expect(at(1000).mult).toBeCloseTo(1.2, 10);
+    expect(at(2400).mult).toBeCloseTo(1.6, 10);
+  });
+
+  it('reads the served rate rather than assuming twenty hertz', () => {
+    // The snapshot rate is published and retunable, and the level is derived from
+    // ticks — so halving the rate has to halve the tick at which a level lands, or
+    // the readout would drift the day anybody changed it.
+    expect(tempoFor(200, 10, tempo.every_ms, tempo.step_pct).level).toBe(1);
+    expect(tempoFor(200, 20, tempo.every_ms, tempo.step_pct).level).toBe(0);
+  });
+
+  it('is level zero and ×1 when the catalogue serves no ramp', () => {
+    // An older server, or one that stopped ramping. The game before the ramp
+    // existed is the right answer; `NaN` over the office is not.
+    expect(tempoFor(5_000, 20, undefined, undefined)).toEqual({ level: 0, mult: 1 });
+    expect(tempoFor(5_000, 20, 0, 10)).toEqual({ level: 0, mult: 1 });
+    expect(tempoFor(NaN, 20, tempo.every_ms, tempo.step_pct)).toEqual({ level: 0, mult: 1 });
+  });
+
+  it('states the ramp on the cheatsheet, derived from what was served', () => {
+    const text = allText({ ...config, tempo: { every_ms: 25_000, step_pct: 15 } });
+    expect(text).toContain('25 с');
+    expect(text).toContain('15 %');
+    // And the reset rule, which is not a number and is therefore prose.
+    expect(text).toContain('Карена');
+  });
+
+  it('computes when he matches a walk rather than stating a minute', () => {
+    // walk 3.2 ÷ boss 2.35 = 1.362, so 4 steps of 10 % (×1.4) is the first that
+    // reaches it: 4 × 30 s = 2 minutes.
+    const text = allText({ ...config, tempo: { every_ms: 30_000, step_pct: 10 } });
+    expect(text).toContain('2 мин');
+  });
+
+  it('says nothing about the ramp when the server does not ramp', () => {
+    expect(allText(config)).not.toContain('ТЕМП');
+    expect(buildRules(config).some((b) => b.title === 'Темп')).toBe(false);
+  });
+
+  it('no longer promises he is slower than a walk for ever', () => {
+    // He is, for about two minutes. A cheatsheet that said otherwise would be
+    // believed — which is the whole reason this screen is generated.
+    const text = allText({ ...config, tempo });
+    expect(text).toContain('в начале смены');
+    expect(text).toContain('разгоняется');
   });
 });

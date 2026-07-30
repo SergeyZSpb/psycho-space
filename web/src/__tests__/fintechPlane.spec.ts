@@ -13,6 +13,7 @@ import {
   decimal,
   depthScaleFor,
   deskBox,
+  formatClock,
   formatMoney,
   formatMultiplier,
   formatSeconds,
@@ -210,6 +211,23 @@ describe('reading the wire', () => {
     expect(formatSeconds(1800)).toBe('1,8\u00a0с.');
     expect(formatSeconds(0)).toBe('0\u00a0с.');
     expect(formatSeconds(Number.NaN)).toBe('0\u00a0с.');
+  });
+
+  it('reads how long the shift has lasted as a clock', () => {
+    // A LENGTH SOMEBODY IS TRYING TO BEAT, so it is punctuated like a clock rather
+    // than printed as «83 с.» — the leaderboard shows the same number and the two
+    // have to be comparable at a glance.
+    expect(formatClock(0)).toBe('0:00');
+    expect(formatClock(9)).toBe('0:09');
+    expect(formatClock(83)).toBe('1:23');
+    expect(formatClock(600)).toBe('10:00');
+    // Seconds are padded and minutes are not, and a fraction is truncated rather
+    // than rounded up — the counter never claims a second that has not passed.
+    expect(formatClock(59.9)).toBe('0:59');
+    // A shift cannot have lasted less than no time, and a readout is the wrong
+    // place to notice a bad number.
+    expect(formatClock(-5)).toBe('0:00');
+    expect(formatClock(Number.NaN)).toBe('0:00');
   });
 
   it('writes decimals the Russian way, without a trailing zero', () => {

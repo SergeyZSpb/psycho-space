@@ -38,7 +38,12 @@ func NewChaser() Chaser {
 // not wobble, and he has no spawn to walk home to — with nobody to chase he simply
 // stands where he is, because unlike the лысый he is not the thing a shift is a race
 // against and a man standing still reads as a man waiting for you to come back.
-func StepChaser(desks []Rect, c Chaser, targets []Vec2, dt float64) Chaser {
+//
+// `elapsed` is the OFFICE's age in seconds, and it is here for one reason: the
+// tempo ramp (TempoAt) speeds both men up together. He takes it as a parameter
+// rather than reading a clock for the reason everything in this file is pure — the
+// office steps him and the tests state his next position.
+func StepChaser(desks []Rect, c Chaser, targets []Vec2, dt float64, elapsed float64) Chaser {
 	aim, ok := nearest(c.Pos, targets)
 	if !ok {
 		c.Cig = 0
@@ -48,7 +53,9 @@ func StepChaser(desks []Rect, c Chaser, targets []Vec2, dt float64) Chaser {
 	head := navAimAt(c.Pos, aim)
 	dx, dy := head.X-c.Pos.X, head.Y-c.Pos.Y
 	dist := math.Hypot(dx, dy)
-	if step := ChaserSpeed * dt; dist > 1e-9 {
+	// The same ramp the лысый is on, so «his speed is the лысый's, exactly» stays
+	// true at every tempo rather than only at the start of a shift.
+	if step := ChaserSpeed * TempoAt(elapsed) * dt; dist > 1e-9 {
 		if step >= dist {
 			c.Pos = head
 		} else {

@@ -165,6 +165,59 @@ func TestADrunkBaldManIsSlowerButStillComing(t *testing.T) {
 	}
 }
 
+func TestBothOfThemWalkFasterAsTheOfficeGetsOlder(t *testing.T) {
+	// THE RAMP, MEASURED WHERE IT MATTERS: not that TempoAt returns a bigger
+	// number — content_test.go states that — but that a second of pursuit actually
+	// covers more ground later in a shift, for BOTH men, from the same start.
+	//
+	// One second at a level six apart, so the difference is 60 % of a walk and no
+	// rounding is being asked to carry the claim.
+	target := []Vec2{{X: BossSpawnX, Y: 2}}
+	late := 6 * LevelSeconds
+
+	early := StepBoss(Desks, NewBoss(), target, 1, 0)
+	older := StepBoss(Desks, NewBoss(), target, 1, late)
+	if BossSpawnY-older.Pos.Y <= BossSpawnY-early.Pos.Y {
+		t.Fatalf("the лысый covered %v at level 0 and %v at level 6 — the ramp does not reach him",
+			BossSpawnY-early.Pos.Y, BossSpawnY-older.Pos.Y)
+	}
+
+	// And Claude, on the same ramp — «his speed is the лысый's, exactly» has to
+	// stay true at every tempo, or the two of them drift apart over a long shift
+	// and the office stops being one difficulty.
+	chaseTarget := []Vec2{{X: ChaserSpawnX, Y: ChaserSpawnY - 8}}
+	cEarly := StepChaser(Desks, NewChaser(), chaseTarget, 1, 0)
+	cLate := StepChaser(Desks, NewChaser(), chaseTarget, 1, late)
+	movedEarly := ChaserSpawnY - cEarly.Pos.Y
+	movedLate := ChaserSpawnY - cLate.Pos.Y
+	if movedLate <= movedEarly {
+		t.Fatalf("Claude covered %v at level 0 and %v at level 6 — he is not on the ramp", movedEarly, movedLate)
+	}
+	// The two of them move by the same factor, which is the invariant rather than
+	// the numbers: same base speed, same ramp, so the ratio is identical.
+	if bossRatio, claudeRatio := (BossSpawnY-older.Pos.Y)/(BossSpawnY-early.Pos.Y), movedLate/movedEarly; math.Abs(bossRatio-claudeRatio) > 1e-6 {
+		t.Fatalf("the ramp moved the лысый by ×%v and Claude by ×%v", bossRatio, claudeRatio)
+	}
+}
+
+func TestTheDrinkIsWorthTheSameFractionAtEveryTempo(t *testing.T) {
+	// The bottle multiplies whatever the ramp has produced, rather than the base
+	// speed — so a round bought twenty minutes in is worth the same PROPORTION of
+	// his walk as one bought at the start. Buying him a drink that stopped mattering
+	// late in a shift would retire the prop exactly when it is needed.
+	target := []Vec2{{X: BossSpawnX, Y: 2}}
+	for _, at := range []float64{0, 3 * LevelSeconds} {
+		sober := StepBoss(Desks, NewBoss(), target, 1, at)
+		tipsy := NewBoss()
+		tipsy.Drunk = DrunkSeconds
+		drunk := StepBoss(Desks, tipsy, target, 1, at)
+		got := (BossSpawnY - drunk.Pos.Y) / (BossSpawnY - sober.Pos.Y)
+		if math.Abs(got-DrunkSpeed) > 1e-6 {
+			t.Fatalf("at %vs a drink left him at ×%v of his walk, want ×%v", at, got, DrunkSpeed)
+		}
+	}
+}
+
 func TestHeWeavesWhileDrunkRatherThanWalkingAStraightLine(t *testing.T) {
 	// The wobble is on the HEADING, so the same second of pursuit from the same
 	// place lands somewhere different depending on where in the weave he is.

@@ -85,9 +85,25 @@
         <span class="fintech-hud-cell fintech-hud-mult" data-testid="fintech-hud-mult">
           {{ formatMultiplier(mult) }}
         </span>
-        <span v-if="personaName" class="fintech-hud-cell fintech-hud-who" data-testid="fintech-who">
-          <span class="fintech-hud-label">ТЫ</span>
-          <span class="fintech-hud-value">{{ personaName }}</span>
+        <!-- HOW LONG YOU HAVE LASTED — the second scored dimension, and the one
+             thing on this strip you are trying to make bigger on purpose. Derived
+             from two tick numbers, so it costs nothing on the wire. -->
+        <span class="fintech-hud-cell" data-testid="fintech-hud-alive">
+          <span class="fintech-hud-label">СМЕНА</span>
+          <span class="fintech-hud-value">{{ formatClock(aliveSecs) }}</span>
+        </span>
+        <!-- AND WHAT THE OFFICE IS DOING ABOUT IT. The ramp is the only thing in
+             this game a player cannot affect at all, so hiding it would just make
+             the лысый feel inconsistent. `data-bump` flashes the cell for a moment
+             when the level moves — an office-wide event nobody would otherwise
+             notice, marked the way every verb on the plane is. -->
+        <span
+          class="fintech-hud-cell fintech-hud-tempo"
+          data-testid="fintech-hud-tempo"
+          :data-bump="tempoBump ? '1' : undefined"
+        >
+          <span class="fintech-hud-label">ТЕМП</span>
+          <span class="fintech-hud-value">{{ tempoLabel }}</span>
         </span>
         <span class="fintech-hud-cell fintech-hud-dash" data-testid="fintech-hud-dash">
           {{ dashMs > 0 ? `РЫВОК ${formatSeconds(dashMs)}` : 'РЫВОК ГОТОВ' }}
@@ -409,7 +425,14 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { gameFintechApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import type { FintechConfig, FintechRect, FintechShift, FintechShiftRow, FintechTopRow } from '../api/types';
-import { FINTECH_DISCLAIMER, FINTECH_LORE, buffsFor, buildRules, endingFor } from '../lib/fintechRules';
+import {
+  FINTECH_DISCLAIMER,
+  FINTECH_LORE,
+  buffsFor,
+  buildRules,
+  endingFor,
+  tempoFor,
+} from '../lib/fintechRules';
 import {
   applyBoss,
   applyFigure,
@@ -422,6 +445,7 @@ import {
   deskBox,
   sayFor,
   withName,
+  formatClock,
   formatMoney,
   formatMultiplier,
   formatSeconds,
@@ -516,6 +540,22 @@ const pay = ref(0);
 const mult = ref(100);
 const ramp = ref(0);
 const dashMs = ref(0);
+/**
+ * THE OFFICE'S TICK, and the tick this shift clocked in on.
+ *
+ * Two integers that between them carry both new readouts and cost the wire
+ * nothing. `tick` is `k`, already on every snapshot because the interpolation
+ * buffer is keyed on it; `startTick` is `k0`, sent once on the ready frame because
+ * it is constant for the life of a shift and a repeating payload is the wrong
+ * place for anything that never changes.
+ *
+ * `startTick` is null until the ready frame lands, which is a state rather than a
+ * default: zero is a real answer — the first person into a fresh office started on
+ * tick zero — so «we have not been told yet» cannot be spelled `0`. Until it
+ * arrives the clock reads 0:00 rather than the age of the whole office.
+ */
+const tick = ref(0);
+const startTick = ref<number | null>(null);
 // WHICH LINE, not the line itself: the wire sends an index and the catalogue —
 // fetched once — holds the words (ADR-037). Reactive because they are text and
 // change at snapshot rate, which is exactly what reactivity is for; the two
@@ -763,6 +803,56 @@ function markAt(kind: string, at: { u: number; v: number } | null): void {
   }, 600);
 }
 
+/**
+ * WHERE THE OFFICE'S TEMPO HAS GOT TO, derived rather than sent.
+ *
+ * `tempoFor` is the port of the server's `TempoAt`; both read the same two served
+ * constants against the office tick this frame already carries. See the helper for
+ * why the ramp is not a field on the wire.
+ */
+const tempo = computed(() =>
+  tempoFor(
+    tick.value,
+    config.value?.sim.hz,
+    config.value?.tempo?.every_ms,
+    config.value?.tempo?.step_pct,
+  ),
+);
+
+/**
+ * The multiplier as the strip shows it, through the SAME formatter the money ramp
+ * uses — so ×1,1 and ×2,75 are punctuated identically and a player reads one kind
+ * of number rather than two.
+ */
+const tempoLabel = computed(() => formatMultiplier(Math.round(tempo.value.mult * 100)));
+
+/** How long this shift has lasted, in seconds. See `startTick` for why it is null-gated. */
+const aliveSecs = computed(() => {
+  const k0 = startTick.value;
+  if (k0 === null) return 0;
+  return Math.max(0, (tick.value - k0) / (config.value?.sim.hz || 20));
+});
+
+/**
+ * True for a moment after the tempo steps up.
+ *
+ * A LEVEL-UP IS AN EVENT NOBODY CAN SEE. Both men simply start walking 10 % faster,
+ * which is under the threshold at which a moving figure looks different — so
+ * without a mark the office quietly gets harder and reads as the лысый behaving
+ * inconsistently. It is one cell flashing for well under a second, cleared on a
+ * TIMER rather than on `animationend` (which never fires when the animation is
+ * switched off under prefers-reduced-motion), exactly like the plane's own marks.
+ */
+const tempoBump = ref(false);
+let tempoBumpTimer: number | undefined;
+function bumpTempo(): void {
+  tempoBump.value = true;
+  if (tempoBumpTimer !== undefined) window.clearTimeout(tempoBumpTimer);
+  tempoBumpTimer = window.setTimeout(() => {
+    tempoBump.value = false;
+  }, 900);
+}
+
 function onPeerFaceError(id: string): void {
   const next = new Set(brokenFaces.value);
   next.add(id);
@@ -994,6 +1084,12 @@ function enterPlay(): void {
   mult.value = 100;
   ramp.value = 0;
   dashMs.value = 0;
+  // BOTH CLOCKS BACK TO NOTHING. The office's tick is whatever the first snapshot
+  // says, and the shift's start is whatever the ready frame says — until then the
+  // readout is 0:00 rather than the last shift's ending.
+  tick.value = 0;
+  startTick.value = null;
+  tempoBump.value = false;
   link.value = 'connecting';
   seenTick = 0;
   outbox = [];
@@ -1046,6 +1142,9 @@ function teardownPlay(): void {
   if (popTimer !== undefined) window.clearTimeout(popTimer);
   popTimer = undefined;
   pop.value = null;
+  if (tempoBumpTimer !== undefined) window.clearTimeout(tempoBumpTimer);
+  tempoBumpTimer = undefined;
+  tempoBump.value = false;
   brokenFaces.value = new Set();
   meFaceBroken.value = false;
   redirectMs.value = 0;
@@ -1313,6 +1412,11 @@ function onFrame(frame: RealtimeFrame): void {
       // AND WHO WE ARE, which a second device or a reconnect would not otherwise
       // know: this tab may be attaching to a shift it did not start.
       if (typeof frame.persona === 'number') persona.value = frame.persona;
+      // AND WHEN THE SHIFT STARTED, as an office tick. Everything else about the
+      // clock is subtraction — see `startTick`. Read from a frame that arrives once
+      // per attach, so a reconnect mid-shift recovers the true age rather than
+      // restarting the readout at zero.
+      if (typeof frame.k0 === 'number') startTick.value = frame.k0;
       break;
     case 'fintech_snap':
       applySnapshot(frame);
@@ -1338,6 +1442,13 @@ function applySnapshot(frame: RealtimeFrame): void {
   // repeats ten times a second for as long as somebody is playing.
   seenTick = num(frame.k);
   link.value = 'open';
+  // THE OFFICE'S CLOCK, which drives both derived readouts. The level is compared
+  // BEFORE the tick is written, because the comparison is against the previous
+  // frame and an assignment first would destroy the edge being looked for — the
+  // mistake this function has already made once, a few lines below.
+  const wasLevel = tempo.value.level;
+  tick.value = num(frame.k);
+  if (tempo.value.level > wasLevel) bumpTempo();
 
   const x = num(frame.x) / 100;
   const y = num(frame.y) / 100;
@@ -1931,6 +2042,30 @@ function onDash(): void {
   font-size: 1.05rem;
   font-weight: 800;
   white-space: nowrap;
+}
+
+/* THE TEMPO CELL, and the one moment it is worth looking at.
+
+   Ordinarily it is the same grey-labelled readout as the rest of the strip. When
+   the office steps up a level `data-bump` lands for well under a second: the value
+   goes red-hot and grows a fraction, which is enough to catch an eye that is
+   watching a man walk across a room and small enough not to take that eye off him.
+   No shake, no flash of the plane, no sound — the rule for every mark in this game. */
+.fintech-hud-tempo[data-bump] .fintech-hud-value {
+  color: #ff6b57;
+  animation: fintech-tempo-bump 900ms ease-out;
+}
+
+@keyframes fintech-tempo-bump {
+  0% {
+    scale: 1;
+  }
+  22% {
+    scale: 1.28;
+  }
+  100% {
+    scale: 1;
+  }
 }
 
 .fintech-hud-dash {
@@ -3120,6 +3255,13 @@ function onDash(): void {
   .fintech-pop {
     animation: none;
     opacity: 0.55;
+  }
+
+  /* The tempo step keeps its COLOUR and loses its motion, for the same reason:
+     the office just got harder and that is worth knowing however you have asked
+     to be told. Its timer is what clears it, not the animation ending. */
+  .fintech-hud-tempo[data-bump] .fintech-hud-value {
+    animation: none;
   }
 }
 </style>

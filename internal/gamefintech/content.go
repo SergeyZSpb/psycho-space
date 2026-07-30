@@ -186,6 +186,61 @@ const (
 	PlayerSpawnY = 4.0
 )
 
+// THE TEMPO — the office gets faster the longer anybody survives it.
+//
+// The game as first shipped had one difficulty for ever: the лысый walks at 4.0
+// against a walk of 6.4, so a player who is willing to keep moving is never
+// caught and a shift ends when they get bored. That is a fine joke and a bad
+// score, because the leaderboard then measures patience rather than nerve.
+//
+// So every LevelSeconds both men gain LevelSpeedStep of their BASE speed, for
+// ever. It is what turns a shift into a curve: early on the money is free,
+// around ×1,6 he matches your walk, and after that the only question is how long
+// you can keep the furniture between you.
+const (
+	// LevelSeconds is how long one step of the ramp lasts.
+	//
+	// Twenty rather than thirty (the first number tried) because the ramp has to
+	// be legible inside one shift: a player who lasts a minute should have felt
+	// it move three times, not twice.
+	LevelSeconds = 20.0
+
+	// LevelSpeedStep is what one step adds, as a fraction of the base speed.
+	//
+	// LINEAR ON THE BASE, NOT COMPOUNDING, and that is a decision rather than an
+	// accident of the arithmetic. The HUD shows this number, so it reads ×1,1
+	// ×1,2 ×1,3 — a player can predict the next one, and can work out from the
+	// cheatsheet when he will match a walk (×1,6, so two minutes in). Compounding
+	// gives ×1,1 ×1,21 ×1,331, which is the same idea printed as noise.
+	LevelSpeedStep = 0.10
+)
+
+// Level is which step of the ramp the office is on at `elapsed` seconds, counting
+// from zero.
+//
+// It takes the OFFICE's elapsed time and not a shift's, which is the whole of how
+// the reset works: the office is torn down when the last occupant leaves (see
+// Service.step), so tick zero — and therefore level zero — comes back with the
+// next shift, and a floor where somebody is still standing keeps the tempo it has
+// earned. «It drops when every human dies» needs no rule of its own.
+func Level(elapsed float64) int {
+	if elapsed <= 0 {
+		return 0
+	}
+	return int(elapsed / LevelSeconds)
+}
+
+// TempoAt is what both chasers' base speed is multiplied by at `elapsed` seconds.
+//
+// PURE, AND THE CLIENT COMPUTES THE SAME THING. Every snapshot carries the office
+// tick and the catalogue publishes the rate, so the browser derives the level from
+// numbers it already has — which is why nothing about the tempo rides the wire (see
+// message.go's budget note). Two implementations of one line of arithmetic is the
+// price of not sending it ten times a second for ever.
+func TempoAt(elapsed float64) float64 {
+	return 1 + LevelSpeedStep*float64(Level(elapsed))
+}
+
 // Endings. The cause is a plain string all the way down to the `cause` column,
 // so iteration 4's «тебя раскусили» is a catalogue entry and not a migration.
 const (
@@ -1032,6 +1087,26 @@ type Config struct {
 	Redirect     VerbConfig   `json:"redirect"`
 	Bottle       BottleConfig `json:"bottle"`
 	Hookah       HookahConfig `json:"hookah"`
+	Tempo        TempoConfig  `json:"tempo"`
+}
+
+// TempoConfig is the ramp: how often the office speeds up, and by how much.
+//
+// PUBLISHED BECAUSE THE CLIENT COMPUTES IT. The HUD shows the current multiplier
+// and the splash cheatsheet states the rule, and both are derived from the
+// snapshot's own tick against these two numbers — so retuning either one moves
+// the simulation, the readout and the cheatsheet together, with no client deploy
+// and no field on a repeating frame.
+//
+// Nothing is withheld: the ramp is the most important thing a player can know
+// about a long shift, and a game that hid it would just be one that felt unfair.
+type TempoConfig struct {
+	// EveryMs is how long one step lasts.
+	EveryMs int `json:"every_ms"`
+	// StepPct is what one step adds to both chasers' base speed, as a percentage —
+	// the `slow_pct` convention the bottle and Claude already use, so the
+	// cheatsheet formats all three the same way.
+	StepPct int `json:"step_pct"`
 }
 
 // ClaudeConfig is Claude Code, published so the cheatsheet can state what he costs
@@ -1206,6 +1281,10 @@ func BuildConfig() Config {
 			DrunkMs:  int(DrunkSeconds * 1000),
 			ReturnMs: int(BottleReturn * 1000),
 			SlowPct:  int(DrunkSpeed * 100),
+		},
+		Tempo: TempoConfig{
+			EveryMs: int(LevelSeconds * 1000),
+			StepPct: int(math.Round(LevelSpeedStep * 100)),
 		},
 		Redirect: VerbConfig{
 			Label:      "ЭТО К НЕМУ",

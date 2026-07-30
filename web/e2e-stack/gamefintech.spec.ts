@@ -226,17 +226,31 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     for (const b of boxes) expect(b.area, 'a non-player has no box at all').toBeGreaterThan(0);
     expect(boxes[0].x, 'both of them are drawn in the same place').not.toBeCloseTo(boxes[1].x, 0);
 
-    // And the readouts name whoever the server drew you as — asserted as membership of
-    // the served cast rather than as a fixed name, because the whole point is that it
-    // is not fixed. That the draw VARIES is proved over real HTTP in the integration
-    // suite, where forty shifts cost no browser.
-    const said = ((await page.getByTestId('fintech-who').textContent()) ?? '').trim();
-    expect(
-      cast.personas.some((n) => said.includes(n)),
-      `the readout says «${said}»`,
-    ).toBe(true);
+    // AND THE SHIFT'S OWN CLOCK, which is the second scored dimension and reaches
+    // the screen without a byte on the snapshot: the ready frame said which office
+    // tick this shift began on and every frame says which tick the office is on. A
+    // real socket against a real office is the only place that subtraction is
+    // proved end to end.
+    await expect(page.getByTestId('fintech-hud-alive')).toBeVisible();
+    await expect
+      .poll(async () => (await page.getByTestId('fintech-hud-alive').textContent())?.trim())
+      .toMatch(/\d+:\d\d/);
+    // And the office's tempo, derived from the same tick against the served ramp.
+    await expect(page.getByTestId('fintech-hud-tempo')).toContainText('×1');
 
     await page.getByTestId('fintech-quit').click();
+
+    // And the ENDING names whoever the server drew you as — asserted as membership
+    // of the served cast rather than as a fixed name, because the whole point is
+    // that it is not fixed. That the draw VARIES is proved over real HTTP in the
+    // integration suite, where forty shifts cost no browser. It is read here rather
+    // than on the play HUD because the persona no longer has a cell there: it
+    // changes nothing about the game and it was the widest readout in the strip.
+    const said = ((await page.getByTestId('fintech-over-who').textContent()) ?? '').trim();
+    expect(
+      cast.personas.some((n) => said.includes(n)),
+      `the ending says «${said}»`,
+    ).toBe(true);
   });
 
   test('WASD and space play the game, against the real office', async ({ page }) => {

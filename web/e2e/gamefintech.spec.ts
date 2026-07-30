@@ -124,6 +124,10 @@ const CONFIG = {
     seconds_ms: 7000,
     cooldown_ms: 21000,
   },
+  // Marked like every other number here: 25 s and 15 % are not production's 20 and
+  // 10, so a HUD or a cheatsheet that hardcoded the ramp cannot pass below. At
+  // 20 Hz that is 500 ticks a level, which is what the tempo assertions drive.
+  tempo: { every_ms: 25000, step_pct: 15 },
 };
 
 const SHIFT = { shift_id: 'shift-e2e', room: 'fintech', persona: 2 };
@@ -331,6 +335,9 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» splash', () => {
     await expect(rules).toContainText('5,5 с');
     await expect(rules).toContainText('2,9 м/с');
     await expect(rules).toContainText('1,25 м');
+    // The ramp, from the stub's own numbers rather than production's 20 s / 10 %.
+    await expect(rules).toContainText('25 с');
+    await expect(rules).toContainText('15 %');
   });
 
   test('and it names both ways the shift can end, in the catalogue’s words', async ({ page }) => {
@@ -435,6 +442,103 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» play', () => {
     await expect(page.getByTestId('fintech-hud-mult')).toContainText('×2,75');
     await expect(page.getByTestId('fintech-hud-streak')).toBeVisible();
     await expect(page.getByTestId('fintech-play')).toContainText('РЫВОК 1,8 с.');
+  });
+
+  test('the clock counts from the tick the ready frame named, not from the office’s age', async ({
+    page,
+  }) => {
+    // THE SECOND SCORED DIMENSION, and the whole of how it reaches the screen: the
+    // ready frame carries `k0` once, every snapshot carries `k`, and the readout is
+    // the difference. Nothing about elapsed time is on a repeating frame.
+    //
+    // The distinction this drives is the one that matters: the office is on tick
+    // 1200 and the shift began on tick 1000, so the answer is 200 ticks — ten
+    // seconds at the served 20 Hz — and NOT the whole minute the office has been
+    // running. A client that read `k` alone would say 1:00.
+    const socket = await enterOffice(page);
+    await socket.ready({ persona: 2, k0: 1000 });
+    await socket.snapshot({ k: 1200 });
+    await expect(page.getByTestId('fintech-hud-alive')).toContainText('0:10');
+
+    await socket.snapshot({ k: 2500 });
+    await expect(page.getByTestId('fintech-hud-alive')).toContainText('1:15');
+  });
+
+  test('and reads 0:00 until the office says when the shift began', async ({ page }) => {
+    // `k0` of zero is a real answer — the first person into a fresh office — so
+    // «we have not been told yet» cannot be spelled zero. Until the ready frame
+    // lands the clock shows nothing rather than the age of the whole office.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ k: 4000 });
+    await expect(page.getByTestId('fintech-hud-alive')).toContainText('0:00');
+  });
+
+  test('the tempo is derived from the office tick and the served ramp', async ({ page }) => {
+    // The ramp is NOT on the wire. The client computes it from `k` against the
+    // catalogue's `tempo`, which is why the stub's deliberately non-production
+    // numbers are what these assertions are written against: 25 s a level at 20 Hz
+    // is 500 ticks, and a step is 15 %.
+    const socket = await enterOffice(page);
+    const tempo = page.getByTestId('fintech-hud-tempo');
+
+    await socket.snapshot({ k: 10 });
+    await expect(tempo).toContainText('×1');
+    await socket.snapshot({ k: 499 });
+    await expect(tempo).toContainText('×1');
+
+    await socket.snapshot({ k: 500 });
+    await expect(tempo).toContainText('×1,15');
+    // And it steps rather than gliding: a tick well inside the second level is
+    // still exactly one step up.
+    await socket.snapshot({ k: 900 });
+    await expect(tempo).toContainText('×1,15');
+    await socket.snapshot({ k: 1000 });
+    await expect(tempo).toContainText('×1,3');
+  });
+
+  test('and the step is marked, because nobody can see two men walk 15 % faster', async ({
+    page,
+  }) => {
+    // A level-up is an event with no visible cause: both men simply speed up by
+    // less than the eye can read off a moving figure. The mark is one cell for
+    // under a second — no shake, no flash of the plane, no sound — and it lands on
+    // the EDGE rather than on the level, or it would flash for the whole level.
+    // RECORDED RATHER THAN SAMPLED, and that is not fussiness — the mark lasts
+    // well under a second by design, and a loaded runner can spend that long
+    // between the frame that raises it and the assertion that looks. Sampling a
+    // short-lived thing is the flake this repository has already paid for once
+    // (`docs/RUNBOOK.md` → «A test that passes on its own and fails in CI»), so a
+    // MutationObserver installed BEFORE the frame collects every value the
+    // attribute ever took and the assertions read that log afterwards.
+    const socket = await enterOffice(page);
+    const tempo = page.getByTestId('fintech-hud-tempo');
+
+    await socket.snapshot({ k: 100 });
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="fintech-hud-tempo"]')!;
+      const seen: (string | null)[] = [el.getAttribute('data-bump')];
+      (window as unknown as { __bumps: (string | null)[] }).__bumps = seen;
+      new MutationObserver(() => seen.push(el.getAttribute('data-bump'))).observe(el, {
+        attributes: true,
+        attributeFilter: ['data-bump'],
+      });
+    });
+
+    // Still inside the first level: nothing to mark.
+    await socket.snapshot({ k: 300 });
+    // And then over the line, which is the edge the mark is on.
+    await socket.snapshot({ k: 500 });
+    await expect(tempo).toContainText('×1,15');
+
+    const bumps = () =>
+      page.evaluate(() => (window as unknown as { __bumps: (string | null)[] }).__bumps);
+    await expect.poll(bumps).toContain('1');
+    // It was NOT raised by the frame that stayed inside the level — the mark is on
+    // the step, not on the level, or it would flash for the whole of one.
+    expect((await bumps())[0]).toBeNull();
+    // And it goes away on its own, on a TIMER rather than on `animationend` — which
+    // never fires when the animation is switched off under prefers-reduced-motion.
+    await expect.poll(async () => (await bumps()).at(-1), { timeout: 5000 }).toBeNull();
   });
 
   test('and says the dash is ready when the snapshot omits the cooldown', async ({ page }) => {
@@ -1436,16 +1540,16 @@ test('a colleague’s face survives the top wall, because it is inside his own b
 });
 
 test.describe('«СИМУЛЯТОР ФИНТЕХА» — who you are this shift', () => {
-  test('the readouts name the employee the server drew, from the served cast', async ({ page }) => {
+  test('the ending says who was working, from the served cast', async ({ page }) => {
     // NOT «Карен», and that is the whole reframe: the office is a fintech and the
     // person standing still is whoever clocked in. The index comes from the shift
     // response and the NAME from the catalogue, so a client that hardcoded either
     // one fails here — the stub's cast is marked, and its index is 2.
-    await enterOffice(page);
-    await expect(page.getByTestId('fintech-who')).toContainText(CONFIG.personas[2]);
-  });
-
-  test('and the ending says who was working', async ({ page }) => {
+    //
+    // THE ENDING IS THE ONLY PLACE IT IS SHOWN. It was on the play HUD too, and it
+    // was dropped: the persona changes nothing about the game, and it was the
+    // widest cell in a strip that has to hold the money, the clock, the tempo and
+    // the way out on a 360 px phone.
     const socket = await enterOffice(page);
     await socket.over({ cause: 'left' });
     await expect(page.getByTestId('fintech-over')).toBeVisible();
@@ -1462,7 +1566,17 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — who you are this shift'
     await openSplash(page, { resume: true });
     await expect(page.getByTestId('fintech-play')).toBeVisible();
     await socket.ready({ persona: 3 });
-    await expect(page.getByTestId('fintech-who')).toContainText(CONFIG.personas[3]);
+    // Read where the persona is now shown: the ending. The claim is about the
+    // READY frame carrying it, not about which screen draws it.
+    await socket.over({ cause: 'left' });
+    await expect(page.getByTestId('fintech-over-who')).toContainText(CONFIG.personas[3]);
+  });
+
+  test('and the play HUD does not spend a cell on it', async ({ page }) => {
+    // The removal, pinned. A readout that says nothing a player can act on is a
+    // readout competing for width with three that they can.
+    await enterOffice(page);
+    await expect(page.getByTestId('fintech-who')).toHaveCount(0);
   });
 
   test('the cheatsheet names the whole cast, derived rather than typed', async ({ page }) => {

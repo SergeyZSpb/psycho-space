@@ -163,6 +163,7 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 		`"sim"`, `"hz"`, `"snapshot_hz"`, `"render_delay_ms"`,
 		`"endings"`, `"key"`, `"sub"`,
 		`"boss_lines"`, `"personas"`, `"claude_lines"`, `"npcs"`, `"max_occupants"`,
+		`"tempo"`, `"every_ms"`, `"step_pct"`,
 	} {
 		if !strings.Contains(string(raw), key) {
 			t.Fatalf("the served catalogue has no %s: %s", key, raw)
@@ -225,6 +226,66 @@ func TestTheConfigAgreesWithTheSimulation(t *testing.T) {
 	}
 	if c.MaxOccupants != MaxOccupants {
 		t.Fatalf("the published occupancy is %d, the office allows %d", c.MaxOccupants, MaxOccupants)
+	}
+	// The tempo is served because the CLIENT computes it: the HUD's multiplier and
+	// the cheatsheet's rule are both derived from the snapshot's own tick against
+	// these two numbers, which is what keeps the ramp off a repeating frame. A
+	// published pair that disagreed with the simulation would put a multiplier on
+	// screen that nothing in the office was walking at.
+	if c.Tempo.EveryMs != int(LevelSeconds*1000) {
+		t.Fatalf("the published tempo step is %d ms, the simulation uses %v s", c.Tempo.EveryMs, LevelSeconds)
+	}
+	if c.Tempo.StepPct != int(math.Round(LevelSpeedStep*100)) {
+		t.Fatalf("the published tempo step is %d %%, the simulation uses %v", c.Tempo.StepPct, LevelSpeedStep)
+	}
+}
+
+func TestTheTempoRampsOnceEveryLevelAndNeverBetween(t *testing.T) {
+	// THE WHOLE OF THE RAMP, stated as a table, because both ends implement it —
+	// this function and `tempoFor` in web/src/lib/fintechRules.ts — and a browser
+	// showing ×1,2 while the office walks at ×1,3 is a game that lies about the
+	// only thing a player can do nothing about.
+	//
+	// The expectations are written against the CONSTANTS rather than against 20 and
+	// 0.1, so retuning either moves the test with the game instead of breaking it.
+	for _, tc := range []struct {
+		elapsed float64
+		level   int
+	}{
+		{-1, 0}, // before the office existed: a clamp, not a negative multiplier
+		{0, 0},
+		{LevelSeconds - 0.001, 0}, // the last instant of the first level
+		{LevelSeconds, 1},         // and the first of the second
+		{LevelSeconds * 2.5, 2},   // it steps, it does not interpolate
+		{LevelSeconds * 6, 6},
+	} {
+		if got := Level(tc.elapsed); got != tc.level {
+			t.Fatalf("Level(%v) = %d, want %d", tc.elapsed, got, tc.level)
+		}
+		want := 1 + LevelSpeedStep*float64(tc.level)
+		if got := TempoAt(tc.elapsed); math.Abs(got-want) > 1e-9 {
+			t.Fatalf("TempoAt(%v) = %v, want %v", tc.elapsed, got, want)
+		}
+	}
+}
+
+func TestTheRampEventuallyOutrunsAWalk(t *testing.T) {
+	// The ramp is not decoration: it is what stops a shift being unbounded. A
+	// player who never stops moving outruns 4.0 m/s for ever, so if the tempo could
+	// not reach a walk the leaderboard would measure patience rather than nerve.
+	//
+	// It asserts the PROPERTY and not the minute, so retuning the step or the walk
+	// keeps the claim true. The cheatsheet says the same thing in Russian, derived
+	// from the same two numbers.
+	level := 0
+	for TempoAt(float64(level)*LevelSeconds)*BossSpeed < WalkSpeed {
+		level++
+		if level > 1000 {
+			t.Fatal("the tempo never reaches a walk — a shift can be extended for ever by moving")
+		}
+	}
+	if mins := float64(level) * LevelSeconds / 60; mins < 1 || mins > 5 {
+		t.Fatalf("he matches a walk after %.1f minutes, which is not a shift-length arc", mins)
 	}
 }
 

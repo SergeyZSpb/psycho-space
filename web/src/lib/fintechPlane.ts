@@ -452,6 +452,24 @@ export function formatMultiplier(hundredths: number): string {
   return `×${decimal(v, 2)}`;
 }
 
+/**
+ * How long the shift has lasted, as the HUD shows it: `1:23`.
+ *
+ * A CLOCK RATHER THAN A DECIMAL, unlike `formatSeconds` right below — this one is
+ * read as a length of time somebody is trying to beat, and «83 с.» is a number you
+ * have to convert before it means anything. Minutes are not padded and seconds
+ * always are, which is how every clock anybody has ever read is written.
+ *
+ * It takes SECONDS, because that is what both callers have: the HUD derives them
+ * from two tick numbers and the leaderboard reads a `double precision` column.
+ * Anything not finite, or negative, is 0:00 — a shift cannot have lasted less than
+ * no time, and a readout is the wrong place to notice a bad number.
+ */
+export function formatClock(secs: number): string {
+  const total = Number.isFinite(secs) ? Math.max(0, Math.floor(secs)) : 0;
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
 /** A duration in milliseconds, as the HUD shows it: `1,8 с.` */
 export function formatSeconds(ms: number): string {
   const v = Number.isFinite(ms) ? Math.max(0, ms) / 1000 : 0;

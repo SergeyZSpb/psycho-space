@@ -198,6 +198,60 @@ func TestHelloIsAnsweredWithTheShiftYouAreOn(t *testing.T) {
 	}
 }
 
+func TestTheReadyFrameSaysWhichTickTheShiftStartedOn(t *testing.T) {
+	// HOW LONG HAVE I BEEN STANDING HERE, and why it is not on the snapshot.
+	//
+	// The client draws the shift's age as `k − k0`. `k` is on every frame already
+	// and `k0` is constant for the life of the shift, so it is sent once, at
+	// attach, and the browser does the subtraction — where an elapsed field on the
+	// snapshot would be bytes at twenty hertz per viewer for ever.
+	//
+	// The office is built by the first StartShift at tick zero, so a k0 that meant
+	// anything had to be measured on somebody who clocked in LATE: this drives a
+	// first shift for a while, then joins a second account and reads its ready.
+	first, late := uuid.New().String(), uuid.New().String()
+	m1 := realtime.Member{ConnID: "c1", AccountID: first}
+	m2 := realtime.Member{ConnID: "c2", AccountID: late}
+	h := start(t, m1)
+
+	if _, _, err := h.svc.StartShift(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	h.pump(t, "the office to be a few ticks old", func() bool {
+		return len(h.tr.framesOfType(TypeSnapshot)) >= 5
+	})
+
+	h.tr.setMembers([]realtime.Member{m1, m2})
+	if _, _, err := h.svc.StartShift(context.Background(), late); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.HandleInbound(context.Background(), m2, Room, []byte(`{"t":"fintech_hello"}`))
+
+	var got float64 = -1
+	for _, f := range h.tr.framesOfType(TypeReady) {
+		if f.Conn == m2.ConnID {
+			k0, ok := f.Frame["k0"].(float64)
+			if !ok {
+				t.Fatalf("the ready frame carries no k0: %+v", f.Frame)
+			}
+			got = k0
+		}
+	}
+	if got <= 0 {
+		t.Fatalf("a shift that started five ticks in was told it began on tick %v", got)
+	}
+	// And it is the office's own tick, not a count of anything else: the next
+	// snapshot addressed to him is at or after it, and the difference is his age.
+	for _, f := range h.tr.framesOfType(TypeSnapshot) {
+		if f.Conn != m2.ConnID {
+			continue
+		}
+		if k := f.Frame["k"].(float64); k < got {
+			t.Fatalf("a snapshot at tick %v is older than the k0 %v it was told", k, got)
+		}
+	}
+}
+
 func TestHelloWithNoShiftIsSilent(t *testing.T) {
 	// Not an error state: a socket that opened before the shift did, or one that
 	// outlived it. The client's own next move — pressing НАЧАТЬ СМЕНУ — is what
@@ -337,21 +391,21 @@ func TestCurrentShiftIsTheReloadPath(t *testing.T) {
 	h := start(t)
 	ctx := context.Background()
 	acc := uuid.New().String()
-	if _, _, ok := h.svc.CurrentShift(acc); ok {
+	if _, _, _, ok := h.svc.CurrentShift(acc); ok {
 		t.Fatal("an account that has never played is working")
 	}
 	id, _, err := h.svc.StartShift(ctx, acc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _, ok := h.svc.CurrentShift(acc)
+	got, _, _, ok := h.svc.CurrentShift(acc)
 	if !ok || got != id {
 		t.Fatalf("CurrentShift = %q, %v; want %q", got, ok, id)
 	}
 	if err := h.svc.LeaveShift(ctx, acc); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := h.svc.CurrentShift(acc); ok {
+	if _, _, _, ok := h.svc.CurrentShift(acc); ok {
 		t.Fatal("the shift survived being walked out of")
 	}
 }
@@ -478,7 +532,7 @@ func TestBeingCaughtEndsTheShiftAndWritesIt(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("being caught never wrote the shift")
 	}
-	if _, _, ok := h.svc.CurrentShift(acc); ok {
+	if _, _, _, ok := h.svc.CurrentShift(acc); ok {
 		t.Fatal("the shift outlived the promotion")
 	}
 }
@@ -528,7 +582,7 @@ func TestAReconnectingPlayerKeepsTheirShift(t *testing.T) {
 	h.stepAt(t, AbandonGrace/2)
 	h.step(t)
 
-	if _, _, ok := h.svc.CurrentShift(acc); !ok {
+	if _, _, _, ok := h.svc.CurrentShift(acc); !ok {
 		t.Fatal("a gap shorter than the grace lost the shift")
 	}
 }
@@ -580,7 +634,7 @@ func TestPurgeAccountIsIdempotentAndWritesNothing(t *testing.T) {
 	h.svc.PurgeAccount(uuid.New().String())
 	h.svc.PurgeAccount("not even a uuid")
 
-	if _, _, ok := h.svc.CurrentShift(acc); ok {
+	if _, _, _, ok := h.svc.CurrentShift(acc); ok {
 		t.Fatal("the purged account is still working")
 	}
 	if got := len(h.svc.saves); got != 0 {
@@ -687,7 +741,7 @@ func TestAShiftStartsEvenWhenTheFaceWillNotLoad(t *testing.T) {
 	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatalf("a failing avatar lookup stopped the shift: %v", err)
 	}
-	if _, _, ok := h.svc.CurrentShift(acc); !ok {
+	if _, _, _, ok := h.svc.CurrentShift(acc); !ok {
 		t.Fatal("no shift after a failed avatar load")
 	}
 }

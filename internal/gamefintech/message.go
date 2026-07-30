@@ -177,6 +177,19 @@ type Ready struct {
 	// reconnect after the tab was asleep — and the over screen has to be able to
 	// name who was working. Sent ONCE per attach, never on a frame.
 	Persona int `json:"persona"`
+	// K0 is the office tick this shift started on, so the client can draw how long
+	// it has lasted as `k − k0`.
+	//
+	// HERE RATHER THAN ON THE SNAPSHOT, and that is the whole reason this game's
+	// second scored dimension costs nothing on the wire. The shift's age changes
+	// every tick, but the number it is derived FROM does not change at all — and a
+	// snapshot already carries `k`. Sending the elapsed time instead would be ~9
+	// bytes × 20 Hz × up to three viewers, for ever, to say something the frame and
+	// this one attach-time integer already imply.
+	//
+	// Not `omitempty`: zero is the honest answer for the first person into a fresh
+	// office, and an absent field would be indistinguishable from "we did not say".
+	K0 uint64 `json:"k0"`
 }
 
 // Snapshot is the idempotent full-state frame, sent at SimHz/SnapshotEvery.

@@ -153,6 +153,20 @@ type Occupant struct {
 	// row.
 	Ended bool
 	Cause string
+	// StartTick is the office tick this occupant clocked in on, and it is how the
+	// client draws «how long have I been standing here».
+	//
+	// A TICK RATHER THAN A CLOCK, and it never reaches a snapshot. The shift's age
+	// is `tick − StartTick`, the tick is on every frame already, and this number is
+	// constant for the life of the shift — so it rides the READY frame, once per
+	// socket attach, and the browser does the subtraction. A field on the snapshot
+	// would be bytes ten times a second per viewer to re-state something derivable
+	// from what is already there (ADR-037's rule, applied to a duration).
+	//
+	// It is not the same number as StartedAt, which is a wall clock and is what the
+	// recorded row's `seconds` is measured with. The two can differ by whatever the
+	// tick has drifted; nobody reads a shift length to the millisecond.
+	StartTick uint64
 }
 
 // Elapsed is how long this shift has lasted.
@@ -265,6 +279,7 @@ func (o *Office) Join(accountID, shiftID, pseudonym, avatar string, persona int,
 		State:     NewPlayerAt(o.spawnPoint()),
 		StartedAt: now,
 		LastSeen:  now,
+		StartTick: o.tick,
 	}
 	return nil
 }
@@ -725,17 +740,19 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		}
 	}
 
-	// Elapsed simulated time, which is what the wobble is a function of. Derived
-	// from the tick rather than from a clock, so it is the same number on every
-	// process that replays the same office.
-	o.boss = StepBoss(Desks, o.boss, targets, dt, float64(o.tick)*SimStep.Seconds())
+	// Elapsed simulated time, which is what the wobble and the TEMPO are functions
+	// of. Derived from the tick rather than from a clock, so it is the same number
+	// on every process that replays the same office — and so the browser can
+	// compute the tempo from the `k` its snapshot already carries.
+	elapsed := float64(o.tick) * SimStep.Seconds()
+	o.boss = StepBoss(Desks, o.boss, targets, dt, elapsed)
 
 	// AND CLAUDE, stepped against the same target list — so a cloud hides you from
 	// both of them, which is the answer a player expects from something called
 	// invincibility. He is deliberately NOT redirectable: the verb is «уточните у
 	// другого», which is a thing you say to a manager and not to a colleague with
-	// an opinion about your tooling.
-	o.claude = StepChaser(Desks, o.claude, targets, dt)
+	// an opinion about your tooling. Same elapsed, so the two of them ramp together.
+	o.claude = StepChaser(Desks, o.claude, targets, dt, elapsed)
 
 	// AND THEN HE STEPS ASIDE IF HE HAS WALKED INTO THE ЛЫСЫЙ. The two of them
 	// share a pursuit rule, a navigator and a speed, so their paths do not cross —
@@ -1039,14 +1056,20 @@ func (o *Office) AvatarFor(handle string) (string, bool) {
 	return "", false
 }
 
-// ShiftOf is which shift an account is working, if any.
-func (o *Office) ShiftOf(accountID string) (string, int, bool) {
+// ShiftOf is which shift an account is working, if any: its id, which employee
+// they are, and the office tick they clocked in on.
+//
+// Four returns rather than a struct, because every one of them is a scalar that
+// goes straight onto one wire message (Ready) and a struct here would be a type
+// declared for one call site. The start tick is last because only the socket's
+// hello needs it — the HTTP reload path drops it.
+func (o *Office) ShiftOf(accountID string) (string, int, uint64, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if occ, ok := o.occupants[accountID]; ok {
-		return occ.ShiftID, occ.Persona, true
+		return occ.ShiftID, occ.Persona, occ.StartTick, true
 	}
-	return "", 0, false
+	return "", 0, 0, false
 }
 
 // Occupants is how many people are on the floor.
