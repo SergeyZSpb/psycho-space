@@ -42,6 +42,7 @@ const K: StepConstants = {
   rampSeconds: 5,
   maxMultiplier: 3,
   graceSeconds: 0.3,
+  slowFactor: 0.8,
 };
 
 /** An empty room, so nothing below is about collision. */
@@ -86,7 +87,7 @@ describe('reconciliation', () => {
   it('drops acknowledged commands and keeps the rest', () => {
     const p = predictor();
     for (let i = 0; i < 5; i++) p.apply(walk);
-    p.reconcile({ x: 8, y: 11.2, ack: 3, dashCooldown: 0 });
+    p.reconcile({ x: 8, y: 11.2, ack: 3, dashCooldown: 0, slowLeft: 0 });
     expect(p.pendingCount()).toBe(2);
   });
 
@@ -97,14 +98,14 @@ describe('reconciliation', () => {
     const p = predictor();
     for (let i = 0; i < 4; i++) p.apply(walk);
     // The server has only seen the first two, so it is two steps behind.
-    p.reconcile({ x: 8, y: 11 + 2 * walk.dt * K.walkSpeed, ack: 2, dashCooldown: 0 });
+    p.reconcile({ x: 8, y: 11 + 2 * walk.dt * K.walkSpeed, ack: 2, dashCooldown: 0, slowLeft: 0 });
     expect(p.raw().y).toBeCloseTo(11 + 4 * walk.dt * K.walkSpeed, 6);
   });
 
   it('lands exactly where the server says once everything is acknowledged', () => {
     const p = predictor();
     for (let i = 0; i < 6; i++) p.apply(walk);
-    p.reconcile({ x: 4.25, y: 17, ack: 6, dashCooldown: 0 });
+    p.reconcile({ x: 4.25, y: 17, ack: 6, dashCooldown: 0, slowLeft: 0 });
     expect(p.raw().x).toBeCloseTo(4.25, 9);
     expect(p.raw().y).toBeCloseTo(17, 9);
   });
@@ -116,7 +117,7 @@ describe('reconciliation', () => {
     const p = predictor();
     p.apply(walk);
     const y = p.raw().y;
-    p.reconcile({ x: 8, y: y + SILENT_CORRECTION / 2, ack: 1, dashCooldown: 0 });
+    p.reconcile({ x: 8, y: y + SILENT_CORRECTION / 2, ack: 1, dashCooldown: 0, slowLeft: 0 });
     expect(p.correction()).toBe(0);
   });
 
@@ -124,7 +125,7 @@ describe('reconciliation', () => {
     const p = predictor();
     p.apply(walk);
     const drawn = p.view();
-    p.reconcile({ x: 8, y: p.raw().y + 0.5, ack: 1, dashCooldown: 0 });
+    p.reconcile({ x: 8, y: p.raw().y + 0.5, ack: 1, dashCooldown: 0, slowLeft: 0 });
     expect(p.view().y).toBeCloseTo(drawn.y, 6);
     expect(p.correction()).toBeGreaterThan(0);
   });
@@ -132,7 +133,7 @@ describe('reconciliation', () => {
   it('and the correction actually goes away', () => {
     const p = predictor();
     p.apply(walk);
-    p.reconcile({ x: 8, y: p.raw().y + 0.5, ack: 1, dashCooldown: 0 });
+    p.reconcile({ x: 8, y: p.raw().y + 0.5, ack: 1, dashCooldown: 0, slowLeft: 0 });
     // Exponential decay never reaches zero by arithmetic, so it is cut off at a
     // tenth of a millimetre. The point is that it ENDS, not how fast.
     for (let i = 0; i < 150; i++) p.tick(CORRECTION_SECONDS / 10);
@@ -143,14 +144,14 @@ describe('reconciliation', () => {
   it('snaps a disagreement too large to glide', () => {
     const p = predictor();
     p.apply(walk);
-    p.reconcile({ x: 8, y: p.raw().y + SNAP_CORRECTION * 2, ack: 1, dashCooldown: 0 });
+    p.reconcile({ x: 8, y: p.raw().y + SNAP_CORRECTION * 2, ack: 1, dashCooldown: 0, slowLeft: 0 });
     expect(p.correction()).toBe(0);
   });
 
   it('never argues with the server, however wrong the server looks', () => {
     const p = predictor();
     for (let i = 0; i < 20; i++) p.apply(walk);
-    p.reconcile({ x: 1, y: 1, ack: 20, dashCooldown: 0 });
+    p.reconcile({ x: 1, y: 1, ack: 20, dashCooldown: 0, slowLeft: 0 });
     for (let i = 0; i < 60; i++) p.tick(0.016);
     expect(p.view().x).toBeCloseTo(1, 6);
     expect(p.view().y).toBeCloseTo(1, 6);
@@ -167,7 +168,7 @@ describe('input redundancy', () => {
   it('offers nothing once everything has been acknowledged', () => {
     const p = predictor();
     for (let i = 0; i < 4; i++) p.apply(walk);
-    p.reconcile({ x: 8, y: p.raw().y, ack: 4, dashCooldown: 0 });
+    p.reconcile({ x: 8, y: p.raw().y, ack: 4, dashCooldown: 0, slowLeft: 0 });
     expect(p.unacknowledged(6)).toEqual([]);
   });
 
@@ -561,7 +562,7 @@ describe('the dash cooldown comes from the server, because a still client cannot
     // Some seconds later the server says it is ready. The client emitted nothing
     // in between — it was standing still, which is the point of the game — so
     // this snapshot is the only way it can ever find out.
-    p.reconcile({ x: p.raw().x, y: p.raw().y, ack: 1, dashCooldown: 0 });
+    p.reconcile({ x: p.raw().x, y: p.raw().y, ack: 1, dashCooldown: 0, slowLeft: 0 });
     expect(p.raw().dashCooldown).toBe(0);
   });
 
@@ -577,7 +578,7 @@ describe('the dash cooldown comes from the server, because a still client cannot
     // and its own cooldown stays frozen wherever the burst left it.
     expect(p.raw().dashCooldown).toBeGreaterThan(0);
 
-    p.reconcile({ x: p.raw().x, y: p.raw().y, ack: 99, dashCooldown: 0 });
+    p.reconcile({ x: p.raw().x, y: p.raw().y, ack: 99, dashCooldown: 0, slowLeft: 0 });
     const before = p.raw().y;
     p.apply({ dt: 0.025, mx: 0, my: -1, dash: true });
     expect(p.raw().dashLeft).toBeCloseTo(K.dashSeconds - 0.025, 9);
@@ -597,7 +598,7 @@ describe('a replay is a rewind, not a second application', () => {
     for (let i = 0; i < 3; i++) p.apply({ dt: 0.025, mx: 0, my: 0 });
     const straight = p.raw();
     // The server has acknowledged only the dash. The other three are replayed.
-    p.reconcile({ x: straight.x, y: straight.y, ack: 1, dashCooldown: straight.dashCooldown + 3 * 0.025 });
+    p.reconcile({ x: straight.x, y: straight.y, ack: 1, dashCooldown: straight.dashCooldown + 3 * 0.025, slowLeft: 0 });
     expect(p.raw().dashLeft).toBeCloseTo(straight.dashLeft, 9);
     expect(p.raw().dashCooldown).toBeCloseTo(straight.dashCooldown, 9);
     expect(p.raw().streak).toBeCloseTo(straight.streak, 9);
@@ -606,7 +607,7 @@ describe('a replay is a rewind, not a second application', () => {
   it('still lands exactly on the server once everything is acknowledged', () => {
     const p = predictor();
     for (let i = 0; i < 6; i++) p.apply({ dt: 0.025, mx: 0, my: 1 });
-    p.reconcile({ x: 4.25, y: 17, ack: 6, dashCooldown: 0 });
+    p.reconcile({ x: 4.25, y: 17, ack: 6, dashCooldown: 0, slowLeft: 0 });
     expect(p.raw().x).toBeCloseTo(4.25, 9);
     expect(p.raw().y).toBeCloseTo(17, 9);
   });

@@ -172,6 +172,21 @@
               <span class="fintech-boss-grin" />
             </span>
           </span>
+          <span ref="claudeEl" class="fintech-claude" data-testid="fintech-claude" aria-hidden="true">
+            <span v-if="claudeSays" class="fintech-say" data-testid="fintech-claude-say">{{
+              claudeSays
+            }}</span>
+            <span class="fintech-fig-body" />
+            <span class="fintech-fig-head">
+              <span class="fintech-fig-hair" />
+              <!-- The stubble, the cigarette and the ember. Three shapes, because a
+                   figure at 30 px has to be identifiable by silhouette rather than
+                   by detail — and the ember is the readout of how close he is,
+                   exactly as the лысый's grin is. -->
+              <span class="fintech-claude-stubble" />
+              <span class="fintech-claude-cig" />
+            </span>
+          </span>
           <span
             v-for="peer in peers"
             :key="peer.id"
@@ -181,6 +196,7 @@
             :data-peer="peer.id"
             :style="{ '--body': peerColour(peer.id) }"
             :data-cloud="peer.cloud ? '1' : undefined"
+            :data-slow="peer.slow ? '1' : undefined"
             aria-hidden="true"
           >
             <span v-if="sayFor(playerLines, peer.line)" class="fintech-say" data-testid="fintech-peer-say">{{
@@ -208,6 +224,7 @@
             class="fintech-me"
             data-testid="fintech-me"
             :data-cloud="cloudMs > 0 ? '1' : undefined"
+            :data-slow="slowMs > 0 ? '1' : undefined"
             aria-hidden="true"
           >
             <span v-if="meSays" class="fintech-say" data-testid="fintech-me-say">{{ meSays }}</span>
@@ -441,6 +458,7 @@ const dashMs = ref(0);
 // POSITIONS beside them are the opposite and never come near it.
 const meLine = ref(0);
 const bossLine = ref(0);
+const claudeLine = ref(0);
 const link = ref<'connecting' | 'open' | 'lost'>('connecting');
 const over = ref<{ cause: string; pay: number; secs: number } | null>(null);
 
@@ -540,9 +558,13 @@ const hookahSpot = ref(0);
 const cloudMs = ref(0);
 /** How long the лысый stays drunk, for the row. */
 const drunkMs = ref(0);
+/** How long Claude Code's slow has left on YOU, in milliseconds. */
+const slowMs = ref(0);
 
 /** What is currently true of you, longest first. Absent when nothing is running. */
-const buffs = computed(() => buffsFor({ cloudMs: cloudMs.value, drunkMs: drunkMs.value }));
+const buffs = computed(() =>
+  buffsFor({ cloudMs: cloudMs.value, drunkMs: drunkMs.value, slowMs: slowMs.value }),
+);
 
 /**
  * Where the кальян stands, in plane coordinates — the bottle's arrangement
@@ -685,6 +707,8 @@ function onPeerFaceError(id: string): void {
 const playerLines = computed(() => config.value?.player_lines);
 
 const meSays = computed(() => sayFor(config.value?.player_lines, meLine.value));
+const claudeSays = computed(() => sayFor(config.value?.claude_lines, claudeLine.value));
+
 const bossSays = computed(() => {
   const line = sayFor(config.value?.boss_lines, bossLine.value);
   // HE NAMES WHOEVER VANISHED, and only the client that vanished can fill it in:
@@ -699,6 +723,7 @@ const overSub = computed(() => endingFor(config.value, over.value?.cause ?? '')?
 
 const meEl = ref<HTMLElement | null>(null);
 const bossEl = ref<HTMLElement | null>(null);
+const claudeEl = ref<HTMLElement | null>(null);
 const stickEl = ref<HTMLElement | null>(null);
 
 let shift: FintechShift | null = null;
@@ -726,6 +751,8 @@ let bossAt: { x: number; y: number } | null = null;
 // he is drawn in the recent past between two samples that have both already
 // arrived. See fintechInterp.
 let bossInterp: Interpolator | null = null;
+let claudeInterp: Interpolator | null = null;
+let claudeAt: { x: number; y: number } | null = null;
 /**
  * The peers' elements and their interpolators, both plain Maps and neither
  * reactive — this is the imperative tier, and nothing here is ever read during a
@@ -741,6 +768,8 @@ const peerInterp = new Map<string, Interpolator>();
 const peerLines = new Map<string, number>();
 // Who was behind a cloud on the previous frame, so the mark lands on the EDGE.
 const peerClouds = new Set<string>();
+// And who was slowed, for the same edge comparison.
+const peerSlows = new Set<string>();
 /** Each colleague's last drawn position, which is how his speed — and so his dash — is known. */
 const peerSeen = new Map<string, { x: number; y: number; at: number }>();
 /** The grin state currently written on the boss, so the class is not rewritten. */
@@ -918,6 +947,7 @@ function enterPlay(): void {
   release = client.subscribe({ frames: onFrame, status: onStatus });
 
   bossInterp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
+  claudeInterp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
   sendTimer = window.setInterval(sendInput, Math.round(1000 / config.value.move.input_hz));
   lastFrameMs = performance.now();
   frameHandle = requestAnimationFrame(drawFrame);
@@ -946,6 +976,7 @@ function teardownPlay(): void {
   hookahMs.value = 0;
   cloudMs.value = 0;
   drunkMs.value = 0;
+  slowMs.value = 0;
   bottleSpot.value = 0;
   peerEls.clear();
   peerInterp.clear();
@@ -958,6 +989,8 @@ function teardownPlay(): void {
   lastDir = null;
   bossAt = null;
   bossInterp = null;
+  claudeInterp = null;
+  claudeAt = null;
 }
 
 // --- the two clocks --------------------------------------------------------
@@ -990,6 +1023,7 @@ function drawFrame(now: number): void {
     predictor.tick(dt);
     placeMe();
     placeBoss(now);
+    placeClaude(now);
     placePeers(now);
   }
 
@@ -1022,6 +1056,17 @@ function sendInput(): void {
 // The лысый, drawn from the interpolation buffer every animation frame rather
 // than written once per snapshot and smoothed by CSS. That is the third
 // Gambetta rung, and the reason it is worth a module is in fintechInterp.
+function placeClaude(now: number): void {
+  const el = claudeEl.value;
+  if (!el || !claudeInterp || !constants) return;
+  const at = claudeInterp.at(now);
+  if (!at) return;
+  // `applyBoss` rather than a third writer: the cigarette is the grin's property
+  // and the stylesheet reads it from `--grin` on this figure too, so the same call
+  // writes the position, the band, the depth, the balloon flip and the ember.
+  applyBoss(el, toPlane(at.x, at.y, constants.officeW, constants.officeH), at.grin);
+}
+
 function placeBoss(now: number): void {
   const el = bossEl.value;
   if (!el || !bossInterp || !constants) return;
@@ -1191,6 +1236,11 @@ function applySnapshot(frame: RealtimeFrame): void {
   // verb on this plane gets. Compared against the previous frame's value, before
   // that value is overwritten, which is the mistake this view has already made
   // once.
+  // BEING CAUGHT BY CLAUDE IS A VERB DONE TO YOU, so it gets the mark every verb on
+  // this plane gets — on the EDGE, and before the previous value is overwritten.
+  const sl = num(frame.sl);
+  if (sl > 0 && slowMs.value === 0) markAt('slow', mePlace());
+  slowMs.value = sl;
   const hk = num(frame.hk);
   const iv = num(frame.iv);
   if (iv > 0 && cloudMs.value === 0) markAt('cloud', mePlace());
@@ -1207,7 +1257,18 @@ function applySnapshot(frame: RealtimeFrame): void {
   // The cooldown is folded in beside the position, because the client SIMULATES
   // from it: `step` refuses a dash while it is running, and a client whose own
   // copy had gone stale would refuse the dash the server was about to grant.
-  predictor.reconcile({ x, y, ack, dashCooldown: dashMs.value / 1000 });
+  // The slow is folded in beside the cooldown and for the identical reason: the
+  // predicted player's own timer only advances when a command is emitted, and a
+  // player standing perfectly still emits nothing — so a locally-held slow would
+  // still be running long after the office had let it expire, and the client would
+  // predict 5.12 m/s against the server's 6.4.
+  predictor.reconcile({
+    x,
+    y,
+    ack,
+    dashCooldown: dashMs.value / 1000,
+    slowLeft: slowMs.value / 1000,
+  });
 
   pay.value = num(frame.pay);
   mult.value = num(frame.m);
@@ -1238,6 +1299,16 @@ function applySnapshot(frame: RealtimeFrame): void {
     // later, between two samples it already holds, which is what makes jitter
     // and a dropped frame cost nothing.
     bossInterp?.push({ x: bossAt.x, y: bossAt.y, grin }, performance.now());
+  }
+
+  // CLAUDE, buffered exactly as the лысый is: not predicted, because his intent is
+  // no more ours to guess than the other man's, so his position arrives ten times a
+  // second and is eased across the gap between two frames.
+  const cl = frame.cl as Record<string, number> | undefined;
+  if (cl) {
+    claudeLine.value = num(cl.p);
+    claudeAt = { x: num(cl.x) / 100, y: num(cl.y) / 100 };
+    claudeInterp?.push({ x: claudeAt.x, y: claudeAt.y, grin: num(cl.c) / 255 }, performance.now());
   }
 
   applyPeers(frame.pr);
@@ -1271,6 +1342,7 @@ function applyPeers(raw: unknown): void {
     }
     peerLines.set(id, line);
     const cloud = num(p.iv) > 0;
+    const slow = num(p.sl) > 0;
     // A COLLEAGUE'S cloud, marked where HE is standing, on the edge — the same rule
     // as his redirect. Somebody stepping out of the лысый's reach is the most
     // useful thing that can happen to a colleague, and a mark only its owner saw
@@ -1280,10 +1352,18 @@ function applyPeers(raw: unknown): void {
     }
     if (cloud) peerClouds.add(id);
     else peerClouds.delete(id);
+    // A COLLEAGUE being caught, marked where HE is standing. Same edge rule, and the
+    // same reason: him losing a fifth of his walk is who the лысый reaches first.
+    if (slow && !peerSlows.has(id) && constants) {
+      markAt('slow', toPlane(num(p.x) / 100, num(p.y) / 100, constants.officeW, constants.officeH));
+    }
+    if (slow) peerSlows.add(id);
+    else peerSlows.delete(id);
     roster.push({
       id,
       line,
       cloud,
+      slow,
       // Derived from the handle, never sent with it (ADR-037). The browser
       // caches the answer, so this is one request per colleague per shift even
       // though the string is recomputed on every roster change.
@@ -2091,6 +2171,78 @@ function onDash(): void {
   box-shadow: 0 0 0 max(1px, calc(var(--unit) * 0.025)) rgba(0, 0, 0, 0.4);
   pointer-events: none;
   z-index: 1;
+}
+
+/* CLAUDE CODE. Built from the same head and body as everybody else, because the
+   scene has to read as three people in a room rather than as two people and a
+   mascot — the differences are the ones you can see at thirty pixels: the terracotta
+   of the company whose tool he is, dark stubble across the jaw, and a cigarette with
+   an ember that brightens as he closes.
+
+   NO LOGO AND NO LIKENESS, deliberately and per the art rules this project already
+   set for itself: he is identifiable by COLOUR and SILHOUETTE. The hue is the one
+   everybody who has opened a terminal this year recognises, and that is the whole of
+   the reference.
+
+   He is `.fintech-claude` and not a variant of `.fintech-boss`, for the reason
+   chaser.go gives about the Go: they are two things that resemble each other, and a
+   shared rule with two exceptions is harder to read than two rules. */
+.fintech-claude {
+  --skin: #e8d3b6;
+  --body: #c96442;
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-size: var(--unit);
+  width: var(--unit);
+  height: calc(var(--unit) * 1.6);
+  transform: translate3d(
+      calc(var(--x, 0.5) * 100cqw - 50%),
+      calc(var(--y, 0.5) * 100cqh - 100%),
+      0
+    )
+    scale(var(--depth, 1));
+  transform-origin: 50% 100%;
+  z-index: var(--band, 0);
+  will-change: transform;
+  pointer-events: none;
+}
+
+/* The stubble: a band across the lower half of the face rather than drawn hairs,
+   which is the only thing that reads at this size. */
+.fintech-claude-stubble {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: 6%;
+  height: 34%;
+  border-radius: 0 0 46% 46%;
+  background: rgba(48, 38, 32, 0.42);
+}
+
+/* The cigarette, with the ember driven by `--grin` — the same 0..1 the лысый's
+   smile uses, written by the same call. So how lit it is IS how close he is, and a
+   player reads the danger off the figure rather than off a meter. */
+.fintech-claude-cig {
+  position: absolute;
+  left: 62%;
+  bottom: 20%;
+  width: 30%;
+  height: 7%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #f2ece0 0%, #f2ece0 66%, #6b3a1f 100%);
+  box-shadow: calc(var(--unit) * 0.06) 0 calc(var(--unit) * 0.05)
+    rgba(255, 138, 60, calc(0.25 + 0.75 * var(--grin, 0)));
+}
+
+/* SLOWED — a debuff, so it is shown for as long as it lasts and on whoever is
+   carrying it, yours and every colleague's alike. Warm, because it is the one state
+   on this plane that is working against you; on the SKIN and the BODY rather than on
+   the positioning box, which is the rule the лысый's green already follows. */
+.fintech-me[data-slow],
+.fintech-peer[data-slow] {
+  --skin: #e6c9b4;
+  --body: #8a4a34;
 }
 
 /* THE КАЛЬЯН. A small thing on the floor you walk to, drawn at ground level and

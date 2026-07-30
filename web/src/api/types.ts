@@ -967,6 +967,16 @@ export interface FintechConfig {
     return_ms: number;
     slow_pct: number;
   };
+  /** Claude Code's pool, by index — a separate figure, so a separate array. */
+  claude_lines?: string[];
+  /** Claude Code: what he costs, and how long for. */
+  claude?: {
+    speed: number;
+    reach: number;
+    /** How much of your walk he leaves you, as a percentage. */
+    slow_pct: number;
+    slow_ms: number;
+  };
   /** «Кальян» — where it stands, and how long the cloud over you lasts. */
   hookah?: {
     /** Every place one can appear; a frame names which by index. */

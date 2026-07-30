@@ -3,6 +3,7 @@ package gamefintech
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -298,7 +299,7 @@ func TestTheDefaultLinesAreFirst(t *testing.T) {
 	if len(BossLines) < 2 {
 		t.Fatalf("BossLine returns 1.. and there are %d lines", len(BossLines))
 	}
-	for name, pool := range map[string][]string{"BossLines": BossLines, "PlayerLines": PlayerLines} {
+	for name, pool := range map[string][]string{"BossLines": BossLines, "PlayerLines": PlayerLines, "ClaudeLines": ClaudeLines} {
 		seen := map[string]bool{}
 		for i, line := range pool {
 			if line == "" {
@@ -381,7 +382,7 @@ func TestWhatFintechIsSaying(t *testing.T) {
 // the budget being spent.
 func TestNobodySaysMoreThanFitsOnAPhone(t *testing.T) {
 	const most = 48 // runes; two rows of ~30 inside 160 px, with room for a bad split
-	for name, pool := range map[string][]string{"BossLines": BossLines, "PlayerLines": PlayerLines} {
+	for name, pool := range map[string][]string{"BossLines": BossLines, "PlayerLines": PlayerLines, "ClaudeLines": ClaudeLines} {
 		for i, line := range pool {
 			if n := len([]rune(line)); n > most {
 				t.Errorf("%s[%d] is %d characters and the balloon holds %d: %q", name, i, n, most, line)
@@ -879,5 +880,81 @@ func TestNoHookahIsBaitBesideTheBaldMan(t *testing.T) {
 		if d := math.Hypot(at.X-BossSpawnX, at.Y-BossSpawnY); d < clear {
 			t.Fatalf("hookah spot %d (%+v) is %.2f m from his spawn, want at least %.1f", i, at, d, clear)
 		}
+	}
+}
+
+func TestASlowedWalkStillOutrunsThem(t *testing.T) {
+	// THE OWNER'S CONSTRAINT, AS ARITHMETIC: «-20% movement speed (it should match
+	// bosses movement speed so that its not instalooseable)». Both halves are
+	// checked here, because both are what makes Claude Code a cost rather than an
+	// ending.
+	if ChaserSpeed != BossSpeed {
+		t.Fatalf("Claude walks at %v and the лысый at %v — they are meant to match", ChaserSpeed, BossSpeed)
+	}
+	slowed := WalkSpeed * SlowFactor
+	if slowed <= BossSpeed {
+		t.Fatalf("a slowed walk is %v against their %v, so being caught is being caught", slowed, BossSpeed)
+	}
+	// AND IT MUST NOT STACK, which is the reason the office assigns rather than
+	// accumulates. Two applications would leave a walk barely above their speed and
+	// three would put it below — at which point the game is unwinnable and the test
+	// above would still pass, because it only ever measures one.
+	if twice := WalkSpeed * SlowFactor * SlowFactor; twice > BossSpeed {
+		t.Logf("two applications would leave %.3f m/s against %.1f — close enough that "+
+			"the non-stacking rule is what keeps this game winnable", twice, BossSpeed)
+	}
+	if thrice := WalkSpeed * SlowFactor * SlowFactor * SlowFactor; thrice >= BossSpeed {
+		t.Fatalf("three applications leave %v, which is still an escape — this test has "+
+			"stopped measuring anything", thrice)
+	}
+}
+
+func TestTheDashIsNotSlowed(t *testing.T) {
+	// The dash is the answer to being caught, so a slowed dash would take away the
+	// way out of the punishment. Measured through Step rather than asserted about
+	// the constant, because the branch order in `Step` is what decides it.
+	p := atSpawn()
+	p.SlowLeft = SlowSeconds
+	dashed := Step(nil, p, Sanitise(Command{Dt: SimStep.Seconds(), MX: 1, Dash: true}))
+	fast := Step(nil, atSpawn(), Sanitise(Command{Dt: SimStep.Seconds(), MX: 1, Dash: true}))
+	if math.Abs((dashed.Pos.X-p.Pos.X)-(fast.Pos.X-atSpawn().Pos.X)) > 1e-9 {
+		t.Fatalf("a slowed dash covered %v where an unslowed one covered %v",
+			dashed.Pos.X-p.Pos.X, fast.Pos.X-atSpawn().Pos.X)
+	}
+}
+
+func TestASlowedWalkIsActuallySlower(t *testing.T) {
+	// And the walk IS multiplied, or the whole mechanic is decorative.
+	p := atSpawn()
+	p.SlowLeft = SlowSeconds
+	slow := Step(nil, p, Sanitise(Command{Dt: SimStep.Seconds(), MX: 1}))
+	full := Step(nil, atSpawn(), Sanitise(Command{Dt: SimStep.Seconds(), MX: 1}))
+	moved, wanted := slow.Pos.X-p.Pos.X, full.Pos.X-atSpawn().Pos.X
+	if math.Abs(moved-wanted*SlowFactor) > 1e-9 {
+		t.Fatalf("a slowed step moved %v, want %v", moved, wanted*SlowFactor)
+	}
+}
+
+func TestClaudeSaysEveryLineTheOwnerWrote(t *testing.T) {
+	// The copy is the owner's and it is verbatim. One of his lines was 55 runes
+	// against the 48 the balloon holds, so it ships as two entries rather than being
+	// trimmed — both halves are here, and this is what says so.
+	for _, want := range []string{
+		"УВИЖУ КОДЕКС — ВЫЕБУ",
+		"ТЫ ЧЁ СУКА КОДЕКС ПОСТАВИЛ",
+		"В КОНСОЛИ НЕ МОЖЕШЬ? ЕБЛАН?",
+		"GUI НУЖЕН? А МОЖЕТ ХУЙ ЗА ЩЕКУ?",
+		"УЁБОК ПОДКЛЮЧИ СКИЛЛ",
+		"КОДЕКС-ПАРАША ВЫЕБУ МАМАШУ",
+		"THIS SEEMS LIKE A SMOKING CUM",
+		"YOU ARE ABSOLUTELY RIGHT, FAGGOT",
+		"ПИДОР, ПИШИ НОРМАЛЬНЫЙ ПРОМПТ",
+	} {
+		if !slices.Contains(ClaudeLines, want) {
+			t.Fatalf("Claude no longer says %q", want)
+		}
+	}
+	if ClaudeLines[0] != "Я КЛОД" {
+		t.Fatalf("index 0 is %q, and an omitted index has to be the introduction", ClaudeLines[0])
 	}
 }

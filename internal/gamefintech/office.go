@@ -139,6 +139,11 @@ type Office struct {
 	// `hookahSpot` right now.
 	hookahGone float64
 	hookahSpot int
+	// claude is Claude Code, the second man on the floor. He is a separate value
+	// with a separate step for the reason chaser.go states: what happens when he
+	// arrives is different, and an interface over two implementations with one
+	// common method would be a seam nobody asked to use.
+	claude Chaser
 	// lostTarget is true when the лысый had somebody to walk at and now has
 	// nobody, because everybody left standing is behind a cloud. It decides which
 	// run he speaks from and is recomputed every tick, so it never goes stale.
@@ -153,9 +158,13 @@ type Office struct {
 	bottleSpot int
 }
 
-// NewOffice opens the floor with the bald man at the far wall and nobody in it.
+// NewOffice opens the floor with both men at the far wall and nobody in it.
 func NewOffice() *Office {
-	return &Office{occupants: make(map[string]*Occupant, MaxOccupants), boss: NewBoss()}
+	return &Office{
+		occupants: make(map[string]*Occupant, MaxOccupants),
+		boss:      NewBoss(),
+		claude:    NewChaser(),
+	}
 }
 
 // Join puts an account to work.
@@ -610,6 +619,27 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// process that replays the same office.
 	o.boss = StepBoss(Desks, o.boss, targets, dt, float64(o.tick)*SimStep.Seconds())
 
+	// AND CLAUDE, stepped against the same target list — so a cloud hides you from
+	// both of them, which is the answer a player expects from something called
+	// invincibility. He is deliberately NOT redirectable: the verb is «уточните у
+	// другого», which is a thing you say to a manager and not to a colleague with
+	// an opinion about your tooling.
+	o.claude = StepChaser(Desks, o.claude, targets, dt)
+
+	// He LANDS rather than catches, and the difference is the whole point of him.
+	// Assigned rather than accumulated, exactly as the лысый's drink is: two
+	// applications would leave a walk at 4.096 m/s against his own 4.0, which is
+	// not an escape, and three would make the game unwinnable.
+	for _, k := range keys {
+		occ := o.occupants[k]
+		if !occ.State.Alive || occ.Invincible > 0 {
+			continue
+		}
+		if Landed(o.claude, occ.State.Pos) {
+			occ.State.SlowLeft = SlowSeconds
+		}
+	}
+
 	var ended []*Occupant
 	for _, k := range keys {
 		occ := o.occupants[k]
@@ -672,6 +702,13 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 		Bt: msUp(o.bottleGone),
 		Bs: o.bottleSpot,
 		Iv: msUp(occ.Invincible),
+		Sl: msUp(occ.State.SlowLeft),
+		Cl: ClaudeFrame{
+			X: cm(o.claude.Pos.X),
+			Y: cm(o.claude.Pos.Y),
+			C: grinByte(o.claude.Cig),
+			P: ClaudeSays(o.tick),
+		},
 		Hk: msUp(o.hookahGone),
 		Hs: o.hookahSpot,
 		Pr: o.peersFor(accountID),
@@ -729,6 +766,7 @@ func (o *Office) peersFor(accountID string) []PeerFrame {
 			Y:  cm(occ.State.Pos.Y),
 			P:  o.lineFor(occ),
 			Iv: msUp(occ.Invincible),
+			Sl: msUp(occ.State.SlowLeft),
 		})
 	}
 	if len(peers) == 0 {

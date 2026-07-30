@@ -65,6 +65,8 @@ type goldenConstants struct {
 	RampSeconds    float64 `json:"ramp_seconds"`
 	MaxMultiplier  float64 `json:"max_multiplier"`
 	GraceSeconds   float64 `json:"grace_seconds"`
+	SlowFactor     float64 `json:"slow_factor"`
+	SlowSeconds    float64 `json:"slow_seconds"`
 	MaxStepSeconds float64 `json:"max_step_seconds"`
 }
 
@@ -102,6 +104,7 @@ type goldenPlayer struct {
 	DashDX       float64 `json:"dash_dx"`
 	DashDY       float64 `json:"dash_dy"`
 	DashCooldown float64 `json:"dash_cooldown"`
+	SlowLeft     float64 `json:"slow_left"`
 	Alive        bool    `json:"alive"`
 }
 
@@ -110,7 +113,7 @@ func toGolden(p Player) goldenPlayer {
 		X: round9(p.Pos.X), Y: round9(p.Pos.Y),
 		Salary: round9(p.Salary), Streak: round9(p.Streak), MoveGrace: round9(p.MoveGrace),
 		DashLeft: round9(p.DashLeft), DashDX: round9(p.DashDX), DashDY: round9(p.DashDY),
-		DashCooldown: round9(p.DashCooldown), Alive: p.Alive,
+		DashCooldown: round9(p.DashCooldown), SlowLeft: round9(p.SlowLeft), Alive: p.Alive,
 	}
 }
 
@@ -172,6 +175,8 @@ func buildGolden() goldenFile {
 			BasePerSecond: BasePerSecond, RampSeconds: RampSeconds,
 			MaxMultiplier: MaxMultiplier, GraceSeconds: GraceSeconds,
 			MaxStepSeconds: MaxStepSeconds,
+			SlowFactor:     SlowFactor,
+			SlowSeconds:    SlowSeconds,
 		},
 	}
 
@@ -236,6 +241,26 @@ func buildGolden() goldenFile {
 		cmds = append(cmds, walking(60, -1, 1)...)
 		cmds = append(cmds, walking(60, 1, 1)...)
 		c := goldenCase{Name: "floor-clamp", Desks: Desks, Commands: cmds}
+		c.run(start)
+		f.Cases = append(f.Cases, c)
+	}
+
+	// SLOWED, then not. Claude Code has landed on somebody, so the walk is
+	// multiplied for a few seconds and then is not — and the DASH inside that window
+	// must be untouched, which is the whole asymmetry of the punishment. The case
+	// runs long enough to cover the slow expiring, so the port has to get both the
+	// multiplied speed AND the moment it stops being multiplied.
+	{
+		start := atSpawn()
+		start.SlowLeft = SlowSeconds
+		var cmds []goldenCmd
+		cmds = append(cmds, walking(30, 0, -1)...)
+		// A dash while slowed: full distance, and it must not be scaled.
+		cmds = append(cmds, goldenCmd{Dt: SimStep.Seconds(), MX: 1, MY: 0, Dash: true})
+		cmds = append(cmds, walking(20, 1, 0)...)
+		// Past the end of the slow, at ordinary speed again.
+		cmds = append(cmds, walking(80, 1, 0)...)
+		c := goldenCase{Name: "slowed-walk", Desks: Desks, Commands: cmds}
 		c.run(start)
 		f.Cases = append(f.Cases, c)
 	}

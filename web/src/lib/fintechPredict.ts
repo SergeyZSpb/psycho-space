@@ -95,6 +95,20 @@ export interface Authoritative {
    * run the timer down locally.
    */
   dashCooldown: number;
+  /**
+   * Seconds of Claude Code's slow remaining — the caller converts from the wire's
+   * `sl` milliseconds, reading an absent field as zero.
+   *
+   * FOLDED IN FOR EXACTLY THE DASH COOLDOWN'S REASON, and it is the same bug
+   * waiting to happen. The predicted player's own timer only moves inside `apply`,
+   * and `apply` only runs when a command is emitted — so a player standing
+   * perfectly still, which is this game's default state, never runs the slow down
+   * locally at all. It would still read 4 s when the office had long since let it
+   * expire, and the client would predict a 5.12 m/s walk against the server's 6.4.
+   * The cooldown version of this cost 5.5 m of divergence per dash; this one costs
+   * 1.28 m/s for as long as the two disagree.
+   */
+  slowLeft: number;
 }
 
 /**
@@ -130,6 +144,10 @@ export function createPredictor(opts: PredictorOptions) {
     streak: 0,
     moveGrace: 0,
     dashLeft: 0,
+    // Zero rather than a guess, and overwritten from the first snapshot like the
+    // cooldown beside it: starting a shift unslowed is right, and starting it
+    // wrongly slowed would predict 5.12 m/s against the office's 6.4.
+    slowLeft: 0,
     dashCooldown: 0,
     dashDx: 0,
     dashDy: 0,
@@ -186,7 +204,13 @@ export function createPredictor(opts: PredictorOptions) {
       // describes, with the two fields the server is authoritative about
       // written over it. With nothing pending that moment is now.
       const base = pending.length ? pending[0].before : predicted;
-      let replayed: StepPlayer = { ...base, x: a.x, y: a.y, dashCooldown: a.dashCooldown };
+      let replayed: StepPlayer = {
+        ...base,
+        x: a.x,
+        y: a.y,
+        dashCooldown: a.dashCooldown,
+        slowLeft: a.slowLeft,
+      };
       for (const p of pending) replayed = step(desks, replayed, p.cmd, constants);
       predicted = replayed;
 

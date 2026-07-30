@@ -1313,3 +1313,132 @@ func TestTheHookahIsSpentAndComesBackSomewhereElse(t *testing.T) {
 		t.Fatalf("it came back on the same spot %d", got)
 	}
 }
+
+func slowOf(o *Office, accountID string) float64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if occ, ok := o.occupants[accountID]; ok {
+		return occ.State.SlowLeft
+	}
+	return 0
+}
+
+func TestClaudeSlowsYouDownRatherThanEndingTheShift(t *testing.T) {
+	// THE WHOLE DIFFERENCE BETWEEN THE TWO MEN. He is placed on the player, which
+	// for the лысый is the end of the shift; for this one it is four seconds of
+	// walking at 5.12 instead of 6.4.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	o.mu.Lock()
+	o.claude.Pos = o.occupants["a"].State.Pos
+	o.mu.Unlock()
+
+	ended := advance(o, 1)
+	if len(ended) != 0 {
+		t.Fatalf("Claude ended a shift: %+v", ended[0])
+	}
+	if got := slowOf(o, "a"); got <= 0 {
+		t.Fatalf("landing on somebody did not slow them: %v", got)
+	}
+	// And the frame says so, on the field the client PREDICTS from.
+	if got := snapOf(t, o, "a").Sl; got <= 0 {
+		t.Fatalf("the frame does not carry the slow: %d", got)
+	}
+}
+
+func TestTheSlowDoesNotStack(t *testing.T) {
+	// Assigned, never accumulated — the лысый's drink arrangement. Two applications
+	// would leave a walk at 4.096 m/s against their 4.0, which is not an escape.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	o.mu.Lock()
+	o.claude.Pos = o.occupants["a"].State.Pos
+	o.mu.Unlock()
+
+	advance(o, 1)
+	first := slowOf(o, "a")
+	advance(o, 1)
+	if second := slowOf(o, "a"); second > first {
+		t.Fatalf("a second landing extended the slow from %v to %v", first, second)
+	}
+}
+
+func TestACloudHidesYouFromBothOfThem(t *testing.T) {
+	// Invincibility is expressed as a shorter target list, and Claude is stepped
+	// against the SAME list — which is the answer a player expects from something
+	// called being uncatchable.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
+	advance(o, 1)
+	if cloudOf(o, "a") <= 0 {
+		t.Fatal("no cloud, so this test proves nothing")
+	}
+	o.mu.Lock()
+	o.claude.Pos = o.occupants["a"].State.Pos
+	o.mu.Unlock()
+
+	advance(o, 1)
+	if got := slowOf(o, "a"); got > 0 {
+		t.Fatalf("Claude landed on somebody behind a cloud: %v", got)
+	}
+}
+
+func TestAColleagueSeesTheSlowToo(t *testing.T) {
+	// A debuff is as public as a buff: «he is slowed» is who the лысый will reach
+	// first, which is exactly the sort of thing every screen has to show.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	o.mu.Lock()
+	o.claude.Pos = o.occupants["a"].State.Pos
+	o.mu.Unlock()
+	advance(o, 1)
+
+	peers := snapOf(t, o, "b").Pr
+	if len(peers) != 1 {
+		t.Fatalf("b sees %d peers, want 1", len(peers))
+	}
+	if peers[0].Sl <= 0 {
+		t.Fatalf("b cannot see that a was slowed: %+v", peers[0])
+	}
+}
+
+func TestClaudeIsAlwaysOnTheFrame(t *testing.T) {
+	// He is never omitted, unlike the props: an absent field would mean «he is not
+	// there», which is never true. This is what makes the budget raise honest.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	advance(o, 1)
+	raw, ok := o.SnapshotFor("a")
+	if !ok {
+		t.Fatal("no snapshot")
+	}
+	if !strings.Contains(string(raw), `"cl":{`) {
+		t.Fatalf("Claude is not on the frame: %s", raw)
+	}
+}
+
+func TestClaudeIsNotRedirectable(t *testing.T) {
+	// The verb is «уточните у другого» — a thing you say to a manager, not to a
+	// colleague with an opinion about your tooling. He walks at the nearest person
+	// whatever anybody says, so a redirect that pointed the лысый at somebody else
+	// leaves Claude exactly where he was heading.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	place(t, o, "a", Vec2{X: 4, Y: 4})
+	place(t, o, "b", Vec2{X: 12, Y: 4})
+	o.mu.Lock()
+	o.claude.Pos = Vec2{X: 4.6, Y: 4}
+	o.mu.Unlock()
+
+	if !o.Redirect("a", "p-b") {
+		t.Fatal("the redirect was refused")
+	}
+	advance(o, 2)
+	// He landed on the man nearest HIM, not on the one the verb named.
+	if slowOf(o, "a") <= 0 {
+		t.Fatal("Claude followed the redirect instead of walking at the nearest person")
+	}
+}

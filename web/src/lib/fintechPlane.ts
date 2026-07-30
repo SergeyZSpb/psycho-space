@@ -473,6 +473,13 @@ export interface PeerLook {
    * in `sameRoster`, so a frame where nothing changed still costs nothing.
    */
   cloud?: boolean;
+  /**
+   * Whether Claude Code has landed on him recently.
+   *
+   * On the roster for the cloud's reason: it toggles a class, which is a vdom
+   * patch, and it changes twice in four seconds rather than ten times a second.
+   */
+  slow?: boolean;
 }
 
 /**
@@ -495,6 +502,7 @@ export function sameRoster(a: readonly PeerLook[], b: readonly PeerLook[]): bool
     // class on his figure, and without this the office would keep drawing him as
     // catchable until something else about him happened to change.
     if (!!a[i].cloud !== !!b[i].cloud) return false;
+    if (!!a[i].slow !== !!b[i].slow) return false;
   }
   return true;
 }

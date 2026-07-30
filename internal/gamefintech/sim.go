@@ -83,6 +83,21 @@ type Player struct {
 	// and yanked the player back and forth.
 	DashDX float64
 	DashDY float64
+	// SlowLeft is seconds of Claude Code's slow remaining.
+	//
+	// ON Player RATHER THAN ON THE OCCUPANT, and it is the only one of this
+	// iteration's new values that has to be. The cloud, the persona and the
+	// redirect all live on the Occupant precisely because `Step` never reads them —
+	// but this one MULTIPLIES THE WALK, so a client that did not know about it
+	// would predict 6.4 m/s while the office moved him at 5.12. That is 1.28 m/s of
+	// divergence: past `SILENT_CORRECTION` immediately and past the snap threshold
+	// in about 1.6 s of walking, which is a figure yanked backwards ten times a
+	// second while a thumb is held down.
+	//
+	// So it is here, it is in the TypeScript port, and it is in the golden vectors —
+	// the three things that have to agree, and the reason this iteration is the only
+	// one in the batch that regenerates them.
+	SlowLeft float64
 	// Alive is false once the bald man has reached this player. A dead occupant
 	// is not a target for him and is not stepped again.
 	Alive bool
@@ -262,6 +277,7 @@ func Step(desks []Rect, p Player, c Command) Player {
 	// 2. Timers.
 	p.DashLeft = math.Max(0, p.DashLeft-c.Dt)
 	p.DashCooldown = math.Max(0, p.DashCooldown-c.Dt)
+	p.SlowLeft = math.Max(0, p.SlowLeft-c.Dt)
 
 	// 3. Speed, and — while dashing — the DIRECTION too. The command's axes are
 	// ignored for the duration: the dash goes where it committed, so it covers
@@ -272,6 +288,14 @@ func Step(desks []Rect, p Player, c Command) Player {
 	if dashing {
 		speed = DashSpeed
 		mx, my = p.DashDX, p.DashDY
+	} else if p.SlowLeft > 0 {
+		// THE SLOW MULTIPLIES THE WALK AND NOT THE DASH, deliberately. The dash is
+		// the answer to being caught, and a slowed dash would be a punishment that
+		// takes away the way out of the punishment — so it still covers its
+		// documented 5.20 m and `TestADashCoversItsWholeDistanceWithNoFurtherInput`
+		// is untouched. Slowed, walking is 5.12 m/s: a real cost, and still faster
+		// than either man on the floor.
+		speed *= SlowFactor
 	}
 
 	// 4. Move, then clamp to the floor, then push out of every desk in

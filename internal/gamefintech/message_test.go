@@ -234,12 +234,17 @@ func TestSnapshotStaysSmall(t *testing.T) {
 		// omitempty and are all present together only in the few seconds after
 		// somebody smokes — which is exactly what a worst case is for.
 		Iv: 10000, Hk: 20000, Hs: len(HookahSpots) - 1,
+		// AND CLAUDE, who is ALWAYS on the floor — the one unconditional addition in
+		// this batch — with his cigarette lit and his widest line index, plus the
+		// slow he leaves behind on you and on both colleagues.
+		Cl: ClaudeFrame{X: 1560, Y: 2160, C: 255, P: len(ClaudeLines) - 1},
+		Sl: 4000,
 		// A FULL OFFICE, which is the worst case and is now most of the frame.
 		// MaxOccupants is three, so two peers; twelve-character handles, both in
 		// the far corner, both on the widest line index in the pool.
 		Pr: []PeerFrame{
-			{I: "AbCdEfGhIjKl", X: 1565, Y: 2165, P: len(PlayerLines) - 1, Iv: 10000},
-			{I: "MnOpQrStUvWx", X: 1565, Y: 2165, P: len(PlayerLines) - 1, Iv: 10000},
+			{I: "AbCdEfGhIjKl", X: 1565, Y: 2165, P: len(PlayerLines) - 1, Iv: 10000, Sl: 4000},
+			{I: "MnOpQrStUvWx", X: 1565, Y: 2165, P: len(PlayerLines) - 1, Iv: 10000, Sl: 4000},
 		},
 	}
 	raw, err := json.Marshal(s)
@@ -311,11 +316,23 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// walk at is the single most useful thing to know about somebody else in the
 	// room.
 	//
-	// Measured at 336 and budgeted at 344, keeping the few bytes of headroom this
-	// bound has always carried: the widest line index grows by a character the day
-	// a pool passes a hundred entries, and a bound with no slack would fail on a
-	// commit that added a joke rather than a field.
-	const budget = 344
+	// 344 -> 424, for CLAUDE CODE, and this raise is different from every one before
+	// it: most of it is UNCONDITIONAL. He is always on the floor, so
+	// `,"cl":{"x":1560,"y":2160,"c":255,"p":11}` — about 40 bytes — rides every
+	// single frame rather than only an interesting one. At 10 Hz that is 400 B/s per
+	// viewer added to the resting state, which is the real cost of a second
+	// antagonist and is stated here rather than buried.
+	//
+	// The rest is omitempty like everything else: `,"sl":4000` is eleven on your own
+	// frame and eleven on each of two peers, present only during the four seconds
+	// after he lands. A debuff is as public as a buff — «he is slowed» is who the
+	// лысый will reach first — so the peers' copy is deliberate.
+	//
+	// Measured at 406 and budgeted at 424, keeping the headroom this bound has
+	// always carried: the widest line index grows a character the day a pool passes
+	// a hundred entries, and a bound with no slack fails on a commit that added a
+	// joke rather than a field.
+	const budget = 424
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}

@@ -164,6 +164,29 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
     });
   }
 
+  // CLAUDE CODE, derived from what the server publishes — his speed, his reach and
+  // both halves of what he costs — so retuning any of them updates the screen.
+  const claude = config.claude;
+  if (claude && has(claude.slow_pct) && has(claude.slow_ms)) {
+    blocks.push({
+      title: 'Клод',
+      lines: [
+        {
+          label: '🚬 кто это',
+          text:
+            `Ходит по офису и ищет, кто поставил кодекс. ` +
+            `Скорость ${decimal(claude.speed)} м/с — как у лысого.`,
+        },
+        {
+          label: '🐌 если догнал',
+          text:
+            `${claude.slow_pct} % от твоего шага на ${decimal(claude.slow_ms / 1000)} с. ` +
+            `Смену не заканчивает — и рывок не трогает. Второй раз не складывается.`,
+        },
+      ],
+    });
+  }
+
   // «Кальян» — the same shape as the bottle's block below and derived the same
   // way, so retuning the cloud or the wait updates the screen by itself.
   const hookah = config.hookah;
@@ -349,11 +372,20 @@ export interface BuffShown {
  * Pure, and unit-tested, for the reason every other derivation in this file is: the
  * template renders rows and never decides what is in them.
  */
-export function buffsFor(frame: { cloudMs?: number; drunkMs?: number }): BuffShown[] {
+export function buffsFor(frame: {
+  cloudMs?: number;
+  drunkMs?: number;
+  slowMs?: number;
+}): BuffShown[] {
   const out: BuffShown[] = [];
   const secs = (ms: number) => Math.ceil(ms / 1000);
   if ((frame.cloudMs ?? 0) > 0) {
     out.push({ key: 'cloud', label: '💨 в дыму', secs: secs(frame.cloudMs!) });
+  }
+  if ((frame.slowMs ?? 0) > 0) {
+    // The one entry that is working AGAINST you, which is what `bad` is for — the
+    // row is meant to be scanned rather than read.
+    out.push({ key: 'slow', label: '🐌 клод догнал', secs: secs(frame.slowMs!), bad: true });
   }
   if ((frame.drunkMs ?? 0) > 0) {
     // HIS state rather than yours, and it belongs here anyway: it is a thing that

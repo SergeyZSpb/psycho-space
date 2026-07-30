@@ -69,6 +69,8 @@ export interface StepConstants {
   dashSpeed: number;
   dashSeconds: number;
   dashCooldownSeconds: number;
+  /** What a slowed walk is multiplied by. See sim.go's SlowFactor. */
+  slowFactor: number;
   idleThreshold: number;
   maxStepSeconds: number;
   basePerSecond: number;
@@ -103,6 +105,18 @@ export interface StepPlayer {
   /** Seconds until the dash is available again. */
   dashCooldown: number;
   /**
+   * Seconds of Claude Code's slow remaining.
+   *
+   * PREDICTED, and it is the only one of that iteration's values that had to be:
+   * it MULTIPLIES THE WALK, so a client that did not know about it would predict
+   * 6.4 m/s while the office moved the same player at 5.12 — 1.28 m/s of
+   * divergence, past the snap threshold in about 1.6 s of walking, which is a
+   * figure yanked backwards ten times a second while a thumb is held down. The
+   * cloud and the persona are on the Occupant precisely because `step` never
+   * reads them; this one it does.
+   */
+  slowLeft: number;
+  /**
    * The direction the current dash committed to, unit length, captured when it
    * started.
    *
@@ -127,6 +141,11 @@ export function stepConstants(config: FintechConfig): StepConstants {
     dashSpeed: config.move.dash_speed,
     dashSeconds: config.move.dash_ms / 1000,
     dashCooldownSeconds: config.move.dash_cooldown_ms / 1000,
+    // Served rather than mirrored, because it is content: a percentage the
+    // cheatsheet also prints, so a retune moves both together. Falls back to 1 —
+    // no slow at all — rather than to a guess, so an older catalogue simply
+    // predicts an unslowed walk instead of diverging by a made-up factor.
+    slowFactor: (config.claude?.slow_pct ?? 100) / 100,
     idleThreshold: IDLE_THRESHOLD,
     maxStepSeconds: MAX_STEP_SECONDS,
     basePerSecond: config.money.base_per_second,
@@ -251,10 +270,19 @@ export function step(
   // 2. Timers.
   out.dashLeft = Math.max(0, out.dashLeft - dt);
   out.dashCooldown = Math.max(0, out.dashCooldown - dt);
+  out.slowLeft = Math.max(0, out.slowLeft - dt);
 
   // 3. Speed, and — while dashing — the DIRECTION too. The command's axes are
   //    ignored for the duration: the dash goes where it committed.
-  const speed = dashing ? k.dashSpeed : k.walkSpeed;
+  //
+  //    THE SLOW MULTIPLIES THE WALK AND NOT THE DASH, exactly as the Go original
+  //    does: the dash is the answer to being caught, and a slowed dash would take
+  //    away the way out of the punishment.
+  const speed = dashing
+    ? k.dashSpeed
+    : out.slowLeft > 0
+      ? k.walkSpeed * k.slowFactor
+      : k.walkSpeed;
   const mx = dashing ? out.dashDx : c.mx;
   const my = dashing ? out.dashDy : c.my;
 

@@ -1,6 +1,7 @@
 package gamefintech
 
 import (
+	"math"
 	"slices"
 	"strings"
 )
@@ -229,6 +230,54 @@ var Endings = []Ending{
 // the browser never learns the layout — which run a state maps to is server-side
 // and changes without a client deploy. Exactly the arrangement PlayerLines uses.
 var BossLines = slices.Concat(bossFar, bossClosing, bossDrunkLines, bossRedirectLines, bossLostLines)
+
+// ClaudeLines is everything Claude Code says, and it is the owner's copy verbatim.
+//
+// INDEX 0 IS THE SELF-INTRODUCTION, like every other pool in this file: «Я КЛОД» is
+// what an omitted index means, and the hashed interjection schedule brings it round
+// periodically so a player who arrives mid-shift learns who is walking at them.
+//
+// ONE OF THE OWNER'S LINES IS TWO ENTRIES. «ТЫ ЧЁ СУКА КОДЕКС ПОСТАВИЛ, В КОНСОЛИ НЕ
+// МОЖЕШЬ? ЕБЛАН?» is 55 runes against the 48 the balloon holds
+// (TestNobodySaysMoreThanFitsOnAPhone, itself a measurement of the two-row box at
+// 0.54rem against a 160px max-width). Splitting it costs nothing — a pool entry is a
+// whole balloon and the rotation says one every two seconds — and it keeps both
+// halves, where trimming would have lost one. Everything else fits as written; the
+// longest is 32.
+//
+// His register is the point and it is not the лысый's. The лысый is a micromanager
+// who never raises his voice; this one is a colleague with an opinion about your
+// tooling, delivered at volume. Neither is angry with YOU, which is what makes both
+// of them worse.
+var ClaudeLines = []string{
+	"Я КЛОД",
+	"УВИЖУ КОДЕКС — ВЫЕБУ",
+	"ТЫ ЧЁ СУКА КОДЕКС ПОСТАВИЛ",
+	"В КОНСОЛИ НЕ МОЖЕШЬ? ЕБЛАН?",
+	"GUI НУЖЕН? А МОЖЕТ ХУЙ ЗА ЩЕКУ?",
+	"УЁБОК ПОДКЛЮЧИ СКИЛЛ",
+	"КОДЕКС-ПАРАША ВЫЕБУ МАМАШУ",
+	"THIS SEEMS LIKE A SMOKING CUM",
+	"YOU ARE ABSOLUTELY RIGHT, FAGGOT",
+	"ПИДОР, ПИШИ НОРМАЛЬНЫЙ ПРОМПТ",
+	"КТО ТЕБЕ ЭТО НАПИСАЛ",
+	"А ТЕСТЫ ГДЕ",
+}
+
+// ClaudeSlot is how long he holds one line. The same two seconds as everybody else
+// on this plane — one cadence, everywhere.
+const ClaudeSlot = 40
+
+// ClaudeSays is which of ClaudeLines belongs over him right now.
+//
+// ONE RUN AND NO STATE MACHINE, unlike the лысый: he has no drink, no redirect and
+// nothing that happens TO him, so there is no second run for a state to select and
+// nothing about the pool's layout to leak. The hashed slot pick is the same one
+// everything else here uses, so every viewer of the same office reads the same words
+// at the same instant with nothing stored.
+func ClaudeSays(tick uint64) int {
+	return pickLine(introLine, 0, ClaudeLines, tick, ClaudeSlot)
+}
 
 // bossLostLines are what he says when the man he was walking at is no longer
 // there — somebody took a hookah and went behind a cloud.
@@ -556,6 +605,47 @@ const (
 	BottleReturn = 10.0
 )
 
+// CLAUDE CODE — the second man who walks at you, and the only one whose arrival
+// you survive.
+//
+// HIS SPEED IS THE ЛЫСЫЙ'S, EXACTLY, and that is the owner's instruction read
+// carefully: «it should match bosses movement speed so that its not
+// instalooseable». Both halves hold at 4.0. He matches the лысый literally, so he is
+// evadable by exactly the margin the лысый already is; and the slow he leaves behind
+// takes a walk from 6.4 to 5.12, which is still 28 % faster than either of them —
+// so being caught costs you ground and time, and never the shift.
+//
+// The arithmetic that makes that a rule rather than a coincidence is in
+// TestASlowedWalkStillOutrunsThem, and it is why the slow does NOT stack: two
+// applications would leave 4.096 m/s against their 4.0, which is not an escape, and
+// three would make the game unwinnable.
+const (
+	// ChaserSpeed is Claude's walk. See above: the лысый's, deliberately.
+	ChaserSpeed = BossSpeed
+
+	// ChaserRadius is the disc the resolver pushes out of furniture. The лысый's,
+	// so `navFree`'s single cached grid is reused for free and the passage-width
+	// rule that already holds for him holds for this one too.
+	ChaserRadius = BossRadius
+
+	// ChaserReach is how close he has to get to land on you. Shorter than the
+	// лысый's catch radius, so the two of them converging on one person do not
+	// arrive on the same tick.
+	ChaserReach = 0.6
+
+	// SlowFactor is what your walk is multiplied by after he lands, and
+	// SlowSeconds is how long for. NON-STACKING — assigned, never multiplied,
+	// exactly as the лысый's drink is — for the arithmetic in the block comment
+	// above.
+	SlowFactor  = 0.8
+	SlowSeconds = 4.0
+
+	// Spawns. The opposite corner from the лысый, so a shift does not open with
+	// both of them in one place and a player pinned against the far wall.
+	ChaserSpawnX = 2.0
+	ChaserSpawnY = 20.0
+)
+
 // «Кальян» — the second prop on the floor, and the only thing in this game that
 // makes you untouchable rather than making HIM slower.
 //
@@ -833,12 +923,29 @@ type Config struct {
 	BossLines []string     `json:"boss_lines"`
 	// Personas is who you might be, by index. The shift responses carry the index
 	// and this carries the names, so retuning the cast is a backend deploy.
-	Personas     []string     `json:"personas"`
+	Personas []string `json:"personas"`
+	// ClaudeLines is Claude Code's pool. A separate served array rather than a run
+	// inside boss_lines: he is a separate figure with a separate index on the
+	// frame, and folding him in would make two figures share one index space for
+	// no gain.
+	ClaudeLines  []string     `json:"claude_lines"`
+	Claude       ClaudeConfig `json:"claude"`
 	PlayerLines  []string     `json:"player_lines"`
 	MaxOccupants int          `json:"max_occupants"`
 	Redirect     VerbConfig   `json:"redirect"`
 	Bottle       BottleConfig `json:"bottle"`
 	Hookah       HookahConfig `json:"hookah"`
+}
+
+// ClaudeConfig is Claude Code, published so the cheatsheet can state what he costs
+// without typing a number and the client can draw his reach.
+type ClaudeConfig struct {
+	Speed float64 `json:"speed"`
+	Reach float64 `json:"reach"`
+	// SlowPct is how much of your walk he leaves you, as a percentage — the
+	// bottle's `slow_pct` convention, so the cheatsheet formats both the same way.
+	SlowPct int `json:"slow_pct"`
+	SlowMs  int `json:"slow_ms"`
 }
 
 // HookahConfig is «кальян», published so the plane can draw it where it actually
@@ -969,6 +1076,13 @@ func BuildConfig() Config {
 		BossLines:    append([]string(nil), BossLines...),
 		PlayerLines:  append([]string(nil), PlayerLines...),
 		MaxOccupants: MaxOccupants,
+		ClaudeLines:  slices.Clone(ClaudeLines),
+		Claude: ClaudeConfig{
+			Speed:   ChaserSpeed,
+			Reach:   ChaserReach,
+			SlowPct: int(math.Round(SlowFactor * 100)),
+			SlowMs:  int(SlowSeconds * 1000),
+		},
 		Hookah: HookahConfig{
 			Spots:        slices.Clone(HookahSpots),
 			Reach:        HookahReach,

@@ -40,6 +40,7 @@ interface GoldenPlayer {
   dash_dx: number;
   dash_dy: number;
   dash_cooldown: number;
+  slow_left: number;
 }
 
 interface GoldenCase {
@@ -64,6 +65,8 @@ interface GoldenFile {
     ramp_seconds: number;
     max_multiplier: number;
     grace_seconds: number;
+    slow_factor: number;
+    slow_seconds: number;
     max_step_seconds: number;
   };
   cases: GoldenCase[];
@@ -112,6 +115,8 @@ function loadGolden(): GoldenFile {
         ramp_seconds: 3.5,
         max_multiplier: 3,
         grace_seconds: 0.18,
+        slow_factor: 0.8,
+        slow_seconds: 4,
         max_step_seconds: 0.2,
       },
       cases: [],
@@ -135,6 +140,7 @@ const K: StepConstants = {
   rampSeconds: golden.constants.ramp_seconds,
   maxMultiplier: golden.constants.max_multiplier,
   graceSeconds: golden.constants.grace_seconds,
+  slowFactor: golden.constants.slow_factor,
 };
 
 /**
@@ -159,6 +165,7 @@ function fromGolden(p: GoldenPlayer): StepPlayer {
     dashDx: p.dash_dx,
     dashDy: p.dash_dy,
     dashCooldown: p.dash_cooldown,
+    slowLeft: p.slow_left,
   };
 }
 
@@ -212,6 +219,11 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
           Math.abs(p.dashCooldown - want.dash_cooldown),
           `${where}: dashCooldown`,
         ).toBeLessThan(TOLERANCE);
+        // COMPARED LIKE EVERY OTHER FIELD, because it changes the speed: a port
+        // that ran the timer down differently would move the player differently,
+        // and the position check above would report a divergence whose cause was
+        // three fields away.
+        expect(Math.abs(p.slowLeft - want.slow_left), `${where}: slowLeft`).toBeLessThan(TOLERANCE);
       }
     });
   }
@@ -233,6 +245,7 @@ function player(over: Partial<StepPlayer> = {}): StepPlayer {
     moveGrace: 0,
     dashLeft: 0,
     dashCooldown: 0,
+    slowLeft: 0,
     dashDx: 0,
     dashDy: 0,
     ...over,

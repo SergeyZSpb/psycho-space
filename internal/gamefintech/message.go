@@ -228,7 +228,17 @@ type Snapshot struct {
 	// viewer is twenty bytes forever to say something that changes once every ten
 	// seconds; one small integer is four. Omitted at zero like everything else.
 	Bs int `json:"bs,omitempty"`
-	// Iv is how long YOU are behind a cloud, in milliseconds, omitted at zero.
+	// Cl is Claude Code — where he is, and how lit his cigarette is.
+	Cl ClaudeFrame `json:"cl"`
+	// Sl is how long Claude Code's slow has left on YOU, in milliseconds.
+	//
+	// THE CLIENT PREDICTS FROM THIS ONE, unlike `iv`: it multiplies the walk, so a
+	// client that did not fold it in would predict 6.4 m/s against the office's
+	// 5.12 — 1.28 m/s of divergence, which clears the snap threshold in about 1.6 s
+	// of walking. Rounded UP for the dash cooldown's reason: zero on the wire has
+	// to mean exactly zero on the server, or the client would predict a full-speed
+	// walk the office is about to refuse.
+	Sl int `json:"sl,omitempty"`
 	//
 	// The client needs it for the buff row and for the cloud over your own figure,
 	// and it does NOT predict from it: unlike the dash cooldown, nothing about
@@ -257,6 +267,23 @@ type Snapshot struct {
 	Pr []PeerFrame `json:"pr,omitempty"`
 }
 
+// ClaudeFrame is Claude Code, quantised exactly as the лысый is.
+//
+// NEVER OMITTED, unlike the props: he is always on the floor, so an absent field
+// would mean «he is not there», which is never true. That costs the frame about
+// thirty bytes on every snapshot and it is the one unconditional addition in this
+// batch — stated rather than hidden, and measured in the budget test.
+type ClaudeFrame struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	// C is how lit the cigarette is, 0..255 — the grin's arrangement exactly, so
+	// the client reads how much trouble it is in without a meter.
+	C int `json:"c"`
+	// P is which line is over his head, an index into ClaudeLines. Omitted at
+	// zero, and zero is «Я КЛОД».
+	P int `json:"p,omitempty"`
+}
+
 // PeerFrame is another Карен, quantised exactly as you are.
 //
 // `I` IS A PSEUDONYM, NOT AN ACCOUNT ID, and there is no name and no picture on
@@ -280,6 +307,13 @@ type PeerFrame struct {
 	// and zero is «Я КАРЕН». The same rule as yours, so two people watching the
 	// same office read the same words at the same instant.
 	P int `json:"p,omitempty"`
+	// Sl is how long Claude Code's slow has left on this colleague, milliseconds.
+	//
+	// A DEBUFF IS AS PUBLIC AS A BUFF. The office rule is that every screen shows
+	// every player's state, and «he is slowed» is exactly the kind of thing that
+	// changes what you do next — it is who the лысый will reach first. Omitted in
+	// the resting state.
+	Sl int `json:"sl,omitempty"`
 	// Iv is how long this colleague is behind a cloud, in milliseconds.
 	//
 	// IT RIDES A PEER'S FRAME BECAUSE A BUFF IS NOT PRIVATE. The office rule is

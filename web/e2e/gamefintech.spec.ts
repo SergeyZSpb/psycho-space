@@ -99,6 +99,9 @@ const CONFIG = {
     return_ms: 9500,
     slow_pct: 45,
   },
+  // Marked like everything else here.
+  claude_lines: ['Я КЛОД, СТЕНД', 'УВИЖУ КОДЕКС — СТЕНД'],
+  claude: { speed: 2.9, reach: 0.6, slow_pct: 75, slow_ms: 4500 },
   // Marked like everything else in this stub.
   hookah: {
     spots: [
@@ -241,6 +244,7 @@ async function stubSocket(page: Page): Promise<{
         st: 4500,
         dc: 1800,
         b: { x: 300, y: 1500, g: 40 },
+        cl: { x: 400, y: 1400, c: 30 },
         ...fields,
       }),
     over: (fields = {}) => send({ t: 'fintech_over', cause: 'promoted', pay: 42800, secs: 73, ...fields }),
@@ -1537,5 +1541,83 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — the кальян and th
     // The stub's numbers, not production's — 11,5 s and 19,5 s.
     await expect(rules).toContainText('11,5 с');
     await expect(rules).toContainText('19,5 с');
+  });
+});
+
+test.describe('«СИМУЛЯТОР ФИНТЕХА» — Claude Code', () => {
+  test('he is on the plane, placed where the frame put him', async ({ page }) => {
+    const socket = await enterOffice(page);
+    await socket.snapshot({ cl: { x: 600, y: 900, c: 120, p: 1 } });
+    const claude = page.getByTestId('fintech-claude');
+    await expect(claude).toHaveCount(1);
+    await expect
+      .poll(() => claude.evaluate((el) => getComputedStyle(el).getPropertyValue('--x').trim()))
+      .toBe(String(6 / CONFIG.office.w));
+    // His words come from his OWN served pool, by index — not the лысый's.
+    await expect(page.getByTestId('fintech-claude-say')).toHaveText(CONFIG.claude_lines[1]);
+  });
+
+  test('he is built like the others and marked by what you can see at thirty pixels', async ({
+    page,
+  }) => {
+    // No logo and no likeness: colour and silhouette. The stubble and the cigarette
+    // have to actually paint, which is the lesson of the three CSS rules that were
+    // written and never landed.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ cl: { x: 600, y: 900, c: 200 } });
+    const shape = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="fintech-claude"]')!;
+      const box = (sel: string) => {
+        const n = el.querySelector(sel);
+        const r = n?.getBoundingClientRect();
+        return r ? r.width * r.height : 0;
+      };
+      return {
+        head: box('.fintech-fig-head'),
+        body: box('.fintech-fig-body'),
+        stubble: box('.fintech-claude-stubble'),
+        cig: box('.fintech-claude-cig'),
+      };
+    });
+    expect(shape.head).toBeGreaterThan(0);
+    expect(shape.body).toBeGreaterThan(0);
+    expect(shape.stubble, 'the stubble does not paint').toBeGreaterThan(0);
+    expect(shape.cig, 'the cigarette does not paint').toBeGreaterThan(0);
+  });
+
+  test('the slow shows on you and on a colleague, and in the row', async ({ page }) => {
+    // A debuff is as public as a buff — who the лысый reaches first is exactly the
+    // sort of thing every screen has to show.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ sl: 4500, pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600, sl: 2000 }] });
+    const marks = await page.evaluate(() => ({
+      me: document.querySelector('[data-testid="fintech-me"]')!.getAttribute('data-slow'),
+      peer: document.querySelector('[data-testid="fintech-peer"]')!.getAttribute('data-slow'),
+      skin: getComputedStyle(document.querySelector('[data-testid="fintech-me"]')!).getPropertyValue(
+        '--skin',
+      ),
+    }));
+    expect(marks.me).toBe('1');
+    expect(marks.peer).toBe('1');
+    // On the SKIN rather than on the positioning box, which is the rule the лысый's
+    // green already follows — a background on a figure's box paints the coordinate.
+    expect(marks.skin.trim()).not.toBe('');
+
+    const row = page.getByTestId('fintech-hud-buffs');
+    await expect(row).toContainText('5');
+    const bad = await row.evaluate((el) =>
+      el.querySelector('[data-buff="slow"]')!.getAttribute('data-bad'),
+    );
+    expect(bad, 'the slow is not marked as working against you').toBe('1');
+  });
+
+  test('the cheatsheet says what he costs, from the served numbers', async ({ page }) => {
+    await openSplash(page);
+    await expect(page.getByTestId('fintech-splash')).toBeVisible();
+    const rules = page.getByTestId('fintech-rules');
+    // The stub's numbers: 75 % of the walk for 4,5 s, at 2,9 m/s.
+    await expect(rules).toContainText('75 %');
+    await expect(rules).toContainText('4,5 с');
+    await expect(rules).toContainText('2,9 м/с');
   });
 });

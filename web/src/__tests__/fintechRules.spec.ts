@@ -257,3 +257,14 @@ describe('what is currently true of you', () => {
     expect(drunk.bad).toBeUndefined();
   });
 });
+
+describe('the slow in the row', () => {
+  it('is the one entry marked as working against you', () => {
+    // The row exists to be scanned rather than read, so the single debuff has to be
+    // distinguishable from the two buffs beside it.
+    const shown = buffsFor({ slowMs: 3_000, cloudMs: 9_000, drunkMs: 1_000 });
+    expect(shown.map((b) => b.key)).toEqual(['cloud', 'slow', 'drunk']);
+    expect(shown.find((b) => b.key === 'slow')!.bad).toBe(true);
+    expect(shown.find((b) => b.key === 'cloud')!.bad).toBeUndefined();
+  });
+});
