@@ -9,6 +9,7 @@ import {
   dashAxes,
   createPredictor,
   stickVector,
+  axesFromKeys,
 } from '../lib/fintechPredict';
 import type { FintechAxes } from '../lib/fintechPredict';
 import type { StepCommand, StepConstants } from '../lib/fintechStep';
@@ -610,5 +611,43 @@ describe('a replay is a rewind, not a second application', () => {
     p.reconcile({ x: 4.25, y: 17, ack: 6, dashCooldown: 0, slowLeft: 0 });
     expect(p.raw().x).toBeCloseTo(4.25, 9);
     expect(p.raw().y).toBeCloseTo(17, 9);
+  });
+});
+
+describe('keys on a desktop', () => {
+  it('walks the way the screen does, not the way a shooter does', () => {
+    // The office's +Y points DOWN and so does the screen's, which is the convention
+    // the whole client is built on. `W` is therefore −1 on Y — «ВАНЯДУМ»'s version of
+    // this function has the opposite sign because a shooter's forward is away from the
+    // camera, and copying it would have walked everybody backwards.
+    expect(axesFromKeys(new Set(['KeyW']))).toEqual({ mx: 0, my: -1 });
+    expect(axesFromKeys(new Set(['KeyS']))).toEqual({ mx: 0, my: 1 });
+    expect(axesFromKeys(new Set(['KeyA']))).toEqual({ mx: -1, my: 0 });
+    expect(axesFromKeys(new Set(['KeyD']))).toEqual({ mx: 1, my: 0 });
+  });
+
+  it('reads the arrows as well, because some people use them', () => {
+    expect(axesFromKeys(new Set(['ArrowUp']))).toEqual({ mx: 0, my: -1 });
+    expect(axesFromKeys(new Set(['ArrowRight']))).toEqual({ mx: 1, my: 0 });
+  });
+
+  it('does not make a diagonal faster than a straight line', () => {
+    // The server sanitises this and so does the port; all three agreeing is the point,
+    // because a diagonal that outran a walk is a cheat the office would refuse and the
+    // correction would then yank the player back.
+    const d = axesFromKeys(new Set(['KeyW', 'KeyD']));
+    expect(Math.hypot(d.mx, d.my)).toBeCloseTo(1, 9);
+    expect(d.mx).toBeCloseTo(1 / Math.SQRT2, 9);
+    expect(d.my).toBeCloseTo(-1 / Math.SQRT2, 9);
+  });
+
+  it('cancels opposite keys rather than picking one', () => {
+    expect(axesFromKeys(new Set(['KeyA', 'KeyD']))).toEqual({ mx: 0, my: 0 });
+    expect(axesFromKeys(new Set(['KeyW', 'KeyS']))).toEqual({ mx: 0, my: 0 });
+  });
+
+  it('stands still for anything it does not read', () => {
+    expect(axesFromKeys(new Set())).toEqual({ mx: 0, my: 0 });
+    expect(axesFromKeys(new Set(['KeyQ', 'ShiftLeft']))).toEqual({ mx: 0, my: 0 });
   });
 });

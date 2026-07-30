@@ -555,6 +555,48 @@ export function stickVector(
   return { mx: dx * scale, my: dy * scale };
 }
 
+/**
+ * Movement axes from the keys currently held — WASD, or the arrows.
+ *
+ * DESKTOP PARITY COSTS ONE FUNCTION and buys two things worth more: the game is
+ * playable and developable without a touch emulator, and a test can drive it with
+ * ordinary key events instead of synthesising pointer gestures on a stick.
+ *
+ * SCREEN AXES, LIKE THE STICK'S. `W` is −1 on Y because the office's +Y points DOWN
+ * and so does the screen's, which is the convention the whole client is built on —
+ * there is no axis flip anywhere in it, and this is not the place to introduce one.
+ *
+ * Re-implemented here rather than imported from «ВАНЯДУМ», which has the same
+ * function: no game shares code with another (ADR-028), and that game's version has
+ * the opposite Y sign because a shooter's forward is away from the camera.
+ */
+export function axesFromKeys(held: ReadonlySet<string>): FintechAxes {
+  const on = (...keys: string[]) => (keys.some((k) => held.has(k)) ? 1 : 0);
+  const mx = on('KeyD', 'ArrowRight') - on('KeyA', 'ArrowLeft');
+  const my = on('KeyS', 'ArrowDown') - on('KeyW', 'ArrowUp');
+  if (mx === 0 || my === 0) return { mx, my };
+  // Normalised, so holding two keys is not faster than holding one. `Sanitise` on the
+  // server does this too and so does the port — all three agreeing is the point, and
+  // a diagonal that outran a straight line is a cheat the office would refuse.
+  const inv = 1 / Math.SQRT2;
+  return { mx: mx * inv, my: my * inv };
+}
+
+/** The keys this game reads, so a handler can ignore everything else. */
+export const MOVE_KEYS: readonly string[] = [
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+];
+
+/** The key that dashes. */
+export const DASH_KEY = 'Space';
+
 /** One command exactly as it goes on the wire — short keys, `d` omitted. */
 export interface WireCommand {
   q?: number;

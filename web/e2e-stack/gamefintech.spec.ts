@@ -126,21 +126,37 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     expect(config.personas[0]).toBe('Карен');
   });
 
-  test('the office a real browser opens actually has Серега and Тёма in it', async ({ page }) => {
-    // THE TEST THAT WAS MISSING. Every other assertion about the two of them was
-    // made against a stubbed frame or against the office in Go — so «the server
-    // sends them» and «the client can draw them» were both proved, and «they are on
-    // screen when a real binary drives a real browser» was not. That is exactly the
-    // gap a prod-only defect hides in.
+  test('the office a real browser opens has the whole cast in it, and names you', async ({
+    page,
+  }) => {
+    // TWO CLAIMS, ONE OFFICE VISIT, and the reason is the suite's own budget rather
+    // than tidiness. This runs at `workers: 1` against one server behind the same
+    // per-IP rate limiter production uses, so every extra login-navigate-start-quit
+    // cycle spends part of a shared allowance — and three separate tests here pushed
+    // the run over it, which surfaced as a 429 on `/api/auth/me` in an unrelated yard
+    // spec twenty tests later. Denser tests, not a raised limit: the limiter is doing
+    // its job.
+    //
+    // THE GAP BOTH HALVES FELL INTO. Every other assertion about the non-players and
+    // about the persona was made against a stubbed frame or against the office in Go —
+    // so «the server sends it» and «the client can draw it» were both proved, and «it
+    // is on screen when a real binary drives a real browser» was not. It was not, for
+    // one deploy: the served `npcs` and `personas` arrays were both nil.
+    const res = await page.request.get('/api/game-fintech/config');
+    const cast = (await res.json()) as { personas: string[]; npcs: { key: string }[] };
+    expect(cast.personas.length).toBeGreaterThan(1);
+    expect(cast.npcs.length).toBeGreaterThan(1);
+
     await page.goto('/app/game-fintech');
     await expect(page.getByTestId('fintech-splash')).toBeVisible();
     await page.getByTestId('fintech-start').click();
     await expect(page.getByTestId('fintech-play')).toBeVisible();
 
+    // Both non-players are there, placed apart rather than stacked at the plane's
+    // default centre — which is what an unwritten `--x` looks like and would read as
+    // one figure rather than two.
     const npcs = page.getByTestId('fintech-npc');
-    await expect(npcs).toHaveCount(2);
-    // Placed, rather than left stacked at the plane's default centre — which is what
-    // an unwritten `--x` looks like and would read as one figure rather than two.
+    await expect(npcs).toHaveCount(cast.npcs.length);
     await expect
       .poll(async () =>
         npcs.first().evaluate((el) => getComputedStyle(el).getPropertyValue('--x').trim()),
@@ -149,36 +165,63 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     const boxes = await npcs.evaluateAll((els) =>
       els.map((el) => {
         const r = el.getBoundingClientRect();
-        return { w: r.width, h: r.height, x: r.x };
+        return { area: r.width * r.height, x: r.x };
       }),
     );
-    for (const b of boxes) expect(b.w * b.h, 'a non-player has no box at all').toBeGreaterThan(0);
+    for (const b of boxes) expect(b.area, 'a non-player has no box at all').toBeGreaterThan(0);
     expect(boxes[0].x, 'both of them are drawn in the same place').not.toBeCloseTo(boxes[1].x, 0);
+
+    // And the readouts name whoever the server drew you as — asserted as membership of
+    // the served cast rather than as a fixed name, because the whole point is that it
+    // is not fixed. That the draw VARIES is proved over real HTTP in the integration
+    // suite, where forty shifts cost no browser.
+    const said = ((await page.getByTestId('fintech-who').textContent()) ?? '').trim();
+    expect(
+      cast.personas.some((n) => said.includes(n)),
+      `the readout says «${said}»`,
+    ).toBe(true);
 
     await page.getByTestId('fintech-quit').click();
   });
 
-  test('the readouts name whoever the server drew you as', async ({ page }) => {
-    // THE OTHER HALF OF THE SAME GAP THE NON-PLAYERS FELL INTO. That the draw varies is
-    // proved over real HTTP in the integration suite; that the NAME reaches the screen
-    // was proved nowhere, and for one deploy it did not — the served `personas` array
-    // was nil, so the readout had no name to show and every shift looked identical
-    // whatever the server had drawn.
-    const res = await page.request.get('/api/game-fintech/config');
-    const cast = ((await res.json()) as { personas: string[] }).personas;
-    expect(cast.length).toBeGreaterThan(1);
-
+  test('WASD and space play the game, against the real office', async ({ page }) => {
+    // DESKTOP CONTROLS, END TO END. The stubbed suite deliberately makes no claim about
+    // input — frames are emitted from the render loop, which a browser pauses for a
+    // backgrounded tab — so the axes are unit-tested and the WIRE is proved here, where
+    // there is one worker, the page is visible, and the office on the other end is real.
     await page.goto('/app/game-fintech');
     await expect(page.getByTestId('fintech-splash')).toBeVisible();
     await page.getByTestId('fintech-start').click();
     await expect(page.getByTestId('fintech-play')).toBeVisible();
 
-    const who = page.getByTestId('fintech-who');
-    await expect(who).toHaveCount(1);
-    const said = ((await who.textContent()) ?? '').trim();
-    // One of the four, whichever was drawn — asserted as membership rather than as a
-    // fixed name, because the whole point is that it is not fixed.
-    expect(cast.some((n) => said.includes(n)), `the readout says «${said}»`).toBe(true);
+    const me = page.getByTestId('fintech-me');
+    const at = () =>
+      me.evaluate((el) => ({
+        x: parseFloat(getComputedStyle(el).getPropertyValue('--x')),
+        y: parseFloat(getComputedStyle(el).getPropertyValue('--y')),
+      }));
+    // Wait for a real position before measuring one: the first frame is what seeds the
+    // predictor, and reading before it arrives measures the plane's default centre.
+    await expect.poll(async () => Number.isFinite((await at()).y)).toBe(true);
+    const before = await at();
+
+    // Held, not tapped: a walk is a state, and the emitter samples the axes at the
+    // served rate rather than per key event.
+    await page.keyboard.down('KeyW');
+    await expect.poll(async () => (await at()).y < before.y - 0.01, { timeout: 5_000 }).toBe(true);
+    await page.keyboard.up('KeyW');
+
+    // And sideways, so the axis mapping is proved rather than just "something moved".
+    const mid = await at();
+    await page.keyboard.down('KeyD');
+    await expect.poll(async () => (await at()).x > mid.x + 0.01, { timeout: 5_000 }).toBe(true);
+    await page.keyboard.up('KeyD');
+
+    // Space dashes, and the readout says so — which is the office answering, since the
+    // cooldown is on the snapshot rather than run locally.
+    await expect(page.getByTestId('fintech-hud-dash')).toContainText('ГОТОВ');
+    await page.keyboard.press('Space');
+    await expect(page.getByTestId('fintech-hud-dash')).not.toContainText('ГОТОВ');
 
     await page.getByTestId('fintech-quit').click();
   });

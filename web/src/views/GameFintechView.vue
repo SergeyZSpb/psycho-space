@@ -66,7 +66,17 @@
 
     <!-- PLAYING — a fixed-height column: readouts, the office, the controls.
          Nothing here scrolls, and nothing stands where a control takes the tap. -->
-    <section v-else-if="phase === 'playing'" class="fintech-play" data-testid="fintech-play">
+    <section
+      v-else-if="phase === 'playing'"
+      class="fintech-play"
+      data-testid="fintech-play"
+      :style="{
+        '--box-ratio': String(box.boxRatio),
+        '--head-share': String(box.headShare),
+        '--side-share': String(box.sideShare),
+        '--unit-cqw': String(UNIT_CQW),
+      }"
+    >
       <div class="fintech-hud">
         <span class="fintech-hud-cell" data-testid="fintech-hud-money">
           <span class="fintech-hud-label">ЗАРПЛАТА</span>
@@ -79,7 +89,7 @@
           <span class="fintech-hud-label">ТЫ</span>
           <span class="fintech-hud-value">{{ personaName }}</span>
         </span>
-        <span class="fintech-hud-cell fintech-hud-dash">
+        <span class="fintech-hud-cell fintech-hud-dash" data-testid="fintech-hud-dash">
           {{ dashMs > 0 ? `РЫВОК ${formatSeconds(dashMs)}` : 'РЫВОК ГОТОВ' }}
         </span>
         <button class="fintech-quit" type="button" data-testid="fintech-quit" @click="quit">
@@ -111,15 +121,7 @@
         {{ link === 'connecting' ? 'связь…' : 'связь потеряна, ждём…' }}
       </p>
 
-      <div
-        class="fintech-stage"
-        :style="{
-          '--box-ratio': String(box.boxRatio),
-          '--head-share': String(box.headShare),
-          '--side-share': String(box.sideShare),
-          '--unit-cqw': String(UNIT_CQW),
-        }"
-      >
+      <div class="fintech-stage">
         <!-- THE PLANE IS THE ROOM PLUS THE WALL OVER IT, and it is the clipper.
              The office rectangle below is the room proper: it keeps the
              catalogue's shape, it is the query container, and every coordinate is
@@ -434,6 +436,9 @@ import {
   REDUNDANT_COMMANDS,
   buildInputFrame,
   createEmitter,
+  DASH_KEY,
+  MOVE_KEYS,
+  axesFromKeys,
   dashAxes,
   createPredictor,
   stickVector,
@@ -873,7 +878,20 @@ onMounted(async () => {
   loading.value = false;
 });
 
-onBeforeUnmount(teardownPlay);
+// Bound on the WINDOW rather than on an element, because nothing in the play screen
+// is focusable except the two buttons — a keyboard player never has focus anywhere a
+// local listener would fire. Guarded on `phase` inside the handler instead, so a key
+// pressed on the splash or the over screen does nothing.
+window.addEventListener('keydown', onKeyDown);
+window.addEventListener('keyup', onKeyUp);
+window.addEventListener('blur', releaseKeys);
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown);
+  window.removeEventListener('keyup', onKeyUp);
+  window.removeEventListener('blur', releaseKeys);
+  teardownPlay();
+});
 
 async function loadLists(): Promise<void> {
   const [mine, top] = await Promise.allSettled([gameFintechApi.myShifts(), gameFintechApi.topShifts()]);
@@ -1568,6 +1586,52 @@ function moveStick(clientX: number, clientY: number): void {
 }
 
 /**
+ * WASD (or the arrows) and space, for anybody playing at a desk.
+ *
+ * THE SAME SEAM THE THUMB USES. Both write the module's one `axes` value, which the
+ * emitter samples at the served rate — so there is one input path, the prediction and
+ * the wire cannot tell a key from a stick, and nothing about the netcode had to learn
+ * about keyboards.
+ *
+ * HELD KEYS RATHER THAN EVENTS, because a walk is a state and a keypress is not: on a
+ * key repeat the browser fires `keydown` over and over, and building an axis per event
+ * would make movement a function of the repeat rate.
+ *
+ * CLEARED ON BLUR, which is the bug this would otherwise ship with: alt-tab away
+ * mid-walk and the `keyup` lands on the other window, so the office keeps walking you
+ * into a wall until you come back. The same reason the stick clears on
+ * `pointercancel`.
+ */
+const held = new Set<string>();
+
+function onKeyDown(e: KeyboardEvent): void {
+  if (phase.value !== 'playing') return;
+  if (e.code === DASH_KEY) {
+    // Space scrolls a page by default, and while a shift is running the page must not
+    // move — the office is the screen. Prevented before the repeat guard, so holding it
+    // does not scroll either.
+    e.preventDefault();
+    if (!e.repeat) onDash();
+    return;
+  }
+  if (!MOVE_KEYS.includes(e.code)) return;
+  e.preventDefault();
+  held.add(e.code);
+  axes = axesFromKeys(held);
+}
+
+function onKeyUp(e: KeyboardEvent): void {
+  if (!held.delete(e.code)) return;
+  axes = axesFromKeys(held);
+}
+
+function releaseKeys(): void {
+  if (held.size === 0) return;
+  held.clear();
+  axes = axesFromKeys(held);
+}
+
+/**
  * Asks for a dash.
  *
  * The flag is set here and consumed by the emitter, rather than a command being
@@ -1743,10 +1807,30 @@ function onDash(): void {
   position: absolute;
   inset: 0;
   overflow: hidden;
+  /* A SIZE CONTAINER, so the readouts and the thumbs can be given the same width as
+     the room. Without it they were laid out against the whole play box: on a phone
+     that is the same thing, because the plane is full-bleed — on a desktop the room is
+     a column in the middle and the money ended up in the far top-left corner with the
+     quit button in the far top-right, an armspan away from the office they describe.
+     The stage below is its own size container, so nothing inside the plane changed. */
+  container-type: size;
   background: #16181d;
   color: rgba(255, 255, 255, 0.94);
 
-  /* HOW TALL THE READOUTS ARE, in one place, because more than one thing has to
+  /* THE ROOM'S OWN WIDTH, for everything drawn on top of it.
+   The same expression `.fintech-plane` sizes itself with, so the readouts, the buff
+   row and the two thumbs line up with the office's edges rather than the screen's.
+   On a phone this is the whole width and changes nothing; on a desktop it is what
+   stops the HUD being an armspan away from the room it describes. */
+.fintech-hud,
+.fintech-streak,
+.fintech-buffs,
+.fintech-controls {
+  width: min(100cqw, calc(100cqh * var(--box-ratio, 0.718)));
+  margin-inline: auto;
+}
+
+/* HOW TALL THE READOUTS ARE, in one place, because more than one thing has to
      agree with it and none of them can measure it.
 
      It is the HUD strip plus the streak bar: `.fintech-quit`'s `min-height: 44px`

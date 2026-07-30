@@ -317,6 +317,10 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» splash', () => {
     // starting rather than discovered mid-shift. Hardcoded prose, so it is asserted
     // by its words rather than by a served number.
     await expect(rules).toContainText('в белом круге');
+    // And how to play at a desk, which is a rule a player needs before starting and
+    // was invisible until the keyboard existed.
+    await expect(rules).toContainText('WASD');
+    await expect(rules).toContainText('пробел');
     await expect(rules).toContainText('5,5 с');
     await expect(rules).toContainText('2,9 м/с');
     await expect(rules).toContainText('1,25 м');
@@ -1871,4 +1875,42 @@ test('Тёма’s words clear his paraglider instead of hiding under it', async
   expect(seen.sayBottom).toBeLessThanOrEqual(seen.markTop + 1);
   // And it would win the paint order anyway, which is the belt to that brace.
   expect(Number(seen.sayZ)).toBeGreaterThan(0);
+});
+
+test('the readouts and the thumbs line up with the room, not the screen', {
+  tag: '@wide',
+}, async ({ page }) => {
+  // ON A DESKTOP THE ROOM IS A COLUMN IN THE MIDDLE, and the overlays were laid out
+  // against the whole play box — so the money sat in the far top-left corner with the
+  // quit button in the far top-right, an armspan away from the office they describe.
+  // At phone width this changes nothing, because the plane is full-bleed there, which
+  // is why the claim is @wide.
+  await enterOffice(page);
+  const seen = await page.evaluate(() => {
+    const box = (sel: string) => {
+      const r = document.querySelector(sel)!.getBoundingClientRect();
+      return { left: r.left, right: r.right, width: r.width };
+    };
+    return {
+      plane: box('[data-testid="fintech-plane"]'),
+      hud: box('.fintech-hud'),
+      streak: box('[data-testid="fintech-hud-streak"]'),
+      controls: box('.fintech-controls'),
+      play: box('[data-testid="fintech-play"]'),
+    };
+  });
+  // Each overlay is the room's width, within a pixel of rounding...
+  for (const [name, b] of [
+    ['the readouts', seen.hud],
+    ['the streak bar', seen.streak],
+    ['the controls', seen.controls],
+  ] as const) {
+    expect(Math.abs(b.width - seen.plane.width), `${name} is not the room's width`).toBeLessThan(2);
+    expect(Math.abs(b.left - seen.plane.left), `${name} is not aligned with the room`).toBeLessThan(2);
+  }
+  // ...and on a wide screen that is genuinely narrower than the play box, so the test
+  // discriminates rather than passing because everything happens to be full width.
+  if (seen.play.width > 900) {
+    expect(seen.plane.width).toBeLessThan(seen.play.width - 40);
+  }
 });
