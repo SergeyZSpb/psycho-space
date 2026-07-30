@@ -737,6 +737,13 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// an opinion about your tooling.
 	o.claude = StepChaser(Desks, o.claude, targets, dt)
 
+	// AND THEN HE STEPS ASIDE IF HE HAS WALKED INTO THE ЛЫСЫЙ. The two of them
+	// share a pursuit rule, a navigator and a speed, so their paths do not cross —
+	// they MERGE, and the floor shows one figure where there are two. Claude is the
+	// one who gives way, so the лысый's position is untouched and nothing about the
+	// chase, the catch or its rewind moves. See Separate.
+	o.claude = Separate(o.boss.Pos, o.claude, Desks)
+
 	// AND THE TWO WHO ARE NOT PLAYING. Stepped after both men and against neither of
 	// them: they are not in `targets`, so nobody walks at them and they walk at
 	// nobody. They carry their own кальян and never touch the office's one.

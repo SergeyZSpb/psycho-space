@@ -65,6 +65,62 @@ func StepChaser(desks []Rect, c Chaser, targets []Vec2, dt float64) Chaser {
 	return c
 }
 
+// Separate moves Claude clear of the лысый when the two are standing in the same
+// place, and returns him.
+//
+// THEY CONVERGE BY CONSTRUCTION, WHICH IS WHY THIS IS NOT AN EDGE CASE. Both men
+// walk at the nearest of the same target list, through the same `navAimAt`, at
+// the same speed — `ChaserSpeed` IS `BossSpeed` — so from the moment their paths
+// meet they compute an identical heading and cover an identical distance every
+// tick, for ever. They do not merely brush past each other: they lock together
+// and the floor shows one figure where there are two, with the лысый's sprite
+// drawn over Claude's or the other way about depending on the depth band. A
+// player then reads one man walking at him and is slowed by something that is not
+// there.
+//
+// CLAUDE YIELDS AND THE ЛЫСЫЙ NEVER MOVES, which is the whole design of this
+// function rather than an implementation detail. Splitting the overlap between
+// them would make the лысый's position a function of Claude's — so how long a
+// player has before the shift ends would depend on where a second man happened to
+// be, and the catch, its rewind ring and every test of the chase would all shift
+// underneath. Only the man whose arrival is survivable gives way.
+//
+// He is moved SIDEWAYS rather than backwards: pushing him along the line between
+// them keeps his distance to the target unchanged, so he still lands on the same
+// tick he would have. Backwards would make him permanently the лысый's shadow and
+// he would never arrive at all.
+//
+// Pure, like everything else in this file, and deterministic in the degenerate
+// case: two discs exactly coincident have no line between them, so the fallback
+// is a fixed axis rather than a draw — this function is stepped twenty times a
+// second and must produce the same office on every process.
+func Separate(bossPos Vec2, c Chaser, desks []Rect) Chaser {
+	const gap = BossRadius + ChaserRadius
+	dx, dy := c.Pos.X-bossPos.X, c.Pos.Y-bossPos.Y
+	dist := math.Hypot(dx, dy)
+	if dist >= gap {
+		return c
+	}
+	if dist < 1e-9 {
+		// Exactly on top of him, which is the state this exists for and the one
+		// with no direction in it. +X, always, so two processes replaying the same
+		// office agree — and the wall and desk resolution below is what stops it
+		// mattering that the axis is arbitrary.
+		dx, dy, dist = 1, 0, 1
+	}
+	c.Pos = Vec2{
+		X: bossPos.X + dx/dist*gap,
+		Y: bossPos.Y + dy/dist*gap,
+	}
+	// The same treatment every move in this game gets, and it is needed here:
+	// stepping aside can step into a desk or through a wall.
+	c.Pos = clampToFloor(c.Pos, ChaserRadius)
+	for _, d := range desks {
+		c.Pos = pushOut(d, c.Pos, ChaserRadius)
+	}
+	return c
+}
+
 // Landed reports whether he has reached a player.
 //
 // A SHORTER REACH THAN THE ЛЫСЫЙ'S, and that is the one asymmetry worth having

@@ -1613,6 +1613,112 @@ func TestAColleagueSeesTheSlowToo(t *testing.T) {
 	}
 }
 
+func TestTheTwoOfThemNeverStandInTheSamePlace(t *testing.T) {
+	// THEY CONVERGE BY CONSTRUCTION. Both men walk at the nearest of the same
+	// target list, through the same navigator, at the same speed — ChaserSpeed IS
+	// BossSpeed — so from the moment their paths meet they compute an identical
+	// heading and cover an identical distance every tick, for ever. The floor then
+	// shows one figure where there are two, and a player is slowed by something
+	// that is not there.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	// Put them on exactly the same tile, which is the state they lock into, and
+	// let them both walk at the same person for a while.
+	o.mu.Lock()
+	o.claude.Pos = o.boss.Pos
+	o.mu.Unlock()
+
+	const gap = BossRadius + ChaserRadius
+	for i := 0; i < 40; i++ {
+		advance(o, 1)
+		o.mu.Lock()
+		d := math.Hypot(o.boss.Pos.X-o.claude.Pos.X, o.boss.Pos.Y-o.claude.Pos.Y)
+		alive := len(o.occupants) > 0
+		o.mu.Unlock()
+		if d < gap-1e-6 {
+			t.Fatalf("tick %d: they are %.3f m apart, two bodies need %.3f", i+1, d, gap)
+		}
+		if !alive {
+			break // the лысый arrived, which is a different test's business
+		}
+	}
+}
+
+func TestOnlyClaudeGivesWay(t *testing.T) {
+	// The лысый's position must not become a function of Claude's. If they split
+	// the overlap between them, how long a player has before the shift ends would
+	// depend on where a second man happened to be — and the catch, its rewind ring
+	// and every test of the chase would move underneath.
+	a := NewOffice()
+	join(t, a, "x", "s1")
+	b := NewOffice()
+	join(t, b, "x", "s2")
+	// Same office twice, except that in one of them Claude has walked into him.
+	b.mu.Lock()
+	b.claude.Pos = b.boss.Pos
+	b.mu.Unlock()
+	place(t, a, "x", Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
+	place(t, b, "x", Vec2{X: PlayerSpawnX, Y: PlayerSpawnY})
+
+	for i := 0; i < 20; i++ {
+		advance(a, 1)
+		advance(b, 1)
+	}
+	a.mu.Lock()
+	b.mu.Lock()
+	defer a.mu.Unlock()
+	defer b.mu.Unlock()
+	if a.boss.Pos != b.boss.Pos {
+		t.Fatalf("Claude moved the лысый: %+v against %+v", a.boss.Pos, b.boss.Pos)
+	}
+}
+
+func TestSteppingAsideKeepsHimOnTheFloorAndOutOfTheFurniture(t *testing.T) {
+	// Stepping sideways can step into a desk or through a wall, so the same
+	// resolution every other move in this game gets applies to it too. Driven over
+	// every desk corner and both spawn ends rather than one convenient spot.
+	for _, at := range append([]Vec2{
+		{X: ChaserRadius, Y: ChaserRadius},
+		{X: OfficeW - ChaserRadius, Y: OfficeH - ChaserRadius},
+		{X: BossSpawnX, Y: BossSpawnY},
+	}, deskCorners()...) {
+		c := Separate(at, Chaser{Pos: at}, Desks)
+		if c.Pos.X < ChaserRadius-1e-9 || c.Pos.X > OfficeW-ChaserRadius+1e-9 ||
+			c.Pos.Y < ChaserRadius-1e-9 || c.Pos.Y > OfficeH-ChaserRadius+1e-9 {
+			t.Fatalf("stepping aside from %+v put him off the floor at %+v", at, c.Pos)
+		}
+		for _, d := range Desks {
+			if insideDesk(d, c.Pos, ChaserRadius) {
+				t.Fatalf("stepping aside from %+v put him inside a desk at %+v", at, c.Pos)
+			}
+		}
+	}
+}
+
+func TestSteppingAsideDoesNothingWhenThereIsRoom(t *testing.T) {
+	// It is a resolver and not a repulsor: two men a metre apart are two men a
+	// metre apart, and nudging them every tick would be a permanent wobble on a
+	// figure the player is reading for direction.
+	far := Chaser{Pos: Vec2{X: 8, Y: 8}}
+	if got := Separate(Vec2{X: 8, Y: 12}, far, Desks); got.Pos != far.Pos {
+		t.Fatalf("a man four metres away was moved: %+v → %+v", far.Pos, got.Pos)
+	}
+}
+
+// deskCorners is every desk's four corners, for the resolution tests above.
+func deskCorners() []Vec2 {
+	out := make([]Vec2, 0, len(Desks)*4)
+	for _, d := range Desks {
+		out = append(out,
+			Vec2{X: d.X, Y: d.Y},
+			Vec2{X: d.X + d.W, Y: d.Y},
+			Vec2{X: d.X, Y: d.Y + d.H},
+			Vec2{X: d.X + d.W, Y: d.Y + d.H},
+		)
+	}
+	return out
+}
+
 func TestClaudeIsAlwaysOnTheFrame(t *testing.T) {
 	// He is never omitted, unlike the props: an absent field would mean «he is not
 	// there», which is never true. This is what makes the budget raise honest.

@@ -423,6 +423,7 @@ sequenceDiagram
         G->>G: drain while the budget covers the next command WHOLE — ack only what ran
         G->>G: any tick no command claimed, and only with an EMPTY queue, is stood still
         G->>G: StepBoss + StepChaser toward the nearest live occupant, round the desks
+        G->>G: Claude steps aside if he has walked into the лысый — one rule, one speed
         G->>G: record both men's positions in the rewind ring
         G->>G: per occupant, resolve Caught/Landed against the ring entry THEY can see
         G->>H: PublishTo(conn, snapshot) every tick — 20 Hz, one per occupant
