@@ -164,6 +164,24 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
     });
   }
 
+  // СЕРЕГА AND ТЁМА, named from the served cast so adding a third is a backend
+  // deploy. One line, because they are scenery: what a player needs to know is that
+  // the two figures wandering about are not part of the game.
+  const cast = config.npcs;
+  if (Array.isArray(cast) && cast.length > 0) {
+    blocks.push({
+      title: 'Кто ещё в офисе',
+      lines: [
+        {
+          label: '🚬 не игроки',
+          text:
+            `${cast.map((n) => n.name).join(' и ')} просто ходят и курят. ` +
+            `Лысый на них не идёт, и они тебе ничего не делают — но говорят много.`,
+        },
+      ],
+    });
+  }
+
   // CLAUDE CODE, derived from what the server publishes — his speed, his reach and
   // both halves of what he costs — so retuning any of them updates the screen.
   const claude = config.claude;

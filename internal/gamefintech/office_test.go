@@ -1442,3 +1442,163 @@ func TestClaudeIsNotRedirectable(t *testing.T) {
 		t.Fatal("Claude followed the redirect instead of walking at the nearest person")
 	}
 }
+
+func npcsOf(o *Office) []NPC {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]NPC(nil), o.npcs...)
+}
+
+func TestTheNonPlayersAreNeverTargets(t *testing.T) {
+	// THE ONE THING THAT MUST NEVER BE TRUE. The moment anything enters the occupant
+	// map it becomes a chase target, a snapshot addressee and a slot against the
+	// occupancy cap — so a lazy player would be saved by a colleague who is not
+	// playing, which is the whole game undone by scenery.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	advance(o, 20)
+
+	o.mu.Lock()
+	occupants := len(o.occupants)
+	npcs := len(o.npcs)
+	o.mu.Unlock()
+	if occupants != 1 {
+		t.Fatalf("the office holds %d occupants, want 1 — an NPC has joined the map", occupants)
+	}
+	if npcs == 0 {
+		t.Fatal("there are no NPCs at all, so this test proves nothing")
+	}
+	if got := o.Occupants(); got != 1 {
+		t.Fatalf("Occupants() reports %d, want 1", got)
+	}
+}
+
+func TestTheBaldManWalksPastThemToGetToYou(t *testing.T) {
+	// He is stepped against the occupants' positions and they are not in that list,
+	// so however close one of them is standing he keeps coming for the player. Put
+	// one right next to him and check he still closes on the man at the other end.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(t, o, "a", Vec2{X: 8, Y: 4})
+	o.mu.Lock()
+	o.boss.Pos = Vec2{X: 8, Y: 16}
+	o.npcs[0].Pos = Vec2{X: 8, Y: 17}
+	o.npcs[0].To = Vec2{X: 8, Y: 17}
+	o.npcs[0].Pause = 60
+	before := math.Hypot(o.boss.Pos.X-8, o.boss.Pos.Y-4)
+	o.mu.Unlock()
+
+	advance(o, 10)
+
+	o.mu.Lock()
+	after := math.Hypot(o.boss.Pos.X-8, o.boss.Pos.Y-4)
+	o.mu.Unlock()
+	if after >= before {
+		t.Fatalf("he was %v from the player and is now %v — an NPC distracted him", before, after)
+	}
+}
+
+func TestTheyNeverTouchYourShift(t *testing.T) {
+	// They buff nobody and debuff nobody. Parked on top of the player for a full
+	// second of simulation, nothing about him may change but his own arithmetic.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	o.mu.Lock()
+	at := o.occupants["a"].State.Pos
+	for i := range o.npcs {
+		o.npcs[i].Pos = at
+		o.npcs[i].To = at
+		o.npcs[i].Pause = 60
+		o.npcs[i].Cloud = NPCCloudSeconds
+	}
+	o.mu.Unlock()
+
+	advance(o, int(SimHz))
+
+	if got := slowOf(o, "a"); got != 0 {
+		t.Fatalf("an NPC slowed the player: %v", got)
+	}
+	if got := cloudOf(o, "a"); got != 0 {
+		t.Fatalf("an NPC's smoke made the player invincible: %v", got)
+	}
+	o.mu.Lock()
+	alive := o.occupants["a"].State.Alive
+	o.mu.Unlock()
+	if !alive {
+		t.Fatal("an NPC ended the shift")
+	}
+}
+
+func TestTheyDoNotTakeTheHookahFromYou(t *testing.T) {
+	// «They get to hookah, get cloud» is decoration. Taking the prop away would be
+	// interference, and interference is what «they do not buff or debuff the players»
+	// rules out — so they smoke where it stands and it stays standing.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	spot := HookahSpots[hookahSpotOf(o)]
+	o.mu.Lock()
+	for i := range o.npcs {
+		o.npcs[i].Pos = spot
+		o.npcs[i].To = spot
+		o.npcs[i].Smoking = true
+	}
+	o.mu.Unlock()
+
+	advance(o, 4)
+	if snapOf(t, o, "a").Hk != 0 {
+		t.Fatal("an NPC consumed the кальян")
+	}
+	// And it is still there for the player to walk to.
+	place(t, o, "a", spot)
+	advance(o, 1)
+	if cloudOf(o, "a") <= 0 {
+		t.Fatal("the player could not take a кальян an NPC had been standing on")
+	}
+}
+
+func TestTheyAmbleAndSmokeAndSaySomething(t *testing.T) {
+	// They have to actually MOVE, or they are furniture with opinions.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	start := npcsOf(o)
+	moved := false
+	for i := 0; i < int(SimHz)*6 && !moved; i++ {
+		advance(o, 1)
+		for j, n := range npcsOf(o) {
+			if math.Hypot(n.Pos.X-start[j].Pos.X, n.Pos.Y-start[j].Pos.Y) > 0.5 {
+				moved = true
+			}
+		}
+	}
+	if !moved {
+		t.Fatal("neither of them went anywhere")
+	}
+
+	// And they are on the frame, each with his own line rather than a shared pool.
+	np := snapOf(t, o, "a").Np
+	if len(np) != len(NPCCast) {
+		t.Fatalf("the frame carries %d NPCs, want %d", len(np), len(NPCCast))
+	}
+	for i, f := range np {
+		if f.P < 0 || f.P >= len(NPCCast[i].Lines) {
+			t.Fatalf("NPC %d says index %d, outside his own pool of %d", i, f.P, len(NPCCast[i].Lines))
+		}
+	}
+}
+
+func TestTheTwoOfThemDoNotSpeakInUnison(t *testing.T) {
+	// On a plane holding both of them, the same line at the same instant reads as one
+	// man duplicated rather than as two colleagues — which is why NPCSays is salted
+	// by which of them it is.
+	same, total := 0, 0
+	for tick := uint64(0); tick < NPCSlot*40; tick += NPCSlot {
+		a, b := NPCSays(0, tick), NPCSays(1, tick)
+		total++
+		if NPCCast[0].Lines[a] == NPCCast[1].Lines[b] {
+			same++
+		}
+	}
+	if same*2 > total {
+		t.Fatalf("they said the same thing in %d of %d slots", same, total)
+	}
+}

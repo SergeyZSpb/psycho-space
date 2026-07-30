@@ -605,6 +605,87 @@ const (
 	BottleReturn = 10.0
 )
 
+// СЕРЕГА AND ТЁМА — the office's two non-players.
+//
+// Scenery with opinions. They wander, they visit the кальян, and they say what they
+// think of your branch; they are not targets, they take no slot in the occupancy cap
+// and they never touch a player's game.
+type NPCKind struct {
+	// Key is what the client draws him as. A key rather than a description, so the
+	// look lives in the stylesheet and the catalogue stays content.
+	Key string `json:"key"`
+	// Name is who he is, for the cheatsheet.
+	Name string `json:"name"`
+	// Spawn is where he starts. Not on the wire — it is only interesting once.
+	Spawn Vec2 `json:"-"`
+	// Lines is his own pool, indexed on the frame like everybody else's.
+	Lines []string `json:"lines"`
+}
+
+// NPCCast is who they are and what they say. The owner's copy, verbatim.
+//
+// A POOL EACH rather than a run inside a shared array: they are two figures with two
+// indexes on the frame, and folding them together would make one man able to say the
+// other's lines. Index 0 is the self-introduction, as in every pool here.
+var NPCCast = []NPCKind{
+	{
+		Key:   "serega",
+		Name:  "Серега",
+		Spawn: Vec2{X: 3.0, Y: 2.0},
+		Lines: []string{
+			"Я СЕРЕГА",
+			"ХУЙНЯ, ПЕРЕДЕЛЫВАЙ",
+			"ТЫ ТУПО КОДЕКСШЛАК ЗАЛИЛ?",
+			"ДА Я ХУЕМ БОЛЬШЕ ДЕЛАЮ",
+			"А РЕВЬЮВИТЬ ОЧКО СЕМА АЛЬМАНА БУДЕТ?",
+		},
+	},
+	{
+		Key:   "tema",
+		Name:  "Тёма",
+		Spawn: Vec2{X: 13.0, Y: 2.0},
+		Lines: []string{
+			"Я ТЁМА",
+			"ХУЙНЯ, ПЕРЕДЕЛЫВАЙ",
+			"А РЕВЬЮВИТЬ КТО БУДЕТ?",
+			"Я В ПОЛЁТЕ, ПОТОМ",
+			"ДА Я ХУЕМ БОЛЬШЕ ДЕЛАЮ",
+		},
+	},
+}
+
+// How they amble.
+const (
+	// NPCSpeed is a stroll — slower than either man who is actually looking for
+	// somebody, so they never read as chasing anyone.
+	NPCSpeed = 2.2
+	// NPCArrive is how close counts as arrived. Generous, because nothing depends
+	// on it: an NPC who stops half a metre short of the кальян is a man standing
+	// near a кальян.
+	NPCArrive = 0.5
+	// NPCPauseSeconds is how long he stands there before choosing somewhere else.
+	NPCPauseSeconds = 3.0
+	// NPCCloudSeconds is how long his smoke lasts. Cosmetic — it hides him from
+	// nobody, because nobody is looking for him.
+	NPCCloudSeconds = 8.0
+	// NPCHookahChance is how often the next place he ambles to is the кальян.
+	NPCHookahChance = 0.35
+	// NPCSlot is how long he holds one line. Two seconds, like everybody else on
+	// this plane — one cadence, everywhere.
+	NPCSlot = 40
+)
+
+// NPCSays is which of this NPC's lines is over his head right now.
+func NPCSays(kind int, tick uint64) int {
+	if kind < 0 || kind >= len(NPCCast) {
+		return 0
+	}
+	// Salted by WHICH of them it is, so the two never say the same thing at the
+	// same instant — which on a plane holding both of them reads as one man
+	// duplicated rather than as two colleagues.
+	return pickLine(introLine, 0, NPCCast[kind].Lines, tick+uint64(kind)*NPCSlot/2, NPCSlot)
+}
+
 // CLAUDE CODE — the second man who walks at you, and the only one whose arrival
 // you survive.
 //
@@ -928,8 +1009,10 @@ type Config struct {
 	// inside boss_lines: he is a separate figure with a separate index on the
 	// frame, and folding him in would make two figures share one index space for
 	// no gain.
-	ClaudeLines  []string     `json:"claude_lines"`
-	Claude       ClaudeConfig `json:"claude"`
+	ClaudeLines []string     `json:"claude_lines"`
+	Claude      ClaudeConfig `json:"claude"`
+	// NPCs is the cast that is not playing: who they are, and what they say.
+	NPCs         []NPCKind    `json:"npcs"`
 	PlayerLines  []string     `json:"player_lines"`
 	MaxOccupants int          `json:"max_occupants"`
 	Redirect     VerbConfig   `json:"redirect"`

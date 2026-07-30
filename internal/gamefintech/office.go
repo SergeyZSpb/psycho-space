@@ -144,6 +144,11 @@ type Office struct {
 	// arrives is different, and an interface over two implementations with one
 	// common method would be a seam nobody asked to use.
 	claude Chaser
+	// npcs are Серега and Тёма. Deliberately NOT in `occupants`: the moment
+	// anything joins that map it becomes a chase target, a snapshot addressee and a
+	// slot against MaxOccupants — so a lazy player would be saved by a colleague
+	// who is not playing.
+	npcs []NPC
 	// lostTarget is true when the лысый had somebody to walk at and now has
 	// nobody, because everybody left standing is behind a cloud. It decides which
 	// run he speaks from and is recomputed every tick, so it never goes stale.
@@ -164,6 +169,7 @@ func NewOffice() *Office {
 		occupants: make(map[string]*Occupant, MaxOccupants),
 		boss:      NewBoss(),
 		claude:    NewChaser(),
+		npcs:      NewNPCs(),
 	}
 }
 
@@ -626,6 +632,14 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// an opinion about your tooling.
 	o.claude = StepChaser(Desks, o.claude, targets, dt)
 
+	// AND THE TWO WHO ARE NOT PLAYING. Stepped after both men and against neither
+	// of them: they are not in `targets`, so nobody walks at them, and they walk at
+	// nobody. They amble towards the кальян's CURRENT spot, which is why this is
+	// server-side at all.
+	for i := range o.npcs {
+		o.npcs[i] = StepNPC(Desks, o.npcs[i], HookahSpots[o.hookahSpot], dt)
+	}
+
 	// He LANDS rather than catches, and the difference is the whole point of him.
 	// Assigned rather than accumulated, exactly as the лысый's drink is: two
 	// applications would leave a walk at 4.096 m/s against his own 4.0, which is
@@ -711,6 +725,7 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 		},
 		Hk: msUp(o.hookahGone),
 		Hs: o.hookahSpot,
+		Np: o.npcsFor(),
 		Pr: o.peersFor(accountID),
 	}
 	raw, err := json.Marshal(s)
@@ -743,6 +758,30 @@ func (o *Office) lineFor(occ *Occupant) int {
 // A DEAD OCCUPANT IS OMITTED. The tick that catches somebody deletes them, so
 // this is only reachable in the instant between the two, and drawing a figure
 // that is no longer in the simulation is worse than drawing nothing.
+// npcsFor is the two non-players, as the plane needs them.
+//
+// NEVER OMITTED, like Claude: they are always on the floor. That is about sixty
+// bytes on every frame for two figures, which is the price of stepping them on the
+// server — see npc.go for why that is the arrangement.
+func (o *Office) npcsFor() []NPCFrame {
+	if len(o.npcs) == 0 {
+		return nil
+	}
+	out := make([]NPCFrame, 0, len(o.npcs))
+	for i, n := range o.npcs {
+		f := NPCFrame{
+			X: cm(n.Pos.X),
+			Y: cm(n.Pos.Y),
+			P: NPCSays(i, o.tick),
+		}
+		if n.Cloud > 0 {
+			f.C = 1
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 func (o *Office) peersFor(accountID string) []PeerFrame {
 	if len(o.occupants) < 2 {
 		return nil

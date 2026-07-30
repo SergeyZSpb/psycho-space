@@ -172,6 +172,29 @@
               <span class="fintech-boss-grin" />
             </span>
           </span>
+          <!-- СЕРЕГА AND ТЁМА, who are not playing. Rendered from the reactive
+               roster like the colleagues are, so their words and their smoke are a
+               vdom patch while their POSITIONS are custom properties written from
+               the draw loop — the same split everything else on this plane uses.
+               `data-npc` is which of them it is, and the stylesheet draws the
+               T-shirt or the paraglider off it. -->
+          <span
+            v-for="npc in npcs"
+            :key="npc.key"
+            :ref="(el) => setNpcEl(npc.key, el as Element | null)"
+            class="fintech-npc"
+            data-testid="fintech-npc"
+            :data-npc="npc.key"
+            :data-cloud="npc.cloud ? '1' : undefined"
+            aria-hidden="true"
+          >
+            <span v-if="npc.say" class="fintech-say" data-testid="fintech-npc-say">{{ npc.say }}</span>
+            <span class="fintech-fig-body" />
+            <span class="fintech-fig-head"><span class="fintech-fig-hair" /></span>
+            <!-- What tells them apart at thirty pixels: a caption on one shirt and a
+                 canopy over the other. -->
+            <span class="fintech-npc-mark" />
+          </span>
           <span ref="claudeEl" class="fintech-claude" data-testid="fintech-claude" aria-hidden="true">
             <span v-if="claudeSays" class="fintech-say" data-testid="fintech-claude-say">{{
               claudeSays
@@ -991,6 +1014,9 @@ function teardownPlay(): void {
   bossInterp = null;
   claudeInterp = null;
   claudeAt = null;
+  npcs.value = [];
+  npcEls.clear();
+  npcInterp.clear();
 }
 
 // --- the two clocks --------------------------------------------------------
@@ -1024,6 +1050,7 @@ function drawFrame(now: number): void {
     placeMe();
     placeBoss(now);
     placeClaude(now);
+    placeNpcs(now);
     placePeers(now);
   }
 
@@ -1090,6 +1117,75 @@ function placeBoss(now: number): void {
  * without it the first-placement branch below would run on every re-render and
  * fight the draw loop for the position.
  */
+/** One of the two non-players, as the template needs him. */
+interface NpcShown {
+  key: string;
+  say: string;
+  cloud: boolean;
+}
+
+const npcs = ref<NpcShown[]>([]);
+const npcEls = new Map<string, HTMLElement>();
+const npcInterp = new Map<string, Interpolator>();
+
+function setNpcEl(key: string, el: Element | null): void {
+  if (!el) {
+    npcEls.delete(key);
+    return;
+  }
+  const node = el as HTMLElement;
+  if (npcEls.get(key) === node) return;
+  npcEls.set(key, node);
+  const at = npcInterp.get(key)?.at(performance.now());
+  if (at && constants) applyFigure(node, toPlane(at.x, at.y, constants.officeW, constants.officeH));
+}
+
+/**
+ * Folds the two non-players into the same two tiers everybody else uses.
+ *
+ * `np` is never omitted — they are always on the floor — so unlike `pr` there is no
+ * absent case to mean «nobody here». The catalogue's ORDER is which of them each
+ * entry is, so the frame carries no name and no key.
+ */
+function applyNpcs(raw: unknown): void {
+  const cast = config.value?.npcs ?? [];
+  const list = Array.isArray(raw) ? (raw as Record<string, number>[]) : [];
+  const shown: NpcShown[] = [];
+  for (let i = 0; i < list.length && i < cast.length; i++) {
+    const f = list[i];
+    const kind = cast[i];
+    shown.push({
+      key: kind.key,
+      say: sayFor(kind.lines, num(f.p)),
+      cloud: num(f.c) > 0,
+    });
+    let interp = npcInterp.get(kind.key);
+    if (!interp) {
+      interp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
+      npcInterp.set(kind.key, interp);
+    }
+    interp.push({ x: num(f.x) / 100, y: num(f.y) / 100, grin: 0 }, performance.now());
+  }
+  // Membership and speech through Vue, positions never — and only when something
+  // actually changed, so an ambling man does not cost a vdom patch ten times a
+  // second for words that have not moved.
+  if (!sameNpcs(npcs.value, shown)) npcs.value = shown;
+}
+
+function sameNpcs(a: readonly NpcShown[], b: readonly NpcShown[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((n, i) => n.key === b[i].key && n.say === b[i].say && n.cloud === b[i].cloud);
+}
+
+function placeNpcs(now: number): void {
+  if (!constants) return;
+  for (const [key, interp] of npcInterp) {
+    const el = npcEls.get(key);
+    const at = interp.at(now);
+    if (el && at) applyFigure(el, toPlane(at.x, at.y, constants.officeW, constants.officeH));
+  }
+}
+
 function setPeerEl(id: string, el: Element | null): void {
   if (!el) {
     peerEls.delete(id);
@@ -1311,6 +1407,7 @@ function applySnapshot(frame: RealtimeFrame): void {
     claudeInterp?.push({ x: claudeAt.x, y: claudeAt.y, grin: num(cl.c) / 255 }, performance.now());
   }
 
+  applyNpcs(frame.np);
   applyPeers(frame.pr);
 }
 
@@ -2171,6 +2268,94 @@ function onDash(): void {
   box-shadow: 0 0 0 max(1px, calc(var(--unit) * 0.025)) rgba(0, 0, 0, 0.4);
   pointer-events: none;
   z-index: 1;
+}
+
+/* СЕРЕГА AND ТЁМА — the two who are not playing.
+   Built from the same head and body as everybody else, and DIMMER than a colleague,
+   because the one thing a player must never do is spend a second wondering whether
+   the figure walking about is somebody who matters. Nobody chases them and they
+   chase nobody; they are the room being a room. */
+.fintech-npc {
+  --skin: #f0d9bd;
+  --body: #52565f;
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-size: var(--unit);
+  width: var(--unit);
+  height: calc(var(--unit) * 1.6);
+  transform: translate3d(
+      calc(var(--x, 0.5) * 100cqw - 50%),
+      calc(var(--y, 0.5) * 100cqh - 100%),
+      0
+    )
+    scale(var(--depth, 1));
+  transform-origin: 50% 100%;
+  z-index: var(--band, 0);
+  will-change: transform;
+  pointer-events: none;
+  opacity: 0.72;
+}
+
+/* WHAT TELLS THEM APART AT THIRTY PIXELS. One shape each, positioned by the same
+   rule: a caption across Серега's shirt, a canopy over Тёма's head. Both are drawn
+   from `.fintech-npc-mark` with the difference in a `data-npc` branch, because two
+   rules that share a box are easier to read than one rule with two exceptions. */
+.fintech-npc-mark {
+  position: absolute;
+  pointer-events: none;
+}
+
+/* СЕРЕГА'S SHIRT. The caption is real text rather than a shape, so it is legible at
+   the size it has to be legible at and needs no art — and it is `content` on a
+   pseudo-element-free span, so no test has to guess at a background image. */
+.fintech-npc[data-npc='serega'] .fintech-npc-mark {
+  left: 50%;
+  bottom: 12%;
+  transform: translateX(-50%);
+  width: 68%;
+  text-align: center;
+  font-size: 0.3em;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.92);
+}
+.fintech-npc[data-npc='serega'] .fintech-npc-mark::after {
+  content: 'ХУЙ';
+}
+
+/* ТЁМА'S PARAGLIDER. A canopy above the head with two lines to it — three shapes
+   would be more accurate and less readable, so it is one arc and a shadow. */
+.fintech-npc[data-npc='tema'] .fintech-npc-mark {
+  left: 50%;
+  top: -34%;
+  transform: translateX(-50%);
+  width: 130%;
+  height: 30%;
+  border-radius: 50% 50% 8% 8%;
+  background: linear-gradient(180deg, #e0b74a 0%, #c9743f 60%, #a8562c 100%);
+  box-shadow: 0 calc(var(--unit) * 0.04) 0 rgba(0, 0, 0, 0.28);
+}
+
+/* His own smoke. Dimmer than a player's, because it means nothing — nobody is
+   looking for him — and it must not read as somebody going uncatchable. */
+.fintech-npc[data-cloud]::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  width: calc(var(--unit) * 1.05);
+  height: calc(var(--unit) * 0.7);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(226, 232, 240, 0.5) 0%,
+    rgba(210, 220, 232, 0.28) 55%,
+    rgba(200, 212, 226, 0) 100%
+  );
+  pointer-events: none;
 }
 
 /* CLAUDE CODE. Built from the same head and body as everybody else, because the

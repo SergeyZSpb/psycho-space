@@ -61,7 +61,9 @@ internal/
                     Postgres is touched once per shift — never on a tick.
                     content.go  the catalogue — the STATIC office, every constant
                     sim.go      Step: pure (desks, player, command) → player
-                    boss.go     the man who walks at the nearest Карен, and grins
+                    boss.go     the man who walks at the nearest employee, and grins
+                    chaser.go   Claude Code — the same walk, a different consequence
+                    npc.go      Серега and Тёма, who are scenery with opinions
                     office.go   the one shared world + the per-occupant budget
                     message.go  the wire types · service.go the office and the tick
   settings/  app_settings key/value (open registration)

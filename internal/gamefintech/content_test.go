@@ -134,7 +134,7 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 		`"boss"`, `"speed"`, `"catch_radius"`, `"grin_range"`,
 		`"sim"`, `"hz"`, `"snapshot_hz"`,
 		`"endings"`, `"key"`, `"sub"`,
-		`"boss_lines"`, `"personas"`, `"max_occupants"`,
+		`"boss_lines"`, `"personas"`, `"claude_lines"`, `"npcs"`, `"max_occupants"`,
 	} {
 		if !strings.Contains(string(raw), key) {
 			t.Fatalf("the served catalogue has no %s: %s", key, raw)
@@ -956,5 +956,82 @@ func TestClaudeSaysEveryLineTheOwnerWrote(t *testing.T) {
 	}
 	if ClaudeLines[0] != "Я КЛОД" {
 		t.Fatalf("index 0 is %q, and an omitted index has to be the introduction", ClaudeLines[0])
+	}
+}
+
+func TestBothNonPlayersHaveTheOwnersCopy(t *testing.T) {
+	// Their lines are the owner's, and each has his OWN pool — folding them together
+	// would let one man say the other's introduction.
+	if len(NPCCast) != 2 {
+		t.Fatalf("the cast is %d, want Серега and Тёма", len(NPCCast))
+	}
+	for _, want := range []string{"ХУЙНЯ, ПЕРЕДЕЛЫВАЙ", "ТЫ ТУПО КОДЕКСШЛАК ЗАЛИЛ?", "ДА Я ХУЕМ БОЛЬШЕ ДЕЛАЮ"} {
+		found := false
+		for _, k := range NPCCast {
+			if slices.Contains(k.Lines, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("nobody says %q any more", want)
+		}
+	}
+	if !slices.Contains(NPCCast[0].Lines, "А РЕВЬЮВИТЬ ОЧКО СЕМА АЛЬМАНА БУДЕТ?") {
+		t.Fatal("Серега no longer asks who is reviewing")
+	}
+	for i, k := range NPCCast {
+		if k.Key == "" || k.Name == "" {
+			t.Fatalf("NPC %d has no key or no name: %+v", i, k)
+		}
+		if len(k.Lines) == 0 {
+			t.Fatalf("%s has nothing to say", k.Name)
+		}
+		// Index 0 is the introduction, as in every pool here — an omitted index on the
+		// frame means zero.
+		if !strings.Contains(strings.ToUpper(k.Lines[0]), strings.ToUpper(k.Name)) {
+			t.Fatalf("%s's index 0 is %q, which is not an introduction", k.Name, k.Lines[0])
+		}
+	}
+}
+
+func TestNobodySaysMoreThanFitsOnAPhoneIncludingThem(t *testing.T) {
+	// The same 48-rune bound the other pools live under — a measurement of the
+	// two-row balloon, not a taste. Their pools are separate arrays, so they escape
+	// the map the other invariants iterate unless something checks them here.
+	const most = 48
+	for _, k := range NPCCast {
+		for i, line := range k.Lines {
+			if n := len([]rune(line)); n > most {
+				t.Fatalf("%s's line %d is %d runes: %q", k.Name, i, n, line)
+			}
+			if line == "" {
+				t.Fatalf("%s's line %d is empty", k.Name, i)
+			}
+		}
+	}
+}
+
+func TestTheNonPlayersSpawnSomewhereTheyCanStand(t *testing.T) {
+	for _, k := range NPCCast {
+		at := k.Spawn
+		if at.X < PlayerRadius || at.X > OfficeW-PlayerRadius ||
+			at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
+			t.Fatalf("%s spawns off the floor at %+v", k.Name, at)
+		}
+		for i, d := range Desks {
+			if insideDesk(d, at, PlayerRadius) {
+				t.Fatalf("%s spawns inside desk %d", k.Name, i)
+			}
+		}
+	}
+}
+
+func TestTheyAmbleSlowerThanAnybodyLookingForSomebody(t *testing.T) {
+	// So they never read as chasing anyone, which is the whole of what they are for.
+	if NPCSpeed >= BossSpeed || NPCSpeed >= ChaserSpeed {
+		t.Fatalf("they amble at %v against %v and %v", NPCSpeed, BossSpeed, ChaserSpeed)
+	}
+	if NPCSpeed >= WalkSpeed*SlowFactor {
+		t.Fatalf("they amble at %v, which a slowed player at %v cannot outwalk", NPCSpeed, WalkSpeed*SlowFactor)
 	}
 }

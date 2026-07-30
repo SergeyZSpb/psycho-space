@@ -228,6 +228,10 @@ type Snapshot struct {
 	// viewer is twenty bytes forever to say something that changes once every ten
 	// seconds; one small integer is four. Omitted at zero like everything else.
 	Bs int `json:"bs,omitempty"`
+	// Np is Серега and Тёма, in catalogue order. Never omitted — they are always on
+	// the floor — and their positions come from the server because they amble towards
+	// the кальян's current spot, which only the server knows (see npc.go).
+	Np []NPCFrame `json:"np"`
 	// Cl is Claude Code — where he is, and how lit his cigarette is.
 	Cl ClaudeFrame `json:"cl"`
 	// Sl is how long Claude Code's slow has left on YOU, in milliseconds.
@@ -265,6 +269,22 @@ type Snapshot struct {
 	// is playable solo by design, and an empty array would be two bytes ten
 	// times a second forever to say "there is nobody here".
 	Pr []PeerFrame `json:"pr,omitempty"`
+}
+
+// NPCFrame is one of the two non-players, quantised exactly as everybody else is.
+//
+// No name and no key: the catalogue carries both and the frame's INDEX is which of
+// them this is, so the wire says nothing that cannot change during a shift — the same
+// rule the balloons and the peers follow (ADR-037).
+type NPCFrame struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	// P is which of HIS OWN lines is over his head. Omitted at zero, and zero is his
+	// introduction.
+	P int `json:"p,omitempty"`
+	// C is 1 while he is standing in his own smoke. A flag rather than a duration:
+	// nothing counts down against it, because his cloud hides him from nobody.
+	C int `json:"c,omitempty"`
 }
 
 // ClaudeFrame is Claude Code, quantised exactly as the лысый is.

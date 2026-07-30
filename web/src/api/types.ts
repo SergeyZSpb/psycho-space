@@ -967,6 +967,14 @@ export interface FintechConfig {
     return_ms: number;
     slow_pct: number;
   };
+  /**
+   * Серега and Тёма — the two people in the office who are not playing.
+   *
+   * The frame's `np` carries them in THIS ORDER and nothing else about them: no
+   * name, no key, no look. So the array's order is the contract, and a figure's
+   * appearance lives in the stylesheet keyed on `key`.
+   */
+  npcs?: { key: string; name: string; lines: string[] }[];
   /** Claude Code's pool, by index — a separate figure, so a separate array. */
   claude_lines?: string[];
   /** Claude Code: what he costs, and how long for. */

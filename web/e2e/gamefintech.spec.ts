@@ -101,6 +101,12 @@ const CONFIG = {
   },
   // Marked like everything else here.
   claude_lines: ['Я КЛОД, СТЕНД', 'УВИЖУ КОДЕКС — СТЕНД'],
+  // Two non-players, marked like everything else here — the frame carries them in
+  // THIS order and nothing else about them.
+  npcs: [
+    { key: 'serega', name: 'СЕРЕГА-СТЕНД', lines: ['Я СЕРЕГА, СТЕНД', 'ХУЙНЯ, СТЕНД'] },
+    { key: 'tema', name: 'ТЁМА-СТЕНД', lines: ['Я ТЁМА, СТЕНД', 'Я В ПОЛЁТЕ, СТЕНД'] },
+  ],
   claude: { speed: 2.9, reach: 0.6, slow_pct: 75, slow_ms: 4500 },
   // Marked like everything else in this stub.
   hookah: {
@@ -245,6 +251,10 @@ async function stubSocket(page: Page): Promise<{
         dc: 1800,
         b: { x: 300, y: 1500, g: 40 },
         cl: { x: 400, y: 1400, c: 30 },
+        np: [
+          { x: 200, y: 300 },
+          { x: 1000, y: 300 },
+        ],
         ...fields,
       }),
     over: (fields = {}) => send({ t: 'fintech_over', cause: 'promoted', pay: 42800, secs: 73, ...fields }),
@@ -1619,5 +1629,74 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — Claude Code', () => {
     await expect(rules).toContainText('75 %');
     await expect(rules).toContainText('4,5 с');
     await expect(rules).toContainText('2,9 м/с');
+  });
+});
+
+test.describe('«СИМУЛЯТОР ФИНТЕХА» — Серега and Тёма', () => {
+  test('both of them are on the plane, each saying his own lines', async ({ page }) => {
+    const socket = await enterOffice(page);
+    await socket.snapshot({
+      np: [
+        { x: 400, y: 600, p: 1 },
+        { x: 1200, y: 900, p: 1, c: 1 },
+      ],
+    });
+    const said = page.getByTestId('fintech-npc-say');
+    await expect(page.getByTestId('fintech-npc')).toHaveCount(2);
+    // HIS OWN pool, by index — the frame's ORDER is which of them it is, so a client
+    // that read the wrong array would show one man the other's line.
+    await expect(said.nth(0)).toHaveText(CONFIG.npcs[0].lines[1]);
+    await expect(said.nth(1)).toHaveText(CONFIG.npcs[1].lines[1]);
+  });
+
+  test('the caption and the paraglider both actually paint', async ({ page }) => {
+    // What tells them apart at thirty pixels. A rule that exists only in a diff does
+    // not exist, so this measures the effect rather than the presence of the CSS.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ np: [{ x: 400, y: 600 }, { x: 1200, y: 900 }] });
+    const marks = await page.evaluate(() => {
+      const one = (key: string) => {
+        const el = document.querySelector(`[data-npc="${key}"] .fintech-npc-mark`)!;
+        const r = el.getBoundingClientRect();
+        const st = getComputedStyle(el);
+        const after = getComputedStyle(el, '::after');
+        return { area: r.width * r.height, background: st.backgroundImage, caption: after.content };
+      };
+      return { serega: one('serega'), tema: one('tema') };
+    });
+    // Серега wears a caption, which is real text so it is legible at any size.
+    expect(marks.serega.caption).toContain('ХУЙ');
+    // Тёма wears a canopy, which is a painted shape.
+    expect(marks.tema.area).toBeGreaterThan(0);
+    expect(marks.tema.background).not.toBe('none');
+  });
+
+  test('their smoke is dimmer than a player’s, because it means nothing', async ({ page }) => {
+    // A player's cloud means uncatchable. Theirs means nothing at all, and it must
+    // not read as the same thing.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ iv: 9000, np: [{ x: 400, y: 600, c: 1 }, { x: 1200, y: 900 }] });
+    const seen = await page.evaluate(() => {
+      const cloud = (sel: string) => getComputedStyle(document.querySelector(sel)!, '::before').content;
+      return {
+        me: cloud('[data-testid="fintech-me"]'),
+        npc: cloud('[data-npc="serega"]'),
+        quiet: getComputedStyle(document.querySelector('[data-npc="tema"]')!, '::before').content,
+        npcOpacity: getComputedStyle(document.querySelector('[data-npc="serega"]')!).opacity,
+      };
+    });
+    expect(seen.me).not.toBe('none');
+    expect(seen.npc).not.toBe('none');
+    // And the one without a cloud has none at all, so the flag is doing something.
+    expect(seen.quiet).toBe('none');
+    // They are recessed, so a glance never mistakes one for somebody who matters.
+    expect(Number(seen.npcOpacity)).toBeLessThan(1);
+  });
+
+  test('the cheatsheet names them and says they do not matter', async ({ page }) => {
+    await openSplash(page);
+    await expect(page.getByTestId('fintech-splash')).toBeVisible();
+    const rules = page.getByTestId('fintech-rules');
+    for (const n of CONFIG.npcs) await expect(rules).toContainText(n.name);
   });
 });
