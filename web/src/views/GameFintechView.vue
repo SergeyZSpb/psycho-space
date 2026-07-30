@@ -165,7 +165,7 @@
                  figure", not "something went wrong". -->
             <img
               v-if="peer.avatar"
-              class="fintech-peer-badge"
+              class="fintech-face-badge"
               data-testid="fintech-peer-avatar"
               :src="peer.avatar"
               alt=""
@@ -177,6 +177,22 @@
             <span v-if="meSays" class="fintech-say" data-testid="fintech-me-say">{{ meSays }}</span>
             <span class="fintech-fig-body" />
             <span class="fintech-fig-head"><span class="fintech-fig-hair" /></span>
+            <!-- YOUR OWN FACE, and it comes from the auth store rather than from
+                 the wire. There is nothing to withhold from you about yourself,
+                 the picture is already in memory before this view mounts, and the
+                 server deliberately never sends your own handle — so the peer
+                 redirector is not even reachable for you. Last child, so it paints
+                 over the head: nothing in here carries a z-index, so paint order
+                 is DOM order. -->
+            <img
+              v-if="meFace"
+              class="fintech-face-badge"
+              data-testid="fintech-me-avatar"
+              :src="meFace"
+              alt=""
+              referrerpolicy="no-referrer"
+              @error="onMeFaceError"
+            />
           </span>
           </div>
         </div>
@@ -220,7 +236,15 @@
             @pointerdown.prevent="onRedirect(peer.id)"
             @click.prevent
           >
-            <img v-if="peer.avatar" class="fintech-verb-face" :src="peer.avatar" alt="" referrerpolicy="no-referrer" />
+            <img
+              v-if="peer.avatar"
+              class="fintech-verb-face"
+              data-testid="fintech-verb-face"
+              :src="peer.avatar"
+              alt=""
+              referrerpolicy="no-referrer"
+              @error="onPeerFaceError(peer.id)"
+            />
             <span class="fintech-verb-label">{{
               redirectMs > 0 ? formatSeconds(redirectMs) : config.redirect.label
             }}</span>
@@ -333,6 +357,7 @@ import {
 import type { StepCommand, StepConstants } from '../lib/fintechStep';
 import { createInterpolator, type Interpolator } from '../lib/fintechInterp';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
+import { useAuthStore } from '../stores/auth';
 
 type Phase = 'splash' | 'playing' | 'over';
 
@@ -400,6 +425,29 @@ const peers = ref<PeerShown[]>([]);
  * minted per process and means nothing after a restart.
  */
 const brokenFaces = ref(new Set<string>());
+
+/**
+ * YOUR OWN FACE, which never travels on the wire.
+ *
+ * `Account.avatar_url` is already in memory: the store's `ensureLoaded()` gates
+ * the router before this view can mount, and the shell already draws it. A peer's
+ * face goes through `/api/game-fintech/avatar/{handle}` because the redirector
+ * exists to stop a client learning a colleague's CDN URL from a frame — there is
+ * nothing to withhold from you about yourself, and routing self through it would
+ * mean inventing a self handle on the wire to fetch a picture already sitting in a
+ * pinia ref.
+ *
+ * `|| undefined` rather than the empty string, which is what every Яндекс account
+ * and every forgotten one carries.
+ */
+const auth = useAuthStore();
+const meFaceBroken = ref(false);
+const meFace = computed(() =>
+  meFaceBroken.value ? undefined : auth.account?.avatar_url || undefined,
+);
+function onMeFaceError(): void {
+  meFaceBroken.value = true;
+}
 
 /** The redirect verb's cooldown, milliseconds, straight off the snapshot. */
 const redirectMs = ref(0);
@@ -792,6 +840,7 @@ function teardownPlay(): void {
   popTimer = undefined;
   pop.value = null;
   brokenFaces.value = new Set();
+  meFaceBroken.value = false;
   redirectMs.value = 0;
   bottleMs.value = 0;
   bottleSpot.value = 0;
@@ -1654,22 +1703,37 @@ function onDash(): void {
   opacity: 0.88;
 }
 
-/* HIS FACE, beside the head rather than on it: a colleague is a cut-out figure,
-   and painting a photograph into the head would make him a token seen from
-   above, which is the one thing this plane is not. Sized off `--unit` like every
-   other length here, so it rides the depth ramp with the man. */
-.fintech-peer-badge {
+/* A FACE, beside the head rather than on it: a colleague is a cut-out figure, and
+   painting a photograph into the head would make him a token seen from above,
+   which is the one thing this plane is not. It serves BOTH figures now — yours and
+   everybody else's — which is why it is no longer called the peer's.
+
+   TWO EXPLICIT `calc()` LENGTHS RATHER THAN A PERCENTAGE PAIR PLUS `aspect-ratio`.
+   The figure box is 1 : 1.6, so a percentage width and height can never be a
+   circle; and `aspect-ratio` on a replaced element with no `height` degrades to a
+   stretched strip on an engine that does not support it — which is the weak
+   remnant of the bug where this rule was missing altogether and a CDN photograph
+   drew at its natural size over the office. Sized off `--unit` like everything
+   else in the room, so it rides the depth ramp with the man and shrank with him.
+
+   It sits ON the scalp and never over the face: the head spans 4 %…96 %
+   horizontally, this spans 74 %…112 %, so it overlaps the head's right edge by
+   about a quarter of the head's width — the yard's shape, whose own comment
+   records that a first attempt overlapping by 30 % covered the face. `top: 1%`
+   rather than the old `-6%`, because the wall above the room is exactly one figure
+   deep: anything hanging above the figure's own box is clipped at the top wall. */
+.fintech-face-badge {
   position: absolute;
-  left: 78%;
-  top: -6%;
-  width: 62%;
-  aspect-ratio: 1;
+  left: 74%;
+  top: 1%;
+  width: calc(var(--unit) * 0.38);
+  height: calc(var(--unit) * 0.38);
   border-radius: 50%;
   object-fit: cover;
-  border: max(1px, calc(var(--unit) * 0.05)) solid rgba(0, 0, 0, 0.4);
+  border: max(1px, calc(var(--unit) * 0.045)) solid rgba(0, 0, 0, 0.45);
   background: rgba(0, 0, 0, 0.25);
-  /* Decoration on somebody else's figure: it must never take a tap meant for
-     the office underneath. */
+  /* Decoration on a figure: it must never take a tap meant for the office
+     underneath. */
   pointer-events: none;
 }
 
@@ -1691,6 +1755,43 @@ function onDash(): void {
      a transition would be the compositor easing towards a value that has already
      been replaced — which reads as lag, which is the exact thing prediction is
      here to remove. */
+}
+
+/* WHICH ONE IS YOU — a ring on the floor you are standing in.
+   With three colleagues in one опенспейс, all built the same way and all wearing a
+   face, `opacity: 0.88` on everybody else is not enough to find yourself while
+   something is walking towards you.
+
+   ON THE FLOOR RATHER THAN AROUND THE BOX, and that is not a preference: a
+   figure's box is a COORDINATE, not a surface, and nothing may paint a background,
+   a border or an outline on it — the лысый shipped once as a filled rectangle for
+   exactly that reason, and a test pins it now. `bottom: 0` is the standing point,
+   because a figure is feet-anchored; the ellipse's centre is dropped 45 % of its
+   own height below that, so the man stands IN it rather than on top of it. Wider
+   than the body and a fifth as tall, so it reads as flat on the floor under the
+   plane's shallow tilt.
+
+   `z-index: -1` puts it under its own figure and CANNOT escape upwards: this
+   element has a numeric `z-index` and a `transform`, so it is a stacking context —
+   which matters because `--band` is the plane's only depth cue and a marker that
+   climbed over a desk would be lying about where you are standing.
+
+   NOTHING FOR `prefers-reduced-motion`, and that is the point: it is a static
+   border with no animation to switch off, so somebody who asked for less motion
+   sees exactly the same marker as everybody else. A mark that only exists while it
+   pulses is a mark they never see. Nothing for the theme either — the plane is
+   hardcoded dark, so white-on-dark reads the same under either app theme. */
+.fintech-me::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: calc(var(--unit) * 0.72);
+  height: calc(var(--unit) * 0.2);
+  transform: translate(-50%, 45%);
+  border-radius: 50%;
+  border: max(1px, calc(var(--unit) * 0.05)) solid rgba(255, 255, 255, 0.9);
+  z-index: -1;
 }
 
 /* A FIGURE IS A HEAD AND A BODY, and the head is deliberately far too big.

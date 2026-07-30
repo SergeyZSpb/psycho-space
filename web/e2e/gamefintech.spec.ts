@@ -104,9 +104,23 @@ const CONFIG = {
 
 const SHIFT = { shift_id: 'shift-e2e', room: 'fintech' };
 
+/**
+ * A ONE-PIXEL PNG AS A `data:` URI, used as the session's own avatar.
+ *
+ * It has to actually LOAD. The view latches an `@error` and removes the face for
+ * the rest of the shift — correctly, because a broken glyph painted over the
+ * office is worse than no face — so an unreachable URL like `example.invalid`
+ * makes the element vanish and the test assert the wrong thing. `data:` is in the
+ * CSP's `img-src` and needs no network at all.
+ */
+const ONE_PIXEL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
 interface StubOptions {
   /** Answer `shifts/current` with a shift, as if the player had reloaded. */
   resume?: boolean;
+  /** The session's own avatar, which is where your figure's face comes from. */
+  avatar?: string;
   mine?: { cause: string; salary: number; seconds: number; created_at: string }[];
   top?: { name: string; salary: number; seconds: number; cause: string }[];
 }
@@ -131,7 +145,7 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
           display_name: 'Тестер',
           role: 'user',
           status: 'approved',
-          avatar_url: '',
+          avatar_url: opts.avatar ?? '',
         },
       });
     }
@@ -590,9 +604,22 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» play', () => {
     // that exists only in a diff is a rule that does not exist.
     const badge = page.getByTestId('fintech-peer-avatar').first();
     await expect(badge).toHaveCount(1);
-    const box = (await badge.boundingBox())!;
-    expect(box.width, 'the avatar is unstyled — natural size, not sized off --unit').toBeLessThan(60);
-    expect(box.width).toBeGreaterThan(4);
+    // AS A FRACTION OF THE FIGURE, not "smaller than 60 px". The loose bound was
+    // written when the only failure in view was an unstyled image at its natural
+    // size; it stopped discriminating once the badge was sized off `--unit`, and it
+    // would have gone on passing through a 25 % world shrink either way.
+    const shape = await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="fintech-peer-avatar"]')!.getBoundingClientRect();
+      const fig = document
+        .querySelector('[data-testid="fintech-peer"]')!
+        .getBoundingClientRect();
+      return { w: b.width, h: b.height, figW: fig.width };
+    });
+    expect(shape.w / shape.figW, 'the badge is not 0.38 of the figure').toBeCloseTo(0.38, 2);
+    // AND IT IS A CIRCLE. Two explicit lengths rather than a percentage pair on a
+    // 1 : 1.6 box, which can never be one — and rather than `aspect-ratio` with no
+    // height, which degrades to a strip on an engine that lacks it.
+    expect(shape.h).toBeCloseTo(shape.w, 1);
     await expect(page.locator('[data-testid="fintech-peer"]').first()).toHaveCSS('opacity', '0.88');
 
     // The line over his head comes from the catalogue by INDEX, exactly as
@@ -1218,5 +1245,82 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — the scale of the world'
     await expect(say).toHaveCSS('font-size', '8.64px');
     const laid = await say.evaluate((el) => (el as HTMLElement).offsetWidth);
     expect(laid).toBeLessThanOrEqual(161);
+  });
+});
+
+test.describe('«СИМУЛЯТОР ФИНТЕХА» — whose figure is whose', () => {
+  test('you wear your own face, taken from the session rather than the wire', async ({ page }) => {
+    // ZERO NEW BYTES AND ZERO NEW REQUESTS. The server never sends your own
+    // handle, so the peer redirector is not even reachable for you — and it does
+    // not need to be: `avatar_url` is in the auth store before this view can
+    // mount. The stub's `/api/auth/me` carries one, so a client reading the wire
+    // instead of the store cannot pass this.
+    const socket = await enterOffice(page, { avatar: ONE_PIXEL });
+    await socket.snapshot();
+    const face = page.getByTestId('fintech-me-avatar');
+    await expect(face).toHaveCount(1);
+    await expect(face).toHaveAttribute('src', ONE_PIXEL);
+    // Same rule as a colleague's, so it is the same size and the same circle.
+    const shape = await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="fintech-me-avatar"]')!.getBoundingClientRect();
+      const fig = document.querySelector('[data-testid="fintech-me"]')!.getBoundingClientRect();
+      return { w: b.width, h: b.height, figW: fig.width };
+    });
+    expect(shape.w / shape.figW).toBeCloseTo(0.38, 2);
+    expect(shape.h).toBeCloseTo(shape.w, 1);
+  });
+
+  test('and no face at all rather than a broken one when there is no picture', async ({ page }) => {
+    // Every Яндекс account and every forgotten one carries the empty string, which
+    // must be absent rather than an `img` with no src painting a broken glyph over
+    // the office.
+    const socket = await enterOffice(page);
+    await socket.snapshot();
+    await expect(page.getByTestId('fintech-me-avatar')).toHaveCount(0);
+  });
+
+  test('your own figure is ringed on the floor, and nobody else’s is', async ({ page }) => {
+    // WITH THREE COLLEAGUES IN ONE OPEN PLAN, all built the same way and all
+    // wearing a face, `opacity: 0.88` on everybody else is not enough to find
+    // yourself while something is walking at you.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600, p: 2 }] });
+    await expect(page.getByTestId('fintech-peer')).toHaveCount(1);
+
+    const rings = await page.evaluate(() => {
+      const ring = (sel: string) => {
+        const el = document.querySelector(sel)!;
+        const st = getComputedStyle(el, '::after');
+        return { content: st.content, borderWidth: st.borderTopWidth, width: st.width };
+      };
+      return { me: ring('[data-testid="fintech-me"]'), peer: ring('[data-testid="fintech-peer"]') };
+    });
+    // A real ::after with a real border on you...
+    expect(rings.me.content).not.toBe('none');
+    expect(parseFloat(rings.me.borderWidth)).toBeGreaterThan(0);
+    expect(parseFloat(rings.me.width)).toBeGreaterThan(0);
+    // ...and nothing at all on a colleague, which is what makes it a marker.
+    expect(rings.peer.content === 'none' || parseFloat(rings.peer.borderWidth) === 0).toBe(true);
+  });
+
+  test('the ring is under its own figure and can never climb over a desk', async ({ page }) => {
+    // `--band` is the plane's only depth cue. A marker that escaped its own
+    // figure's stacking context would paint over the furniture and lie about where
+    // you are standing — so this asserts the two properties that make that
+    // impossible together: a negative z-index inside an element that is itself a
+    // stacking context.
+    const socket = await enterOffice(page);
+    await socket.snapshot();
+    const seen = await page.evaluate(() => {
+      const me = document.querySelector('[data-testid="fintech-me"]')!;
+      return {
+        ringZ: getComputedStyle(me, '::after').zIndex,
+        figZ: getComputedStyle(me).zIndex,
+        figTransform: getComputedStyle(me).transform,
+      };
+    });
+    expect(seen.ringZ).toBe('-1');
+    expect(seen.figZ).not.toBe('auto');
+    expect(seen.figTransform).not.toBe('none');
   });
 });
