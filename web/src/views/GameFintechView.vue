@@ -994,8 +994,8 @@ function enterPlay(): void {
   const client = realtimeClient(shift.room);
   release = client.subscribe({ frames: onFrame, status: onStatus });
 
-  bossInterp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
-  claudeInterp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
+  bossInterp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 20));
+  claudeInterp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 20));
   sendTimer = window.setInterval(sendInput, Math.round(1000 / config.value.move.input_hz));
   lastFrameMs = performance.now();
   frameHandle = requestAnimationFrame(drawFrame);
@@ -1181,7 +1181,7 @@ function applyNpcs(raw: unknown): void {
     shown.push({ key: kind.key, say: sayFor(kind.lines, num(f.p)) });
     let interp = npcInterp.get(kind.key);
     if (!interp) {
-      interp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
+      interp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 20));
       npcInterp.set(kind.key, interp);
     }
     interp.push({ x: num(f.x) / 100, y: num(f.y) / 100, grin: 0 }, performance.now());
@@ -1490,7 +1490,7 @@ function applyPeers(raw: unknown): void {
     if (!interp) {
       // Same period as the лысый's, from the same served rate, so everybody who
       // is not predicted is drawn at the same instant in the past.
-      interp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
+      interp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 20));
       peerInterp.set(id, interp);
     }
     // Buffered, never drawn here — see placePeers.
@@ -2368,10 +2368,6 @@ function onDash(): void {
 .fintech-boss {
   --skin: #e8d7b0;
   --body: #7a5a86;
-  /* HE IS NOT PREDICTED — his intent is not ours to guess — so his position
-     arrives ten times a second and is eased across the gap between two frames.
-     100ms is exactly the snapshot period: long enough to be continuous, short
-     enough that he is never drawn anywhere the server did not put him. */
   /* NO TRANSITION. He is interpolated in JS now (fintechInterp), so a CSS
      transition here would smooth an already-smooth position — adding a second
      lag on top of the interpolation delay and reintroducing the stop-start it

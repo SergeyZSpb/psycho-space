@@ -75,7 +75,13 @@ interface Timed extends InterpSample {
  *
  * One period would be exactly enough if frames were perfectly spaced, which is
  * the one thing they are not. A half period of slack absorbs ordinary jitter and
- * a single dropped frame, and costs 150 ms at the 10 Hz this game publishes at.
+ * a single dropped frame.
+ *
+ * IT IS A MULTIPLE OF THE SERVED PERIOD AND NEVER A FIXED NUMBER OF
+ * MILLISECONDS, which is what made the office's move to 20 Hz snapshots free on
+ * this side: the same 1.5 periods went from 150 ms of staleness to 75 ms with no
+ * edit here at all. At the лысый's walking speed that is 0.3 m rather than 0.6 m
+ * of the catch radius spent on being behind.
  */
 export const DELAY_PERIODS = 1.5;
 

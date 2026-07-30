@@ -6,7 +6,7 @@ import { DELAY_PERIODS, createInterpolator } from '../lib/fintechInterp';
  * without. Every test here is a way the CSS transition it replaces went wrong.
  */
 
-const PERIOD = 100; // the 10 Hz this game publishes at
+const PERIOD = 50; // the 20 Hz this game publishes at
 const DELAY = PERIOD * DELAY_PERIODS;
 
 const at = (x: number) => ({ x, y: 0, grin: 0 });
@@ -25,6 +25,24 @@ describe('the interpolator', () => {
     // Half a period earlier is half way between them.
     expect(i.at(1050 + DELAY)!.x).toBeCloseTo(5, 6);
     expect(i.at(1025 + DELAY)!.x).toBeCloseTo(2.5, 6);
+  });
+
+  it('follows the served publish rate, so the office can tighten the delay without a client deploy', () => {
+    // THE DELAY IS A MULTIPLE OF THE SERVED PERIOD AND NEVER A FIXED NUMBER OF
+    // MILLISECONDS. It is what made the office's move from 10 Hz to 20 Hz
+    // snapshots cost nothing on this side — the same 1.5 periods went from 150 ms
+    // of staleness to 75 ms, which is the difference between spending half the
+    // catch radius on being behind and spending a quarter of it.
+    for (const period of [100, 50, 25]) {
+      const i = createInterpolator(period);
+      i.push(at(0), 1000);
+      i.push(at(10), 1000 + period);
+      // The newest sample is drawn exactly `period * DELAY_PERIODS` after it
+      // arrived, and not one millisecond sooner.
+      const delay = period * DELAY_PERIODS;
+      expect(i.at(1000 + period + delay)!.x).toBeCloseTo(10, 6);
+      expect(i.at(1000 + period + delay - period / 2)!.x).toBeCloseTo(5, 6);
+    }
   });
 
   it('is unbothered by jitter, which is the whole point', () => {

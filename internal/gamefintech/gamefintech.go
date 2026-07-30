@@ -94,13 +94,27 @@ const (
 	SimStep = time.Second / SimHz
 
 	// SnapshotEvery is how many simulation steps pass between snapshots: every
-	// second tick, so the wire runs at 10 Hz while the simulation runs at 20.
+	// tick, so the wire runs at the simulation's own rate.
 	//
-	// «ВАНЯДУМ» sends one per step and can afford to, because a run has one
-	// occupant. This office is shared, so the cost is per viewer per tick and
-	// halving it is free: the client predicts its own position between frames
-	// and the boss is interpolated, so nobody can see the difference.
-	SnapshotEvery = 2
+	// IT WAS TWO, AND THAT WAS THE LARGEST SINGLE TERM IN THE LATENCY LEDGER.
+	// The лысый cannot be predicted — his intent is not the client's to guess —
+	// so he is drawn from an interpolation buffer, in the recent past, and the
+	// delay that buffer needs is a multiple of THIS period (see DELAY_PERIODS in
+	// web/src/lib/fintechInterp.ts). At 10 Hz that was 150 ms of staleness, or
+	// 0.6 m at his walking speed, on top of the downlink — against a catch radius
+	// of 1.2 m. Which is how a shift ended while he was still drawn a couple of
+	// metres away: the client was dodging a man who was no longer there.
+	//
+	// Halving the period halves that, and costs 140 bytes a tick per viewer —
+	// 2.8 kB/s, about 22 kbit/s, on a floor that holds three people. The client
+	// needs no change at all: it derives the delay from the served `snapshot_hz`
+	// rather than hardcoding a period, so publishing faster tightens the buffer
+	// by itself.
+	//
+	// The reason it was two is still true and is simply outweighed: this office
+	// is shared, so the cost is per viewer per tick where «ВАНЯДУМ» pays it once.
+	// Three viewers of a 336-byte worst case is 20 kB/s for the whole game.
+	SnapshotEvery = 1
 
 	// InputHz is how often the client sends. It is published in the catalogue
 	// rather than chosen by the client, because it is half of the ratio below.
