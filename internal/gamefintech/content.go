@@ -670,6 +670,20 @@ const (
 	NPCArrive = 0.5
 	// NPCPauseSeconds is how long he stands there before choosing somewhere else.
 	NPCPauseSeconds = 3.0
+	// NPCGiveUpSeconds is how long he walks at one place before deciding it is not
+	// worth it — and it is what stops him being stuck forever.
+	//
+	// HE HAS NO NAVIGATION, deliberately: he ambles, and bumping into a desk and
+	// sliding along it is what an amble looks like. But that means a target he cannot
+	// reach — one inside a desk, or behind one — is one he walks at for the rest of
+	// the shift, because the resolver pushes him off the furniture and he never gets
+	// within NPCArrive of it, so the arrival branch that would pick somewhere else is
+	// never reached. Both of them were permanently stuck in production for exactly
+	// that reason.
+	//
+	// Long enough to cross the room at NPCSpeed (22 m at 2.2 m/s is ten seconds) with
+	// room for a detour, so an honest walk is never interrupted.
+	NPCGiveUpSeconds = 14.0
 	// NPCSlot is how long he holds one line. Two seconds, like everybody else on
 	// this plane — one cadence, everywhere.
 	NPCSlot = 40

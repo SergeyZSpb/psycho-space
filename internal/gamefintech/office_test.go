@@ -3,6 +3,7 @@ package gamefintech
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -1598,5 +1599,56 @@ func TestTheNonPlayersAreAlwaysOnTheFrame(t *testing.T) {
 		if f.X == 0 && f.Y == 0 {
 			t.Fatalf("non-player %d is at the origin: %+v", i, f)
 		}
+	}
+}
+
+func TestTheNonPlayersDoNotGetStuck(t *testing.T) {
+	// THE OWNER REPORTED BOTH OF THEM PERMANENTLY STUCK. They have no navigation, so
+	// a target inside a desk — or behind one — is one they walk at forever: the
+	// resolver pushes them off the furniture, they never get within NPCArrive of it,
+	// and the arrival branch that would draw somewhere else is never reached.
+	//
+	// Driven over a long stretch of simulated time and asserted on DISTINCT PLACES
+	// VISITED rather than on movement, because a man grinding along a desk edge is
+	// moving and still stuck.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+
+	seen := make([]map[string]bool, len(NPCCast))
+	for i := range seen {
+		seen[i] = map[string]bool{}
+	}
+	for i := 0; i < int(SimHz)*90; i++ {
+		advance(o, 1)
+		for j, n := range npcsOf(o) {
+			seen[j][fmt.Sprintf("%.0f,%.0f", n.Pos.X, n.Pos.Y)] = true
+		}
+	}
+	for j, places := range seen {
+		if len(places) < 8 {
+			t.Fatalf("%s visited only %d places in 90 s — he is stuck", NPCCast[j].Name, len(places))
+		}
+	}
+}
+
+func TestAnUnreachableTargetIsGivenUpOn(t *testing.T) {
+	// The specific trap: a target inside a desk. He cannot stand there, so he can
+	// never arrive, and without a give-up he walks into it for the rest of the shift.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	inside := Vec2{X: Desks[0].X + Desks[0].W/2, Y: Desks[0].Y + Desks[0].H/2}
+	o.mu.Lock()
+	o.npcs[0].Pos = Vec2{X: Desks[0].X - 2, Y: inside.Y}
+	o.npcs[0].To = inside
+	o.npcs[0].Pause = 0
+	o.mu.Unlock()
+
+	advance(o, int(SimHz*NPCGiveUpSeconds)+int(SimHz*NPCPauseSeconds)+int(SimHz))
+
+	o.mu.Lock()
+	to := o.npcs[0].To
+	o.mu.Unlock()
+	if to == inside {
+		t.Fatal("he is still walking at a spot inside a desk")
 	}
 }

@@ -24,6 +24,9 @@ type NPC struct {
 	To Vec2
 	// Pause is seconds of standing still remaining.
 	Pause float64
+	// Walked is seconds spent walking at the current target. Past NPCGiveUpSeconds he
+	// picks somewhere else — see that constant for why he has to.
+	Walked float64
 }
 
 // NewNPCs puts them on the floor at their own spawns.
@@ -50,11 +53,16 @@ func StepNPC(desks []Rect, n NPC, dt float64) NPC {
 
 	dx, dy := n.To.X-n.Pos.X, n.To.Y-n.Pos.Y
 	dist := math.Hypot(dx, dy)
-	if dist <= NPCArrive {
+	// ARRIVED, OR GIVEN UP. The second branch is what stops him being stuck: he has
+	// no navigation, so a target inside a desk or behind one is one he would otherwise
+	// walk at for the rest of the shift while the resolver held him off it.
+	if dist <= NPCArrive || n.Walked >= NPCGiveUpSeconds {
 		n.Pause = NPCPauseSeconds
-		n.To = drawNPCTarget()
+		n.To = drawNPCTarget(desks)
+		n.Walked = 0
 		return n
 	}
+	n.Walked += dt
 
 	if step := NPCSpeed * dt; step < dist {
 		n.Pos.X += dx / dist * step
@@ -72,14 +80,34 @@ func StepNPC(desks []Rect, n NPC, dt float64) NPC {
 	return n
 }
 
-// drawNPCTarget picks somewhere to amble to.
+// drawNPCTarget picks somewhere to amble to that he can actually stand on.
 //
-// Anywhere on the floor, inset by a radius so the draw is always somewhere he can
-// stand. A spot inside a desk is handled by the resolver pushing him off it, which
-// reads as somebody changing their mind.
-func drawNPCTarget() Vec2 {
-	return Vec2{
-		X: PlayerRadius + unitRand()*(OfficeW-2*PlayerRadius),
-		Y: PlayerRadius + unitRand()*(OfficeH-2*PlayerRadius),
+// Anywhere on the floor, inset by a radius, and REJECTED IF IT IS INSIDE A DESK —
+// which the first version did not do, on the theory that the resolver pushing him
+// off it "reads as somebody changing his mind". It does not: it reads as a man
+// walking into a desk forever, because he never arrives and so never chooses again.
+//
+// Bounded draws with a floor fallback rather than a loop, for `spawnPoint`'s reason:
+// a rejection sampler with no bound is a rejection sampler that can hang the tick.
+func drawNPCTarget(desks []Rect) Vec2 {
+	for i := 0; i < 16; i++ {
+		at := Vec2{
+			X: PlayerRadius + unitRand()*(OfficeW-2*PlayerRadius),
+			Y: PlayerRadius + unitRand()*(OfficeH-2*PlayerRadius),
+		}
+		clear := true
+		for _, d := range desks {
+			if insideDesk(d, at, PlayerRadius) {
+				clear = false
+				break
+			}
+		}
+		if clear {
+			return at
+		}
 	}
+	// Sixteen draws all landed on furniture, which in this room is vanishingly
+	// unlikely. The central lane is always clear — content_test pins it — so it is
+	// somewhere he can certainly stand.
+	return Vec2{X: OfficeW / 2, Y: OfficeH / 2}
 }

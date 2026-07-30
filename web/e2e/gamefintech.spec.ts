@@ -1687,8 +1687,19 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — Серега and Тём
         return { content: st.content, w: parseFloat(st.width) };
       };
       const pipe = (sel: string) => {
-        const r = document.querySelector(`${sel} .fintech-npc-pipe`)!.getBoundingClientRect();
-        return r.width * r.height;
+        const el = document.querySelector(`${sel} .fintech-npc-pipe`)!;
+        const r = el.getBoundingClientRect();
+        // FOUR PARTS, like the floor one: the box is the glass base, `::before` the
+        // stem and bowl, `::after` the hose. A single blob would pass an area check
+        // and read as a bottle, which is what the floor кальян already had to be
+        // fixed for.
+        return {
+          area: r.width * r.height,
+          base: getComputedStyle(el).backgroundImage,
+          stem: getComputedStyle(el, '::before').content,
+          bowl: getComputedStyle(el, '::after').content,
+          hose: getComputedStyle(el, '::after').boxShadow,
+        };
       };
       return {
         me: cloud('[data-testid="fintech-me"]'),
@@ -1703,8 +1714,16 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — Серега and Тём
     expect(seen.serega.content).not.toBe('none');
     expect(seen.tema.content).not.toBe('none');
     // And each is holding the thing the smoke comes from.
-    expect(seen.seregaPipe, 'Серега has no кальян in his hand').toBeGreaterThan(0);
-    expect(seen.temaPipe, 'Тёма has no кальян in his hand').toBeGreaterThan(0);
+    for (const [who, p] of [
+      ['Серега', seen.seregaPipe],
+      ['Тёма', seen.temaPipe],
+    ] as const) {
+      expect(p.area, `${who} has no кальян in his hand`).toBeGreaterThan(0);
+      expect(p.base, `${who}'s кальян has no glass base`).not.toBe('none');
+      expect(p.stem, `${who}'s кальян has no stem`).not.toBe('none');
+      expect(p.bowl, `${who}'s кальян has no bowl`).not.toBe('none');
+      expect(p.hose, `${who}'s кальян has no hose`).not.toBe('none');
+    }
     // Smaller than a player's, whose cloud means something.
     expect(seen.serega.w).toBeLessThan(seen.me.w);
     // And recessed, so a glance never mistakes one for somebody who matters.

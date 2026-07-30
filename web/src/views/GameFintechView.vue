@@ -2378,20 +2378,50 @@ function onDash(): void {
   pointer-events: none;
 }
 
-/* THE КАЛЬЯН IN HIS HAND. Smaller than the one on the floor and drawn at his side
-   rather than at his feet, so the two never read as the same object — one is a thing
-   you walk to, this is a thing he is holding. Base, stem and bowl in one element,
-   because at this size three children would be markup nobody can read. */
+/* THE КАЛЬЯН IN HIS HAND, and it is the FLOOR one's shapes at a smaller size rather
+   than a second look invented for it. The floor кальян reads correctly, so the
+   handheld one is the same four parts — wide glass base, stem, bowl, hose — in the
+   same colours; only the scale and where it hangs differ, because one is a thing you
+   walk to and this is a thing he is holding at his side.
+   Three elements would be the accurate way and one is the readable way: the box is
+   the base, `::before` is the stem and bowl, `::after` is the hose. */
 .fintech-npc-pipe {
   position: absolute;
-  left: 74%;
-  bottom: 24%;
-  width: 26%;
-  height: 34%;
-  border-radius: 40% 40% 34% 34%;
-  background:
-    radial-gradient(ellipse 60% 22% at 50% 4%, #c9743f 0%, #a8562c 72%, rgba(168, 86, 44, 0) 73%),
-    linear-gradient(180deg, rgba(0, 0, 0, 0) 22%, #a8842f 22%, #6b5320 100%);
+  left: 72%;
+  bottom: 16%;
+  width: 24%;
+  height: 22%;
+  border-radius: 46% 46% 42% 42%;
+  background: linear-gradient(180deg, #7fc7d9 0%, #3f8fa8 55%, #1f5a70 100%);
+  box-shadow: 0 0 0 max(1px, calc(var(--unit) * 0.015)) rgba(0, 0, 0, 0.45);
+}
+
+/* The stem, and the bowl on top of it. */
+.fintech-npc-pipe::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 78%;
+  width: 34%;
+  height: 150%;
+  transform: translateX(-50%);
+  background: linear-gradient(180deg, #d8c48f 0%, #a8842f 100%);
+}
+.fintech-npc-pipe::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 210%;
+  width: 96%;
+  height: 62%;
+  transform: translateX(-50%);
+  border-radius: 50% 50% 30% 30%;
+  background: linear-gradient(180deg, #c9743f 0%, #a8562c 100%);
+  /* The hose, leaving the base towards him — a curved shadow rather than a fifth
+     shape, which at this size is the difference between a кальян and a smudge. */
+  box-shadow:
+    calc(var(--unit) * -0.1) calc(var(--unit) * 0.34) 0 calc(var(--unit) * -0.055)
+    #6b5320;
 }
 
 /* CLAUDE CODE. Built from the same head and body as everybody else, because the
