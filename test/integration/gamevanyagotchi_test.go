@@ -1702,9 +1702,21 @@ func getNoRedirect(t *testing.T, cli *http.Client, url string) *http.Response {
 // exactly where it was five times a second, so «искать ключи» was a race to press
 // a button pointing at a visible dot rather than a search. It is now absent from
 // the frame entirely — not obscured, not flagged, absent — and the strong form of
-// that is asserted here: no entity carries its art, no entity carries its id, and
-// nothing at all is standing on its coordinates. A client reading every byte it
-// will ever receive still does not know where the keys are.
+// that is asserted here: no entity carries its art, and no entity carries its id.
+// A client reading every byte it will ever receive still does not know which of
+// the yard's visible things, if any, is standing near a key.
+//
+// IT USED TO ASSERT A THIRD THING — that nothing at all stands on the key's
+// coordinates — AND THAT CLAIM DIED WITH A DESIGN CHANGE. A key hides at a
+// catalogue hotspot, and a crate is now stood up AT a hotspot too, in any of the
+// five places (see the clearance note in content.go): both are drawn from the
+// same short list, so two of them landing on one point is the ORDINARY case
+// rather than a leak. It leaks nothing either — the hotspots are published to
+// every client already, because a search with no visible candidates is a guess,
+// and the thing standing there carries its own art and its own id, both of which
+// are still asserted below. CI caught it as a one-in-a-few-hotspots failure on an
+// unrelated push; the fix is to delete a claim the game stopped making, not to
+// re-run until the draw is kind.
 //
 // What must NOT go with it is the hunt's id. A hunt is STATE a late joiner has to
 // be able to see and take part in, so a yard that stopped saying one was running
@@ -1762,8 +1774,8 @@ func TestVanyagotchiTheHiddenKeyNeverReachesTheWire(t *testing.T) {
 		}
 	}
 
-	// Where it actually is, straight out of the table — the one place in the
-	// system that knows.
+	// Which key is lost, straight out of the table — the one place in the system
+	// that knows anything about it at all.
 	rows := petContestedRowsOf(t, kind.Key)
 	var live []petContestedRow
 	for _, r := range rows {
@@ -1774,18 +1786,13 @@ func TestVanyagotchiTheHiddenKeyNeverReachesTheWire(t *testing.T) {
 	if len(live) != 1 {
 		t.Fatalf("%d keys are lost in the yard; the partial unique index permits exactly one: %+v", len(live), rows)
 	}
-	hidden, err := petWorldObjectPoint(t, live[0].id)
-	if err != nil {
-		t.Fatalf("read where the key is hidden: %v", err)
-	}
+	// Where it actually is is deliberately NOT read any more: the only thing this
+	// test now needs from the table is the key's id, and the coordinate assertion
+	// that used it is gone with the design it described.
 
 	for _, p := range frame.Peers {
 		if p.Art == kind.Art {
 			t.Errorf("the frame draws an entity with the key's own art: %+v — everybody can see where it is, and «искать ключи» is a race to press rather than a search", p)
-		}
-		if p.X == hidden.X && p.Y == hidden.Y {
-			t.Errorf("entity %q is standing exactly where the key is hidden, (%v,%v); a client that noticed would have the answer",
-				p.ID, p.X, p.Y)
 		}
 		if p.ID == propPrefix+live[0].id[:12] {
 			t.Errorf("the key is in the roster under its own id %q; hiding it means it is not an entity at all", p.ID)
