@@ -202,9 +202,23 @@ describe('reading the wire', () => {
 
   it('turns hundredths back into the multiplier a player is protecting', () => {
     expect(formatMultiplier(275)).toBe('×2,75');
-    expect(formatMultiplier(100)).toBe('×1');
-    // The ceiling deserves to look like a round number when it is reached.
-    expect(formatMultiplier(300)).toBe('×3');
+    expect(formatMultiplier(100)).toBe('×1,00');
+    expect(formatMultiplier(300)).toBe('×3,00');
+  });
+
+  it('is always the same number of characters, so the strip does not jog', () => {
+    // THE READOUT CHANGES SEVERAL TIMES A SECOND while the ramp climbs, and a
+    // variable digit count changes the cell's width with it — so everything to its
+    // right slides sideways while the player is standing perfectly still, which is
+    // exactly when they should be watching the man crossing the room. Tabular
+    // figures fix how wide a digit is, not how many there are.
+    // The invariant is the DECIMALS, not the whole string: the tempo ramp uses this
+    // same formatter and would eventually reach two digits before the comma, which
+    // is a jog nobody will live long enough to see. Two after it, always.
+    for (const h of [0, 1, 99, 100, 105, 199, 275, 300, 1000]) {
+      const shown = formatMultiplier(h);
+      expect(shown, `«${shown}» is not ×N,NN`).toMatch(/^×\d+,\d{2}$/);
+    }
   });
 
   it('reads a duration as the HUD says it', () => {

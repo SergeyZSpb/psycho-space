@@ -443,13 +443,21 @@ export function decimal(v: number, digits = 1): string {
 /**
  * The multiplier, from the hundredths the wire carries.
  *
- * Whole values lose their decimals — `×3`, not `×3,00` — because the ceiling is
- * the thing a player is protecting and it deserves to look like a round number
- * when they reach it.
+ * ALWAYS TWO DECIMALS, AND THAT IS THE WHOLE POINT — `×3,00` rather than `×3`.
+ * This readout changes several times a second while the ramp climbs, and a
+ * variable number of digits changes the cell's WIDTH with it, so everything to
+ * its right jogs sideways as you stand still. Tabular figures fix the digits'
+ * widths but not how many of them there are; only a fixed count does that.
+ *
+ * It used to strip the decimals on a whole value, on the reasoning that the
+ * ceiling deserves to look like a round number when you reach it. It does — and
+ * it reached it by shoving the rest of the strip half a centimetre to the left,
+ * which is the one moment in the game when nobody should be looking at anything
+ * but the лысый.
  */
 export function formatMultiplier(hundredths: number): string {
   const v = Number.isFinite(hundredths) ? Math.max(0, hundredths) / 100 : 1;
-  return `×${decimal(v, 2)}`;
+  return `×${v.toFixed(2).replace('.', ',')}`;
 }
 
 /**

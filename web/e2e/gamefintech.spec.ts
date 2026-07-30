@@ -2088,3 +2088,33 @@ test('the readouts and the thumbs line up with the room, not the screen', {
     expect(seen.plane.width).toBeLessThan(seen.play.width - 40);
   }
 });
+
+test('the pane is full-bleed even though the room inside it cannot be', async ({ page }) => {
+  // THE ROOM IS A PORTRAIT 16 × 22 AND KEEPS THAT SHAPE EXACTLY, so the plane can
+  // only ever fill one axis of the box it is given: measured, 360 of 360 wide but
+  // 501 of 728 tall on a phone, and 595 of 1184 wide on a 1440 desktop. The
+  // leftover is unavoidable — what is not is leaving it a flat slab of a different
+  // colour, which reads as the game not covering its own pane.
+  //
+  // So the element that fills the play box carries the wall's own gradient, and
+  // this asserts exactly that: it is the full box on BOTH axes, and it paints.
+  await enterOffice(page);
+  const seen = await page.evaluate(() => {
+    const stage = document.querySelector('.fintech-stage')!;
+    const play = document.querySelector('[data-testid="fintech-play"]')!;
+    const s = stage.getBoundingClientRect();
+    const p = play.getBoundingClientRect();
+    return {
+      dw: Math.abs(s.width - p.width),
+      dh: Math.abs(s.height - p.height),
+      paint: getComputedStyle(stage).backgroundImage,
+      planeW: document.querySelector('[data-testid="fintech-plane"]')!.getBoundingClientRect().width,
+      playW: p.width,
+    };
+  });
+  expect(seen.dw, 'the pane does not span the play box').toBeLessThan(2);
+  expect(seen.dh, 'the pane does not fill the play box').toBeLessThan(2);
+  expect(seen.paint, 'the pane behind the room paints nothing').not.toBe('none');
+  // And the room really is the smaller thing inside it, or this asserts nothing.
+  expect(seen.planeW).toBeLessThanOrEqual(seen.playW);
+});

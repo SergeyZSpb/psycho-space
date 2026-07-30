@@ -2260,6 +2260,20 @@ function onDash(): void {
    phone its full-width office, because the plane then becomes bounded by height
    rather than width and the room draws ~7 % narrower with dead space down both
    sides, which is the exact defect the overlay layout exists to remove. */
+/* THE PANE IS FULL-BLEED; THE ROOM INSIDE IT IS NOT, AND CANNOT BE.
+
+   The office is a portrait 16 × 22 room and the plane keeps that shape exactly —
+   distorting it would move every metre-to-pixel mapping in the game — so the
+   plane can only ever fill ONE axis of whatever box it is given. Measured: on a
+   360 × 800 phone it is the full 360 wide and 501 of 728 tall; on a 1440 × 900
+   desktop it is 595 of 1184 wide. The rest is unavoidable.
+
+   What WAS avoidable is that the rest used to be flat `#16181d` while the plane
+   carried a gradient, so the game read as a card sitting on a slab of a different
+   colour — "the pane is not full width". So the wall's own gradient is drawn HERE,
+   across the whole play box, and the plane is the same material with its edges
+   marked. Nothing about geometry moves: this element is `inset: 0` and paints
+   only, and the room stays the exact size the catalogue's ratio says. */
 .fintech-stage {
   position: absolute;
   inset: 0;
@@ -2267,6 +2281,7 @@ function onDash(): void {
   align-items: center;
   justify-content: center;
   container-type: size;
+  background: linear-gradient(180deg, #14161b, #1c1f26 55%, #23262d);
 }
 
 /* THE PLANE IS THE ROOM PLUS THE WALL ABOVE IT, AND IT IS THE CLIPPER.
@@ -2303,6 +2318,14 @@ function onDash(): void {
   /* The wall. Darker than the floor and unlit, so the room reads as a room seen
      from slightly above rather than as a plane that got taller. */
   background: linear-gradient(180deg, #1b1e24, #23262d);
+  /* WHERE THE ROOM ENDS, now that what surrounds it is the same material rather
+     than a flat slab. A hairline and a drop shadow, because the walls are a rule
+     of the game — you are clamped to them and the лысый corners you against them —
+     so the boundary has to be readable even where the two gradients meet at
+     nearly the same colour. */
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 12px 34px rgba(0, 0, 0, 0.5);
 }
 
 /* THE ROOM ITSELF — the catalogue's 16 × 22, sitting at the bottom of the plane.
