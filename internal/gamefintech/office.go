@@ -82,6 +82,26 @@ type Occupant struct {
 	// LastSeq is the last command sequence actually folded in, echoed to the
 	// client as the snapshot's `ack`.
 	LastSeq uint32
+	// HighSeq is the highest sequence ever ACCEPTED INTO THE QUEUE, which is a
+	// different number from LastSeq and is what redundancy is deduplicated
+	// against.
+	//
+	// THE DIFFERENCE BETWEEN THE TWO IS A BUG THIS GAME SHIPPED. A client repeats
+	// its unacknowledged tail in every frame so one lost packet costs no input,
+	// and that is only free while a repeat is dropped. Deduplicating on LastSeq
+	// alone drops the repeats of commands already SIMULATED and accepts the
+	// repeats of commands still WAITING — and a frame carries four sub-steps
+	// where a tick affords two, so at any moment about half the queue is in
+	// exactly that state. Measured: eight sub-steps of walking sent, 1.45 m
+	// travelled where 1.28 m was asked for.
+	//
+	// Worse, it compounds. Duplicates double the demand on a budget that accrues
+	// at real time, so the queue grows, so MORE of it is unapplied when the next
+	// frame lands, so the whole redundancy window duplicates rather than half of
+	// it. The player is dragged forward while walking and keeps walking after the
+	// stick is released, because the office is still working through a backlog of
+	// movement they only asked for once.
+	HighSeq uint32
 	// Budget is the unspent client-claimed simulated time described on
 	// TimeBudgetCap.
 	Budget    float64
@@ -389,13 +409,18 @@ func (o *Office) Seen(accountID string, now time.Time) {
 // pure function of valid input and lets the golden vectors describe the
 // simulation rather than the clamp.
 //
-// COMMANDS ALREADY APPLIED ARE DROPPED HERE, by sequence number. That single
-// rule is what makes input redundancy free: a client may resend the tail of its
+// COMMANDS ALREADY SEEN ARE DROPPED HERE, by sequence number. That single rule
+// is what makes input redundancy free: a client may resend the tail of its
 // unacknowledged commands in every frame, so one lost packet costs no input at
 // all, and a client that resends everything forever gains nothing because the
 // second copy never reaches the queue. Without it a replayed command would be
 // movement that happens twice on the server and once on the client, which the
 // player feels as being dragged.
+//
+// "SEEN" IS HighSeq AND NOT LastSeq, and the difference is the whole of the
+// rule's correctness — see the field. A command that is queued but not yet
+// simulated has been seen; deduplicating against what has been APPLIED lets
+// every one of those through a second time.
 func (o *Office) Enqueue(accountID string, cmds []Command, now time.Time) {
 	if len(cmds) == 0 {
 		return
@@ -409,10 +434,11 @@ func (o *Office) Enqueue(accountID string, cmds []Command, now time.Time) {
 	occ.LastSeen = now
 	for _, c := range cmds {
 		// Sequences are 1-based, so a zero is "unset" and is dropped along with
-		// everything already applied.
-		if c.Seq <= occ.LastSeq {
+		// everything already seen.
+		if c.Seq <= occ.HighSeq {
 			continue
 		}
+		occ.HighSeq = c.Seq
 		occ.Pending = append(occ.Pending, Sanitise(c))
 	}
 	if len(occ.Pending) > maxPending {
@@ -439,28 +465,30 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		occ.Budget = math.Min(occ.Budget+dt, TimeBudgetCap)
 
 		spent := 0.0
-		for len(occ.Pending) > 0 && occ.Budget > 0 {
+		// A COMMAND IS SIMULATED WHOLE OR IT WAITS. It is never simulated in part,
+		// because there is no way to acknowledge a part: the ack is one sequence
+		// number, the client drops everything at or below it, and a client that
+		// dropped a command the office had only half-run would keep the whole of
+		// it in its own prediction for ever. That is a permanent divergence in the
+		// direction that matters most here — the client believes it is further
+		// from the лысый than the office does, so it is eaten while he is still
+		// drawn a metre away.
+		//
+		// The earlier version truncated the command to the remaining budget and
+		// acknowledged it anyway, against a comment saying it did not. Waiting
+		// costs one tick of stutter for a client that is already behind; the
+		// truncation cost 0.96 m of silent, unrecoverable drift per occurrence.
+		for len(occ.Pending) > 0 && occ.Pending[0].Dt <= occ.Budget {
 			c := occ.Pending[0]
 			occ.Pending = occ.Pending[1:]
-			// Spend no more than has actually elapsed. A command longer than the
-			// remaining budget is simulated for as much of itself as the player
-			// has paid for rather than being dropped — dropping it would make a
-			// laggy client stutter, where truncating merely makes it slower for
-			// one step.
-			if c.Dt > occ.Budget {
-				c.Dt = occ.Budget
-			}
 			occ.Budget -= c.Dt
 			spent += c.Dt
 			occ.State = Step(Desks, occ.State, c)
-			// Acknowledged only once it has ACTUALLY been folded in, so a
-			// command truncated by the budget is not reported as applied — the
-			// client would drop it from its pending list and its prediction
-			// would drift permanently by whatever the server declined to
-			// simulate.
-			if c.Seq > occ.LastSeq {
-				occ.LastSeq = c.Seq
-			}
+			// The queue is strictly ascending in Seq — Enqueue drops anything at
+			// or below HighSeq and the overflow trim takes from the front — so
+			// this is the last command actually folded in, which is what the
+			// snapshot's `ack` promises.
+			occ.LastSeq = c.Seq
 		}
 
 		// THE IDLE FILL, and the game does not work without it.
@@ -476,6 +504,7 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		// It consumes the budget too, so quiet time cannot be BANKED and then
 		// spent on movement — earning the ramp and hoarding simulated seconds to
 		// dodge with would be having it both ways.
+		//
 		// ONLY WHEN THE CLIENT CLAIMED NOTHING AT ALL, and the guard is the
 		// whole correctness of it. A client that is standing still sends no
 		// frame whatsoever, so `spent == 0` is exactly the state this exists
@@ -505,7 +534,15 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		// Nothing is lost by skipping it: money accrues only while standing
 		// still, so an unclaimed sliver during movement was never worth
 		// anything, and the budget carries it to the next tick regardless.
-		if idle := dt - spent; idle > 0 && spent == 0 {
+		//
+		// AND ONLY WHILE THE QUEUE IS EMPTY, which is the guard that lets the
+		// drain above wait rather than truncate. The fill consumes the budget, so
+		// a fill that ran while a command sat waiting for budget would consume
+		// exactly the budget that command was waiting for — and the two would
+		// deadlock: the command is never affordable, so nothing is ever spent, so
+		// the fill runs again, for ever. The fill exists for a client that sent
+		// NOTHING; a client whose command is waiting has sent something.
+		if idle := dt - spent; idle > 0 && spent == 0 && len(occ.Pending) == 0 {
 			occ.State = Step(Desks, occ.State, Command{Dt: idle})
 			occ.Budget = math.Max(0, occ.Budget-idle)
 		}

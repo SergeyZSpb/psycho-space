@@ -191,6 +191,79 @@ func TestACommandAlreadyAppliedIsDroppedRatherThanReplayed(t *testing.T) {
 	}
 }
 
+func TestARedundantCommandStillWaitingInTheQueueIsDroppedToo(t *testing.T) {
+	// THE DEFECT THIS GAME SHIPPED, and the one the test above does not catch
+	// because it drains the queue between the two sends.
+	//
+	// A frame carries four fresh sub-steps where a tick affords two, so at any
+	// moment about half the queue is accepted-but-not-yet-simulated. Deduplicating
+	// on the ACK — the last sequence applied — drops the repeats of the simulated
+	// half and accepts the repeats of the waiting half, so the player walks twice
+	// for input they gave once: dragged forward while the stick is down, and still
+	// walking after it is released while the office works through the surplus.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(t, o, "a", Vec2{X: 1, Y: OfficeH / 2})
+	start := snapOf(t, o, "a").X
+
+	frame := func(from, to uint32) []Command {
+		var out []Command
+		for i := from; i <= to; i++ {
+			out = append(out, Command{Seq: i, Dt: 0.025, MX: 1})
+		}
+		return out
+	}
+
+	// Frame one: four sub-steps, 100 ms of walking. One tick affords two of them,
+	// so three and four are still in the queue when the next frame lands.
+	o.Enqueue("a", frame(1, 4), epoch)
+	advance(o, 1)
+	// Frame two, exactly as buildInputFrame produces it: the unacknowledged tail
+	// repeated, then the fresh sub-steps.
+	o.Enqueue("a", frame(1, 8), epoch)
+	advance(o, 20)
+
+	moved := float64(snapOf(t, o, "a").X-start) / 100
+	want := 8 * 0.025 * WalkSpeed
+	if math.Abs(moved-want) > 1e-6 {
+		t.Fatalf("moved %.4f m where %.4f m was asked for — a queued command was applied twice", moved, want)
+	}
+}
+
+func TestOnlyWhatWasActuallySimulatedIsAcknowledged(t *testing.T) {
+	// The ack is ONE sequence number and the client drops everything at or below
+	// it, so there is no way to acknowledge half a command. Simulating part of one
+	// and acknowledging the whole leaves the client holding movement the office
+	// never ran — a permanent divergence, and in the direction that costs most
+	// here: the client believes it is further from the лысый than the office does,
+	// so the shift ends while he is still drawn a metre away.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	start := snapOf(t, o, "a").X
+
+	// One command four ticks long. A single tick can afford none of it.
+	o.Enqueue("a", []Command{{Seq: 1, Dt: MaxStepSeconds, MX: 1}}, epoch)
+	advance(o, 1)
+	if got := snapOf(t, o, "a").Ack; got != 0 {
+		t.Fatalf("acknowledged seq %d after a tick that could not afford it", got)
+	}
+	if got := snapOf(t, o, "a").X; got != start {
+		t.Fatalf("simulated part of a command it could not afford: %d → %d", start, got)
+	}
+
+	// Three more ticks buy it, and THEN it is acknowledged — in full, having
+	// moved its full distance. That it is ever acknowledged at all is the other
+	// half of the claim: the idle fill must not eat the budget it is waiting for.
+	advance(o, 3)
+	if got := snapOf(t, o, "a").Ack; got != 1 {
+		t.Fatalf("four ticks' budget did not run a command worth four ticks: ack %d", got)
+	}
+	moved := float64(snapOf(t, o, "a").X-start) / 100
+	if want := MaxStepSeconds * WalkSpeed; math.Abs(moved-want) > 1e-6 {
+		t.Fatalf("acknowledged after moving %.4f m of the %.4f m it described", moved, want)
+	}
+}
+
 func TestTheTimeBudgetCapsBankedSimulatedTime(t *testing.T) {
 	// THE SPEED HACK. A client that fills every frame with the largest legal dt
 	// is asking to run faster than everybody else, with no single field out of
@@ -424,12 +497,19 @@ func TestPendingInputIsBounded(t *testing.T) {
 		o.Enqueue("a", cmds, epoch)
 	}
 	// The newest maxPending commands survive; everything older was dropped
-	// before it could be simulated, so the position is bounded by the budget and
+	// before it could be simulated, so the position is bounded by REAL TIME and
 	// not by how much was sent.
-	advance(o, 1)
+	//
+	// FOUR TICKS RATHER THAN ONE, because a command is now simulated whole or it
+	// waits: each of these claims MaxStepSeconds, which is four ticks' worth of
+	// budget, so one tick affords none of it and the fourth affords exactly one.
+	// That is the point of the change — the alternative was truncating a command
+	// to the budget and acknowledging it as though it had run in full.
+	const ticks = 4
+	advance(o, ticks)
 	x := float64(snapOf(t, o, "a").X) / 100
-	if limit := PlayerSpawnX + TimeBudgetCap*WalkSpeed + 1e-6; x > limit {
-		t.Fatalf("a thousand queued commands moved him to %v, the cap allows %v", x, limit)
+	if limit := PlayerSpawnX + ticks*SimStep.Seconds()*WalkSpeed + 1e-6; x > limit {
+		t.Fatalf("a thousand queued commands moved him to %v, %d ticks of real time allow %v", x, ticks, limit)
 	}
 	if math.Abs(x-PlayerSpawnX) < 1e-9 {
 		t.Fatal("none of the queue was simulated at all")

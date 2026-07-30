@@ -751,6 +751,100 @@ func TestFintechTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 	}
 }
 
+func TestFintechResendingUnacknowledgedInputDoesNotWalkYouTwice(t *testing.T) {
+	// INPUT REDUNDANCY, END TO END. The browser repeats the tail of whatever the
+	// office has not acknowledged in every frame, so one lost packet costs no
+	// input at all. That is only free while a repeat is DROPPED — and the office
+	// deduplicated against the wrong number, so a repeat of a command that was
+	// queued but not yet simulated was applied a second time. The player was
+	// dragged forward while walking and kept walking after the stick came up,
+	// because the office was still working through movement they asked for once.
+	//
+	// Driven over a real socket rather than against the office directly, because
+	// the shape that produces it is the WIRE's: a frame carries four sub-steps
+	// where a tick affords two, so half the queue is always in exactly the state
+	// that used to duplicate.
+	app, tick, _ := buildAppFintech(t, fintechVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cli := loginAs(t, srv.URL, "920011", "user")
+	clock := newFintechClock()
+
+	startShift(t, cli, srv.URL)
+	conn, _, err := dialFintech(t, srv.URL, cookieHeader(t, cli, srv.URL), gamefintech.Room)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	frames := readFrames(t, conn)
+
+	ctx := context.Background()
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"t":"fintech_hello"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitForFintechFrame(t, frames, tick, clock, "fintech_ready", 15*time.Second)
+	first := waitForFintechFrame(t, frames, tick, clock, "fintech_snap", 15*time.Second)
+	startY, _ := first["y"].(float64)
+
+	// Down the plane, for the reason the test above walks down: a spawn is drawn
+	// in the band furthest from him, so "away" is a wall a few centimetres back.
+	// The whole walk here is 1.28 m out of a head start of fifteen.
+	const subStep = 0.025
+	send := func(from, to int) {
+		cmds := make([]map[string]any, 0, to-from+1)
+		for q := from; q <= to; q++ {
+			cmds = append(cmds, map[string]any{"q": q, "dt": subStep, "mx": 0, "my": 1})
+		}
+		msg, _ := json.Marshal(map[string]any{"t": "fintech_input", "k": 0, "cmds": cmds})
+		if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// One frame of four sub-steps, then ONE tick — which affords two of them, so
+	// sequences three and four are still queued when the next frame lands.
+	send(1, 4)
+	fintechStep(t, tick, clock)
+	// The next frame exactly as the browser builds it: the unacknowledged tail
+	// first, then the fresh sub-steps.
+	send(1, 8)
+
+	// Pump until everything is acknowledged, bounded by a DEADLINE and never by a
+	// count of attempts. Paced, so the bald man does not cross the office while
+	// this waits.
+	var done map[string]any
+	pace := time.NewTicker(gamefintech.SimStep)
+	defer pace.Stop()
+	deadline := time.After(10 * time.Second)
+	for done == nil {
+		select {
+		case raw := <-frames:
+			var f map[string]any
+			if json.Unmarshal(raw, &f) != nil || f["t"] != "fintech_snap" {
+				continue
+			}
+			if ack, _ := f["ack"].(float64); ack >= 8 {
+				done = f
+			}
+		case <-pace.C:
+			select {
+			case tick <- clock.peek():
+				clock.advance()
+			case <-time.After(gamefintech.SimStep):
+			}
+		case <-deadline:
+			t.Fatal("the office never acknowledged all eight sub-steps")
+		}
+	}
+
+	endY, _ := done["y"].(float64)
+	// Centimetres on the wire; eight sub-steps of walking and not one more.
+	want := 8 * subStep * gamefintech.WalkSpeed * 100
+	if got := endY - startY; math.Abs(got-want) > 2 {
+		t.Fatalf("walked %.0f cm where %.0f cm was sent — a queued command was applied twice", got, want)
+	}
+}
+
 func TestFintechBeingCaughtWritesTheShift(t *testing.T) {
 	// The other ending, and the only one nobody asks for. Driven entirely
 	// through production paths: the occupant stands where the office put him and

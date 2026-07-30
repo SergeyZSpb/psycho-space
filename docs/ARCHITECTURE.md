@@ -391,13 +391,13 @@ sequenceDiagram
         B->>B: emit while the stick is pushed, a dash is asked for, OR ONE IS RUNNING
         B->>B: apply each command through its own copy of Step, keep it pending
         B->>G: fintech_input {k, cmds:[{q,dt,mx,my,d}]} + the unacknowledged tail
-        G->>G: Sanitise every field, QUEUE — nothing is refused for being generous
+        G->>G: Sanitise every field, drop anything already SEEN, QUEUE the rest
     end
 
     Note over B,P: SIMULATION — 20 Hz, memory only, no query of any kind
     loop injected ticker, 20 Hz
         G->>G: budget += one tick of REAL time, capped — the speed-hack guard
-        G->>G: per occupant drain the queue while the budget lasts, Step() each
+        G->>G: per occupant drain while the budget covers the next command WHOLE
         G->>G: the streak — still pays, moving past the grace resets, a dash does neither
         G->>G: StepBoss toward the NEAREST live occupant, pushed out of desks
         G->>G: Caught? then the shift ends with cause promoted
