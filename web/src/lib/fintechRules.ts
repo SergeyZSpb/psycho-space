@@ -148,7 +148,7 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
         // in order to play belongs on the splash screen.
         {
           label: '⚪ где ты',
-          text: 'Ты — тот, кто стоит в белом круге. Лица настоящие, из профиля.',
+          text: 'Ты — тот, кто обведён белым и стоит в белом круге. Лица настоящие, из профиля.',
         },
         ...(Array.isArray(config.personas) && config.personas.length > 1
           ? [

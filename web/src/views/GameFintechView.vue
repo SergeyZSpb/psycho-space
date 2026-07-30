@@ -2143,6 +2143,40 @@ function onDash(): void {
      here to remove. */
 }
 
+/* WHICH ONE IS YOU, PART TWO — AN OUTLINE ROUND THE MAN HIMSELF.
+   The ground ring below was not enough: with three figures built identically, all
+   wearing a face and all the same size, a ring under the feet is something you have
+   to look for rather than something you see.
+
+   ON THE HEAD AND THE BODY, NOT ON THE BOX. A figure's box is a COORDINATE and not a
+   surface — nothing may set a `background`, a `border` or an `outline` on it, because
+   the лысый shipped once as a filled rectangle for exactly that reason and a test
+   pins it now. So the outline goes on the two shapes that ARE him, exactly as the
+   drunk green and the grin steps do, and it therefore follows his silhouette instead
+   of drawing a box around his coordinate.
+
+   `box-shadow` rather than `outline`, for two reasons: an `outline` is drawn on the
+   element's box even on a rounded shape, and a spread-only shadow follows the
+   `border-radius` that makes him a person. Sized in `em`, which is `--unit` on a
+   figure, so it thickens with him down the depth ramp instead of becoming a thread at
+   the back of the room.
+
+   Warm white against a dark floor and a blue shirt, and it is the same hue as the
+   ground ring so the two read as one marker rather than two decorations. */
+.fintech-me .fintech-fig-head {
+  box-shadow:
+    0 0 0 0.06em rgba(255, 255, 255, 0.95),
+    0 0 0 0.1em rgba(0, 0, 0, 0.45),
+    inset -0.18em -0.22em 0.5em rgba(0, 0, 0, 0.18);
+}
+
+.fintech-me .fintech-fig-body {
+  box-shadow:
+    0 0 0 0.06em rgba(255, 255, 255, 0.95),
+    0 0 0 0.1em rgba(0, 0, 0, 0.45),
+    inset 0 -0.35em 0.5em rgba(0, 0, 0, 0.22);
+}
+
 /* WHICH ONE IS YOU — a ring on the floor you are standing in.
    With three colleagues in one опенспейс, all built the same way and all wearing a
    face, `opacity: 0.88` on everybody else is not enough to find yourself while

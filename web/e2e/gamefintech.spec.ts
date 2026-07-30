@@ -1798,3 +1798,40 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — the three things that h
     expect(sizes.cloudH).toBeGreaterThan(sizes.figW);
   });
 });
+
+test('your own figure is outlined and no colleague is', async ({ page }) => {
+  // The ground ring was not enough: three figures built identically, all wearing a
+  // face, and a ring under the feet is something you look for rather than see. The
+  // outline is on the HEAD and the BODY rather than on the box, because a figure's box
+  // is a coordinate and not a surface — the лысый shipped once as a filled rectangle
+  // for exactly that reason.
+  const socket = await enterOffice(page);
+  await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }] });
+  await expect(page.getByTestId('fintech-peer')).toHaveCount(1);
+
+  const seen = await page.evaluate(() => {
+    const part = (who: string, cls: string) =>
+      getComputedStyle(document.querySelector(`${who} .${cls}`)!).boxShadow;
+    const st = getComputedStyle(document.querySelector('[data-testid="fintech-me"]')!);
+    return {
+      meHead: part('[data-testid="fintech-me"]', 'fintech-fig-head'),
+      meBody: part('[data-testid="fintech-me"]', 'fintech-fig-body'),
+      peerHead: part('[data-testid="fintech-peer"]', 'fintech-fig-head'),
+      boxShadow: st.boxShadow,
+      boxBackground: st.backgroundImage,
+      boxOutline: st.outlineStyle,
+    };
+  });
+  // A bright ring on both of his shapes...
+  expect(seen.meHead).toContain('255, 255, 255');
+  expect(seen.meBody).toContain('255, 255, 255');
+  // ...and not on a colleague's, which is what makes it a marker rather than a style.
+  expect(seen.peerHead).not.toContain('255, 255, 255');
+  // AND NOTHING ON THE BOX, which is the rule the лысый's filled rectangle bought.
+  expect(seen.boxShadow).toBe('none');
+  expect(seen.boxBackground).toBe('none');
+  // `outlineStyle` rather than `outlineWidth`: an element with no outline still
+  // computes a width of `medium`, so the width says nothing about whether one is
+  // drawn.
+  expect(seen.boxOutline).toBe('none');
+});
