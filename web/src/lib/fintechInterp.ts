@@ -65,9 +65,22 @@ export interface InterpPoint {
 }
 
 interface Timed extends InterpSample {
-  /** Local arrival time. The server's tick is NOT used — see below. */
-  at: number;
+  /** The simulation tick this sample describes. The timeline, see below. */
+  tick: number;
 }
+
+/**
+ * How fast the estimated clock offset is allowed to creep UPWARDS, per sample.
+ *
+ * The estimator takes the minimum, and a minimum is a ratchet: without this a
+ * single unusually-early frame would pin the offset for the rest of the shift,
+ * and any drift between the two machines' clocks would slowly push the drawn
+ * instant past the newest sample the buffer holds — which shows as the лысый
+ * pausing more and more often. Creeping upwards costs about two per cent of the
+ * error a second at twenty samples a second, which is far slower than jitter and
+ * far faster than any real crystal drifts.
+ */
+const OFFSET_CREEP = 0.001;
 
 /** How many samples to keep. Two are needed; the rest are slack for a stall. */
 const BUFFER = 8;
@@ -95,27 +108,64 @@ function grinOf(s: InterpSample): number {
  * they are not, and the extra half absorbs jitter and a single dropped frame), so
  * changing that rate moves this and the compensation together.
  */
-export function createInterpolator(delayMs: number) {
+export function createInterpolator(delayMs: number, tickMs: number) {
   const delay = Math.max(0, delayMs);
+  const perTick = tickMs > 0 ? tickMs : 1;
   let buf: Timed[] = [];
+  // Where tick zero sits on THIS machine's clock, estimated from arrivals. Null
+  // until the first sample; see `push`.
+  let offset: number | null = null;
+
+  /** A sample's place on the local clock. */
+  const timeOf = (t: Timed) => t.tick * perTick + (offset ?? 0);
 
   return {
     /**
-     * Records a sample as having arrived now.
+     * Records the sample the office published on `tick`, arriving now.
      *
-     * ARRIVAL TIME RATHER THAN THE SERVER'S TICK NUMBER, deliberately. The tick
-     * is a perfectly good timeline and is on the wire, but using it means
-     * mapping the server's clock onto this one and keeping that mapping honest
-     * across a stall, a sleep and a reconnect. Arrival time needs no mapping and
-     * is wrong only in the way that does not matter here: it inherits the
-     * network's jitter, which is exactly what the delay above is for.
+     * THE TIMELINE IS THE SERVER'S TICK, NOT THE ARRIVAL TIME, and that is the
+     * whole of this module's correctness. Arrival time is easier — it needs no
+     * clock mapping — but it inherits the network's jitter DIRECTLY AS RENDERED
+     * VELOCITY: two frames sent 50 ms apart that arrive 20 ms and 80 ms apart
+     * make the лысый appear to walk at two and a half times his speed and then at
+     * three fifths of it, on the exact stretch where the dodge is being judged.
+     * The tick is a perfect fixed-rate timeline and was already on every frame.
+     *
+     * It also fixes what a stall does. The hub drops a slow client's backlog but
+     * keeps what fits, so a phone coming back from a tunnel receives several
+     * frames within a few milliseconds of each other — on an arrival timeline
+     * that is a world where everything happened at once, and the buffer's whole
+     * span collapses. Keyed on the tick they simply carry their own spacing.
+     *
+     * The mapping between the two clocks is one number and it is estimated
+     * ROBUSTLY RATHER THAN EXACTLY: the local time of tick zero is the smallest
+     * `arrival − tick × period` seen, because the least-delayed frame is the best
+     * evidence of the true offset, with a slow upward creep so a minimum cannot
+     * ratchet (see OFFSET_CREEP). Nothing here needs the estimate to be right in
+     * absolute terms — only stable — because everything drawn is a difference.
      */
-    push(s: InterpSample, nowMs: number): void {
-      // Out-of-order or duplicate arrivals are ignored rather than sorted in:
-      // the transport delivers in order, so this is belt and braces.
+    push(s: InterpSample, tick: number, nowMs: number): void {
+      // Out-of-order or duplicate ticks are ignored rather than sorted in: the
+      // transport delivers in order, so this is belt and braces — and a repeat
+      // would make a span of zero.
+      //
+      // A tick a long way BACKWARDS is a different office rather than a late
+      // frame: the process restarted, or a shift was picked up in a rebuilt one,
+      // and its clock starts again from nothing. Dropping those would leave the
+      // figure frozen for the rest of the shift, so the timeline is abandoned
+      // and started again from what just arrived.
       const last = buf[buf.length - 1];
-      if (last && nowMs < last.at) return;
-      buf.push({ ...s, at: nowMs });
+      if (last && tick <= last.tick) {
+        if (last.tick - tick <= BUFFER) return;
+        buf = [];
+        offset = null;
+      }
+
+      const seen = nowMs - tick * perTick;
+      if (offset === null || seen < offset) offset = seen;
+      else offset += (seen - offset) * OFFSET_CREEP;
+
+      buf.push({ ...s, tick });
       if (buf.length > BUFFER) buf = buf.slice(buf.length - BUFFER);
     },
 
@@ -134,14 +184,16 @@ export function createInterpolator(delayMs: number) {
 
       // Older than anything held — a long stall. Hold the oldest rather than
       // extrapolating backwards into a past nobody sampled.
-      if (target <= buf[0].at) return { x: buf[0].x, y: buf[0].y, grin: grinOf(buf[0]) };
+      if (target <= timeOf(buf[0])) return { x: buf[0].x, y: buf[0].y, grin: grinOf(buf[0]) };
 
       for (let i = buf.length - 1; i > 0; i--) {
         const b = buf[i];
         const a = buf[i - 1];
-        if (target >= a.at && target <= b.at) {
-          const span = b.at - a.at;
-          const t = span > 0 ? (target - a.at) / span : 1;
+        const ta = timeOf(a);
+        const tb = timeOf(b);
+        if (target >= ta && target <= tb) {
+          const span = tb - ta;
+          const t = span > 0 ? (target - ta) / span : 1;
           return {
             x: lerp(a.x, b.x, t),
             y: lerp(a.y, b.y, t),
@@ -161,6 +213,10 @@ export function createInterpolator(delayMs: number) {
     /** Drops everything, for when a shift ends. */
     reset(): void {
       buf = [];
+      // The offset goes with it: a new shift is a new office, its ticks start
+      // again from nothing, and an estimate made against the last one would put
+      // every sample minutes into the past.
+      offset = null;
     },
 
     /** For tests. */

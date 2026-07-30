@@ -6,7 +6,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 
 - **topic:** psycho-space at two altitudes — the structural view (§1–7: logical containers, runtime flows, package layout, data model, API map, security) and, in §8, a one-paragraph summary of every decision that produced that shape, each linking to its full record in `docs/adrs/`. `CLAUDE.md` carries the *rules*; this file carries the *shape* and the *why*.
 - **status:** a current-state snapshot, deliberately not a history — `git log` holds how it got here. **One Go binary** (embedded Vue SPA + `/api` + a WebSocket) behind nginx on one Ubuntu box, PostgreSQL 16 local, no Redis, no cron, no worker and no queue. Login is **VK ID or Яндекс ID** — two providers behind one identity model, where an identity is the pair `(provider, blind index)` and a second provider means a second account rather than a link (ADR-054); access is allowlist-gated. Live sections: **wishlist** (items + threaded comments, both upvotable), **admin/settings**, and **four games**. **«Смолтолк в Химках»** (`internal/gamekhimki/`) is LLM-judged dialogue and the only paid path. **«Ванягоччи»** (`internal/gamevanyagotchi/`) is realtime with **no LLM on any path**: a shared plane broadcast at 5 Hz over the hub, a Postgres-backed **pet** whose stats decay lazily from `(value, as_of)`, **seven regulars** — at least one in every place — whose POSITIONS are closed-form though their speech is not, walking with server-decided tiredness, absent players drawn asleep where they stood, and speech balloons. The yard is drawn **2.5D**: painted backdrops, cut-out figures anchored at the feet, four depth bands, the hashed identity colour as a ground shadow and the player's VK photograph as a badge beside the head. Its controls are **on the plane** rather than under it — the crate is what you tap to drink, a death screen is the only way back up, and one floating button carries whatever verb has nowhere better to be. The yard also holds **world objects** — relief deposits with a TTL, a lost key exactly one player wins, and a crate of beer drawn down one at a time — contested by two disciplines the catalogue routes between, both settled by a conditional `UPDATE` in PostgreSQL rather than by hub ordering. **Both singletons wander**: a fresh key hides at a hotspot, a fresh crate stands on ordinary ground clear of them, each in a location drawn at random — and **nothing may be placed in the plane's two bottom corners**, which are interface and swallow the taps that land on them. There are **five places** — двор, лес, лифт, кусты, заброшка — and none of them is a realtime room: one room carries the whole game and the client filters on each entity's location, so **a position is a triple** (a place plus `x`,`y` within it) and adding a place costs nothing at the transport layer (ADR-045). Two verbs are **gated on where a Ваня is standing**: drinking, on arrival at the crate, and finding the key, which is a **search** — the key is never drawn, its hiding place is stored and unpublished, and a claim must name a catalogue hotspot the player has actually walked to. **A verb travels over the socket, not over HTTP**, and is followed by state rather than answered by a body — the pet's whole HTTP surface is two reads (ADR-043). Its splash screen is a **rules cheatsheet generated from the served catalogue**. The realtime transport carries a `bye` frame, exposes three game seams (`Handler`, `Hub.Members`, `Hub.PublishTo`), and revalidates sessions every 30 s so a socket cannot outlive its own. **«ВАНЯДУМ»** (`internal/gamevanyadum/`) is game three and the first in 3D: a first-person shooter on a generated заброшка, rendered with **three.js in a canvas that holds the world and nothing else** — every readout and control stays DOM, which is what keeps both Playwright suites alive (ADR-047). It is also the first thing in this project that **simulates**: collision destroys the closed-form motion model everything else uses, so a **20 Hz fixed-step loop** advances in-memory **arenas** — one per run, unicast through `PublishTo` because an arena is not a room — while Postgres is touched exactly twice per run and never on a tick, which is what keeps it on the right side of ADR-038 (ADR-048). Input is **batched to ten frames a second carrying four sub-steps**, fitting inside the socket's existing rate limit rather than loosening it, and a per-arena **real-time budget** is what stops a client filling every frame with legal values and running eight times faster than everybody else (ADR-049). The **level** is a Doom-style sector graph generated in Go from a seed and sent once (ADR-050); the game **stores no art at all** — geometry, textures and props are generated from that seed, with textures as pure typed-array functions specifically so they are testable (ADR-051). Netcode is **all four Gambetta rungs** — client-side prediction, server reconciliation, entity interpolation and lag compensation — built together after the feel gate came back "looks like low fps"; the client runs the server's own `Step`, pinned to it by golden vectors, and authority never moves (ADR-052). Controls are thumbs on glass, and on a desktop a click captures the pointer so the mouse can look. **«СИМУЛЯТОР ФИНТЕХА»** (`internal/gamefintech/`) is game four, and the first to take one answer from each of the two above: it **simulates like the shooter and draws like the yard** — a 20 Hz server-owned tick over a world made of real DOM elements, with no canvas anywhere (ADR-057). There is a **bottle** on the floor — in one of several catalogue spots, moving to a different one ten seconds after each drink: walk to it and the лысый drinks, turns green and staggers — slower and weaving, but still coming, because a boss who freezes is a boss you ignore. You are Карен, and your salary accrues **only while you stand perfectly still**, on a multiplier that ramps ×1→×3 and resets when you move — so the premise that pays you for doing nothing becomes a game about dodging at the last possible instant, and the dash is the skill ceiling because it is the one movement that keeps the streak. A smiling лысый walks at the nearest occupant and contact ends the shift. The tick is earned by **pursuit** rather than by collision, and the office is **one process-wide arena** rather than one per run, because co-op here means several Карена in the same опенспейс (ADR-056) — so iteration 1 ships solo play on multi-occupant plumbing. The office is **static and lives in the catalogue**: no generator, no seed, nothing about geometry on any frame. Postgres holds one summary row per shift and nothing else. **The лысый routes around the furniture** — a coarse grid over the static office, one breadth-first flood fill from the target per tick, and a boss who walks downhill through it, with a straight line taken whenever one exists. He used to be pure pursuit, which in a room with desks is not cover but a wall he grinds along: measured against a still player, a point in a desk's shadow took **90 seconds** where one he could see took under five. It is **10.35 s worst case** over the whole floor now, and nothing is unreachable. **Where a shift starts is drawn rather than fixed** — inside the walls, out of the furniture, clear of whoever is already working, and far enough from him to outlast the shortest recordable shift. Occupants **see each other**: the snapshot carries the others as pseudonyms with positions, drawn from the same interpolation buffer the bald man uses.
-- **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only, immutable once shipped). For the shooter: `internal/gamevanyadum/{sim,level,arena,service}.go` and on the client `web/src/views/GameVanyadumView.vue` + `web/src/lib/vanyadum{Level,Texture,Input,Rules,Step,Predict,Interp}.ts` + `web/src/render/vanyadumScene.ts` (the only module importing three.js). For the yard: `internal/gamevanyagotchi/service.go` (the verbs and the tick), `message.go` (the wire contract in §5), `content.go` (every tuning constant, character and phrase), and on the client `web/src/views/GameVanyagotchiView.vue` + `web/src/lib/vanyagotchi{Plane,Pet,Rules}.ts` + `web/src/realtime/socket.ts`. For the office: `internal/gamefintech/{sim,boss,office,service}.go` and on the client `web/src/views/GameFintechView.vue` + `web/src/lib/fintech{Step,Predict,Plane,Rules}.ts`.
+- **code:** `cmd/psycho-space/main.go` (DI root — read this first), `internal/httpapi/router.go` (every route and middleware), `migrations/` (schema, forward-only, immutable once shipped). For the shooter: `internal/gamevanyadum/{sim,level,arena,service}.go` and on the client `web/src/views/GameVanyadumView.vue` + `web/src/lib/vanyadum{Level,Texture,Input,Rules,Step,Predict,Interp}.ts` + `web/src/render/vanyadumScene.ts` (the only module importing three.js). For the yard: `internal/gamevanyagotchi/service.go` (the verbs and the tick), `message.go` (the wire contract in §5), `content.go` (every tuning constant, character and phrase), and on the client `web/src/views/GameVanyagotchiView.vue` + `web/src/lib/vanyagotchi{Plane,Pet,Rules}.ts` + `web/src/realtime/socket.ts`. For the office: `internal/gamefintech/{sim,boss,office,service}.go` and on the client `web/src/views/GameFintechView.vue` + `web/src/lib/fintech{Step,Predict,Plane,Rules}.ts`. For the office: `internal/gamefintech/{sim,office,boss,chaser,service}.go` — `office.go` holds the input queue, the rewind ring and both hit tests — and on the client `web/src/views/GameFintechView.vue` + `web/src/lib/fintech{Step,Predict,Interp,Plane,Rules}.ts`. The whole client-and-server loop, its four clocks and its latency ledger are §2.8.
 - **relocate:** `grep -rn "func (s \*Server) handle" internal/httpapi` lists every handler; `internal/*/service.go` is each domain's entry point; `ls docs/adrs/` lists every decision record; `grep -n 'TypeHello\|TypeMove\|TypeDo\|TypeRoster\|TypeYou\|TypeStateFrame' internal/gamevanyagotchi/message.go` re-finds the wire types if §5 drifts.
 - **adr:** §8 is a **summary layer**; the records themselves are one file each in `docs/adrs/ADR-0NN-<slug>.md`. **A record states the decision as it stands TODAY and is rewritten in place when it changes** — there is no append-only rule any more, no `Superseded by`, and no amendment chains. The history of a decision lives in `git log -p docs/adrs/ADR-0NN-*.md`, which is a better record of how the thinking moved than a status line was. Adding one: create the file, add a one-paragraph summary + link under the right `### 8.x` group, take the **next global number** wherever the group. **Numbers are never reused and gaps are permanent**, so existing references never shift. Status vocabulary is `Accepted` and nothing else. **The bar is architecture** — deployment, data, a component boundary, or the cost of a whole class of change; a tuning constant, a UI behaviour or a test-harness fix gets a comment beside the code instead. Highest record: **ADR-057** — confirm with `ls docs/adrs/ | tail -1`. The unused numbers are **020, 032, 035, 036**, all permanent gaps left by records withdrawn for failing the architecture bar. `./scripts/check-docs.sh` (in the lint gate) rejects a duplicate id, a summary with no file, a file with no summary, and a dead link.
 - **next:** keep this file in step with the code — a new domain package, route group, table, or runtime flow updates the matching section here in the same change, and a decision whose reasoning is not recoverable from the diff gets a record (`CLAUDE.md` → *Task workflow* step 7 makes both a gate).
@@ -56,7 +56,7 @@ flowchart TB
 
 **Why one binary.** The SPA is compiled into the executable, so a deploy is a single file plus a restart, and nginx never needs to know about static asset paths. See [§8 → ADR-001](#adr-001--the-spa-is-embedded-in-the-go-binary) for why, and for what it costs.
 
-**There are two ways in, and only one of them is a request.** Everything except the yard is request/response over `/api`. «Ванягоччи» additionally holds a WebSocket, which nginx must be told about explicitly — an upgrade is not a proxied request and the `Upgrade`/`Connection` headers do not survive a default `proxy_pass`. Inside the binary the hub is deliberately **not** a domain service: it is transport, it knows no game's vocabulary, and a game reaches it through two narrow seams — publish out, query presence in ([§8 → ADR-033](#adr-033--a-game-reads-the-socket-through-a-game-agnostic-handler-and-pulls-presence)). Note also what is **not** in the diagram: no cron, no worker, no queue and no Redis. Three loops do recur, and **none of them ticks anything durable** — which is the rule, rather than "nothing recurs". The yard's 5 Hz broadcast reads an in-memory cache and never the database ([§2.6](#26-one-tick-of-the-yard)), «ВАНЯДУМ» runs a 20 Hz simulation over arenas that live only in memory and touch Postgres exactly twice per run ([§2.7](#27-one-step-of-ванядум--the-first-thing-in-this-system-that-simulates)), and «СИМУЛЯТОР ФИНТЕХА» runs a 20 Hz simulation over one shared office that touches Postgres once per shift ([§2.8](#28-one-tick-of-the-office--a-dom-game-that-simulates)).
+**There are two ways in, and only one of them is a request.** Everything except the yard is request/response over `/api`. «Ванягоччи» additionally holds a WebSocket, which nginx must be told about explicitly — an upgrade is not a proxied request and the `Upgrade`/`Connection` headers do not survive a default `proxy_pass`. Inside the binary the hub is deliberately **not** a domain service: it is transport, it knows no game's vocabulary, and a game reaches it through two narrow seams — publish out, query presence in ([§8 → ADR-033](#adr-033--a-game-reads-the-socket-through-a-game-agnostic-handler-and-pulls-presence)). Note also what is **not** in the diagram: no cron, no worker, no queue and no Redis. Three loops do recur, and **none of them ticks anything durable** — which is the rule, rather than "nothing recurs". The yard's 5 Hz broadcast reads an in-memory cache and never the database ([§2.6](#26-one-tick-of-the-yard)), «ВАНЯДУМ» runs a 20 Hz simulation over arenas that live only in memory and touch Postgres exactly twice per run ([§2.7](#27-one-step-of-ванядум--the-first-thing-in-this-system-that-simulates)), and «СИМУЛЯТОР ФИНТЕХА» runs a 20 Hz simulation over one shared office that touches Postgres once per shift ([§2.8](#28-the-office-loop--the-whole-of-it-both-ends-with-the-latency-ledger)).
 
 ## 2. Runtime views
 
@@ -364,52 +364,109 @@ sequenceDiagram
 
 **And `Step` is pure** — a function of `(level, player, command)` with no clock, no randomness and no query. That future arrived the same day: the feel gate failed, so this exact function now **also runs in the browser**, pinned to the Go original by golden vectors in `internal/gamevanyadum/testdata/`. The client predicts its own movement through it and the server reconciles ([ADR-052](#adr-052--the-netcode-is-built-multiplayer-complete-before-there-is-a-second-player)); peers are interpolated in the recent past instead, because their intent cannot be predicted; and the tick's recording above is what lets a shot be resolved against the world the shooter actually saw.
 
-### 2.8 One tick of the office — a DOM game that simulates
+### 2.8 The office loop — the whole of it, both ends, with the latency ledger
 
 **This flow is «СИМУЛЯТОР ФИНТЕХА»**, and it is a *third* kind of tick rather than a repeat of either above. [§2.6](#26-one-tick-of-the-yard) renders a world that is a closed-form function of the clock. [§2.7](#27-one-step-of-ванядум--the-first-thing-in-this-system-that-simulates) integrates a world that is not, and draws it in WebGL. This one **integrates a world that is not, and draws it in DOM** — which is not a contradiction but two independent decisions taken separately ([ADR-057](#adr-057--a-dom-game-may-own-a-fixed-step-simulation)).
 
 **Pursuit is why.** Лысый's position at *t* is a function of every position the player occupied before *t*, and the money multiplier is an accumulation of the player's own input history rather than an evaluation of elapsed time. Neither can be written as `pattern(params, now − epoch)`, so both have to be stepped.
 
-**And there is one office, not one per player.** Where the shooter keys an arena by account, this game holds a single process-wide world that occupants join and leave, because co-op here means several Карена being chased by the same bald man ([ADR-056](#adr-056--the-office-is-one-process-wide-arena-not-one-per-run)). The frame is still built and addressed **per occupant** — each carries his own salary and his own acknowledged input — so the room is the membership query rather than the fan-out.
+**And there is one office, not one per player.** Where the shooter keys an arena by account, this game holds a single process-wide world that occupants join and leave, because co-op here means several Карена being chased by the same bald man ([ADR-056](#adr-056--the-office-is-one-process-wide-arena-not-one-per-run)). The frame is still built and addressed **per occupant** — each carries his own salary, his own acknowledged input and his own rewind — so the room is the membership query rather than the fan-out.
+
+#### 2.8.1 The four clocks
+
+Nothing about this loop makes sense until you know which of these a given line of code is running on. They are deliberately independent, and no two of them are the same rate.
+
+| Clock | Rate | Whose | What runs on it |
+|---|---|---|---|
+| **Draw** | the display's, 30–120 Hz | browser | `requestAnimationFrame`: predict, ease the correction, interpolate everybody else, write CSS custom properties |
+| **Emit** | 40 Hz (`input_hz × max_commands`) | browser | turn the elapsed time and the current axes into one command, apply it locally, queue it |
+| **Send** | 10 Hz (`input_hz`) | browser | one frame carrying the commands emitted since the last one, plus the unacknowledged tail |
+| **Simulate** | 20 Hz (`sim.hz`) | server | drain each occupant's queue, step both men, resolve the hit tests, publish a snapshot per occupant |
+
+The emit rate is fixed at forty a second *because prediction exists*: the client has to predict exactly what it sends, so commands may never be merged — a merged command would be simulated as one thing on the server and as several on the client, and the correction would never settle. The send rate is ten because the socket permits ten messages a second and that is a security property this game fits inside rather than loosens ([ADR-049](#adr-049--input-is-batched-to-fit-the-sockets-bound-never-to-loosen-it)).
+
+#### 2.8.2 The loop
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant B as Browser
+    participant D as Browser · draw+emit
+    participant S as Browser · send
     participant H as hub
     participant G as gamefintech
     participant P as PostgreSQL
 
-    Note over B,P: START — no write at all
-    B->>G: POST /api/game-fintech/shifts
+    Note over D,P: START — no write at all
+    D->>G: POST /api/game-fintech/shifts
     G->>G: create the office if empty, place this Карен, mint a shift id
-    G-->>B: {shift_id, room} — the office is STATIC and already in the catalogue
-    B->>H: ws /api/realtime?room=fintech then {"t":"fintech_hello"}
+    G-->>D: {shift_id, room} — the office is STATIC and already in the catalogue
+    D->>H: ws /api/realtime?room=fintech then {"t":"fintech_hello"}
 
-    Note over B,P: INPUT — ten frames a second, and the client PREDICTS locally
-    loop while on shift
-        B->>B: emit while the stick is pushed, a dash is asked for, OR ONE IS RUNNING
-        B->>B: apply each command through its own copy of Step, keep it pending
-        B->>G: fintech_input {k, cmds:[{q,dt,mx,my,d}]} + the unacknowledged tail
-        G->>G: Sanitise every field, drop anything already SEEN, QUEUE the rest
+    Note over D,S: PREDICT — 40 Hz, and nothing is sent yet
+    loop every animation frame
+        D->>D: emitter.due(now, axes) — one command per 25 ms of elapsed time
+        D->>D: predictor.apply(cmd): step() locally, keep it PENDING with the state BEFORE it
+        D->>D: draw at predicted + residual carry + the correction still easing out
+        D->>D: draw everybody else from their interpolation buffers, render_delay_ms in the past
     end
 
-    Note over B,P: SIMULATION — 20 Hz, memory only, no query of any kind
+    Note over S,G: SEND — 10 Hz, and only when something happened
+    loop every 100 ms
+        S->>G: fintech_input {k, cmds:[{q,dt,mx,my,d}]} + the unacknowledged tail
+        G->>G: derive this occupant's round trip from k, smoothed
+        G->>G: Sanitise every field — DROP anything at or below HighSeq — queue the rest
+    end
+
+    Note over G,P: SIMULATE — 20 Hz, memory only, no query of any kind
     loop injected ticker, 20 Hz
         G->>G: budget += one tick of REAL time, capped — the speed-hack guard
-        G->>G: per occupant drain while the budget covers the next command WHOLE
-        G->>G: the streak — still pays, moving past the grace resets, a dash does neither
-        G->>G: StepBoss toward the NEAREST live occupant, pushed out of desks
-        G->>G: Caught? then the shift ends with cause promoted
-        G->>H: PublishTo(conn, snapshot) EVERY tick — 20 Hz, one per occupant
-        H-->>B: fintech_snap {k, ack, x, y, pay, m, st, dc?, b}
-        B->>B: drop acked, REWIND to the state at the ack, replay the rest, ease the residue
+        G->>G: drain while the budget covers the next command WHOLE — ack only what ran
+        G->>G: any tick no command claimed, and only with an EMPTY queue, is stood still
+        G->>G: StepBoss + StepChaser toward the nearest live occupant, round the desks
+        G->>G: record both men's positions in the rewind ring
+        G->>G: per occupant, resolve Caught/Landed against the ring entry THEY can see
+        G->>H: PublishTo(conn, snapshot) every tick — 20 Hz, one per occupant
+        H-->>D: fintech_snap {k, ack, x, y, pay, m, st, dc?, b, cl, np, pr?}
     end
 
-    Note over B,P: END — promoted, walked out, or abandoned. One row, once.
+    Note over D,G: RECONCILE — on every snapshot
+    D->>D: drop everything acknowledged — rewind to the state BEFORE the oldest unacked
+    D->>D: overwrite x, y, dashCooldown, slowLeft from the frame — the server is the authority
+    D->>D: replay what is still pending on top — ease the residue over 0.12 s, or snap past 2 m
+    D->>D: push the лысый, Claude, the NPCs and the peers into their buffers, keyed on k
+
+    Note over D,P: END — promoted, walked out, or abandoned. One row, once.
     G->>H: fintech_over {cause, pay, secs}
     G->>P: INSERT game_fintech_shifts — on a separate writer goroutine
 ```
+
+#### 2.8.3 What is predicted, what is interpolated, and why the difference matters
+
+**Your own Карен is predicted.** The client runs the same `Step` the office does — the Go original and its TypeScript port, pinned to each other by golden vectors ([ADR-052](#adr-052--the-netcode-is-built-multiplayer-complete-before-there-is-a-second-player)) — so movement answers the thumb in zero milliseconds and redraws at frame rate rather than at the snapshot rate. **The money is not predicted**: the salary, the multiplier and the streak are read straight off the frame, because they are the score and a score flickering between a guess and the truth is worse than one that is merely 20 Hz.
+
+**Everything else is interpolated**, because another mind's intent is not ours to guess. The лысый, Claude Code, Серега and Тёма and every colleague are buffered and drawn **`sim.render_delay_ms` in the past**, between the two samples that bracket that instant, so jitter and a dropped frame cost nothing — the renderer is never waiting on anything. **The buffer's timeline is the office's tick, not the arrival time**: keyed on arrival, two frames sent 50 ms apart that arrive 20 ms and 80 ms apart make the лысый appear to walk at two and a half times his speed and then at three fifths of it, and a burst delivered after a stall collapses the whole span to nothing.
+
+**Three timers are folded in from the frame on every reconcile** — the dash cooldown, Claude's slow, and the position itself. A predicted timer only advances when a command is emitted, and *this game's default state is a player standing perfectly still emitting nothing*, so a locally-held timer would still be running long after the office had let it expire ([ADR-058](#adr-058--a-predicted-effect-lives-on-player-an-unpredicted-one-lives-on-the-occupant)).
+
+#### 2.8.4 The latency ledger, and why the catch is rewound
+
+Predicting yourself and interpolating everybody else means **you are drawn in the present and he is drawn in the past**. Resolving a hit test between them in the office's present compares two different instants, and the errors **add** in the one situation the game is about — running away.
+
+| | drawn at | error while fleeing |
+|---|---|---|
+| your own Карен | predicted now, plus up to 25 ms of carry | — |
+| the office's copy of you | now − (send batching + uplink + queue) | you are **0.6–1.0 m** nearer him than drawn |
+| the лысый on your screen | office truth − (render delay + downlink) | he is **0.6–0.9 m** nearer you than drawn |
+
+`CatchRadius + PlayerRadius` is 1.2 m and the accumulated error is **1.4–1.8 m** — larger than the thing it is an error in, and scaling with the connection rather than with the geometry, so no radius fixes it. So the office keeps a short **ring of both men's positions**, one entry per tick, and resolves each occupant's `Caught` and `Landed` against the entry *their* screen is showing: their derived round trip plus the served render delay, capped at `CatchRewindMax` ([ADR-059](#adr-059--the-catch-is-resolved-in-the-victims-timeframe-because-being-caught-is-a-hit-test)). Pursuit — *who* he walks at — is deliberately **not** rewound, because it is a decision rather than a hit test.
+
+#### 2.8.5 The three rules the input path lives by
+
+Each of these was a defect before it was a rule, and each is pinned by a named test.
+
+- **A repeat is dropped against what has been ACCEPTED, not against what has been applied.** A frame carries four sub-steps where a tick affords two, so about half the queue is always accepted-but-not-yet-simulated; deduplicating on the acknowledgement lets every one of those through a second time. Measured over a real socket: 168 cm walked where 128 cm was sent. It compounds, because duplicates grow the queue and a longer queue duplicates more of the redundancy window.
+- **A command is simulated whole or it waits.** The acknowledgement is one sequence number and the client drops everything at or below it, so a command simulated in part and acknowledged in full leaves the client holding movement the office never ran, permanently.
+- **The idle fill runs only when the queue is empty.** Standing perfectly still sends nothing at all, so any part of a tick no command claimed is simulated as stillness — that is what accrues the salary and is the whole game. But the fill *consumes the budget*, so a fill running while a command waited for budget would consume exactly the budget it was waiting for, for ever.
 
 **A shift under a few seconds is dropped rather than written**, so the table is not full of accidental one-second shifts, and an occupant whose socket has been gone for the abandon grace is ended as `left` and written. **The office is torn down when it empties**, and the next shift builds a fresh one — so a restart loses shifts in flight exactly as it loses arenas and presence, which is the same accepted trade [ADR-048](#adr-048--the-simulation-is-a-server-owned-fixed-step-tick-over-in-memory-arenas) made.
 

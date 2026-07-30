@@ -498,6 +498,17 @@ function renderDelayMs(): number {
   return config.value?.sim.render_delay_ms ?? 75;
 }
 
+/**
+ * How long one simulation tick is, in milliseconds.
+ *
+ * The interpolation buffer is keyed on the office's TICK rather than on when a
+ * frame happened to arrive, so it needs this to put a tick on a local clock —
+ * see fintechInterp. Served like everything else about the rates.
+ */
+function tickMs(): number {
+  return 1000 / (config.value?.sim.hz || 20);
+}
+
 // --- what the server last told us ------------------------------------------
 // Read at ten hertz and rendered as text, which is exactly what reactivity is
 // for. Positions are the opposite and never come near it — see drawFrame.
@@ -1012,8 +1023,8 @@ function enterPlay(): void {
   const client = realtimeClient(shift.room);
   release = client.subscribe({ frames: onFrame, status: onStatus });
 
-  bossInterp = createInterpolator(renderDelayMs());
-  claudeInterp = createInterpolator(renderDelayMs());
+  bossInterp = createInterpolator(renderDelayMs(), tickMs());
+  claudeInterp = createInterpolator(renderDelayMs(), tickMs());
   sendTimer = window.setInterval(sendInput, Math.round(1000 / config.value.move.input_hz));
   lastFrameMs = performance.now();
   frameHandle = requestAnimationFrame(drawFrame);
@@ -1189,7 +1200,7 @@ function setNpcEl(key: string, el: Element | null): void {
  * absent case to mean «nobody here». The catalogue's ORDER is which of them each
  * entry is, so the frame carries no name and no key.
  */
-function applyNpcs(raw: unknown): void {
+function applyNpcs(raw: unknown, tick: number): void {
   const cast = config.value?.npcs ?? [];
   const list = Array.isArray(raw) ? (raw as Record<string, number>[]) : [];
   const shown: NpcShown[] = [];
@@ -1199,10 +1210,10 @@ function applyNpcs(raw: unknown): void {
     shown.push({ key: kind.key, say: sayFor(kind.lines, num(f.p)) });
     let interp = npcInterp.get(kind.key);
     if (!interp) {
-      interp = createInterpolator(renderDelayMs());
+      interp = createInterpolator(renderDelayMs(), tickMs());
       npcInterp.set(kind.key, interp);
     }
-    interp.push({ x: num(f.x) / 100, y: num(f.y) / 100, grin: 0 }, performance.now());
+    interp.push({ x: num(f.x) / 100, y: num(f.y) / 100, grin: 0 }, tick, performance.now());
   }
   // Membership and speech through Vue, positions never — and only when something
   // actually changed, so an ambling man does not cost a vdom patch ten times a
@@ -1432,7 +1443,7 @@ function applySnapshot(frame: RealtimeFrame): void {
     // Buffered rather than drawn. The render loop reads him back out a beat
     // later, between two samples it already holds, which is what makes jitter
     // and a dropped frame cost nothing.
-    bossInterp?.push({ x: bossAt.x, y: bossAt.y, grin }, performance.now());
+    bossInterp?.push({ x: bossAt.x, y: bossAt.y, grin }, seenTick, performance.now());
   }
 
   // CLAUDE, buffered exactly as the лысый is: not predicted, because his intent is
@@ -1442,11 +1453,11 @@ function applySnapshot(frame: RealtimeFrame): void {
   if (cl) {
     claudeLine.value = num(cl.p);
     claudeAt = { x: num(cl.x) / 100, y: num(cl.y) / 100 };
-    claudeInterp?.push({ x: claudeAt.x, y: claudeAt.y, grin: num(cl.c) / 255 }, performance.now());
+    claudeInterp?.push({ x: claudeAt.x, y: claudeAt.y, grin: num(cl.c) / 255 }, seenTick, performance.now());
   }
 
-  applyNpcs(frame.np);
-  applyPeers(frame.pr);
+  applyNpcs(frame.np, seenTick);
+  applyPeers(frame.pr, seenTick);
 }
 
 /**
@@ -1457,7 +1468,7 @@ function applySnapshot(frame: RealtimeFrame): void {
  * Read the other way a colleague who walked out would stand in the office for
  * the rest of the shift.
  */
-function applyPeers(raw: unknown): void {
+function applyPeers(raw: unknown, tick: number): void {
   const list = Array.isArray(raw) ? raw : [];
   const now = performance.now();
   const roster: PeerShown[] = [];
@@ -1508,11 +1519,11 @@ function applyPeers(raw: unknown): void {
     if (!interp) {
       // Same period as the лысый's, from the same served rate, so everybody who
       // is not predicted is drawn at the same instant in the past.
-      interp = createInterpolator(renderDelayMs());
+      interp = createInterpolator(renderDelayMs(), tickMs());
       peerInterp.set(id, interp);
     }
     // Buffered, never drawn here — see placePeers.
-    interp.push({ x: num(p.x) / 100, y: num(p.y) / 100 }, now);
+    interp.push({ x: num(p.x) / 100, y: num(p.y) / 100 }, tick, now);
   }
 
   // Somebody who is no longer on the frame has been promoted or walked out. The

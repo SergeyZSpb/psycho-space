@@ -70,7 +70,7 @@ const CONFIG = {
     max_commands: 4,
   },
   boss: { speed: 2.9, catch_radius: 1.25, grin_range: 7 },
-  sim: { hz: 20, snapshot_hz: 10 },
+  sim: { hz: 20, snapshot_hz: 20, render_delay_ms: 75 },
   // Marked, so a client that hardcoded the endings instead of reading them
   // cannot pass the ending assertions either.
   endings: [
@@ -223,6 +223,13 @@ async function stubSocket(page: Page): Promise<{
 }> {
   const sent: string[] = [];
   let ws: WebSocketRoute | null = null;
+  // THE TICK ADVANCES, and it has to. The interpolation buffer is keyed on the
+  // office's tick rather than on when a frame turned up (fintechInterp), so a
+  // stub that sent the same `k` twice would have its second frame dropped as a
+  // duplicate and the figure would never move — which is a stub bug that reads
+  // exactly like a broken renderer. A test that wants a specific tick still
+  // passes one in `fields`.
+  let tick = 12;
 
   await page.routeWebSocket('**/api/realtime*', (route) => {
     ws = route;
@@ -241,7 +248,7 @@ async function stubSocket(page: Page): Promise<{
     snapshot: (fields = {}) =>
       send({
         t: 'fintech_snap',
-        k: 12,
+        k: (tick += 1),
         ack: 0,
         x: 600,
         y: 900,
