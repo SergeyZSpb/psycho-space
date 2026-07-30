@@ -282,9 +282,6 @@ type NPCFrame struct {
 	// P is which of HIS OWN lines is over his head. Omitted at zero, and zero is his
 	// introduction.
 	P int `json:"p,omitempty"`
-	// C is 1 while he is standing in his own smoke. A flag rather than a duration:
-	// nothing counts down against it, because his cloud hides him from nobody.
-	C int `json:"c,omitempty"`
 }
 
 // ClaudeFrame is Claude Code, quantised exactly as the лысый is.

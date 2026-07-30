@@ -237,13 +237,16 @@ var BossLines = slices.Concat(bossFar, bossClosing, bossDrunkLines, bossRedirect
 // what an omitted index means, and the hashed interjection schedule brings it round
 // periodically so a player who arrives mid-shift learns who is walking at them.
 //
-// ONE OF THE OWNER'S LINES IS TWO ENTRIES. «ТЫ ЧЁ СУКА КОДЕКС ПОСТАВИЛ, В КОНСОЛИ НЕ
-// МОЖЕШЬ? ЕБЛАН?» is 55 runes against the 48 the balloon holds
-// (TestNobodySaysMoreThanFitsOnAPhone, itself a measurement of the two-row box at
-// 0.54rem against a 160px max-width). Splitting it costs nothing — a pool entry is a
-// whole balloon and the rotation says one every two seconds — and it keeps both
-// halves, where trimming would have lost one. Everything else fits as written; the
-// longest is 32.
+// ONE OF THE OWNER'S LINES IS TWO ENTRIES, AND THEY ARE DELIBERATELY UNRELATED.
+// «ТЫ ЧЁ СУКА КОДЕКС ПОСТАВИЛ, В КОНСОЛИ НЕ МОЖЕШЬ? ЕБЛАН?» is 55 runes against the
+// 48 a balloon holds (TestNobodySaysMoreThanFitsOnAPhone, itself a measurement of the
+// two-row box at 0.54rem against a 160px max-width), so it has to be two entries.
+//
+// They are NOT sequenced, and that is the owner's call rather than an oversight: each
+// half stands on its own as something he shouts at you, and chaining them into «first
+// half, then second half» was tried and reverted. Do not re-add the pairing — both
+// halves are just lines in the rotation, like every other line here.
+// Everything else fits as written; the longest is 32.
 //
 // His register is the point and it is not the лысый's. The лысый is a micromanager
 // who never raises his voice; this one is a colleague with an opinion about your
@@ -607,9 +610,12 @@ const (
 
 // СЕРЕГА AND ТЁМА — the office's two non-players.
 //
-// Scenery with opinions. They wander, they visit the кальян, and they say what they
-// think of your branch; they are not targets, they take no slot in the occupancy cap
-// and they never touch a player's game.
+// Scenery with opinions. They walk about at random, each carrying his own кальян with
+// a permanent cloud under him, and they say what they think of your branch. They are
+// not targets, they take no slot in the occupancy cap, and they never touch a
+// player's game — including the office's own кальян, which they neither seek nor
+// consume, because competing with a player for the strongest effect in the game is
+// exactly the interference they are supposed not to be.
 type NPCKind struct {
 	// Key is what the client draws him as. A key rather than a description, so the
 	// look lives in the stylesheet and the catalogue stays content.
@@ -659,17 +665,11 @@ const (
 	// NPCSpeed is a stroll — slower than either man who is actually looking for
 	// somebody, so they never read as chasing anyone.
 	NPCSpeed = 2.2
-	// NPCArrive is how close counts as arrived. Generous, because nothing depends
-	// on it: an NPC who stops half a metre short of the кальян is a man standing
-	// near a кальян.
+	// NPCArrive is how close counts as arrived. Generous, because nothing depends on
+	// it — he is ambling, not going anywhere.
 	NPCArrive = 0.5
 	// NPCPauseSeconds is how long he stands there before choosing somewhere else.
 	NPCPauseSeconds = 3.0
-	// NPCCloudSeconds is how long his smoke lasts. Cosmetic — it hides him from
-	// nobody, because nobody is looking for him.
-	NPCCloudSeconds = 8.0
-	// NPCHookahChance is how often the next place he ambles to is the кальян.
-	NPCHookahChance = 0.35
 	// NPCSlot is how long he holds one line. Two seconds, like everybody else on
 	// this plane — one cadence, everywhere.
 	NPCSlot = 40
@@ -1157,9 +1157,11 @@ func BuildConfig() Config {
 		},
 		Endings:      append([]Ending(nil), Endings...),
 		BossLines:    append([]string(nil), BossLines...),
+		Personas:     slices.Clone(Personas),
 		PlayerLines:  append([]string(nil), PlayerLines...),
 		MaxOccupants: MaxOccupants,
 		ClaudeLines:  slices.Clone(ClaudeLines),
+		NPCs:         slices.Clone(NPCCast),
 		Claude: ClaudeConfig{
 			Speed:   ChaserSpeed,
 			Reach:   ChaserReach,

@@ -1509,7 +1509,6 @@ func TestTheyNeverTouchYourShift(t *testing.T) {
 		o.npcs[i].Pos = at
 		o.npcs[i].To = at
 		o.npcs[i].Pause = 60
-		o.npcs[i].Cloud = NPCCloudSeconds
 	}
 	o.mu.Unlock()
 
@@ -1526,33 +1525,6 @@ func TestTheyNeverTouchYourShift(t *testing.T) {
 	o.mu.Unlock()
 	if !alive {
 		t.Fatal("an NPC ended the shift")
-	}
-}
-
-func TestTheyDoNotTakeTheHookahFromYou(t *testing.T) {
-	// «They get to hookah, get cloud» is decoration. Taking the prop away would be
-	// interference, and interference is what «they do not buff or debuff the players»
-	// rules out — so they smoke where it stands and it stays standing.
-	o := NewOffice()
-	join(t, o, "a", "s1")
-	spot := HookahSpots[hookahSpotOf(o)]
-	o.mu.Lock()
-	for i := range o.npcs {
-		o.npcs[i].Pos = spot
-		o.npcs[i].To = spot
-		o.npcs[i].Smoking = true
-	}
-	o.mu.Unlock()
-
-	advance(o, 4)
-	if snapOf(t, o, "a").Hk != 0 {
-		t.Fatal("an NPC consumed the кальян")
-	}
-	// And it is still there for the player to walk to.
-	place(t, o, "a", spot)
-	advance(o, 1)
-	if cloudOf(o, "a") <= 0 {
-		t.Fatal("the player could not take a кальян an NPC had been standing on")
 	}
 }
 
@@ -1600,5 +1572,31 @@ func TestTheTwoOfThemDoNotSpeakInUnison(t *testing.T) {
 	}
 	if same*2 > total {
 		t.Fatalf("they said the same thing in %d of %d slots", same, total)
+	}
+}
+
+func TestTheNonPlayersAreAlwaysOnTheFrame(t *testing.T) {
+	// The owner logged in and could not see them. This is the assertion that was
+	// missing: `np` is never omitted, so a real office has to put both of them on
+	// every snapshot from the first tick.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	raw, ok := o.SnapshotFor("a")
+	if !ok {
+		t.Fatal("no snapshot")
+	}
+	if !strings.Contains(string(raw), `"np":[`) {
+		t.Fatalf("the non-players are not on the frame at all: %s", raw)
+	}
+	s := snapOf(t, o, "a")
+	if len(s.Np) != len(NPCCast) {
+		t.Fatalf("the frame carries %d non-players, want %d: %s", len(s.Np), len(NPCCast), raw)
+	}
+	// And at a real position rather than at the origin, which the client would draw
+	// in the room's top-left corner.
+	for i, f := range s.Np {
+		if f.X == 0 && f.Y == 0 {
+			t.Fatalf("non-player %d is at the origin: %+v", i, f)
+		}
 	}
 }

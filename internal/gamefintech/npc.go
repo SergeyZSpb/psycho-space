@@ -4,38 +4,26 @@ import "math"
 
 // СЕРЕГА AND ТЁМА — the two people in this office who are not playing.
 //
-// They wander, they walk to the кальян, they stand in a cloud for a while, and they
-// say what they think of your branch. What they do NOT do is touch the game: they are
-// not targets for either man on the floor, they take no slot in the occupancy cap,
-// they cannot be caught, and they never buff or debuff a player. That is the whole
-// specification, and every clause of it is a test.
+// They walk about at random, they carry their own кальян, and they say what they
+// think of your branch. That is the whole of it. What they do NOT do is touch the
+// game: they are not targets for either man on the floor, they take no slot in the
+// occupancy cap, they cannot be caught, and they never buff or debuff a player.
 //
-// THEY DO NOT CONSUME THE КАЛЬЯН, which is the one place the specification had to be
-// read carefully. «They get to hookah, get cloud» is decoration; taking the prop away
-// from a player would be interference, and interference is what «they do not buff or
-// debuff the players» rules out. So they smoke where it stands and it stays standing.
-//
-// WHY THEY ARE STEPPED ON THE SERVER rather than evaluated closed-form on the client
-// like the yard's regulars (ADR-042): they walk to a place the SERVER chooses — the
-// кальян moves every twenty seconds — so a client-side evaluation would need the spot
-// draw published and the wander reimplemented in TypeScript. That is a second
-// unpinned port of a moving thing, and this project's answer to those is golden
-// vectors, which decoration does not earn. The bytes are paid instead, and stated:
-// two NPCs at about thirty bytes a frame is ~600 B/s per viewer.
+// THEY DO NOT USE THE OFFICE'S КАЛЬЯН, and the first version of this file had them
+// walking to it. That was wrong twice over. It was interference — the prop is a
+// first-taker, so an NPC on his way to it was competing with the player for the
+// strongest effect in the game — and it was logic in something that exists to be
+// scenery. Now each of them holds his own, the cloud under him is permanent, and
+// there is no seeking, no arrival, no smoking state and no shared prop. The
+// simplest thing that produces the intended picture.
 
-// NPC is one of them: where he is, where he is going, and what is over his head.
+// NPC is one of them: where he is and where he is ambling to.
 type NPC struct {
 	Pos Vec2
 	// To is where he is walking. Reached, he pauses and picks somewhere else.
 	To Vec2
 	// Pause is seconds of standing still remaining.
 	Pause float64
-	// Cloud is seconds of smoke over him remaining. Cosmetic — it hides him from
-	// nobody, because nobody is looking for him.
-	Cloud float64
-	// Smoking is true while `To` is the кальян, so arriving there lights one and
-	// arriving anywhere else does not.
-	Smoking bool
 }
 
 // NewNPCs puts them on the floor at their own spawns.
@@ -54,10 +42,7 @@ func NewNPCs() []NPC {
 // and no golden vector pins one, so there is no second implementation for a random
 // draw to disagree with. The office is the only authority on where Серега is, which
 // is the cheapest possible arrangement for something nobody is racing.
-func StepNPC(desks []Rect, n NPC, hookah Vec2, dt float64) NPC {
-	if n.Cloud > 0 {
-		n.Cloud = math.Max(0, n.Cloud-dt)
-	}
+func StepNPC(desks []Rect, n NPC, dt float64) NPC {
 	if n.Pause > 0 {
 		n.Pause = math.Max(0, n.Pause-dt)
 		return n
@@ -66,13 +51,8 @@ func StepNPC(desks []Rect, n NPC, hookah Vec2, dt float64) NPC {
 	dx, dy := n.To.X-n.Pos.X, n.To.Y-n.Pos.Y
 	dist := math.Hypot(dx, dy)
 	if dist <= NPCArrive {
-		// Arrived. A cigarette if this was the кальян, a breather either way, and
-		// then somewhere else — which is sometimes the кальян and mostly not.
-		if n.Smoking {
-			n.Cloud = NPCCloudSeconds
-		}
 		n.Pause = NPCPauseSeconds
-		n.To, n.Smoking = drawNPCTarget(hookah)
+		n.To = drawNPCTarget()
 		return n
 	}
 
@@ -92,16 +72,14 @@ func StepNPC(desks []Rect, n NPC, hookah Vec2, dt float64) NPC {
 	return n
 }
 
-// drawNPCTarget picks somewhere to amble to, and whether it is the кальян.
-func drawNPCTarget(hookah Vec2) (Vec2, bool) {
-	if unitRand() < NPCHookahChance {
-		return hookah, true
-	}
-	// Anywhere on the floor, inset by a radius so the draw is always somewhere he
-	// can stand. The resolver handles a spot inside a desk by pushing him off it,
-	// which reads as somebody changing their mind.
+// drawNPCTarget picks somewhere to amble to.
+//
+// Anywhere on the floor, inset by a radius so the draw is always somewhere he can
+// stand. A spot inside a desk is handled by the resolver pushing him off it, which
+// reads as somebody changing their mind.
+func drawNPCTarget() Vec2 {
 	return Vec2{
 		X: PlayerRadius + unitRand()*(OfficeW-2*PlayerRadius),
 		Y: PlayerRadius + unitRand()*(OfficeH-2*PlayerRadius),
-	}, false
+	}
 }

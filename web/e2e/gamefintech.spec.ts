@@ -661,7 +661,7 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» play', () => {
     // not depend on the bytes, so every shape claim below would hold for a broken
     // image too.
     expect(shape.natural, 'the badge never decoded, so its shape proves nothing').toBe(true);
-    expect(shape.w / shape.figW, 'the badge is not 0.38 of the figure').toBeCloseTo(0.38, 2);
+    expect(shape.w / shape.figW, 'the badge is not 0.76 of the figure').toBeCloseTo(0.76, 2);
     // AND IT IS A CIRCLE. Two explicit lengths rather than a percentage pair on a
     // 1 : 1.6 box, which can never be one — and rather than `aspect-ratio` with no
     // height, which degrades to a strip on an engine that lacks it.
@@ -1314,7 +1314,10 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — whose figure is whose',
       return { w: b.width, h: b.height, figW: fig.width, natural: img.naturalWidth > 0 };
     });
     expect(shape.natural).toBe(true);
-    expect(shape.w / shape.figW).toBeCloseTo(0.38, 2);
+    // TWICE what it was, owner-directed: at 0.38 it was a colour cue rather than a
+    // face, and the point of a badge is telling which of your friends is standing
+    // there.
+    expect(shape.w / shape.figW).toBeCloseTo(0.76, 2);
     expect(shape.h).toBeCloseTo(shape.w, 1);
   });
 
@@ -1671,25 +1674,40 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — Серега and Тём
     expect(marks.tema.background).not.toBe('none');
   });
 
-  test('their smoke is dimmer than a player’s, because it means nothing', async ({ page }) => {
-    // A player's cloud means uncatchable. Theirs means nothing at all, and it must
-    // not read as the same thing.
+  test('both carry their own кальян and stand in a cloud that never goes out', async ({ page }) => {
+    // They hold their own now and never touch the office's one, so there is no state
+    // to it and no flag on the frame — the cloud is simply part of what they look
+    // like. A player's cloud means uncatchable; theirs means nothing at all, so it
+    // must be smaller and dimmer or the two read as the same thing.
     const socket = await enterOffice(page);
-    await socket.snapshot({ iv: 9000, np: [{ x: 400, y: 600, c: 1 }, { x: 1200, y: 900 }] });
+    await socket.snapshot({ iv: 9000, np: [{ x: 400, y: 600 }, { x: 1200, y: 900 }] });
     const seen = await page.evaluate(() => {
-      const cloud = (sel: string) => getComputedStyle(document.querySelector(sel)!, '::before').content;
+      const cloud = (sel: string) => {
+        const st = getComputedStyle(document.querySelector(sel)!, '::before');
+        return { content: st.content, w: parseFloat(st.width) };
+      };
+      const pipe = (sel: string) => {
+        const r = document.querySelector(`${sel} .fintech-npc-pipe`)!.getBoundingClientRect();
+        return r.width * r.height;
+      };
       return {
         me: cloud('[data-testid="fintech-me"]'),
-        npc: cloud('[data-npc="serega"]'),
-        quiet: getComputedStyle(document.querySelector('[data-npc="tema"]')!, '::before').content,
+        serega: cloud('[data-npc="serega"]'),
+        tema: cloud('[data-npc="tema"]'),
+        seregaPipe: pipe('[data-npc="serega"]'),
+        temaPipe: pipe('[data-npc="tema"]'),
         npcOpacity: getComputedStyle(document.querySelector('[data-npc="serega"]')!).opacity,
       };
     });
-    expect(seen.me).not.toBe('none');
-    expect(seen.npc).not.toBe('none');
-    // And the one without a cloud has none at all, so the flag is doing something.
-    expect(seen.quiet).toBe('none');
-    // They are recessed, so a glance never mistakes one for somebody who matters.
+    // BOTH of them, unconditionally — no frame said so.
+    expect(seen.serega.content).not.toBe('none');
+    expect(seen.tema.content).not.toBe('none');
+    // And each is holding the thing the smoke comes from.
+    expect(seen.seregaPipe, 'Серега has no кальян in his hand').toBeGreaterThan(0);
+    expect(seen.temaPipe, 'Тёма has no кальян in his hand').toBeGreaterThan(0);
+    // Smaller than a player's, whose cloud means something.
+    expect(seen.serega.w).toBeLessThan(seen.me.w);
+    // And recessed, so a glance never mistakes one for somebody who matters.
     expect(Number(seen.npcOpacity)).toBeLessThan(1);
   });
 

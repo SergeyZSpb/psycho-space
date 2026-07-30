@@ -197,8 +197,19 @@ export const HEADROOM_FIGURES = 1.0;
  */
 export const UNIT_CQW = 0.0825;
 
-/** A figure's height, as a fraction of the office's width. */
+/** A figure's HEIGHT, as a fraction of the office's width. */
 export const FIGURE_W = 1.6 * UNIT_CQW;
+
+/**
+ * A figure's WIDTH, as a fraction of the office's width.
+ *
+ * The same number `--unit` is, because a figure box is one unit wide and 1.6 tall.
+ * Named separately because the two walls are derived from different halves of it and
+ * confusing them costs the room a tenth of its width: the top wall needs a figure's
+ * HEIGHT, the side walls need half its WIDTH, and using the height for both was the
+ * first version of this.
+ */
+export const FIGURE_WIDE = UNIT_CQW;
 
 /** The custom property saying a balloon must hang below the feet instead. */
 export const SAY_BELOW_PROPERTY = '--say-below';
@@ -224,12 +235,14 @@ export function sayBelow(v: number): boolean {
   return v < SAY_FLIP_V;
 }
 
-/** The plane's shape, and how much of it is the wall above the room. */
+/** The plane's shape, and how much of it is wall rather than room. */
 export interface PlaneBox {
-  /** width ÷ height of the whole plane, room plus wall. */
+  /** width ÷ height of the whole plane, room plus walls. */
   boxRatio: number;
-  /** The wall's share of the plane's height, 0..1. */
+  /** The top wall's share of the plane's height, 0..1. */
   headShare: number;
+  /** Each side wall's share of the plane's width, 0..1. */
+  sideShare: number;
 }
 
 /**
@@ -250,12 +263,24 @@ export interface PlaneBox {
  */
 export function planeBox(officeW: number, officeH: number): PlaneBox {
   if (!(officeW > 0) || !(officeH > 0) || !Number.isFinite(officeW) || !Number.isFinite(officeH)) {
-    return { boxRatio: 16 / 22, headShare: 0 };
+    return { boxRatio: 16 / 22, headShare: 0, sideShare: 0 };
   }
   const headroom = HEADROOM_FIGURES * FIGURE_W * officeW;
+  // HALF A FIGURE ON EACH SIDE, and that is the whole of the side walls.
+  //
+  // A figure is centred on its coordinate and is FIGURE_W of the office's width
+  // across, so at either side wall — reachable, since the simulation clamps only to
+  // PlayerRadius — exactly half of it is outside the room. The top wall is a whole
+  // figure HEIGHT deep because a figure hangs entirely above its feet; a side wall is
+  // half its WIDTH, because sideways it is symmetric. Using the height for both, as
+  // the first version did, gives away a tenth of the room for nothing.
+  const side = 0.5 * FIGURE_WIDE * officeW;
+  const boxW = officeW + 2 * side;
+  const boxH = officeH + headroom;
   return {
-    boxRatio: officeW / (officeH + headroom),
-    headShare: headroom / (officeH + headroom),
+    boxRatio: boxW / boxH,
+    headShare: headroom / boxH,
+    sideShare: side / boxW,
   };
 }
 
@@ -268,12 +293,21 @@ export function planeBox(officeW: number, officeH: number): PlaneBox {
  * unit tests rather than trusted.
  */
 export function planeBoxFits(officeW: number, officeH: number): boolean {
-  const { headShare, boxRatio } = planeBox(officeW, officeH);
-  if (headShare <= 0) return false;
-  // The wall, as a fraction of the office's WIDTH — the same basis as FIGURE_W.
-  // A plane of width w is w / boxRatio tall, and the wall is headShare of that.
-  const wallW = headShare / boxRatio;
-  return wallW >= FIGURE_W;
+  const { headShare, sideShare, boxRatio } = planeBox(officeW, officeH);
+  if (headShare <= 0 || sideShare <= 0) return false;
+  // MEASURED AGAINST THE ROOM'S WIDTH, which is the basis `FIGURE_W` and
+  // `FIGURE_WIDE` are in — and no longer the plane's, now that the room is inset on
+  // the sides as well. Getting that basis wrong is what made this return false for a
+  // box that was in fact correct: the plane is wider than the room, so a wall is a
+  // smaller fraction of it.
+  //
+  // Derived from the SHARES the stylesheet actually consumes rather than recomputed
+  // from the inputs, so this checks the arithmetic instead of restating it.
+  const roomShare = 1 - 2 * sideShare; // the room's width, per unit of plane width
+  const topWall = headShare / boxRatio / roomShare; // per unit of ROOM width
+  const sideWall = sideShare / roomShare;
+  const slack = 1e-9;
+  return topWall + slack >= FIGURE_W && sideWall + slack >= FIGURE_WIDE / 2;
 }
 
 /** How pleased he is, as a state the stylesheet can key off. */

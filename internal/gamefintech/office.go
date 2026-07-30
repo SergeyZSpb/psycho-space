@@ -632,12 +632,11 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// an opinion about your tooling.
 	o.claude = StepChaser(Desks, o.claude, targets, dt)
 
-	// AND THE TWO WHO ARE NOT PLAYING. Stepped after both men and against neither
-	// of them: they are not in `targets`, so nobody walks at them, and they walk at
-	// nobody. They amble towards the кальян's CURRENT spot, which is why this is
-	// server-side at all.
+	// AND THE TWO WHO ARE NOT PLAYING. Stepped after both men and against neither of
+	// them: they are not in `targets`, so nobody walks at them and they walk at
+	// nobody. They carry their own кальян and never touch the office's one.
 	for i := range o.npcs {
-		o.npcs[i] = StepNPC(Desks, o.npcs[i], HookahSpots[o.hookahSpot], dt)
+		o.npcs[i] = StepNPC(Desks, o.npcs[i], dt)
 	}
 
 	// He LANDS rather than catches, and the difference is the whole point of him.
@@ -769,15 +768,11 @@ func (o *Office) npcsFor() []NPCFrame {
 	}
 	out := make([]NPCFrame, 0, len(o.npcs))
 	for i, n := range o.npcs {
-		f := NPCFrame{
+		out = append(out, NPCFrame{
 			X: cm(n.Pos.X),
 			Y: cm(n.Pos.Y),
 			P: NPCSays(i, o.tick),
-		}
-		if n.Cloud > 0 {
-			f.C = 1
-		}
-		out = append(out, f)
+		})
 	}
 	return out
 }

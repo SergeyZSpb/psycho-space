@@ -89,6 +89,9 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
       endings: { key: string }[];
       boss_lines: string[];
       player_lines: string[];
+      personas: string[];
+      claude_lines: string[];
+      npcs: { key: string; name: string; lines: string[] }[];
     };
     // The load-bearing simplification: the office is STATIC and lives here, so
     // starting a shift sends no level and the client draws from this alone.
@@ -111,6 +114,48 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     expect(config.player_lines[0]).toBe('Я КАРЕН');
     expect(config.boss_lines[0]).toBe('Я ЛЫСЫЙ');
     expect(config.boss_lines.length).toBeGreaterThan(1);
+    // AND THE WHOLE CAST, because the owner logged in and could not see the two
+    // non-players. Their names live here and only an INDEX rides the frame, so a
+    // catalogue missing this array means two figures the client cannot draw.
+    expect(config.npcs.length).toBeGreaterThan(1);
+    for (const n of config.npcs) {
+      expect(n.key).not.toBe('');
+      expect(n.lines.length).toBeGreaterThan(0);
+    }
+    expect(config.claude_lines[0]).toBe('Я КЛОД');
+    expect(config.personas[0]).toBe('Карен');
+  });
+
+  test('the office a real browser opens actually has Серега and Тёма in it', async ({ page }) => {
+    // THE TEST THAT WAS MISSING. Every other assertion about the two of them was
+    // made against a stubbed frame or against the office in Go — so «the server
+    // sends them» and «the client can draw them» were both proved, and «they are on
+    // screen when a real binary drives a real browser» was not. That is exactly the
+    // gap a prod-only defect hides in.
+    await page.goto('/app/game-fintech');
+    await expect(page.getByTestId('fintech-splash')).toBeVisible();
+    await page.getByTestId('fintech-start').click();
+    await expect(page.getByTestId('fintech-play')).toBeVisible();
+
+    const npcs = page.getByTestId('fintech-npc');
+    await expect(npcs).toHaveCount(2);
+    // Placed, rather than left stacked at the plane's default centre — which is what
+    // an unwritten `--x` looks like and would read as one figure rather than two.
+    await expect
+      .poll(async () =>
+        npcs.first().evaluate((el) => getComputedStyle(el).getPropertyValue('--x').trim()),
+      )
+      .not.toBe('');
+    const boxes = await npcs.evaluateAll((els) =>
+      els.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { w: r.width, h: r.height, x: r.x };
+      }),
+    );
+    for (const b of boxes) expect(b.w * b.h, 'a non-player has no box at all').toBeGreaterThan(0);
+    expect(boxes[0].x, 'both of them are drawn in the same place').not.toBeCloseTo(boxes[1].x, 0);
+
+    await page.getByTestId('fintech-quit').click();
   });
 
   test('a shift walked out of is written, and comes back from Postgres', async ({ page }) => {

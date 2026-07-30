@@ -125,6 +125,34 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// PRESENCE IS NOT ENOUGH, and this is the lesson that cost a shipped defect: the
+	// loop below only asks whether a KEY appears in the payload, and `"npcs":null`
+	// satisfies that perfectly. The whole cast was nil in the served config for a
+	// deploy — an anchored edit that matched nothing, which is indistinguishable from
+	// success — and a real browser drew no non-players at all while this test stayed
+	// green. Every array the client indexes into is now checked for CONTENT first.
+	c := BuildConfig()
+	for name, arr := range map[string]int{
+		"npcs":         len(c.NPCs),
+		"claude_lines": len(c.ClaudeLines),
+		"personas":     len(c.Personas),
+		"boss_lines":   len(c.BossLines),
+		"player_lines": len(c.PlayerLines),
+		"endings":      len(c.Endings),
+		"desks":        len(c.Office.Desks),
+		"hookah spots": len(c.Hookah.Spots),
+		"bottle spots": len(c.Bottle.Spots),
+	} {
+		if arr == 0 {
+			t.Fatalf("the served %s is empty — the client indexes into it and would draw nothing", name)
+		}
+	}
+	for i, n := range c.NPCs {
+		if n.Key == "" || n.Name == "" || len(n.Lines) == 0 {
+			t.Fatalf("served NPC %d is hollow: %+v", i, n)
+		}
+	}
+
 	for _, key := range []string{
 		`"game_key"`, `"title"`,
 		`"office"`, `"w"`, `"h"`, `"desks"`, `"player_radius"`, `"boss_radius"`,

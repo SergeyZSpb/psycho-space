@@ -116,6 +116,7 @@
         :style="{
           '--box-ratio': String(box.boxRatio),
           '--head-share': String(box.headShare),
+          '--side-share': String(box.sideShare),
           '--unit-cqw': String(UNIT_CQW),
         }"
       >
@@ -185,7 +186,6 @@
             class="fintech-npc"
             data-testid="fintech-npc"
             :data-npc="npc.key"
-            :data-cloud="npc.cloud ? '1' : undefined"
             aria-hidden="true"
           >
             <span v-if="npc.say" class="fintech-say" data-testid="fintech-npc-say">{{ npc.say }}</span>
@@ -194,6 +194,9 @@
             <!-- What tells them apart at thirty pixels: a caption on one shirt and a
                  canopy over the other. -->
             <span class="fintech-npc-mark" />
+            <!-- His own кальян, in his hand, with the cloud that never goes out. No
+                 logic behind either: he is scenery, and the picture is the point. -->
+            <span class="fintech-npc-pipe" />
           </span>
           <span ref="claudeEl" class="fintech-claude" data-testid="fintech-claude" aria-hidden="true">
             <span v-if="claudeSays" class="fintech-say" data-testid="fintech-claude-say">{{
@@ -1125,7 +1128,6 @@ function placeBoss(now: number): void {
 interface NpcShown {
   key: string;
   say: string;
-  cloud: boolean;
 }
 
 const npcs = ref<NpcShown[]>([]);
@@ -1158,11 +1160,7 @@ function applyNpcs(raw: unknown): void {
   for (let i = 0; i < list.length && i < cast.length; i++) {
     const f = list[i];
     const kind = cast[i];
-    shown.push({
-      key: kind.key,
-      say: sayFor(kind.lines, num(f.p)),
-      cloud: num(f.c) > 0,
-    });
+    shown.push({ key: kind.key, say: sayFor(kind.lines, num(f.p)) });
     let interp = npcInterp.get(kind.key);
     if (!interp) {
       interp = createInterpolator(1000 / (config.value?.sim.snapshot_hz || 10));
@@ -1178,7 +1176,7 @@ function applyNpcs(raw: unknown): void {
 
 function sameNpcs(a: readonly NpcShown[], b: readonly NpcShown[]): boolean {
   if (a.length !== b.length) return false;
-  return a.every((n, i) => n.key === b[i].key && n.say === b[i].say && n.cloud === b[i].cloud);
+  return a.every((n, i) => n.key === b[i].key && n.say === b[i].say);
 }
 
 function placeNpcs(now: number): void {
@@ -1944,12 +1942,13 @@ function onDash(): void {
    `min(100cqw, 100cqh × box-ratio)` is still the largest box of that shape that
    fits whichever way the stage is shaped.
 
-   WHY THERE IS A WALL AT ALL. A figure is feet-anchored — the coordinate is where
-   somebody is STANDING and the box hangs above it — and the top wall is
-   reachable, because the simulation clamps only to `PlayerRadius`, 0.35 m of a
-   22 m room. So a man at the wall had his whole box above the room, `overflow:
-   hidden` deleted it, and what a player saw was the bottom sliver of a body with
-   no head and no words at all. Most shifts OPENED like that: the spawn sampler
+   WHY THERE ARE WALLS AT ALL. A figure is feet-anchored — the coordinate is where
+   somebody is STANDING and the box hangs above it — and every wall is reachable,
+   because the simulation clamps only to `PlayerRadius`, 0.35 m in a 16 × 22 m room.
+   So a man at the top wall had his whole box above the room, `overflow: hidden`
+   deleted it, and what a player saw was the bottom sliver of a body with no head and
+   no words at all. At a SIDE wall the same clip took half of him, and half of every
+   balloon over him — reported second, fixed the same way. Most shifts OPENED like that: the spawn sampler
    draws the first point far enough from the лысый, and he starts at the bottom,
    so the qualifying region is a strip along the top.
    This is not a `z-index` problem and could not be fixed by reordering — the
@@ -1964,8 +1963,8 @@ function onDash(): void {
    87 wanted — and folding the wall into the four transform sites would have been
    four independent edits that must agree forever. */
 .fintech-plane {
-  width: min(100cqw, calc(100cqh * var(--box-ratio, 0.63)));
-  aspect-ratio: var(--box-ratio, 0.63);
+  width: min(100cqw, calc(100cqh * var(--box-ratio, 0.718)));
+  aspect-ratio: var(--box-ratio, 0.718);
   position: relative;
   overflow: hidden;
   border-radius: 10px;
@@ -1982,7 +1981,14 @@ function onDash(): void {
    ROOM — which is why nothing else in this stylesheet had to change. */
 .fintech-office {
   position: absolute;
-  inset: calc(var(--head-share, 0.13) * 100%) 0 0 0;
+  /* Inset on THREE sides: a figure's height of wall above, and half a figure's width
+     down each side. The bottom stays flush, because a figure hangs above its feet and
+     nothing but the small ground ring extends below them.
+     A percentage `top`/`bottom` resolves against the containing block's HEIGHT and a
+     percentage `left`/`right` against its WIDTH, which is exactly what is wanted
+     here — the plane's box is definite in both directions because of its
+     `aspect-ratio`. */
+  inset: calc(var(--head-share, 0.088) * 100%) calc(var(--side-share, 0.038) * 100%) 0;
   container-type: size;
   border-radius: 0 0 10px 10px;
   background:
@@ -2096,10 +2102,18 @@ function onDash(): void {
    it over the face, which is the defect the yard already recorded. */
 .fintech-face-badge {
   position: absolute;
-  left: 68%;
+  /* Pulled back in as it grew: at 0.76 wide, `left: 68%` would hang 44 % of a figure
+     outside the box and be clipped at a side wall. `44%` puts its right edge at 120 %
+     — the same overhang the small one had — and its left edge over the ear rather
+     than over the face. */
+  left: 44%;
   top: 1%;
-  width: calc(var(--unit) * 0.38);
-  height: calc(var(--unit) * 0.38);
+  /* TWICE THE SIZE, owner-directed: at 0.38 of a figure it was a colour cue rather
+     than a face, and the whole point of a badge is telling which of your friends is
+     standing there. 0.76 is most of the head's width, which is as large as it can be
+     before it stops reading as a badge beside him and starts reading as his face. */
+  width: calc(var(--unit) * 0.76);
+  height: calc(var(--unit) * 0.76);
   border-radius: 50%;
   object-fit: cover;
   border: max(1px, calc(var(--unit) * 0.045)) solid rgba(0, 0, 0, 0.45);
@@ -2342,9 +2356,11 @@ function onDash(): void {
   box-shadow: 0 calc(var(--unit) * 0.04) 0 rgba(0, 0, 0, 0.28);
 }
 
-/* His own smoke. Dimmer than a player's, because it means nothing — nobody is
-   looking for him — and it must not read as somebody going uncatchable. */
-.fintech-npc[data-cloud]::before {
+/* HIS OWN SMOKE, AND IT NEVER GOES OUT. He carries his own кальян, so there is no
+   state to it and no flag on the frame — the cloud is simply part of what he looks
+   like. Dimmer and smaller than a player's, because a player's means uncatchable and
+   this one means nothing at all. */
+.fintech-npc::before {
   content: '';
   position: absolute;
   left: 50%;
@@ -2360,6 +2376,22 @@ function onDash(): void {
     rgba(200, 212, 226, 0) 100%
   );
   pointer-events: none;
+}
+
+/* THE КАЛЬЯН IN HIS HAND. Smaller than the one on the floor and drawn at his side
+   rather than at his feet, so the two never read as the same object — one is a thing
+   you walk to, this is a thing he is holding. Base, stem and bowl in one element,
+   because at this size three children would be markup nobody can read. */
+.fintech-npc-pipe {
+  position: absolute;
+  left: 74%;
+  bottom: 24%;
+  width: 26%;
+  height: 34%;
+  border-radius: 40% 40% 34% 34%;
+  background:
+    radial-gradient(ellipse 60% 22% at 50% 4%, #c9743f 0%, #a8562c 72%, rgba(168, 86, 44, 0) 73%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0) 22%, #a8842f 22%, #6b5320 100%);
 }
 
 /* CLAUDE CODE. Built from the same head and body as everybody else, because the

@@ -26,6 +26,7 @@ import {
   sayFor,
   toPlane,
   FIGURE_W,
+  FIGURE_WIDE,
   HEADROOM_FIGURES,
   SAY_BELOW_PROPERTY,
   SAY_FLIP_V,
@@ -381,12 +382,18 @@ describe('the wall the room stands against', () => {
     // ratio is untouched — which is the whole reason the split is two elements:
     // every coordinate stays a fraction of the ROOM, so nothing that maps metres
     // to pixels knows the wall exists.
-    const { boxRatio, headShare } = planeBox(16, 22);
-    const planeH = 1 / boxRatio; // per unit of plane width
+    const { boxRatio, headShare, sideShare } = planeBox(16, 22);
+    // Per unit of plane WIDTH, so the room's own aspect can be read straight off.
+    const planeH = 1 / boxRatio;
     const roomH = planeH * (1 - headShare);
-    expect(16 / 22 / (1 / roomH)).toBeCloseTo(1, 6);
+    const roomW = 1 - 2 * sideShare;
+    // THE ROOM KEEPS THE CATALOGUE'S SHAPE, which is the whole reason the walls are
+    // an inset on an outer box rather than arithmetic in four transform sites.
+    expect(roomW / roomH).toBeCloseTo(16 / 22, 6);
     expect(headShare).toBeGreaterThan(0);
     expect(headShare).toBeLessThan(0.25);
+    expect(sideShare).toBeGreaterThan(0);
+    expect(sideShare).toBeLessThan(0.1);
   });
 
   it('is deep enough to hold a whole figure standing against it', () => {
@@ -401,8 +408,14 @@ describe('the wall the room stands against', () => {
     // him — that is the relation. It is exactly one today, because the full-bleed
     // rule pays for no more; see the constant for the measurement.
     expect(HEADROOM_FIGURES).toBeGreaterThanOrEqual(1);
-    const { headShare, boxRatio } = planeBox(16, 22);
-    expect(headShare / boxRatio).toBeCloseTo(HEADROOM_FIGURES * FIGURE_W, 6);
+    const { headShare, sideShare, boxRatio } = planeBox(16, 22);
+    const roomShare = 1 - 2 * sideShare;
+    expect(headShare / boxRatio / roomShare).toBeCloseTo(HEADROOM_FIGURES * FIGURE_W, 6);
+    // AND HALF A FIGURE'S WIDTH DOWN EACH SIDE, which is the whole of the side walls:
+    // a figure is centred on its coordinate, so at a side wall exactly half of it is
+    // outside the room. Half its WIDTH, not half its height — using the height for
+    // both gives away a tenth of the room for nothing.
+    expect(sideShare / roomShare).toBeCloseTo(FIGURE_WIDE / 2, 6);
   });
 
   it('answers a usable box for a catalogue that has not arrived', () => {
@@ -419,6 +432,7 @@ describe('the wall the room stands against', () => {
       expect(Number.isFinite(box.boxRatio)).toBe(true);
       expect(box.boxRatio).toBeGreaterThan(0);
       expect(box.headShare).toBe(0);
+      expect(box.sideShare).toBe(0);
     }
   });
 });
