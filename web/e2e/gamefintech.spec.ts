@@ -105,16 +105,25 @@ const CONFIG = {
 const SHIFT = { shift_id: 'shift-e2e', room: 'fintech' };
 
 /**
- * A ONE-PIXEL PNG AS A `data:` URI, used as the session's own avatar.
+ * A DELIBERATELY WIDE PNG — 4 × 1 — as a `data:` URI, used as the session's own
+ * avatar and by the colleague redirector stub.
  *
- * It has to actually LOAD. The view latches an `@error` and removes the face for
- * the rest of the shift — correctly, because a broken glyph painted over the
- * office is worse than no face — so an unreachable URL like `example.invalid`
- * makes the element vanish and the test assert the wrong thing. `data:` is in the
- * CSP's `img-src` and needs no network at all.
+ * WIDE RATHER THAN SQUARE, and that is the whole reason it exists. A replaced
+ * element given an explicit `width` and no `height` derives its height from the
+ * image's intrinsic ratio — so with a 1 × 1 fixture a badge with `height` deleted,
+ * or with `aspect-ratio: 1` restored in its place, still measures exactly square
+ * and the «it is a circle» assertion passes through the very regression it was
+ * written to catch. A 4 : 1 source turns that into a visible strip. The yard
+ * reasons the same way: «a VK avatar is not necessarily square, and `cover` is what
+ * stops a wide one being drawn as a wide face».
+ *
+ * It also has to actually LOAD. The view latches an `@error` and removes the face
+ * for the rest of the shift — correctly, since a broken glyph over the office is
+ * worse than no face — so an unreachable URL like `example.invalid` makes the
+ * element vanish and the assertion measure the wrong thing. `data:` is in the CSP's
+ * `img-src` and needs no network at all.
  */
-const ONE_PIXEL =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const WIDE_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAABCAIAAAB2XpiaAAAADUlEQVR4nGM4ERAARwAmfQWhqUwtbAAAAABJRU5ErkJggg==';
 
 interface StubOptions {
   /** Answer `shifts/current` with a shift, as if the player had reloaded. */
@@ -157,10 +166,9 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
       return route.fulfill({
         status: 200,
         contentType: 'image/png',
-        body: Buffer.from(
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-          'base64',
-        ),
+        // Deliberately 4 × 1 — see WIDE_PNG for why a square fixture makes the
+        // badge's shape assertions unfalsifiable.
+        body: Buffer.from(WIDE_PNG.split(',')[1], 'base64'),
       });
     }
     if (path === '/api/game-fintech/config') return json(200, CONFIG);
@@ -276,6 +284,10 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» splash', () => {
     await expect(rules).toContainText('0,45 с');
     await expect(rules).toContainText('4,4 м/с');
     await expect(rules).toContainText('11,5 м/с');
+    // The marker this iteration added, explained where a player reads it before
+    // starting rather than discovered mid-shift. Hardcoded prose, so it is asserted
+    // by its words rather than by a served number.
+    await expect(rules).toContainText('в белом круге');
     await expect(rules).toContainText('5,5 с');
     await expect(rules).toContainText('2,9 м/с');
     await expect(rules).toContainText('1,25 м');
@@ -609,12 +621,17 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» play', () => {
     // size; it stopped discriminating once the badge was sized off `--unit`, and it
     // would have gone on passing through a 25 % world shrink either way.
     const shape = await page.evaluate(() => {
-      const b = document.querySelector('[data-testid="fintech-peer-avatar"]')!.getBoundingClientRect();
+      const img = document.querySelector('[data-testid="fintech-peer-avatar"]') as HTMLImageElement;
+      const b = img.getBoundingClientRect();
       const fig = document
         .querySelector('[data-testid="fintech-peer"]')!
         .getBoundingClientRect();
-      return { w: b.width, h: b.height, figW: fig.width };
+      return { w: b.width, h: b.height, figW: fig.width, natural: img.naturalWidth > 0 };
     });
+    // DECODED, not merely present: the box is two explicit `calc()` lengths and does
+    // not depend on the bytes, so every shape claim below would hold for a broken
+    // image too.
+    expect(shape.natural, 'the badge never decoded, so its shape proves nothing').toBe(true);
     expect(shape.w / shape.figW, 'the badge is not 0.38 of the figure').toBeCloseTo(0.38, 2);
     // AND IT IS A CIRCLE. Two explicit lengths rather than a percentage pair on a
     // 1 : 1.6 box, which can never be one — and rather than `aspect-ratio` with no
@@ -1255,17 +1272,19 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — whose figure is whose',
     // not need to be: `avatar_url` is in the auth store before this view can
     // mount. The stub's `/api/auth/me` carries one, so a client reading the wire
     // instead of the store cannot pass this.
-    const socket = await enterOffice(page, { avatar: ONE_PIXEL });
+    const socket = await enterOffice(page, { avatar: WIDE_PNG });
     await socket.snapshot();
     const face = page.getByTestId('fintech-me-avatar');
     await expect(face).toHaveCount(1);
-    await expect(face).toHaveAttribute('src', ONE_PIXEL);
+    await expect(face).toHaveAttribute('src', WIDE_PNG);
     // Same rule as a colleague's, so it is the same size and the same circle.
     const shape = await page.evaluate(() => {
-      const b = document.querySelector('[data-testid="fintech-me-avatar"]')!.getBoundingClientRect();
+      const img = document.querySelector('[data-testid="fintech-me-avatar"]') as HTMLImageElement;
+      const b = img.getBoundingClientRect();
       const fig = document.querySelector('[data-testid="fintech-me"]')!.getBoundingClientRect();
-      return { w: b.width, h: b.height, figW: fig.width };
+      return { w: b.width, h: b.height, figW: fig.width, natural: img.naturalWidth > 0 };
     });
+    expect(shape.natural).toBe(true);
     expect(shape.w / shape.figW).toBeCloseTo(0.38, 2);
     expect(shape.h).toBeCloseTo(shape.w, 1);
   });
@@ -1277,6 +1296,14 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — whose figure is whose',
     const socket = await enterOffice(page);
     await socket.snapshot();
     await expect(page.getByTestId('fintech-me-avatar')).toHaveCount(0);
+    // AND NOT «rendered, then withdrawn», which `toHaveCount(0)` cannot tell apart:
+    // the `@error` latch removes the very element the count is looking for, so an
+    // `img` with `src=""` would come out green. `|| undefined` in the computed is
+    // what prevents it; this is the assertion that says so.
+    const emptySrc = await page.evaluate(
+      () => document.querySelectorAll('[data-testid="fintech-plane"] img:not([src]), [data-testid="fintech-plane"] img[src=""]').length,
+    );
+    expect(emptySrc).toBe(0);
   });
 
   test('your own figure is ringed on the floor, and nobody else’s is', async ({ page }) => {
@@ -1299,28 +1326,68 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — whose figure is whose',
     expect(rings.me.content).not.toBe('none');
     expect(parseFloat(rings.me.borderWidth)).toBeGreaterThan(0);
     expect(parseFloat(rings.me.width)).toBeGreaterThan(0);
-    // ...and nothing at all on a colleague, which is what makes it a marker.
-    expect(rings.peer.content === 'none' || parseFloat(rings.peer.borderWidth) === 0).toBe(true);
+    // ...and NO pseudo-element at all on a colleague, which is what makes it a
+    // marker. Asserted as `content: none` rather than as an either/or: a computed
+    // style is reported for a pseudo-element that does not generate, so a
+    // disjunction over its border width would pass whatever the rule said.
+    expect(rings.peer.content).toBe('none');
   });
 
-  test('the ring is under its own figure and can never climb over a desk', async ({ page }) => {
-    // `--band` is the plane's only depth cue. A marker that escaped its own
-    // figure's stacking context would paint over the furniture and lie about where
-    // you are standing — so this asserts the two properties that make that
-    // impossible together: a negative z-index inside an element that is itself a
-    // stacking context.
+  test('the ring is no wider than the ground he is standing on', async ({ page }) => {
+    // THE OUTCOME, NOT THE MECHANISM. `z-index: -1` orders the ring behind its own
+    // body and head and nothing more — the figure carries `z-index: var(--band)`
+    // while a desk is positioned at `auto`, so the whole figure including this
+    // pseudo-element always paints above the furniture and no value could change
+    // that. What makes that harmless is the ring's SIZE: it is the collision disc,
+    // the ground `PlayerRadius` guarantees nothing else occupies, so it can never
+    // claim floor the player is not standing on.
+    //
+    // Derived from the served radius rather than from the number in the stylesheet,
+    // so retuning either one has to keep them consistent.
     const socket = await enterOffice(page);
     await socket.snapshot();
     const seen = await page.evaluate(() => {
       const me = document.querySelector('[data-testid="fintech-me"]')!;
+      const office = document.querySelector('[data-testid="fintech-office"]')!.getBoundingClientRect();
       return {
         ringZ: getComputedStyle(me, '::after').zIndex,
-        figZ: getComputedStyle(me).zIndex,
-        figTransform: getComputedStyle(me).transform,
+        ringW: parseFloat(getComputedStyle(me, '::after').width),
+        officeW: office.width,
       };
     });
     expect(seen.ringZ).toBe('-1');
-    expect(seen.figZ).not.toBe('auto');
-    expect(seen.figTransform).not.toBe('none');
+    const discFraction = (2 * CONFIG.office.player_radius) / CONFIG.office.w;
+    expect(seen.ringW / seen.officeW).toBeLessThanOrEqual(discFraction);
+    // And not vanishingly small either, or the marker is not a marker.
+    expect(seen.ringW / seen.officeW).toBeGreaterThan(discFraction * 0.5);
   });
+});
+
+test('a colleague’s face survives the top wall, because it is inside his own box', {
+  tag: '@wide',
+}, async ({ page }) => {
+  // THE OTHER HALF OF THE BADGE CHANGE, which shipped with no assertion at all.
+  // The badge used to sit at `top: -6%`, outboard of the figure's box; the wall
+  // above the room is a whole figure deep, so that cleared it at the tested sizes
+  // — but `--unit` has a `clamp()` floor, and where it engages the figure is taller
+  // than the wall and anything outboard is the first thing lost. Inside the box it
+  // cannot happen at any width, and this is what says so.
+  const socket = await enterOffice(page);
+  await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 40, p: 1 }] });
+  const peer = page.locator('[data-testid="fintech-peer"][data-peer="AbCdEfGhIjKl"]');
+  await expect
+    .poll(() => peer.evaluate((el) => getComputedStyle(el).getPropertyValue('--y').trim()))
+    .toBe(String(0.4 / CONFIG.office.h));
+
+  const seen = await page.evaluate(() => {
+    const fig = document.querySelector('[data-testid="fintech-peer"]')!.getBoundingClientRect();
+    const badge = document.querySelector('[data-testid="fintech-peer-avatar"]')!.getBoundingClientRect();
+    const plane = document.querySelector('[data-testid="fintech-plane"]')!.getBoundingClientRect();
+    return { figTop: fig.top, badgeTop: badge.top, badgeH: badge.height, planeTop: plane.top };
+  });
+  // Inside his own box, so the wall can never reach it...
+  expect(seen.badgeTop).toBeGreaterThanOrEqual(seen.figTop - 1);
+  // ...and therefore inside the clipping box, whole.
+  expect(seen.badgeTop).toBeGreaterThanOrEqual(seen.planeTop - 1);
+  expect(seen.badgeH).toBeGreaterThan(0);
 });

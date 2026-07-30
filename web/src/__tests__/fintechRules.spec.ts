@@ -185,6 +185,12 @@ describe('the colleagues block', () => {
     const colleagues = blocks.find((b) => b.title === 'Коллеги');
     expect(colleagues).toBeDefined();
     expect(colleagues!.lines.some((l) => l.text.includes('7'))).toBe(true);
+    // AND IT SAYS WHICH FIGURE IS YOU. The office now holds several figures built
+    // identically, every one wearing a real photograph, and the only thing marking
+    // yours is a white ellipse — a rule a player needs before starting, so it
+    // belongs on the splash screen. Hardcoded rather than derived, because the
+    // marker is a stylesheet rule and the catalogue carries no number for it.
+    expect(colleagues!.lines.some((l) => l.text.includes('белом круге'))).toBe(true);
   });
 
   it('says nothing about colleagues in an office that holds one person', () => {

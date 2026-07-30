@@ -178,9 +178,10 @@ export function applyFigure(el: StyleTarget, at: PlanePoint): void {
  * to remove («the office is the whole screen, edge to edge» in the layout suite).
  *
  * So there is no air above his head, and the consequence is worth stating: at the
- * wall, the outermost pixel or two of the head's outline and the top of a
- * colleague's avatar badge are clipped. That is invisible at a glance and is the
- * right way round — a man drawn a pixel short beats a room drawn narrow.
+ * wall the outermost pixel or two of the head's outline is clipped. That is
+ * invisible at a glance and is the right way round — a man drawn a pixel short
+ * beats a room drawn narrow. The avatar badge used to be on this list and is not
+ * any more: it sits inside the figure's own box now, so the wall cannot reach it.
  */
 export const HEADROOM_FIGURES = 1.0;
 

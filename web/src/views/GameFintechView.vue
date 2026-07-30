@@ -236,15 +236,12 @@
             @pointerdown.prevent="onRedirect(peer.id)"
             @click.prevent
           >
-            <img
-              v-if="peer.avatar"
-              class="fintech-verb-face"
-              data-testid="fintech-verb-face"
-              :src="peer.avatar"
-              alt=""
-              referrerpolicy="no-referrer"
-              @error="onPeerFaceError(peer.id)"
-            />
+            <!-- NO `@error` HERE, deliberately. It is the same `src` as the badge on
+                 his figure, which is rendered whenever this button is and does
+                 carry the handler — so a CDN failure latches once and withdraws
+                 both. A second handler on the same URL would be a second path to
+                 one outcome. -->
+            <img v-if="peer.avatar" class="fintech-verb-face" :src="peer.avatar" alt="" referrerpolicy="no-referrer" />
             <span class="fintech-verb-label">{{
               redirectMs > 0 ? formatSeconds(redirectMs) : config.redirect.label
             }}</span>
@@ -1718,13 +1715,26 @@ function onDash(): void {
 
    It sits ON the scalp and never over the face: the head spans 4 %…96 %
    horizontally, this spans 74 %…112 %, so it overlaps the head's right edge by
-   about a quarter of the head's width — the yard's shape, whose own comment
-   records that a first attempt overlapping by 30 % covered the face. `top: 1%`
-   rather than the old `-6%`, because the wall above the room is exactly one figure
-   deep: anything hanging above the figure's own box is clipped at the top wall. */
+   about a third of the head's width, on the hair rather than the face — the yard's
+   shape, whose own comment records that a first attempt overlapping by 30 %
+   covered the face, which a badge sitting on the SCALP does not.
+
+   `top: 1%` rather than the old `-6%`, so the badge is inside the figure's own box.
+   The reason is not the top wall: the wall is a whole figure deep while nobody can
+   stand nearer than `PlayerRadius` to it, so at the tested sizes a badge hanging
+   6 % above the box still cleared it. It is that `--unit` has a `clamp()` FLOOR, and
+   where that floor engages — a narrow or landscape plane — the figure is taller
+   than the wall and anything outboard of the box is the first thing lost. Inside
+   the box it cannot happen at any width.
+
+   IT STILL HANGS 6 % OUTSIDE THE BOX HORIZONTALLY (74 % + 38 % = 112 % was 12 %;
+   `left: 68%` halves it), and that is accepted rather than solved: pressed against
+   a side wall a figure is already half outside the plane and clipped, so the face
+   is the least of what is missing there. Pulling the badge fully inboard would push
+   it over the face, which is the defect the yard already recorded. */
 .fintech-face-badge {
   position: absolute;
-  left: 74%;
+  left: 68%;
   top: 1%;
   width: calc(var(--unit) * 0.38);
   height: calc(var(--unit) * 0.38);
@@ -1767,14 +1777,24 @@ function onDash(): void {
    a border or an outline on it — the лысый shipped once as a filled rectangle for
    exactly that reason, and a test pins it now. `bottom: 0` is the standing point,
    because a figure is feet-anchored; the ellipse's centre is dropped 45 % of its
-   own height below that, so the man stands IN it rather than on top of it. Wider
-   than the body and a fifth as tall, so it reads as flat on the floor under the
-   plane's shallow tilt.
+   own height below that, so the man stands IN it rather than on top of it.
 
-   `z-index: -1` puts it under its own figure and CANNOT escape upwards: this
-   element has a numeric `z-index` and a `transform`, so it is a stacking context —
-   which matters because `--band` is the plane's only depth cue and a marker that
-   climbed over a desk would be lying about where you are standing.
+   IT IS EXACTLY HIS COLLISION DISC, and that is where the width comes from.
+   `PlayerRadius` is 0.35 m, so a 0.70 m circle is precisely the ground the
+   simulation will not let anybody else or any desk occupy — which means the ring
+   can never be drawn over a surface you could not be standing on. 0.52 × `--unit`
+   is that 0.70 m at this scale (`--unit` is 0.0825 of a 16 m room, so a unit is
+   1.32 m). It was 0.72 first, which is 0.95 m — wider than the disc, so pressed
+   against a desk the arc painted over the desk's edge and claimed ground the
+   player was not on.
+
+   WHAT `z-index: -1` DOES AND DOES NOT DO. It orders the ring behind its OWN body
+   and head, which is all it is for. It does NOT keep the marker below the
+   furniture, and an earlier version of this comment claimed it did: this element
+   carries `z-index: var(--band)` while a desk is positioned with `z-index: auto`,
+   so the whole figure — pseudo-element included — always paints above every desk,
+   and no value here could change that. Sizing the ring to the collision disc is
+   what makes that harmless rather than a lie.
 
    NOTHING FOR `prefers-reduced-motion`, and that is the point: it is a static
    border with no animation to switch off, so somebody who asked for less motion
@@ -1786,8 +1806,8 @@ function onDash(): void {
   position: absolute;
   left: 50%;
   bottom: 0;
-  width: calc(var(--unit) * 0.72);
-  height: calc(var(--unit) * 0.2);
+  width: calc(var(--unit) * 0.52);
+  height: calc(var(--unit) * 0.145);
   transform: translate(-50%, 45%);
   border-radius: 50%;
   border: max(1px, calc(var(--unit) * 0.05)) solid rgba(255, 255, 255, 0.9);

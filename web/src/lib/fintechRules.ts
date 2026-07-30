@@ -139,6 +139,17 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
           label: '🎯 кто ближе',
           text: 'Лысый идёт к ближайшему. Отойди — и пойдёт не к тебе.',
         },
+        // WHICH FIGURE IS YOU, and this line is HARDCODED because nothing in the
+        // catalogue carries it — the marker is a stylesheet rule, not a served
+        // number. It exists for the same reason the line above it does: the
+        // office now holds several figures built identically, every one of them
+        // wearing a real photograph, and the only thing separating yours is a
+        // white ellipse that nothing on screen explains. A rule the player needs
+        // in order to play belongs on the splash screen.
+        {
+          label: '⚪ где ты',
+          text: 'Ты — тот, кто стоит в белом круге. Лица настоящие, из профиля.',
+        },
       ],
     });
   }
