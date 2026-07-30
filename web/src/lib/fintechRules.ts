@@ -150,6 +150,16 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
           label: '⚪ где ты',
           text: 'Ты — тот, кто стоит в белом круге. Лица настоящие, из профиля.',
         },
+        ...(Array.isArray(config.personas) && config.personas.length > 1
+          ? [
+              {
+                label: '🎲 кем ты будешь',
+                text:
+                  `Каждая смена — кто-то из своих: ${config.personas.join(', ')}. ` +
+                  `Выбирает не ты. На игру не влияет — только на то, как ты себя представляешь.`,
+              },
+            ]
+          : []),
       ],
     });
   }

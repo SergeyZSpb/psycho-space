@@ -392,7 +392,50 @@ var dashingLines = []string{
 }
 
 // PlayerLines is the three runs above, in order, as the catalogue serves them.
-var PlayerLines = slices.Concat(stillLines, movingLines, dashingLines, redirectLines)
+// Personas are who you might be on any given shift, drawn when you clock in.
+//
+// The office is a fintech rather than one man's office, so the person standing
+// perfectly still is Карен, or Андрюха, or Саня, or Даша. It changes nothing about
+// how the game plays: a persona decides what your figure SAYS when it introduces
+// itself and nothing else.
+//
+// КАРЕН IS INDEX 0, AND THAT IS FORCED RATHER THAN SENTIMENTAL. An omitted persona
+// on the wire means zero, `introLine` is zero, and `stillLines[0]` is «Я КАРЕН» —
+// three separate contracts that all agree only while he is first. Reordering this
+// slice is a wire change.
+var Personas = []string{"Карен", "Андрюха", "Саня", "Даша"}
+
+// personaIntros is what each persona AFTER Карен says when it introduces itself.
+//
+// APPENDED LAST, and every base index below is the written-out sum of the lengths
+// of every preceding run. A middle insert is the single highest-risk edit available
+// in this file and it is invisible to the whole suite, because the tests recompute
+// their expected bases with the same expression the code uses — so a stale base is
+// wrong identically on both sides and passes.
+//
+// Карен is absent on purpose: his introduction is already `stillLines[0]`, where
+// the flat pool's index 0 has to stay.
+var personaIntros = []string{
+	"Я АНДРЮХА",
+	"Я САНЯ",
+	"Я ДАША",
+}
+
+var PlayerLines = slices.Concat(stillLines, movingLines, dashingLines, redirectLines, personaIntros)
+
+// personaIntroBase is where personaIntros starts in the flat pool.
+var personaIntroBase = len(stillLines) + len(movingLines) + len(dashingLines) + len(redirectLines)
+
+// IntroLineFor is the index of the line this persona introduces itself with.
+//
+// Anything out of range answers Карен's, which is the safe direction: a frame that
+// could not be read must not silently point at a different colleague's name.
+func IntroLineFor(persona int) int {
+	if persona <= 0 || persona > len(personaIntros) {
+		return introLine
+	}
+	return personaIntroBase + persona - 1
+}
 
 // RedirectLine is the index of «ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО» in the flat pool.
 //
@@ -499,16 +542,17 @@ const PlayerSlot = 40 // ticks, at SimHz — 2 s
 // is read off the state `Step` has already produced. Putting it on `Player`
 // would force a vector regeneration and a client change for a value the
 // simulation never reads.
-func PlayerLine(p Player, tick uint64) int {
+func PlayerLine(p Player, persona int, tick uint64) int {
+	intro := IntroLineFor(persona)
 	switch {
 	case p.DashLeft > 0:
-		return pickLine(len(stillLines)+len(movingLines), dashingLines, tick, PlayerSlot)
+		return pickLine(intro, len(stillLines)+len(movingLines), dashingLines, tick, PlayerSlot)
 	case p.MoveGrace > 0:
 		// He has moved inside the grace window, so the streak is at risk even
 		// though it has not gone yet. That is exactly when it is worth saying.
-		return pickLine(len(stillLines), movingLines, tick, PlayerSlot)
+		return pickLine(intro, len(stillLines), movingLines, tick, PlayerSlot)
 	default:
-		return pickLine(0, stillLines, tick, PlayerSlot)
+		return pickLine(intro, 0, stillLines, tick, PlayerSlot)
 	}
 }
 
@@ -561,27 +605,27 @@ func slotHash(slot, salt uint64) uint64 {
 // The no-immediate-repeat guard is closed form as well: it recomputes the
 // previous slot's answer rather than remembering it, so this stays a pure
 // function of the clock.
-func pickLine(base int, run []string, tick uint64, slotTicks uint64) int {
+func pickLine(intro, base int, run []string, tick uint64, slotTicks uint64) int {
 	n := uint64(len(run))
 	if n == 0 || slotTicks == 0 {
 		return 0
 	}
 	slot := tick / slotTicks
-	got := lineIn(base, n, slot)
-	if slot > 0 && got == lineIn(base, n, slot-1) {
+	got := lineIn(intro, base, n, slot)
+	if slot > 0 && got == lineIn(intro, base, n, slot-1) {
 		// Say something else rather than the same thing twice running — a
 		// balloon that does not change across a slot boundary reads as frozen,
 		// which is the defect this whole cadence exists to avoid.
-		return nextLine(base, n, got)
+		return nextLine(intro, base, n, got)
 	}
 	return got
 }
 
 // lineIn is the unguarded pick for one slot: the introduction, or a line of the
 // run.
-func lineIn(base int, n, slot uint64) int {
+func lineIn(intro, base int, n, slot uint64) int {
 	if slotHash(slot, introSalt)%IntroEvery == 0 {
-		return introLine
+		return intro
 	}
 	// The remainder is strictly less than the run's length, which is a couple of
 	// dozen at most. gosec cannot see that bound and flags every uint64
@@ -595,7 +639,7 @@ func lineIn(base int, n, slot uint64) int {
 // to say — which was NOT true of the first version, and the bug is worth naming
 // because it looked impossible: for the still run `base` IS the introduction, so
 // "the introduction repeated, start the run instead" returned the introduction.
-func nextLine(base int, n uint64, from int) int {
+func nextLine(intro, base int, n uint64, from int) int {
 	//nolint:gosec // n is a slice length, so it fits an int by construction
 	end := base + int(n)
 	if from < base || from >= end {
@@ -614,7 +658,7 @@ func nextLine(base int, n uint64, from int) int {
 	if base != from {
 		return base
 	}
-	return introLine
+	return intro
 }
 
 // introLine is where the self-introduction lives in every pool, and introSalt /
@@ -652,9 +696,9 @@ const (
 func BossSays(state BossState, grin float64, tick uint64) int {
 	switch state {
 	case BossDrunk:
-		return pickLine(len(bossFar)+len(bossClosing), bossDrunkLines, tick, BossSlot)
+		return pickLine(introLine, len(bossFar)+len(bossClosing), bossDrunkLines, tick, BossSlot)
 	case BossRedirected:
-		return pickLine(len(bossFar)+len(bossClosing)+len(bossDrunkLines), bossRedirectLines, tick, BossSlot)
+		return pickLine(introLine, len(bossFar)+len(bossClosing)+len(bossDrunkLines), bossRedirectLines, tick, BossSlot)
 	default:
 		return BossLine(grin, tick)
 	}
@@ -667,9 +711,9 @@ func BossLine(grin float64, tick uint64) int {
 	// is most of a shift, and it left the balloon over the only other figure on
 	// the plane frozen while everything else moved.
 	if grin >= BossQuiet {
-		return pickLine(len(bossFar), bossClosing, tick, BossSlot)
+		return pickLine(introLine, len(bossFar), bossClosing, tick, BossSlot)
 	}
-	return pickLine(0, bossFar, tick, BossSlot)
+	return pickLine(introLine, 0, bossFar, tick, BossSlot)
 }
 
 // Config is the whole catalogue as the browser receives it.
@@ -684,15 +728,18 @@ func BossLine(grin float64, tick uint64) int {
 // `json:"-"` — a number the client does not need is a number that tells a player
 // how to beat him.
 type Config struct {
-	GameKey      string       `json:"game_key"`
-	Title        string       `json:"title"`
-	Office       OfficeConfig `json:"office"`
-	Money        MoneyConfig  `json:"money"`
-	Move         MoveConfig   `json:"move"`
-	Boss         BossConfig   `json:"boss"`
-	Sim          SimConfig    `json:"sim"`
-	Endings      []Ending     `json:"endings"`
-	BossLines    []string     `json:"boss_lines"`
+	GameKey   string       `json:"game_key"`
+	Title     string       `json:"title"`
+	Office    OfficeConfig `json:"office"`
+	Money     MoneyConfig  `json:"money"`
+	Move      MoveConfig   `json:"move"`
+	Boss      BossConfig   `json:"boss"`
+	Sim       SimConfig    `json:"sim"`
+	Endings   []Ending     `json:"endings"`
+	BossLines []string     `json:"boss_lines"`
+	// Personas is who you might be, by index. The shift responses carry the index
+	// and this carries the names, so retuning the cast is a backend deploy.
+	Personas     []string     `json:"personas"`
 	PlayerLines  []string     `json:"player_lines"`
 	MaxOccupants int          `json:"max_occupants"`
 	Redirect     VerbConfig   `json:"redirect"`

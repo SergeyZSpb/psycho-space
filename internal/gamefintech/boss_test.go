@@ -214,7 +214,7 @@ func TestHeReachesSomebodyStandingBehindADesk(t *testing.T) {
 	}
 
 	o := NewOffice()
-	if err := o.Join("a", "s1", "p-a", "", epoch); err != nil {
+	if err := o.Join("a", "s1", "p-a", "", 0, epoch); err != nil {
 		t.Fatal(err)
 	}
 	const patience = 30 * SimHz

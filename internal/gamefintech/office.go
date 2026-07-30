@@ -46,6 +46,16 @@ type Occupant struct {
 	// account id never reaches the wire, and a pseudonym means nothing once the
 	// process that minted it has restarted.
 	Pseudonym string
+	// Persona is which employee this occupant is — an index into Personas, drawn
+	// once when the shift starts.
+	//
+	// ON THE OCCUPANT AND NEVER ON Player, and that is a rule rather than a
+	// preference: `Step` is pinned to its TypeScript port by golden vectors, so a
+	// field the simulation never reads would force the whole 193 kB artefact to be
+	// regenerated for a value that changes nothing about movement. A persona
+	// decides what a figure SAYS, and the line it says is already chosen here.
+	Persona int
+
 	// Avatar is the picture the OTHER occupants draw on this one, read once when
 	// the shift starts and never again.
 	//
@@ -135,7 +145,7 @@ func NewOffice() *Office {
 // first: dropping the running one would throw away a shift somebody is in the
 // middle of on their other tab, and nothing here can tell which one they meant.
 // The client's answer is the quit button.
-func (o *Office) Join(accountID, shiftID, pseudonym, avatar string, now time.Time) error {
+func (o *Office) Join(accountID, shiftID, pseudonym, avatar string, persona int, now time.Time) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if _, ok := o.occupants[accountID]; ok {
@@ -149,6 +159,7 @@ func (o *Office) Join(accountID, shiftID, pseudonym, avatar string, now time.Tim
 		ShiftID:   shiftID,
 		Pseudonym: pseudonym,
 		Avatar:    avatar,
+		Persona:   persona,
 		State:     NewPlayerAt(o.spawnPoint()),
 		StartedAt: now,
 		LastSeen:  now,
@@ -292,6 +303,19 @@ func unitRand() float64 {
 		return 0.5
 	}
 	return float64(n.Int64()) / 1000
+}
+
+// drawPersona picks which employee you are this shift.
+//
+// `crypto/rand` rather than `math/rand`, because it is the only source this project
+// uses — not because a persona is a secret. A failed draw answers Карен, which is
+// index 0 and the one persona every other contract already assumes as its default.
+func drawPersona() int {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(Personas))))
+	if err != nil {
+		return 0
+	}
+	return int(n.Int64())
 }
 
 // Leave ends a shift on purpose and takes the occupant out of the world,
@@ -597,7 +621,7 @@ func (o *Office) lineFor(occ *Occupant) int {
 	if occ.Announce > 0 {
 		return RedirectLine
 	}
-	return PlayerLine(occ.State, o.tick)
+	return PlayerLine(occ.State, occ.Persona, o.tick)
 }
 
 // peersFor is everybody in the office except the account being addressed.
@@ -725,13 +749,13 @@ func (o *Office) AvatarFor(handle string) (string, bool) {
 }
 
 // ShiftOf is which shift an account is working, if any.
-func (o *Office) ShiftOf(accountID string) (string, bool) {
+func (o *Office) ShiftOf(accountID string) (string, int, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if occ, ok := o.occupants[accountID]; ok {
-		return occ.ShiftID, true
+		return occ.ShiftID, occ.Persona, true
 	}
-	return "", false
+	return "", 0, false
 }
 
 // Occupants is how many people are on the floor.

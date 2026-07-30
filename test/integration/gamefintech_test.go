@@ -425,6 +425,18 @@ func TestFintechShiftIsCreatedAndResumable(t *testing.T) {
 	if first["room"] != gamefintech.Room {
 		t.Fatalf("room is %v, want %q", first["room"], gamefintech.Room)
 	}
+	// WHO YOU ARE, drawn by the server and named by the catalogue. It rides the
+	// shift response rather than a frame because it is constant for the life of a
+	// shift, and it is not omitempty: zero is Карен, a real answer, and an absent
+	// field would be indistinguishable from him.
+	persona, ok := first["persona"].(float64)
+	if !ok {
+		t.Fatalf("no persona in %v", first)
+	}
+	if persona < 0 || int(persona) >= len(gamefintech.Personas) {
+		t.Fatalf("persona %v is outside the cast of %d", persona, len(gamefintech.Personas))
+	}
+
 	// The office is STATIC and already in the catalogue, so a shift start sends
 	// no level. This is the load-bearing difference from the shooter, and it is
 	// worth pinning: re-sending an office nobody generated would be pure waste.

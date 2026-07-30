@@ -941,6 +941,8 @@ export interface FintechConfig {
   endings: FintechEnding[];
   /** What he says. Carried from iteration 1 so the shape is right; drawn later. */
   boss_lines: string[];
+  /** Who you might be, by index. A shift response names which one you are. */
+  personas: string[];
   /** What YOU say. The wire carries an index into this, never the words. */
   player_lines: string[];
   max_occupants: number;
@@ -972,6 +974,14 @@ export interface FintechShift {
   shift_id: string;
   /** The realtime room to open the socket in. Taken from here, never hardcoded. */
   room: string;
+  /**
+   * Which employee this shift is — an index into the catalogue's `personas`.
+   *
+   * On the shift responses rather than on a frame, because it is constant for the
+   * life of a shift and a repeating payload is the wrong place for anything that
+   * never changes. Zero is Карен, a real answer rather than a missing one.
+   */
+  persona: number;
 }
 
 /** One of your own finished shifts, as the splash lists them. */

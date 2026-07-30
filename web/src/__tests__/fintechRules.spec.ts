@@ -38,6 +38,7 @@ const config: FintechConfig = {
     { key: 'left', title: 'ТЫ ПРОСТО УШЁЛ', sub: 'смена засчитана. никто не заметил.' },
   ],
   boss_lines: ['А ГДЕ?'],
+  personas: ['Карен', 'Андрюха', 'Саня', 'Даша'],
   player_lines: ['Я КАРЕН', 'Я ПРОСТО ВОДЫ ПОПИТЬ', 'Я НА ВСТРЕЧУ'],
   max_occupants: 3,
 };
@@ -191,6 +192,11 @@ describe('the colleagues block', () => {
     // belongs on the splash screen. Hardcoded rather than derived, because the
     // marker is a stylesheet rule and the catalogue carries no number for it.
     expect(colleagues!.lines.some((l) => l.text.includes('белом круге'))).toBe(true);
+    // AND WHO YOU MIGHT BE, derived from the served cast rather than typed — so
+    // retuning the cast updates the screen by itself, which is the whole reason the
+    // names are in the catalogue and only an index is on the wire.
+    expect(colleagues!.lines.some((l) => l.text.includes('Андрюха'))).toBe(true);
+    expect(colleagues!.lines.some((l) => l.text.includes('Даша'))).toBe(true);
   });
 
   it('says nothing about colleagues in an office that holds one person', () => {

@@ -161,6 +161,12 @@ func ParseInbound(payload []byte) (string, []Command) {
 type Ready struct {
 	T       string `json:"t"`
 	ShiftID string `json:"shift_id"`
+	// Persona is which employee this shift is, as an index into the catalogue's
+	// `personas`. It is here as well as on the two shift responses because a socket
+	// can open against a shift this client did not start — a second device, or a
+	// reconnect after the tab was asleep — and the over screen has to be able to
+	// name who was working. Sent ONCE per attach, never on a frame.
+	Persona int `json:"persona"`
 }
 
 // Snapshot is the idempotent full-state frame, sent at SimHz/SnapshotEvery.

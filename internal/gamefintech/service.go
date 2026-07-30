@@ -353,7 +353,7 @@ func (s *Service) writeShift(ctx context.Context, sh Shift) {
 // request-scoped call, and a handler that had to remember which one was
 // different would eventually forget; the day this one reads the database, the
 // parameter is already there and no caller changes.
-func (s *Service) StartShift(ctx context.Context, accountID string) (string, error) {
+func (s *Service) StartShift(ctx context.Context, accountID string) (string, int, error) {
 	now := time.Now()
 	// Read ONCE, here, and outside the lock: it is a database round trip, it is
 	// constant for the life of the shift, and the alternative is a query on a
@@ -376,15 +376,16 @@ func (s *Service) StartShift(ctx context.Context, accountID string) (string, err
 		s.office = NewOffice()
 	}
 	shiftID := uuid.New().String()
-	if err := s.office.Join(accountID, shiftID, s.pseudonym(accountID), avatar, now); err != nil {
+	persona := drawPersona()
+	if err := s.office.Join(accountID, shiftID, s.pseudonym(accountID), avatar, persona, now); err != nil {
 		// A refusal must not leave an empty office behind, or the bald man would
 		// be left standing wherever the last shift ended.
 		if s.office.Empty() {
 			s.office = nil
 		}
-		return "", err
+		return "", 0, err
 	}
-	return shiftID, nil
+	return shiftID, persona, nil
 }
 
 // LeaveShift is the quit button: the shift ends with cause "left", is recorded
@@ -432,12 +433,12 @@ func (s *Service) LeaveShift(ctx context.Context, accountID string) error {
 // CurrentShift is which shift an account is working, if any. It is the reload
 // path: a page that comes back finds its shift here rather than starting a
 // second one.
-func (s *Service) CurrentShift(accountID string) (string, bool) {
+func (s *Service) CurrentShift(accountID string) (string, int, bool) {
 	s.mu.Lock()
 	office := s.office
 	s.mu.Unlock()
 	if office == nil {
-		return "", false
+		return "", 0, false
 	}
 	return office.ShiftOf(accountID)
 }
@@ -533,11 +534,11 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 // that opened before the shift did, or one that outlived it, and the client's
 // own next move — pressing НАЧАТЬ СМЕНУ — is what fixes it.
 func (s *Service) hello(ctx context.Context, m realtime.Member) {
-	shiftID, ok := s.CurrentShift(m.AccountID)
+	shiftID, persona, ok := s.CurrentShift(m.AccountID)
 	if !ok {
 		return
 	}
-	msg, err := json.Marshal(Ready{T: TypeReady, ShiftID: shiftID})
+	msg, err := json.Marshal(Ready{T: TypeReady, ShiftID: shiftID, Persona: persona})
 	if err != nil {
 		return
 	}

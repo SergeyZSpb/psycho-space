@@ -67,6 +67,12 @@ func (s *Server) handleGameFintechConfig(w http.ResponseWriter, r *http.Request)
 type fintechShift struct {
 	ShiftID string `json:"shift_id"`
 	Room    string `json:"room"`
+	// Persona is which employee this shift is — an index into the catalogue's
+	// `personas`. It rides the two shift responses rather than the frame, because
+	// it is constant for the life of a shift and a repeating payload is the wrong
+	// place for anything that never changes. It is not `omitempty`: zero is Карен,
+	// a real answer, and an absent field would be indistinguishable from him.
+	Persona int `json:"persona"`
 }
 
 // handleGameFintechStart clocks in.
@@ -89,7 +95,7 @@ func (s *Server) handleGameFintechStart(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	shiftID, err := s.d.GameFintech.StartShift(r.Context(), acc.ID)
+	shiftID, persona, err := s.d.GameFintech.StartShift(r.Context(), acc.ID)
 	switch {
 	case errors.Is(err, gamefintech.ErrShiftInProgress):
 		writeError(w, r, http.StatusConflict, "shift_in_progress")
@@ -102,7 +108,7 @@ func (s *Server) handleGameFintechStart(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
-	writeJSON(w, http.StatusCreated, fintechShift{ShiftID: shiftID, Room: gamefintech.Room})
+	writeJSON(w, http.StatusCreated, fintechShift{ShiftID: shiftID, Room: gamefintech.Room, Persona: persona})
 }
 
 // handleGameFintechCurrent returns the shift already in progress, or 404.
@@ -120,12 +126,12 @@ func (s *Server) handleGameFintechCurrent(w http.ResponseWriter, r *http.Request
 		writeError(w, r, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	shiftID, ok := s.d.GameFintech.CurrentShift(acc.ID)
+	shiftID, persona, ok := s.d.GameFintech.CurrentShift(acc.ID)
 	if !ok {
 		writeError(w, r, http.StatusNotFound, "no_shift")
 		return
 	}
-	writeJSON(w, http.StatusOK, fintechShift{ShiftID: shiftID, Room: gamefintech.Room})
+	writeJSON(w, http.StatusOK, fintechShift{ShiftID: shiftID, Room: gamefintech.Room, Persona: persona})
 }
 
 // handleGameFintechLeave walks out, which is one of this game's two endings.

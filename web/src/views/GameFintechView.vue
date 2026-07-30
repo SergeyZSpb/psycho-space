@@ -75,6 +75,10 @@
         <span class="fintech-hud-cell fintech-hud-mult" data-testid="fintech-hud-mult">
           {{ formatMultiplier(mult) }}
         </span>
+        <span v-if="personaName" class="fintech-hud-cell fintech-hud-who" data-testid="fintech-who">
+          <span class="fintech-hud-label">ТЫ</span>
+          <span class="fintech-hud-value">{{ personaName }}</span>
+        </span>
         <span class="fintech-hud-cell fintech-hud-dash">
           {{ dashMs > 0 ? `РЫВОК ${formatSeconds(dashMs)}` : 'РЫВОК ГОТОВ' }}
         </span>
@@ -267,6 +271,12 @@
       <p class="fintech-lore">{{ overSub }}</p>
       <p class="fintech-over-salary" data-testid="fintech-over-salary">{{ money(over?.pay ?? 0) }}</p>
       <p class="fintech-over-secs">за {{ seconds(over?.secs ?? 0) }} с</p>
+      <!-- WHO WAS WORKING. The ending is the one screen where the persona is worth
+           repeating: the shift is over, the figure is gone, and «ты был Саня» is the
+           whole of the reframe in three words. -->
+      <p v-if="personaName" class="fintech-over-secs" data-testid="fintech-over-who">
+        ты был {{ personaName }}
+      </p>
       <v-btn color="warning" size="large" data-testid="fintech-retry" :loading="starting" @click="start">
         ЕЩЁ РАЗ
       </v-btn>
@@ -439,6 +449,26 @@ const brokenFaces = ref(new Set<string>());
  */
 const auth = useAuthStore();
 const meFaceBroken = ref(false);
+
+/**
+ * WHO YOU ARE THIS SHIFT.
+ *
+ * The office is a fintech rather than one man's office, so the person standing
+ * perfectly still is Карен, or Андрюха, or Саня, or Даша, drawn when you clock in.
+ * The shift response carries the INDEX and the catalogue carries the names, so
+ * retuning the cast is a backend deploy — and the index rides the two shift
+ * responses plus the ready frame rather than a repeating payload, because it never
+ * changes for the life of a shift.
+ *
+ * Out of range answers the first name rather than nothing: zero is Карен and is
+ * also what an older server would send by omission.
+ */
+const persona = ref(0);
+const personaName = computed(() => {
+  const cast = config.value?.personas;
+  if (!cast || cast.length === 0) return '';
+  return cast[persona.value] ?? cast[0];
+});
 const meFace = computed(() =>
   meFaceBroken.value ? undefined : auth.account?.avatar_url || undefined,
 );
@@ -727,12 +757,14 @@ async function start(): Promise<void> {
   error.value = '';
   try {
     shift = await gameFintechApi.start();
+    persona.value = shift.persona ?? 0;
     enterPlay();
   } catch (e) {
     if (e instanceof ApiError && e.code === 'shift_in_progress') {
       // Somebody's other tab. Resuming is the right answer, not a second shift.
       try {
         shift = await gameFintechApi.current();
+        persona.value = shift.persona ?? 0;
         enterPlay();
       } catch {
         error.value = 'смена уже идёт на другой вкладке';
@@ -1014,6 +1046,9 @@ function onFrame(frame: RealtimeFrame): void {
       // occupant is not yet attached, which is a different thing and is what the
       // link line is honestly reporting.
       link.value = 'open';
+      // AND WHO WE ARE, which a second device or a reconnect would not otherwise
+      // know: this tab may be attaching to a shift it did not start.
+      if (typeof frame.persona === 'number') persona.value = frame.persona;
       break;
     case 'fintech_snap':
       applySnapshot(frame);

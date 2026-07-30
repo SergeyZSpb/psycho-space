@@ -133,7 +133,7 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 		`"boss"`, `"speed"`, `"catch_radius"`, `"grin_range"`,
 		`"sim"`, `"hz"`, `"snapshot_hz"`,
 		`"endings"`, `"key"`, `"sub"`,
-		`"boss_lines"`, `"max_occupants"`,
+		`"boss_lines"`, `"personas"`, `"max_occupants"`,
 	} {
 		if !strings.Contains(string(raw), key) {
 			t.Fatalf("the served catalogue has no %s: %s", key, raw)
@@ -339,16 +339,16 @@ func TestWhatFintechIsSaying(t *testing.T) {
 	// own run — a walking Карен must not borrow a standing one's line.
 	intros := 0
 	for tick := uint64(0); tick < PlayerSlot*uint64(len(PlayerLines))*4; tick += PlayerSlot {
-		if got := PlayerLine(still, tick); !stillRun(got) {
+		if got := PlayerLine(still, 0, tick); !stillRun(got) {
 			t.Fatalf("tick %d: standing still says %d (%q), which is not in the still run", tick, got, PlayerLines[got])
 		}
-		if got := PlayerLine(moving, tick); got != introLine && !movingRun(got) {
+		if got := PlayerLine(moving, 0, tick); got != introLine && !movingRun(got) {
 			t.Fatalf("tick %d: moving says %d (%q), which is neither the introduction nor in the moving run", tick, got, PlayerLines[got])
 		}
-		if got := PlayerLine(dashing, tick); got != introLine && !dashRun(got) {
+		if got := PlayerLine(dashing, 0, tick); got != introLine && !dashRun(got) {
 			t.Fatalf("tick %d: dashing says %d (%q), which is neither the introduction nor in the dash run", tick, got, PlayerLines[got])
 		}
-		if PlayerLine(moving, tick) == introLine {
+		if PlayerLine(moving, 0, tick) == introLine {
 			intros++
 		}
 	}
@@ -357,10 +357,10 @@ func TestWhatFintechIsSaying(t *testing.T) {
 		t.Fatal("a walking Карен never once said who he was")
 	}
 	// He HOLDS a line for a whole slot rather than flickering, and then moves on.
-	if PlayerLine(still, PlayerSlot-1) != PlayerLine(still, 0) {
+	if PlayerLine(still, 0, PlayerSlot-1) != PlayerLine(still, 0, 0) {
 		t.Fatal("the line changed inside one slot")
 	}
-	if len(stillLines) > 1 && PlayerLine(still, PlayerSlot) == PlayerLine(still, 0) {
+	if len(stillLines) > 1 && PlayerLine(still, 0, PlayerSlot) == PlayerLine(still, 0, 0) {
 		t.Fatal("the line did not change after a whole slot")
 	}
 }
@@ -471,9 +471,9 @@ func TestEveryBalloonOnThePlaneRotatesEveryTwoSeconds(t *testing.T) {
 	}{
 		{"the bald man, far away", func(tk uint64) int { return BossLine(0, tk) }},
 		{"the bald man, closing", func(tk uint64) int { return BossLine(1, tk) }},
-		{"a Карен standing perfectly still", func(tk uint64) int { return PlayerLine(still, tk) }},
-		{"a Карен who has just moved", func(tk uint64) int { return PlayerLine(moving, tk) }},
-		{"a Карен mid-dash", func(tk uint64) int { return PlayerLine(dashing, tk) }},
+		{"a Карен standing perfectly still", func(tk uint64) int { return PlayerLine(still, 0, tk) }},
+		{"a Карен who has just moved", func(tk uint64) int { return PlayerLine(moving, 0, tk) }},
+		{"a Карен mid-dash", func(tk uint64) int { return PlayerLine(dashing, 0, tk) }},
 	} {
 		// Held for the whole slot...
 		first := tc.line(0)
@@ -511,7 +511,7 @@ func TestNobodyRecitesThePoolInOrder(t *testing.T) {
 		name string
 		line func(slot uint64) int
 	}{
-		{"a Карен standing still", func(sl uint64) int { return PlayerLine(atSpawn(), sl*PlayerSlot) }},
+		{"a Карен standing still", func(sl uint64) int { return PlayerLine(atSpawn(), 0, sl*PlayerSlot) }},
 		{"the bald man closing", func(sl uint64) int { return BossLine(1, sl*BossSlot) }},
 	} {
 		seq := make([]int, slots)
@@ -711,5 +711,67 @@ func TestTheServedGeometryUsesTheKeysTheClientReads(t *testing.T) {
 		if d.X == nil || d.W == nil {
 			t.Fatalf("desk %d has no x/w the client can read: %s", i, raw)
 		}
+	}
+}
+
+func TestEveryPersonaIntroducesItselfAsItself(t *testing.T) {
+	// THE STRING BEHIND THE INDEX, not index-against-index arithmetic. A test that
+	// recomputes a base with the same expression the code uses is wrong identically
+	// on both sides and passes, which is the failure mode append-only ordering
+	// exists to avoid — so every claim here resolves to the actual line.
+	if len(Personas) != len(personaIntros)+1 {
+		t.Fatalf("%d personas but %d intros after Карен", len(Personas), len(personaIntros))
+	}
+	if PlayerLines[IntroLineFor(0)] != "Я КАРЕН" {
+		t.Fatalf("persona 0 introduces itself as %q, want «Я КАРЕН»", PlayerLines[IntroLineFor(0)])
+	}
+	for i := 1; i < len(Personas); i++ {
+		got := PlayerLines[IntroLineFor(i)]
+		want := personaIntros[i-1]
+		if got != want {
+			t.Fatalf("persona %d (%s) introduces itself as %q, want %q", i, Personas[i], got, want)
+		}
+		if !strings.Contains(strings.ToUpper(got), strings.ToUpper(Personas[i])) {
+			t.Fatalf("persona %d is %s but says %q", i, Personas[i], got)
+		}
+	}
+}
+
+func TestKarenIsStillFirstInTheFlatPool(t *testing.T) {
+	// THREE SEPARATE CONTRACTS AGREE ONLY WHILE HE IS. An omitted persona on the
+	// wire means zero; `introLine` is zero; and `PlayerLines[0]` is his line. The
+	// full-stack suite reads the first element of the served array, and the client
+	// draws index 0 for anybody who has said nothing yet. Reordering `Personas` or
+	// prepending to any run is a wire change, and this is the test that says so.
+	if Personas[0] != "Карен" {
+		t.Fatalf("Personas[0] = %q, want Карен", Personas[0])
+	}
+	if introLine != 0 || IntroLineFor(0) != 0 {
+		t.Fatalf("introLine = %d, IntroLineFor(0) = %d, want 0 and 0", introLine, IntroLineFor(0))
+	}
+	if PlayerLines[0] != stillLines[0] {
+		t.Fatalf("the flat pool does not start with the still run: %q vs %q", PlayerLines[0], stillLines[0])
+	}
+}
+
+func TestAnUnknownPersonaFallsBackToKaren(t *testing.T) {
+	// The safe direction: a frame that could not be read must not silently point at
+	// a different colleague's name.
+	for _, p := range []int{-1, len(Personas), 99} {
+		if got := IntroLineFor(p); got != introLine {
+			t.Fatalf("persona %d answers intro %d, want %d", p, got, introLine)
+		}
+	}
+}
+
+func TestAppendingPersonasDidNotMoveTheRedirectLine(t *testing.T) {
+	// `RedirectLine` is derived from the lengths of the three runs before it, and
+	// the new run is appended AFTER the redirect run — so it cannot move. Pinned
+	// against the string, because that is the thing the client joins on.
+	if PlayerLines[RedirectLine] != redirectLines[0] {
+		t.Fatalf("RedirectLine points at %q, want %q", PlayerLines[RedirectLine], redirectLines[0])
+	}
+	if personaIntroBase <= RedirectLine {
+		t.Fatalf("the persona intros start at %d, which is not after the redirect run at %d", personaIntroBase, RedirectLine)
 	}
 }

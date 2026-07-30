@@ -81,6 +81,9 @@ const CONFIG = {
   // instead of reading the catalogue cannot pass the assertions below.
   boss_lines: ['Я ЛЫСЫЙ, СТЕНД', 'А ГДЕ, СТЕНД?'],
   player_lines: ['Я КАРЕН, СТЕНД', 'ВОДЫ, СТЕНД', 'НА ВСТРЕЧУ, СТЕНД', LONG_SAY, REDIRECT_SAY],
+  // Marked like everything else here, so a client that hardcoded the cast instead
+  // of reading it cannot pass the assertions below.
+  personas: ['КАРЕН-СТЕНД', 'АНДРЮХА-СТЕНД', 'САНЯ-СТЕНД', 'ДАША-СТЕНД'],
   max_occupants: 3,
   // Marked like everything else in this stub, so a client that hardcoded the
   // label or the timers cannot pass the assertions below.
@@ -102,7 +105,7 @@ const CONFIG = {
   },
 };
 
-const SHIFT = { shift_id: 'shift-e2e', room: 'fintech' };
+const SHIFT = { shift_id: 'shift-e2e', room: 'fintech', persona: 2 };
 
 /**
  * A DELIBERATELY WIDE PNG — 4 × 1 — as a `data:` URI, used as the session's own
@@ -192,7 +195,7 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
  * about the HUD and the plane is pushed rather than waited for.
  */
 async function stubSocket(page: Page): Promise<{
-  ready: () => Promise<void>;
+  ready: (fields?: Record<string, unknown>) => Promise<void>;
   snapshot: (fields?: Record<string, unknown>) => Promise<void>;
   over: (fields?: Record<string, unknown>) => Promise<void>;
   sent: () => string[];
@@ -213,7 +216,7 @@ async function stubSocket(page: Page): Promise<{
   };
 
   return {
-    ready: () => send({ t: 'fintech_ready', shift_id: SHIFT.shift_id }),
+    ready: (fields = {}) => send({ t: 'fintech_ready', shift_id: SHIFT.shift_id, ...fields }),
     snapshot: (fields = {}) =>
       send({
         t: 'fintech_snap',
@@ -1390,4 +1393,42 @@ test('a colleague’s face survives the top wall, because it is inside his own b
   // ...and therefore inside the clipping box, whole.
   expect(seen.badgeTop).toBeGreaterThanOrEqual(seen.planeTop - 1);
   expect(seen.badgeH).toBeGreaterThan(0);
+});
+
+test.describe('«СИМУЛЯТОР ФИНТЕХА» — who you are this shift', () => {
+  test('the readouts name the employee the server drew, from the served cast', async ({ page }) => {
+    // NOT «Карен», and that is the whole reframe: the office is a fintech and the
+    // person standing still is whoever clocked in. The index comes from the shift
+    // response and the NAME from the catalogue, so a client that hardcoded either
+    // one fails here — the stub's cast is marked, and its index is 2.
+    await enterOffice(page);
+    await expect(page.getByTestId('fintech-who')).toContainText(CONFIG.personas[2]);
+  });
+
+  test('and the ending says who was working', async ({ page }) => {
+    const socket = await enterOffice(page);
+    await socket.over({ cause: 'left' });
+    await expect(page.getByTestId('fintech-over')).toBeVisible();
+    await expect(page.getByTestId('fintech-over-who')).toContainText(CONFIG.personas[2]);
+  });
+
+  test('a socket that attaches to somebody else’s shift is told who it is', async ({ page }) => {
+    // A SECOND DEVICE, or a reconnect after the tab slept. The shift was not
+    // started here, so the HTTP response never carried a persona to this client —
+    // the ready frame is what tells it, and this is the only place that is proved.
+    // A RESUMED shift enters play on mount, so there is no start button to click
+    // and `enterOffice` is the wrong door — the same shape the resume test uses.
+    const socket = await stubSocket(page);
+    await openSplash(page, { resume: true });
+    await expect(page.getByTestId('fintech-play')).toBeVisible();
+    await socket.ready({ persona: 3 });
+    await expect(page.getByTestId('fintech-who')).toContainText(CONFIG.personas[3]);
+  });
+
+  test('the cheatsheet names the whole cast, derived rather than typed', async ({ page }) => {
+    await openSplash(page);
+    await expect(page.getByTestId('fintech-splash')).toBeVisible();
+    const rules = page.getByTestId('fintech-rules');
+    for (const name of CONFIG.personas) await expect(rules).toContainText(name);
+  });
 });
