@@ -380,36 +380,49 @@
           </button>
         </div>
 
-        <!-- «РОУТЕР УПАЛ», beside the dash because it is the same kind of thing:
-             one thumb, one press, a timer. It is disabled while the router is on
-             its way back up AND while Claude is already away — pressing it then
-             would be a press the office refuses, and a button that looks live and
-             does nothing is worse than one that is visibly spent.
-             The label and both timers come from the catalogue, so retuning them
-             needs no client deploy. -->
-        <button
-          v-if="config?.router"
-          class="fintech-router"
-          type="button"
-          data-testid="fintech-router"
-          :disabled="routerMs > 0 || claudeAwayMs > 0"
-          :aria-label="config.router.label"
-          @pointerdown.prevent="onRouter"
-          @click.prevent
-        >
-          {{ routerMs > 0 ? formatSeconds(routerMs) : config.router.label }}
-        </button>
+        <!-- THE THUMB'S COLUMN: «РОУТЕР УПАЛ» directly above РЫВОК, one over the
+             other rather than side by side. The middle of the band belongs to the
+             colleagues, which is where a redirect has always been — putting a
+             third control there pushed them about and left three things competing
+             for one thumb's width on a 360 px phone.
+             The router is disabled while it is on its way back up AND while Claude
+             is already away: pressing it then would be a press the office refuses,
+             and a button that looks live and does nothing is worse than one that
+             is visibly spent. -->
+        <div class="fintech-thumb">
+          <button
+            v-if="config?.router"
+            class="fintech-router"
+            type="button"
+            data-testid="fintech-router"
+            :disabled="routerMs > 0 || claudeAwayMs > 0"
+            :aria-label="config.router.label"
+            @pointerdown.prevent="onRouter"
+            @click.prevent
+          >
+            <!-- THE LABEL NEVER LEAVES, and the countdown appears UNDER it rather
+                 than in its place. Swapping the words for «45,0 с.» changed how wide
+                 and how tall the button was every time it was pressed, so the whole
+                 column jumped — and the one thing a control under a thumb must not
+                 do is move. Both lines live in a fixed box; only their text
+                 changes. -->
+            <span class="fintech-router-label">{{ config.router.label }}</span>
+            <span class="fintech-router-timer">{{
+              routerMs > 0 ? formatSeconds(routerMs) : claudeAwayMs > 0 ? 'НЕТ СВЯЗИ' : 'ГОТОВ'
+            }}</span>
+          </button>
 
-        <button
-          class="fintech-dash"
-          type="button"
-          data-testid="fintech-dash"
-          :disabled="dashMs > 0"
-          @pointerdown.prevent="onDash"
-          @click.prevent
-        >
-          РЫВОК
-        </button>
+          <button
+            class="fintech-dash"
+            type="button"
+            data-testid="fintech-dash"
+            :disabled="dashMs > 0"
+            @pointerdown.prevent="onDash"
+            @click.prevent
+          >
+            РЫВОК
+          </button>
+        </div>
       </div>
     </section>
 
@@ -3387,39 +3400,72 @@ function onDash(): void {
   white-space: nowrap;
 }
 
-/* «РОУТЕР УПАЛ» — beside the dash, because it is used in the same breath as one
-   and by the same thumb. A pill rather than a second circle: two 84 px discs side
-   by side is most of a 360 px phone's width, and a mis-tap between them costs the
-   dodge. It is the coolest colour on the plane on purpose — nothing about it is
+/* THE THUMB'S COLUMN — «РОУТЕР УПАЛ» stacked directly on top of РЫВОК.
+   One thumb reaches both without moving across the glass, and the middle of the
+   band stays the colleagues', which is where a redirect has always been. Side by
+   side, the three of them competed for one phone's width and the stick lost its
+   clearance from the edge. */
+.fintech-thumb {
+  pointer-events: none;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* «РОУТЕР УПАЛ» — the coolest colour on the plane on purpose: nothing about it is
    urgent, and the eye should find РЫВОК first.
 
-   It carries its own label, so the button says what it does and the balloon over
-   your head says the same words. Both come from the catalogue. */
+   A FIXED BOX, and that is the point of every dimension here being written out.
+   The label and the countdown are two lines inside it and only their TEXT changes,
+   so pressing the button cannot resize it and the column under the thumb never
+   moves. Sizing it off its own content — which is what a pill whose words swap
+   between «РОУТЕР УПАЛ» and «45,0 с.» does — made it jump on every press.
+
+   It is the dash's width, so the two read as one column rather than as two
+   controls that happen to be near each other. */
 .fintech-router {
   pointer-events: auto;
-  align-self: flex-end;
-  /* THE ONE CONTROL IN THIS ROW THAT GIVES WAY. The stick and the dash are sized
-     to a thumb and must not shrink; this is a label, so it wraps to a second line
-     on a narrow phone instead of taking room off either of them. */
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 84px;
   /* ≥ 44 px, like every control on this plane. */
-  min-height: 44px;
-  max-width: 26cqw;
-  padding: 0 12px;
-  border-radius: 22px;
+  height: 46px;
+  padding: 0 4px;
+  border-radius: 14px;
   border: 2px solid rgba(120, 170, 210, 0.45);
   background: rgba(30, 46, 60, 0.72);
   color: rgba(255, 255, 255, 0.92);
-  font-size: 0.6rem;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  line-height: 1.1;
+  letter-spacing: 0.02em;
+  overflow: hidden;
   touch-action: manipulation;
 }
 
+.fintech-router-label {
+  font-size: 0.52rem;
+  font-weight: 800;
+  line-height: 1.05;
+  text-align: center;
+}
+
+/* The state line: a countdown, «ГОТОВ», or «НЕТ СВЯЗИ» while he is actually away.
+   Tabular figures and a fixed line box, so the digits changing ten times a second
+   move nothing. */
+.fintech-router-timer {
+  font-size: 0.5rem;
+  font-weight: 700;
+  line-height: 1.05;
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
+}
+
 .fintech-router:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   border-color: rgba(255, 255, 255, 0.18);
   background: rgba(255, 255, 255, 0.06);
 }

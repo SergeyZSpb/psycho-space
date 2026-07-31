@@ -1764,7 +1764,7 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — the кальян and th
 });
 
 test.describe('«СИМУЛЯТОР ФИНТЕХА» — «РОУТЕР УПАЛ»', () => {
-  test('the button is beside the dash and says what the catalogue says', async ({ page }) => {
+  test('the button sits on top of the dash and says what the catalogue says', async ({ page }) => {
     // It is a real tap target on a phone like every other control here, and its
     // words come from the served verb rather than from this client — the stub's
     // label carries the СТЕНД marker, so a hardcoded button fails.
@@ -1774,15 +1774,64 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — «РОУТЕР УПАЛ
     await expect(router).toContainText(CONFIG.router.label);
     await expect(router).toBeEnabled();
 
-    const [box, dash] = await Promise.all([
+    const [box, dash, stick] = await Promise.all([
       router.boundingBox(),
       page.getByTestId('fintech-dash').boundingBox(),
+      page.getByTestId('fintech-stick').boundingBox(),
     ]);
     expect(box!.height, 'a control under 44 px is not a tap target').toBeGreaterThanOrEqual(44);
-    // BESIDE THE DASH, which is the point of where it lives: the same thumb
-    // reaches both, and it is used in the same breath as a dodge.
-    expect(Math.abs(box!.y + box!.height - (dash!.y + dash!.height))).toBeLessThan(60);
-    expect(box!.x).toBeLessThan(dash!.x);
+    // DIRECTLY ABOVE THE DASH, in one column: the same thumb reaches both without
+    // crossing the glass, and the middle of the band is left to the colleagues.
+    expect(box!.y + box!.height, 'the router is not above the dash').toBeLessThanOrEqual(dash!.y + 1);
+    expect(Math.abs(box!.x + box!.width / 2 - (dash!.x + dash!.width / 2)),
+      'the two are not one column').toBeLessThan(4);
+    // And it is nowhere near the stick, which keeps its clearance from the edge.
+    expect(box!.x).toBeGreaterThan(stick!.x + stick!.width);
+  });
+
+  test('and it never changes size, however it is pressed', async ({ page }) => {
+    // A CONTROL UNDER A THUMB MUST NOT MOVE. The label used to be REPLACED by the
+    // countdown, so the button was as wide as whichever string was showing and the
+    // whole column jumped on every press. The label stays and the state line under
+    // it changes instead — same box, different text.
+    const socket = await enterOffice(page);
+    const router = page.getByTestId('fintech-router');
+    const size = async () => {
+      const b = (await router.boundingBox())!;
+      return { w: Math.round(b.width), h: Math.round(b.height), x: Math.round(b.x), y: Math.round(b.y) };
+    };
+    const ready = await size();
+
+    // On cooldown, with Claude still away — the two states that change the text.
+    await socket.snapshot({ cl: undefined, ca: 9000, rd: 45000 });
+    await expect(router).toBeDisabled();
+    expect(await size(), 'it resized while Claude was away').toEqual(ready);
+
+    await socket.snapshot({ cl: { x: 400, y: 1400, c: 30 }, rd: 45000 });
+    expect(await size(), 'it resized while counting down').toEqual(ready);
+
+    // And a four-figure countdown, which is the widest the state line ever gets.
+    await socket.snapshot({ cl: { x: 400, y: 1400, c: 30 }, rd: 9900 });
+    expect(await size(), 'it resized as the digits fell').toEqual(ready);
+  });
+
+  test('the colleagues keep the middle of the band, as they always had', async ({ page }) => {
+    // A REDIRECT LIVES BETWEEN THE STICK AND THE THUMB'S COLUMN. The router was
+    // put there first and pushed them about; the middle is theirs, and there is
+    // one per colleague, so it has to be the part of the band that grows.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 500, y: 500 }] });
+    const redirect = page.getByTestId('fintech-redirect');
+    await expect(redirect).toHaveCount(1);
+
+    const [verb, stick, router] = await Promise.all([
+      redirect.boundingBox(),
+      page.getByTestId('fintech-stick').boundingBox(),
+      page.getByTestId('fintech-router').boundingBox(),
+    ]);
+    expect(verb!.x, 'a colleague is to the left of the stick').toBeGreaterThan(stick!.x);
+    expect(verb!.x + verb!.width, 'a colleague overlaps the thumb’s column')
+      .toBeLessThanOrEqual(router!.x + 1);
   });
 
   test('pressing it sends the verb, with no target because there is nothing to aim', async ({
