@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1989,4 +1990,195 @@ func TestEveryShiftDrawsItsOwnPersona(t *testing.T) {
 			t.Fatalf("persona %d (%s) came up %d times in 400, want at least %d", p, Personas[p], n, floor)
 		}
 	}
+}
+
+// --- «РОУТЕР УПАЛ» ----------------------------------------------------------
+
+func TestTheRouterTakesClaudeOffTheFloorAndOffTheWire(t *testing.T) {
+	// THE WHOLE VERB. He is not stepped, not tested against anybody, and — the
+	// part a client depends on — not on the frame at all: an absent `cl` is what
+	// says he is not there, and `ca` is how long for.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	// Standing where he is about to be landed on, so "he stopped chasing" is a
+	// claim this test can actually make.
+	place(t, o, "a", Vec2{X: ChaserSpawnX, Y: ChaserSpawnY - 1})
+	advance(o, 1)
+	if snapOf(t, o, "a").Cl == nil {
+		t.Fatal("Claude is missing from a frame before anything happened to him")
+	}
+
+	if !o.RouterDown("a") {
+		t.Fatal("the router refused to fall")
+	}
+	advance(o, 1)
+	got := snapOf(t, o, "a")
+	if got.Cl != nil {
+		t.Fatalf("Claude is still on the frame while the router is down: %+v", got.Cl)
+	}
+	if got.Ca <= 0 {
+		t.Fatalf("nothing says how long he is gone for: ca=%d", got.Ca)
+	}
+	if got.Rd <= 0 {
+		t.Fatalf("the button has no cooldown to disable itself with: rd=%d", got.Rd)
+	}
+	// AND HE DOES NOTHING WHILE HE IS AWAY. Standing on the spot he was walking
+	// to would be slowed within a tick or two if he were still being stepped.
+	place(t, o, "a", claudeOf(o))
+	advance(o, 4)
+	if slowOf(o, "a") > 0 {
+		t.Fatal("a man who is not in the office landed on somebody")
+	}
+}
+
+func TestTheRouterComesBackUpAndClaudeReturnsThroughTheDoor(t *testing.T) {
+	// A REPRIEVE, NOT A DELETION. He is back after RouterSeconds — and back at his
+	// SPAWN, because a man who vanishes at your desk and rematerialises at your
+	// desk has not been anywhere and the reprieve would end with him on top of you.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	// LET HIM WALK FIRST, or the claim is vacuous: he starts at his spawn, so a
+	// test that presses the button immediately proves nothing about where he
+	// reappears. Two seconds of chasing takes him most of the way across the room.
+	place(t, o, "a", Vec2{X: OfficeW - 1.5, Y: 1.5})
+	advance(o, 2*SimHz)
+	left := claudeOf(o)
+	if math.Hypot(left.X-ChaserSpawnX, left.Y-ChaserSpawnY) < 2 {
+		t.Fatalf("he never left his spawn, so this test asserts nothing: %+v", left)
+	}
+
+	if !o.RouterDown("a") {
+		t.Fatal("the router refused to fall")
+	}
+	// One tick past the absence, so the tick that restores him has run and he has
+	// barely stepped since — fleeing throughout, because twelve seconds is three
+	// times what the лысый needs to cross the floor and a caught occupant has no
+	// snapshot to read.
+	advanceFleeing(t, o, int(RouterSeconds*SimHz)+1, "a")
+
+	got := snapOf(t, o, "a")
+	if got.Cl == nil {
+		t.Fatal("Claude never came back")
+	}
+	if got.Ca != 0 {
+		t.Fatalf("he is back and the frame still counts him away: ca=%d", got.Ca)
+	}
+	// At his spawn, within the step or two he has taken since being put back —
+	// and nowhere near where he vanished, which is the whole point.
+	back := claudeOf(o)
+	if d := math.Hypot(back.X-ChaserSpawnX, back.Y-ChaserSpawnY); d > 3*ChaserSpeed*SimStep.Seconds() {
+		t.Fatalf("he came back at %+v, %.2f m from his spawn", back, d)
+	}
+	if d := math.Hypot(back.X-left.X, back.Y-left.Y); d < 2 {
+		t.Fatalf("he reappeared %.2f m from where he vanished — that is not going anywhere", d)
+	}
+	// And the cooldown outlasts the absence, or the verb would be holdable.
+	if got.Rd <= 0 {
+		t.Fatalf("the router was pressable again the instant he returned: rd=%d", got.Rd)
+	}
+}
+
+func TestTheRoutersCooldownBelongsToTheOfficeAndNotToTheCaller(t *testing.T) {
+	// «ANYBODY CAN PRESS IT» IS WHAT MAKES THIS LOAD-BEARING. With a per-caller
+	// cooldown a full floor of three would cover 36 s of absence in every 30, and
+	// Claude would simply never be on the floor again — which is a deletion rather
+	// than the reprieve this verb is meant to be.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+
+	if !o.RouterDown("a") {
+		t.Fatal("the first, legitimate press was refused")
+	}
+	if o.RouterDown("a") {
+		t.Fatal("the same caller pressed it twice")
+	}
+	if o.RouterDown("b") {
+		t.Fatal("a colleague pressed it while the router was already down")
+	}
+	// Past the absence but still inside the wait: he is on the floor and it is
+	// still refused, which is the difference between the two timers.
+	advanceFleeing(t, o, int(RouterSeconds*SimHz)+2, "a", "b")
+	if snapOf(t, o, "a").Cl == nil {
+		t.Fatal("Claude should be back by now")
+	}
+	if o.RouterDown("b") {
+		t.Fatal("the wait ended with the absence — the two timers are the same one")
+	}
+	// And past the wait, anybody may take it down again.
+	advanceFleeing(t, o, int((RouterCooldown-RouterSeconds)*SimHz)+2, "a", "b")
+	if !o.RouterDown("b") {
+		t.Fatal("the router never came back up for the office")
+	}
+}
+
+func TestTheRouterIsRefusedForSomebodyWhoIsNotWorking(t *testing.T) {
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	if o.RouterDown("not-working") {
+		t.Fatal("somebody who is not on a shift used a verb")
+	}
+	if !o.RouterDown("a") {
+		t.Fatal("the legitimate press was refused")
+	}
+}
+
+func TestTheCallerSaysTheRouterFellAndNotTheOtherVerbsLine(t *testing.T) {
+	// TWO ANNOUNCEMENTS NOW, and which one is showing lives on the occupant. It
+	// was a hardcoded RedirectLine, which was right with one verb and would have
+	// put «ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО» over the head of somebody who pressed
+	// this one.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	if !o.RouterDown("a") {
+		t.Fatal("the router refused to fall")
+	}
+	advance(o, 1)
+	if got := snapOf(t, o, "a").P; got != RouterLine {
+		t.Fatalf("the caller is saying line %d, want the router's %d", got, RouterLine)
+	}
+	// AND EVERY SCREEN SEES IT, not just his own: a verb only its author can see
+	// is an unfinished verb.
+	peers := snapOf(t, o, "b").Pr
+	if len(peers) != 1 || peers[0].P != RouterLine {
+		t.Fatalf("a colleague was not told who did it: %+v", peers)
+	}
+}
+
+// advanceFleeing runs n ticks while keeping the named occupants in whichever
+// corners are furthest from the лысый — one corner each, so they do not stack.
+//
+// EVERY LONG TEST IN THIS FILE NEEDS SOMETHING LIKE THIS. He crosses the floor in
+// under four seconds, so anything measuring a twelve- or thirty-second timer ends
+// with its occupants caught and their snapshots gone — which reads as the feature
+// being broken rather than as the chase working. Fleeing is not what is under test
+// here; surviving long enough to read the timer is.
+func advanceFleeing(t *testing.T, o *Office, n int, accounts ...string) {
+	t.Helper()
+	corners := []Vec2{
+		{X: 1.2, Y: 1.2},
+		{X: OfficeW - 1.2, Y: 1.2},
+		{X: 1.2, Y: OfficeH - 1.2},
+		{X: OfficeW - 1.2, Y: OfficeH - 1.2},
+	}
+	for i := 0; i < n; i++ {
+		him := bossOf(o)
+		ranked := append([]Vec2(nil), corners...)
+		sort.Slice(ranked, func(a, b int) bool {
+			return math.Hypot(ranked[a].X-him.X, ranked[a].Y-him.Y) >
+				math.Hypot(ranked[b].X-him.X, ranked[b].Y-him.Y)
+		})
+		for j, acc := range accounts {
+			place(t, o, acc, ranked[j%len(ranked)])
+		}
+		advance(o, 1)
+	}
+}
+
+// claudeOf is where Claude is standing.
+func claudeOf(o *Office) Vec2 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.claude.Pos
 }

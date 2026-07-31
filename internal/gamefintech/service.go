@@ -508,16 +508,21 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 		s.hello(ctx, m)
 	case TypeDo:
 		verb, target := ParseVerb(payload)
-		if verb != VerbRedirect {
-			return
-		}
 		s.mu.Lock()
 		office := s.office
 		s.mu.Unlock()
-		if office != nil {
-			// The outcome is not replied to: it arrives as the next snapshot,
-			// which is what stops a client believing a verb the office refused.
+		if office == nil {
+			return
+		}
+		// The outcome is not replied to in either case: it arrives as the next
+		// snapshot, which is what stops a client believing a verb the office
+		// refused. An unknown verb is silence, like every other unreadable frame.
+		switch verb {
+		case VerbRedirect:
 			office.Redirect(m.AccountID, target)
+		case VerbRouter:
+			// No target: there is one Claude and the effect is the whole office's.
+			office.RouterDown(m.AccountID)
 		}
 	case TypeInput:
 		now := time.Now()

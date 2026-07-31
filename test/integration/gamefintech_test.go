@@ -696,6 +696,69 @@ func TestFintechWalkingOutWritesTheShift(t *testing.T) {
 	}
 }
 
+func TestFintechTheRouterTakesClaudeOffTheWire(t *testing.T) {
+	// «РОУТЕР УПАЛ», END TO END over a real socket. The unit tests drive the office
+	// directly; this is the only place that proves the frame actually arrives with
+	// Claude MISSING — which is the whole client contract, since an absent `cl` is
+	// what tells a browser to stop drawing him.
+	app, tick, _ := buildAppFintech(t, fintechVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cli := loginAs(t, srv.URL, "920020", "user")
+	clock := newFintechClock()
+
+	startShift(t, cli, srv.URL)
+	conn, _, err := dialFintech(t, srv.URL, cookieHeader(t, cli, srv.URL), gamefintech.Room)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	frames := readFrames(t, conn)
+
+	ctx := context.Background()
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"t":"fintech_hello"}`)); err != nil {
+		t.Fatal(err)
+	}
+	// He is on the floor to begin with, or the absence below proves nothing.
+	first := waitForFintechFrame(t, frames, tick, clock, "fintech_snap", 15*time.Second)
+	if _, ok := first["cl"]; !ok {
+		t.Fatalf("Claude was already missing before anything happened: %v", first)
+	}
+
+	// NO TARGET ON THE FRAME. There is one Claude and the effect is the whole
+	// office's, so the verb carries a name and nothing else.
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"t":"fintech_do","v":"router"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The office acknowledges by STATE rather than by a reply, like every verb
+	// here: `cl` stops being sent, `ca` says how long for, `rd` disables the button
+	// and the caller's own balloon says who did it.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("the office never took the router down")
+		}
+		f := waitForFintechFrame(t, frames, tick, clock, "fintech_snap", 15*time.Second)
+		ca, _ := f["ca"].(float64)
+		rd, _ := f["rd"].(float64)
+		p, _ := f["p"].(float64)
+		if ca <= 0 {
+			continue
+		}
+		if _, present := f["cl"]; present {
+			t.Fatalf("he is away for %v ms and still on the frame: %v", ca, f)
+		}
+		if rd <= 0 {
+			t.Fatalf("the router is down and the button has no cooldown: %v", f)
+		}
+		if int(p) != gamefintech.RouterLine {
+			t.Fatalf("the caller is saying line %v, want the router's %d", p, gamefintech.RouterLine)
+		}
+		break
+	}
+}
+
 func TestFintechAShortShiftIsNotWritten(t *testing.T) {
 	// The negative half of the test above. A shift is dropped rather than
 	// written below MinShiftSeconds, so opening the game, tapping НАЧАТЬ СМЕНУ

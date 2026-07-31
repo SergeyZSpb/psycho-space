@@ -243,8 +243,16 @@ func TestSnapshotStaysSmall(t *testing.T) {
 		// AND CLAUDE, who is ALWAYS on the floor — the one unconditional addition in
 		// this batch — with his cigarette lit and his widest line index, plus the
 		// slow he leaves behind on you and on both colleagues.
-		Cl: ClaudeFrame{X: 1560, Y: 2160, C: 255, P: len(ClaudeLines) - 1},
+		Cl: &ClaudeFrame{X: 1560, Y: 2160, C: 255, P: len(ClaudeLines) - 1},
 		Sl: 4000,
+		// AND THE ROUTER ON COOLDOWN, which is the state that costs bytes: `rd`
+		// rides every frame for thirty seconds after somebody presses the button,
+		// and by then Claude is back on the floor — so the worst case is the two of
+		// them together, which is exactly what this frame now describes. `ca` is
+		// deliberately NOT here: he cannot be away and present at once, and while he
+		// IS away the frame loses forty bytes of `cl` and gains twelve of `ca`, so
+		// that state is cheaper than this one rather than dearer.
+		Rd: 30000,
 		// A FULL OFFICE, which is the worst case and is now most of the frame.
 		// MaxOccupants is three, so two peers; twelve-character handles, both in
 		// the far corner, both on the widest line index in the pool.
@@ -338,7 +346,19 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// always carried: the widest line index grows a character the day a pool passes
 	// a hundred entries, and a bound with no slack fails on a commit that added a
 	// joke rather than a field.
-	const budget = 424
+	// 424 -> 436, for «РОУТЕР УПАЛ». `,"rd":30000` is twelve bytes and rides only
+	// while the router is on its way back up — thirty seconds after a press, and
+	// never at all in a shift where nobody uses it. It is the office's cooldown
+	// rather than the caller's, so every occupant is told the same number; that is
+	// the point of it, because two players cannot both be offered a press the
+	// office will refuse.
+	//
+	// THE ABSENCE ITSELF MAKES THE FRAME SMALLER, which is worth stating because it
+	// is the opposite of every raise above. While Claude is off the floor `cl` — the
+	// forty-byte unconditional field — is omitted entirely and replaced by
+	// `,"ca":12000`, so the twelve seconds after the button is pressed are the
+	// cheapest frames this game sends with a full office in it.
+	const budget = 436
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}

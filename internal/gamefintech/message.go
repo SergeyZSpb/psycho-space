@@ -106,7 +106,13 @@ type doFrame struct {
 }
 
 // Verb names, as they arrive on a doFrame.
-const VerbRedirect = "redirect"
+const (
+	VerbRedirect = "redirect"
+	// VerbRouter is «РОУТЕР УПАЛ» — it takes Claude Code off the floor. It carries
+	// no `tg`: there is nothing to aim, because there is exactly one Claude and
+	// the effect is the whole office's.
+	VerbRouter = "router"
+)
 
 // ParseVerb decodes a verb frame into its name and target. It is separate from
 // ParseInbound because a verb carries strings rather than commands, and giving
@@ -256,7 +262,26 @@ type Snapshot struct {
 	// the кальян's current spot, which only the server knows (see npc.go).
 	Np []NPCFrame `json:"np"`
 	// Cl is Claude Code — where he is, and how lit his cigarette is.
-	Cl ClaudeFrame `json:"cl"`
+	//
+	// A POINTER, AND OMITTED WHILE HE IS AWAY. It used to be the one field on this
+	// frame that was never omitted, on the reasoning that he is always on the floor
+	// and an absent field would mean he was not. «РОУТЕР УПАЛ» made that exactly
+	// what an absent field has to mean: he walks off to see about the router, and
+	// sending a stale position for twelve seconds would be forty bytes a frame per
+	// viewer to draw a man who is not there.
+	Cl *ClaudeFrame `json:"cl,omitempty"`
+	// Ca is how long until Claude is back, in milliseconds, and it is the field
+	// that says he is gone at all — `cl` being absent is the consequence, not the
+	// announcement. Omitted while he is on the floor, which is most of a shift.
+	Ca int `json:"ca,omitempty"`
+	// Rd is the router verb's cooldown, milliseconds, rounded up and omitted when
+	// it is ready — the same rule as `rc` and `dc`.
+	//
+	// IT IS THE OFFICE'S AND NOT YOURS, so every occupant is told the same number:
+	// the router can only fall once every RouterCooldown however many people are in
+	// the room. That is a fact everybody's button has to know, or two players would
+	// both offer a press and one of them would be silently refused.
+	Rd int `json:"rd,omitempty"`
 	// Sl is how long Claude Code's slow has left on YOU, in milliseconds.
 	//
 	// THE CLIENT PREDICTS FROM THIS ONE, unlike `iv`: it multiplies the walk, so a
@@ -309,10 +334,10 @@ type NPCFrame struct {
 
 // ClaudeFrame is Claude Code, quantised exactly as the лысый is.
 //
-// NEVER OMITTED, unlike the props: he is always on the floor, so an absent field
-// would mean «he is not there», which is never true. That costs the frame about
-// thirty bytes on every snapshot and it is the one unconditional addition in this
-// batch — stated rather than hidden, and measured in the budget test.
+// OMITTED ONLY WHILE HE IS AWAY, and an absent `cl` means exactly that — «he is
+// not there» — which is now a state the game has. It costs the frame about thirty
+// bytes on every snapshot he IS on the floor for, which is most of a shift;
+// stated rather than hidden, and measured in the budget test.
 type ClaudeFrame struct {
 	X int `json:"x"`
 	Y int `json:"y"`

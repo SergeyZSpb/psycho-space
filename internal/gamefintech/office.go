@@ -139,6 +139,14 @@ type Occupant struct {
 	// a player standing perfectly still sends nothing at all and is the most
 	// present person in the game.
 	LastSeen time.Time
+	// AnnounceLine is WHICH line the announcement above is showing — the redirect's
+	// or the router's.
+	//
+	// A FIELD RATHER THAN A HARDCODE, because there are two announcements now. It
+	// was `lineFor` returning RedirectLine outright, which was right while there was
+	// one verb and becomes a bug the moment there are two: taking the router down
+	// would have put «ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО» over your head.
+	AnnounceLine int
 	// RedirectCool is seconds until this occupant may point the bald man at
 	// somebody again, and Announce is seconds of still saying so.
 	//
@@ -229,6 +237,17 @@ type Office struct {
 	// nobody, because everybody left standing is behind a cloud. It decides which
 	// run he speaks from and is recomputed every tick, so it never goes stale.
 	lostTarget bool
+	// routerAway is how long Claude Code stays off the floor, in seconds, and
+	// routerCool is how long until the router may fall again.
+	//
+	// BOTH ON THE OFFICE AND NEITHER ON A PLAYER, and the cooldown's placement is
+	// the design rather than an implementation detail: anybody may press the
+	// button, and it then cannot be pressed by ANYBODY until the wait is over. A
+	// per-caller cooldown — the shape the redirect uses — would let a full floor of
+	// three keep Claude away almost permanently, which is a deletion rather than a
+	// reprieve.
+	routerAway float64
+	routerCool float64
 	// bottleGone is how long until another bottle appears, in seconds. Zero means
 	// one is standing there now, which is the common case and therefore the one
 	// that costs nothing on the wire.
@@ -690,6 +709,24 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		}
 	}
 
+	// THE ROUTER, which is the office's rather than anybody's. Ticked before Claude
+	// is stepped so an absence that ends on this tick puts him back on the floor on
+	// this tick, exactly as a round bought this tick slows the лысый on this tick.
+	if o.routerCool > 0 {
+		o.routerCool = math.Max(0, o.routerCool-dt)
+	}
+	if o.routerAway > 0 {
+		o.routerAway = math.Max(0, o.routerAway-dt)
+		if o.routerAway == 0 {
+			// HE COMES BACK THROUGH THE DOOR RATHER THAN REAPPEARING WHERE HE STOOD.
+			// A man who vanishes at your desk and rematerialises at your desk twelve
+			// seconds later has not been anywhere, and the reprieve would end with
+			// him already on top of you. His spawn is the far corner, which is the
+			// same head start a shift opens with.
+			o.claude = NewChaser()
+		}
+	}
+
 	// THE BOTTLE, and it is checked before he steps so a round bought this tick
 	// slows him on this tick rather than the next. Whoever reaches it gets it —
 	// in ascending account order, like every other decision here, so two people
@@ -752,14 +789,23 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// invincibility. He is deliberately NOT redirectable: the verb is «уточните у
 	// другого», which is a thing you say to a manager and not to a colleague with
 	// an opinion about your tooling. Same elapsed, so the two of them ramp together.
-	o.claude = StepChaser(Desks, o.claude, targets, dt, elapsed)
+	//
+	// UNLESS THE ROUTER IS DOWN, in which case he is not on the floor at all: not
+	// stepped, not separated, not tested against anybody, and not on the wire. He
+	// keeps his last position and it is never sent, because he is about to be put
+	// back at his spawn when the absence ends.
+	if o.routerAway <= 0 {
+		o.claude = StepChaser(Desks, o.claude, targets, dt, elapsed)
+	}
 
 	// AND THEN HE STEPS ASIDE IF HE HAS WALKED INTO THE ЛЫСЫЙ. The two of them
 	// share a pursuit rule, a navigator and a speed, so their paths do not cross —
 	// they MERGE, and the floor shows one figure where there are two. Claude is the
 	// one who gives way, so the лысый's position is untouched and nothing about the
 	// chase, the catch or its rewind moves. See Separate.
-	o.claude = Separate(o.boss.Pos, o.claude, Desks)
+	if o.routerAway <= 0 {
+		o.claude = Separate(o.boss.Pos, o.claude, Desks)
+	}
 
 	// AND THE TWO WHO ARE NOT PLAYING. Stepped after both men and against neither of
 	// them: they are not in `targets`, so nobody walks at them and they walk at
@@ -783,13 +829,15 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// alone: he is drawn from the same interpolation buffer, so landing on
 	// somebody the player watched him miss is the identical complaint with a
 	// smaller consequence.
-	for _, k := range keys {
-		occ := o.occupants[k]
-		if !occ.State.Alive || occ.Invincible > 0 {
-			continue
-		}
-		if Landed(o.seenBy(occ).claude, occ.State.Pos) {
-			occ.State.SlowLeft = SlowSeconds
+	if o.routerAway <= 0 {
+		for _, k := range keys {
+			occ := o.occupants[k]
+			if !occ.State.Alive || occ.Invincible > 0 {
+				continue
+			}
+			if Landed(o.seenBy(occ).claude, occ.State.Pos) {
+				occ.State.SlowLeft = SlowSeconds
+			}
 		}
 	}
 
@@ -856,12 +904,13 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 		Bs: o.bottleSpot,
 		Iv: msUp(occ.Invincible),
 		Sl: msUp(occ.State.SlowLeft),
-		Cl: ClaudeFrame{
-			X: cm(o.claude.Pos.X),
-			Y: cm(o.claude.Pos.Y),
-			C: grinByte(o.claude.Cig),
-			P: ClaudeSays(o.tick),
-		},
+		// CLAUDE, OR NOTHING AT ALL. While the router is down he is off the floor,
+		// so the frame says so by leaving him out rather than by sending a stale
+		// position with a flag beside it — `ca` is what carries how long he is gone
+		// for, and it is the only field either of them costs in that state.
+		Cl: o.claudeFrame(),
+		Ca: msUp(o.routerAway),
+		Rd: msUp(o.routerCool),
 		Hk: msUp(o.hookahGone),
 		Hs: o.hookahSpot,
 		Np: o.npcsFor(),
@@ -874,15 +923,31 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 	return raw, true
 }
 
+// claudeFrame is Claude Code as the wire carries him, or nil while the router is
+// down and he is not on the floor. Called with the lock held.
+func (o *Office) claudeFrame() *ClaudeFrame {
+	if o.routerAway > 0 {
+		return nil
+	}
+	return &ClaudeFrame{
+		X: cm(o.claude.Pos.X),
+		Y: cm(o.claude.Pos.Y),
+		C: grinByte(o.claude.Cig),
+		P: ClaudeSays(o.tick),
+	}
+}
+
 // lineFor is which line is over an occupant's head.
 //
-// The announcement OUTRANKS the rotation: for RedirectSaySeconds after pointing
-// the bald man at somebody, that is what you are saying, because the whole point
-// of the verb is that your colleague can see who did it to him. Everything else
+// The announcement OUTRANKS the rotation: for a few seconds after a verb, that is
+// what you are saying, because the whole point of a verb is that your colleagues
+// can see who did it. WHICH announcement is on the occupant — there are two of
+// them now, and a hardcoded RedirectLine here would have put «ЭТО НУЖНО УТОЧНИТЬ
+// У ДРУГОГО» over the head of somebody who took the router down. Everything else
 // is the ordinary two-second rotation. Called with the lock held.
 func (o *Office) lineFor(occ *Occupant) int {
 	if occ.Announce > 0 {
-		return RedirectLine
+		return occ.AnnounceLine
 	}
 	return PlayerLine(occ.State, occ.Persona, o.tick)
 }
@@ -970,10 +1035,38 @@ func (o *Office) Redirect(accountID, targetHandle string) bool {
 		}
 		o.redirectTo, o.redirectLeft = k, RedirectSeconds
 		caller.RedirectCool = RedirectCooldown
-		caller.Announce = RedirectSaySeconds
+		caller.Announce, caller.AnnounceLine = RedirectSaySeconds, RedirectLine
 		return true
 	}
 	return false
+}
+
+// RouterDown takes Claude Code off the floor for RouterSeconds.
+//
+// Returns whether it fired, and is refused — silently, like every other bad frame
+// — when the caller is not working, when the router is already down, or when it
+// has not come back up yet. A refusal is not an error: the client disables the
+// button from the cooldown the snapshot carries, so a refused verb means the two
+// disagreed for a frame.
+//
+// THE COOLDOWN IS THE OFFICE'S, NOT THE CALLER'S, which is what «anybody can
+// press it» actually costs. Three occupants each holding their own thirty-second
+// timer would cover thirty-six seconds of absence in every thirty, and Claude
+// would simply never be on the floor again.
+func (o *Office) RouterDown(accountID string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	caller, ok := o.occupants[accountID]
+	if !ok || !caller.State.Alive {
+		return false
+	}
+	if o.routerCool > 0 || o.routerAway > 0 {
+		return false
+	}
+	o.routerAway = RouterSeconds
+	o.routerCool = RouterCooldown
+	caller.Announce, caller.AnnounceLine = RouterSaySeconds, RouterLine
+	return true
 }
 
 // bossState is what has most recently happened to him. Called with the lock held.

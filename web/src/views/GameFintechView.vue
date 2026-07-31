@@ -237,7 +237,17 @@
                  logic behind either: he is scenery, and the picture is the point. -->
             <span class="fintech-npc-pipe" />
           </span>
-          <span ref="claudeEl" class="fintech-claude" data-testid="fintech-claude" aria-hidden="true">
+          <!-- GONE WHILE THE ROUTER IS DOWN, and gone from the DOM rather than
+               hidden: the frame stops carrying him entirely (`cl` is omitted, `ca`
+               says how long for), so there is no position to draw and an element
+               left behind would sit wherever he was standing when he walked off. -->
+          <span
+            v-if="claudeAwayMs === 0"
+            ref="claudeEl"
+            class="fintech-claude"
+            data-testid="fintech-claude"
+            aria-hidden="true"
+          >
             <span v-if="claudeSays" class="fintech-say" data-testid="fintech-claude-say">{{
               claudeSays
             }}</span>
@@ -369,6 +379,26 @@
             }}</span>
           </button>
         </div>
+
+        <!-- «РОУТЕР УПАЛ», beside the dash because it is the same kind of thing:
+             one thumb, one press, a timer. It is disabled while the router is on
+             its way back up AND while Claude is already away — pressing it then
+             would be a press the office refuses, and a button that looks live and
+             does nothing is worse than one that is visibly spent.
+             The label and both timers come from the catalogue, so retuning them
+             needs no client deploy. -->
+        <button
+          v-if="config?.router"
+          class="fintech-router"
+          type="button"
+          data-testid="fintech-router"
+          :disabled="routerMs > 0 || claudeAwayMs > 0"
+          :aria-label="config.router.label"
+          @pointerdown.prevent="onRouter"
+          @click.prevent
+        >
+          {{ routerMs > 0 ? formatSeconds(routerMs) : config.router.label }}
+        </button>
 
         <button
           class="fintech-dash"
@@ -676,6 +706,17 @@ function onMeFaceError(): void {
 
 /** The redirect verb's cooldown, milliseconds, straight off the snapshot. */
 const redirectMs = ref(0);
+/**
+ * The router verb's cooldown and how long Claude is away, both straight off the
+ * snapshot in milliseconds.
+ *
+ * The cooldown is the OFFICE'S — everybody is told the same number, because the
+ * router can only fall once every wait however many people are in the room, and
+ * two players both being offered a press the office would refuse is exactly the
+ * disagreement a server-owned cooldown exists to prevent.
+ */
+const routerMs = ref(0);
+const claudeAwayMs = ref(0);
 
 /** How long until another bottle stands in the office. Zero means one is there. */
 const bottleMs = ref(0);
@@ -710,7 +751,12 @@ const slowMs = ref(0);
 
 /** What is currently true of you, longest first. Absent when nothing is running. */
 const buffs = computed(() =>
-  buffsFor({ cloudMs: cloudMs.value, drunkMs: drunkMs.value, slowMs: slowMs.value }),
+  buffsFor({
+    cloudMs: cloudMs.value,
+    drunkMs: drunkMs.value,
+    slowMs: slowMs.value,
+    awayMs: claudeAwayMs.value,
+  }),
 );
 
 /**
@@ -765,6 +811,18 @@ function sameFaces(a: readonly PeerShown[], b: readonly PeerShown[]): boolean {
  * The cooldown is checked here only to keep the button honest; the office checks
  * it too, and the office is the one that decides.
  */
+/**
+ * Takes the router down, which takes Claude off the floor.
+ *
+ * No target: there is one Claude and the effect is the whole office's. Like every
+ * verb here it is not answered — the outcome arrives as the next snapshot, which
+ * is what stops this client believing something the office refused.
+ */
+function onRouter(): void {
+  if (!shift || routerMs.value > 0 || claudeAwayMs.value > 0) return;
+  realtimeClient(shift.room).send({ t: 'fintech_do', v: 'router' });
+}
+
 function onRedirect(peerID: string): void {
   if (!shift || redirectMs.value > 0) return;
   realtimeClient(shift.room).send({ t: 'fintech_do', v: 'redirect', tg: peerID });
@@ -813,6 +871,12 @@ function bossPlace(): { u: number; v: number } | null {
   return toPlane(bossAt.x, bossAt.y, constants.officeW, constants.officeH);
 }
 
+/** Where Claude last was, which is where he walked off from. */
+function claudePlace(): { u: number; v: number } | null {
+  if (!claudeAt || !constants) return null;
+  return toPlane(claudeAt.x, claudeAt.y, constants.officeW, constants.officeH);
+}
+
 /**
  * Which line index is «ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО».
  *
@@ -829,6 +893,14 @@ const redirectLine = computed(() => {
   if (!say || !lines) return -1;
   return lines.indexOf(say);
 });
+
+// THERE IS NO `routerLine` HERE, unlike the redirect's, and the asymmetry is
+// deliberate. The redirect has to be derived from the balloon index because
+// nothing else on the frame says it happened. The router does say so — `ca` is on
+// every occupant's frame, because the effect is the office's — so the mark is
+// taken off that edge instead, and lands where Claude was standing rather than on
+// whoever pressed the button. Who pressed it is the balloon's job, and «РОУТЕР
+// УПАЛ» is already over their head on every screen.
 
 const pop = ref<{ key: number; kind: string; u: number; v: number } | null>(null);
 let popKey = 0;
@@ -1193,6 +1265,8 @@ function teardownPlay(): void {
   brokenFaces.value = new Set();
   meFaceBroken.value = false;
   redirectMs.value = 0;
+  routerMs.value = 0;
+  claudeAwayMs.value = 0;
   bottleMs.value = 0;
   hookahMs.value = 0;
   cloudMs.value = 0;
@@ -1602,9 +1676,31 @@ function applySnapshot(frame: RealtimeFrame): void {
     bossInterp?.push({ x: bossAt.x, y: bossAt.y, grin }, seenTick, performance.now());
   }
 
+  // THE ROUTER, read before Claude because it decides whether there is a Claude to
+  // read. `ca` is how long he is away and `rd` is when the button comes back —
+  // both omitted in the resting state, so absent means zero and never "unchanged".
+  const wasAway = claudeAwayMs.value;
+  const ca = num(frame.ca);
+  claudeAwayMs.value = ca;
+  routerMs.value = num(frame.rd);
+  // MARKED WHERE HE WAS STANDING when he walked off, on the EDGE — the office
+  // getting quieter is a thing that HAPPENED, and the only place it happened is
+  // wherever the man who is now missing used to be. Compared before the buffer is
+  // dropped below, because that is what still knows where he was.
+  if (ca > 0 && wasAway === 0) markAt('router', claudePlace());
+  if (ca > 0) {
+    // NOTHING BUFFERED WHILE HE IS GONE. The interpolator eases between the last
+    // two samples it holds, so keeping them would have him drifting on across a
+    // floor he is not on — and when he returns it is at his spawn, which is not a
+    // step from wherever he vanished but a jump the buffer must not smooth.
+    claudeInterp = createInterpolator(renderDelayMs(), tickMs());
+    claudeAt = null;
+  }
+
   // CLAUDE, buffered exactly as the лысый is: not predicted, because his intent is
   // no more ours to guess than the other man's, so his position arrives ten times a
-  // second and is eased across the gap between two frames.
+  // second and is eased across the gap between two frames. Absent while the router
+  // is down, which is the one state where `cl` is not on the frame at all.
   const cl = frame.cl as Record<string, number> | undefined;
   if (cl) {
     claudeLine.value = num(cl.p);
@@ -3214,6 +3310,12 @@ function onDash(): void {
 .fintech-stick {
   position: relative;
   pointer-events: auto;
+  /* NEITHER THUMB TARGET MAY SHRINK. They are sized to a thumb, and the flex row
+     they share now has a third control in it — a default `flex-shrink: 1` let the
+     router pill take the stick's own padding back off the left edge, which put the
+     half of it a thumb reaches first back inside the phone's edge-swipe strip.
+     The pill is the thing that gives way instead; see `.fintech-router`. */
+  flex: 0 0 auto;
   width: 104px;
   height: 104px;
   border-radius: 50%;
@@ -3285,8 +3387,46 @@ function onDash(): void {
   white-space: nowrap;
 }
 
+/* «РОУТЕР УПАЛ» — beside the dash, because it is used in the same breath as one
+   and by the same thumb. A pill rather than a second circle: two 84 px discs side
+   by side is most of a 360 px phone's width, and a mis-tap between them costs the
+   dodge. It is the coolest colour on the plane on purpose — nothing about it is
+   urgent, and the eye should find РЫВОК first.
+
+   It carries its own label, so the button says what it does and the balloon over
+   your head says the same words. Both come from the catalogue. */
+.fintech-router {
+  pointer-events: auto;
+  align-self: flex-end;
+  /* THE ONE CONTROL IN THIS ROW THAT GIVES WAY. The stick and the dash are sized
+     to a thumb and must not shrink; this is a label, so it wraps to a second line
+     on a narrow phone instead of taking room off either of them. */
+  flex: 0 1 auto;
+  min-width: 0;
+  /* ≥ 44 px, like every control on this plane. */
+  min-height: 44px;
+  max-width: 26cqw;
+  padding: 0 12px;
+  border-radius: 22px;
+  border: 2px solid rgba(120, 170, 210, 0.45);
+  background: rgba(30, 46, 60, 0.72);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  touch-action: manipulation;
+}
+
+.fintech-router:disabled {
+  opacity: 0.4;
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .fintech-dash {
   pointer-events: auto;
+  flex: 0 0 auto;
   width: 84px;
   height: 84px;
   border-radius: 50%;
@@ -3335,6 +3475,13 @@ function onDash(): void {
 }
 .fintech-pop[data-kind='redirect'] {
   --pop: rgba(240, 180, 41, 0.95);
+}
+
+/* The router falling, marked where Claude was standing when he walked off — a
+   cool blue, so it is told apart from the redirect's amber when both can land in
+   the same second. */
+.fintech-pop[data-kind='router'] {
+  --pop: rgba(122, 190, 235, 0.95);
 }
 
 @keyframes fintech-pop {

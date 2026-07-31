@@ -242,6 +242,31 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
     });
   }
 
+  // «РОУТЕР УПАЛ» — the one verb anybody can press, derived from what the server
+  // publishes so both timers stay true when either is retuned.
+  const router = config.router;
+  if (router && has(router.seconds_ms) && has(router.cooldown_ms)) {
+    blocks.push({
+      title: router.label,
+      lines: [
+        {
+          label: '📴 убрать клода',
+          text:
+            `Жми кнопку у рывка — роутер падает, и Клод уходит разбираться на ` +
+            `${decimal(router.seconds_ms / 1000)} с. Никого не догоняет и никого не тормозит.`,
+        },
+        {
+          label: '⏳ один на всех',
+          text:
+            `Нажать может кто угодно, но следующий раз — только через ` +
+            `${decimal(router.cooldown_ms / 1000)} с, и это таймер офиса, а не твой. ` +
+            `Возвращается Клод от двери.`,
+        },
+        { label: '🗣 и все услышат', text: `Над тобой загорится «${router.say}».` },
+      ],
+    });
+  }
+
   // «Кальян» — the same shape as the bottle's block below and derived the same
   // way, so retuning the cloud or the wait updates the screen by itself.
   const hookah = config.hookah;
@@ -475,6 +500,7 @@ export function buffsFor(frame: {
   cloudMs?: number;
   drunkMs?: number;
   slowMs?: number;
+  awayMs?: number;
 }): BuffShown[] {
   const out: BuffShown[] = [];
   const secs = (ms: number) => Math.ceil(ms / 1000);
@@ -485,6 +511,14 @@ export function buffsFor(frame: {
     // The one entry that is working AGAINST you, which is what `bad` is for — the
     // row is meant to be scanned rather than read.
     out.push({ key: 'slow', label: '🐌 клод догнал', secs: secs(frame.slowMs!), bad: true });
+  }
+  if ((frame.awayMs ?? 0) > 0) {
+    // CLAUDE BEING OFF THE FLOOR IS THE OFFICE'S STATE, exactly as the лысый's
+    // drink is, and it belongs in this row for the same reason: it has a duration,
+    // it changes what is worth doing, and the figure that would otherwise carry it
+    // is the one thing that is not there to carry anything. Not `bad` — a missing
+    // Claude is the best news this row can hold.
+    out.push({ key: 'away', label: '📴 клод ушёл', secs: secs(frame.awayMs!) });
   }
   if ((frame.drunkMs ?? 0) > 0) {
     // HIS state rather than yours, and it belongs here anyway: it is a thing that

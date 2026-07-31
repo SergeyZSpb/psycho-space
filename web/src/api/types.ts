@@ -964,6 +964,23 @@ export interface FintechConfig {
     seconds_ms: number;
     cooldown_ms: number;
   };
+  /**
+   * «РОУТЕР УПАЛ» — the verb that takes Claude Code off the floor.
+   *
+   * The same shape as `redirect` and deliberately a separate key rather than a
+   * list of verbs: there are two, they are drawn as two different controls, and a
+   * list would still need the client to know which is which.
+   *
+   * `seconds_ms` is how long he is away; `cooldown_ms` is the wait before the
+   * router can fall again, and it belongs to the OFFICE rather than to the caller
+   * — anybody may press it, and nobody may press it again until the wait is over.
+   */
+  router?: {
+    label: string;
+    say: string;
+    seconds_ms: number;
+    cooldown_ms: number;
+  };
   /** «Набухать лысого» — where the bottle stands and what drinking it does. */
   bottle?: {
     /** Every place one can appear; a frame names which by index. */

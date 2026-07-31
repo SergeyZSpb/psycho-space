@@ -341,3 +341,56 @@ describe('the tempo ramp', () => {
     expect(text).toContain('разгоняется');
   });
 });
+
+describe('«РОУТЕР УПАЛ»', () => {
+  const router = {
+    label: 'РОУТЕР УПАЛ',
+    say: 'РОУТЕР УПАЛ',
+    seconds_ms: 12_000,
+    cooldown_ms: 30_000,
+  };
+
+  it('states both timers and whose timer the cooldown is', () => {
+    // The cooldown belonging to the OFFICE rather than to the caller is the whole
+    // design of the verb — anybody may press it and nobody may press it again —
+    // so a cheatsheet that only said «перезарядка 30 с» would describe the
+    // redirect instead. Both numbers are derived, so retuning either rewrites this.
+    const text = allText({ ...config, router: { ...router, seconds_ms: 9000, cooldown_ms: 45_000 } });
+    expect(text).toContain('9 с');
+    expect(text).toContain('45 с');
+    expect(text).toContain('таймер офиса');
+    expect(text).toContain('кто угодно');
+  });
+
+  it('quotes the line that appears over your head, from the catalogue', () => {
+    const text = allText({ ...config, router: { ...router, say: 'ИНТЕРНЕТА НЕТ' } });
+    expect(text).toContain('ИНТЕРНЕТА НЕТ');
+  });
+
+  it('says nothing at all when the server does not serve the verb', () => {
+    expect(buildRules(config).some((b) => b.title === 'РОУТЕР УПАЛ')).toBe(false);
+  });
+});
+
+describe('Claude being away in the buff row', () => {
+  it('is shown as the office state it is, with how long is left', () => {
+    // The one buff whose owner is not on the plane to carry it: the figure that
+    // would show it is the thing that is missing. Not `bad` — a missing Claude is
+    // the best news this row can hold.
+    const shown = buffsFor({ awayMs: 7400 });
+    expect(shown).toHaveLength(1);
+    expect(shown[0].key).toBe('away');
+    expect(shown[0].secs).toBe(8);
+    expect(shown[0].bad).toBeUndefined();
+  });
+
+  it('sorts with everything else by how long is left', () => {
+    const shown = buffsFor({ awayMs: 11_000, cloudMs: 3000, slowMs: 1000 });
+    expect(shown.map((b) => b.key)).toEqual(['away', 'cloud', 'slow']);
+  });
+
+  it('is absent when he is on the floor, which is most of a shift', () => {
+    expect(buffsFor({}).some((b) => b.key === 'away')).toBe(false);
+    expect(buffsFor({ awayMs: 0 }).some((b) => b.key === 'away')).toBe(false);
+  });
+});

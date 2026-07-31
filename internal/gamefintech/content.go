@@ -478,6 +478,19 @@ var redirectLines = []string{
 	"ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО",
 }
 
+// routerLines is what you say when you take the router down, and it is a run of
+// its own for the redirect's reason: everybody in the office is about to notice
+// that Claude has walked off the floor, and the balloon is what tells them whose
+// doing it was.
+//
+// APPENDED AFTER personaIntros, at the very end of the flat pool, because every
+// base index in this file is the written-out sum of the runs before it — a middle
+// insert is the highest-risk edit available here and the tests cannot catch it,
+// since they recompute their bases with the same expression the code uses.
+var routerLines = []string{
+	"РОУТЕР УПАЛ",
+}
+
 // BottleSpots is everywhere a bottle can appear.
 //
 // A LIST IN THE CATALOGUE RATHER THAN A DRAWN COORDINATE, and that is what keeps
@@ -563,7 +576,7 @@ var personaIntros = []string{
 	"Я ДАША",
 }
 
-var PlayerLines = slices.Concat(stillLines, movingLines, dashingLines, redirectLines, personaIntros)
+var PlayerLines = slices.Concat(stillLines, movingLines, dashingLines, redirectLines, personaIntros, routerLines)
 
 // personaIntroBase is where personaIntros starts in the flat pool.
 var personaIntroBase = len(stillLines) + len(movingLines) + len(dashingLines) + len(redirectLines)
@@ -586,6 +599,12 @@ func IntroLineFor(persona int) int {
 // player — putting it on Player would force a golden-vector regeneration and a
 // client change for a value Step never reads.
 var RedirectLine = len(stillLines) + len(movingLines) + len(dashingLines)
+
+// RouterLine is the index of «РОУТЕР УПАЛ» in the flat pool, picked by the office
+// for exactly RedirectLine's reason: taking the router down is a fact about the
+// room rather than about the simulated player, and `Step` never reads it.
+var RouterLine = len(stillLines) + len(movingLines) + len(dashingLines) +
+	len(redirectLines) + len(personaIntros)
 
 // BossSlot is how long he holds one of his sentences before moving to the next.
 //
@@ -627,6 +646,42 @@ const (
 	// It is deliberately longer than one balloon slot: the whole point of the
 	// verb is that your colleague sees who did it to him.
 	RedirectSaySeconds = 3.0
+)
+
+// The router verb — «РОУТЕР УПАЛ».
+//
+// The second thing a player can DO rather than dodge, and the first that acts on
+// Claude Code: the router goes down, Claude walks off the floor to see about it,
+// and for a while nobody is being slowed. It is the лысый's bottle pointed at the
+// other man, with two differences that are the whole design of it.
+//
+// IT COSTS NO WALK. The bottle and the кальян both charge you the thing this game
+// is actually about — leaving where you were standing, and therefore the streak.
+// This one is a button, so its only price is the timer; that is affordable
+// precisely because Claude cannot end a shift. Take the router down while the
+// лысый is three metres away and you have wasted a thumb on the wrong man.
+//
+// AND ITS COOLDOWN BELONGS TO THE ROUTER RATHER THAN TO THE CALLER. Anybody in
+// the office may press it, and it then cannot be pressed again by anyone until
+// the timer runs out. Per-caller — the shape the redirect uses — would let a full
+// floor of three keep Claude off the field almost permanently, which is not a
+// reprieve but a deletion: 3 × 12 s of absence against a 30 s wait.
+const (
+	// RouterSeconds is how long Claude Code is away. Longer than the кальян's
+	// cloud, because unlike the cloud it is the whole office's and unlike the
+	// bottle it does not merely slow the man down — it removes him — so the wait
+	// below is what pays for it.
+	RouterSeconds = 12.0
+	// RouterCooldown is the wait before the router can fall again, OFFICE-WIDE
+	// and owner-directed at thirty seconds. Two and a half times the absence, so
+	// Claude is on the floor for most of any shift and the verb stays something
+	// you spend at a moment rather than something you hold down.
+	RouterCooldown = 30.0
+	// RouterSaySeconds is how long «РОУТЕР УПАЛ» stays over your head — the
+	// redirect's number, for the redirect's reason: a colleague has to be able to
+	// see whose doing it was, and one balloon slot is not long enough to notice
+	// while somebody is walking at you.
+	RouterSaySeconds = 3.0
 )
 
 // «Набухать лысого» — the bottle, and the one mechanic in this game that acts on
@@ -1081,13 +1136,18 @@ type Config struct {
 	ClaudeLines []string     `json:"claude_lines"`
 	Claude      ClaudeConfig `json:"claude"`
 	// NPCs is the cast that is not playing: who they are, and what they say.
-	NPCs         []NPCKind    `json:"npcs"`
-	PlayerLines  []string     `json:"player_lines"`
-	MaxOccupants int          `json:"max_occupants"`
-	Redirect     VerbConfig   `json:"redirect"`
-	Bottle       BottleConfig `json:"bottle"`
-	Hookah       HookahConfig `json:"hookah"`
-	Tempo        TempoConfig  `json:"tempo"`
+	NPCs         []NPCKind  `json:"npcs"`
+	PlayerLines  []string   `json:"player_lines"`
+	MaxOccupants int        `json:"max_occupants"`
+	Redirect     VerbConfig `json:"redirect"`
+	// Router is «РОУТЕР УПАЛ», the verb that takes Claude Code off the floor. A
+	// second VerbConfig rather than a list of verbs: there are two, they are drawn
+	// as two different controls, and a list would be an abstraction with no second
+	// use — the client would still have to know which is which to draw it.
+	Router VerbConfig   `json:"router"`
+	Bottle BottleConfig `json:"bottle"`
+	Hookah HookahConfig `json:"hookah"`
+	Tempo  TempoConfig  `json:"tempo"`
 }
 
 // TempoConfig is the ramp: how often the office speeds up, and by how much.
@@ -1291,6 +1351,15 @@ func BuildConfig() Config {
 			Say:        redirectLines[0],
 			SecondsMs:  int(RedirectSeconds * 1000),
 			CooldownMs: int(RedirectCooldown * 1000),
+		},
+		Router: VerbConfig{
+			// The label IS the line here, unlike the redirect's, because there is
+			// nothing to aim: the button says what happens and the balloon says the
+			// same words, so a player pressing it once knows what they did.
+			Label:      routerLines[0],
+			Say:        routerLines[0],
+			SecondsMs:  int(RouterSeconds * 1000),
+			CooldownMs: int(RouterCooldown * 1000),
 		},
 	}
 }

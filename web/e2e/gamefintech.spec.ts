@@ -41,6 +41,15 @@ const LONG_SAY = 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО КОЛЛ�
  */
 const REDIRECT_SAY = 'ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО, СТЕНД';
 
+/**
+ * The router announcement, as the catalogue publishes it in TWO places — the
+ * verb's `say` and a line of `player_lines`. Unlike the redirect the client does
+ * NOT join them by string (the mark comes off the `ca` edge instead), but the
+ * stub still has to agree with itself the way the server does, or the balloon
+ * assertion below would be checking a line the catalogue never served.
+ */
+const ROUTER_SAY = 'РОУТЕР УПАЛ, СТЕНД';
+
 const CONFIG = {
   // `karen` rather than `fintech`, mirroring production: a game_key VALUE is data
   // and did not move when the game was renamed (migrations/014). Nothing in the
@@ -82,7 +91,14 @@ const CONFIG = {
   // Index 2 carries the name placeholder the client substitutes — appended rather
   // than replacing a line, so the assertions about index 1 keep meaning what they did.
   boss_lines: ['Я ЛЫСЫЙ, СТЕНД', 'А ГДЕ, СТЕНД?', 'ЧЕ ЗА ХЕРЬ, ГДЕ {} — СТЕНД'],
-  player_lines: ['Я КАРЕН, СТЕНД', 'ВОДЫ, СТЕНД', 'НА ВСТРЕЧУ, СТЕНД', LONG_SAY, REDIRECT_SAY],
+  player_lines: [
+    'Я КАРЕН, СТЕНД',
+    'ВОДЫ, СТЕНД',
+    'НА ВСТРЕЧУ, СТЕНД',
+    LONG_SAY,
+    REDIRECT_SAY,
+    ROUTER_SAY,
+  ],
   // Marked like everything else here, so a client that hardcoded the cast instead
   // of reading it cannot pass the assertions below.
   personas: ['КАРЕН-СТЕНД', 'АНДРЮХА-СТЕНД', 'САНЯ-СТЕНД', 'ДАША-СТЕНД'],
@@ -128,6 +144,15 @@ const CONFIG = {
   // 10, so a HUD or a cheatsheet that hardcoded the ramp cannot pass below. At
   // 20 Hz that is 500 ticks a level, which is what the tempo assertions drive.
   tempo: { every_ms: 25000, step_pct: 15 },
+  // «РОУТЕР УПАЛ», marked like everything else in this stub — 9 s and 45 s are not
+  // production's 12 and 30, and the label carries the СТЕНД marker so a client
+  // that hardcoded the button's words cannot pass.
+  router: {
+    label: 'РОУТЕР УПАЛ, СТЕНД',
+    say: ROUTER_SAY,
+    seconds_ms: 9000,
+    cooldown_ms: 45000,
+  },
 };
 
 const SHIFT = { shift_id: 'shift-e2e', room: 'fintech', persona: 2 };
@@ -268,6 +293,9 @@ async function stubSocket(page: Page): Promise<{
         st: 4500,
         dc: 1800,
         b: { x: 300, y: 1500, g: 40 },
+        // Claude, as a nested object — a test that wants him GONE passes
+        // `cl: undefined`, which is exactly what the office does while the router
+        // is down.
         cl: { x: 400, y: 1400, c: 30 },
         np: [
           { x: 200, y: 300 },
@@ -1732,6 +1760,92 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — the кальян and th
     // The stub's numbers, not production's — 11,5 s and 19,5 s.
     await expect(rules).toContainText('11,5 с');
     await expect(rules).toContainText('19,5 с');
+  });
+});
+
+test.describe('«СИМУЛЯТОР ФИНТЕХА» — «РОУТЕР УПАЛ»', () => {
+  test('the button is beside the dash and says what the catalogue says', async ({ page }) => {
+    // It is a real tap target on a phone like every other control here, and its
+    // words come from the served verb rather than from this client — the stub's
+    // label carries the СТЕНД marker, so a hardcoded button fails.
+    await enterOffice(page);
+    const router = page.getByTestId('fintech-router');
+    await expect(router).toBeVisible();
+    await expect(router).toContainText(CONFIG.router.label);
+    await expect(router).toBeEnabled();
+
+    const [box, dash] = await Promise.all([
+      router.boundingBox(),
+      page.getByTestId('fintech-dash').boundingBox(),
+    ]);
+    expect(box!.height, 'a control under 44 px is not a tap target').toBeGreaterThanOrEqual(44);
+    // BESIDE THE DASH, which is the point of where it lives: the same thumb
+    // reaches both, and it is used in the same breath as a dodge.
+    expect(Math.abs(box!.y + box!.height - (dash!.y + dash!.height))).toBeLessThan(60);
+    expect(box!.x).toBeLessThan(dash!.x);
+  });
+
+  test('pressing it sends the verb, with no target because there is nothing to aim', async ({
+    page,
+  }) => {
+    const socket = await enterOffice(page);
+    await page.getByTestId('fintech-router').click();
+    await expect
+      .poll(() => socket.sent().filter((m) => m.includes('"v":"router"')).length)
+      .toBeGreaterThan(0);
+    const sent = JSON.parse(socket.sent().find((m) => m.includes('"v":"router"'))!);
+    expect(sent.t).toBe('fintech_do');
+    expect(sent.v).toBe('router');
+    expect(sent.tg, 'the router verb carries a target it has no use for').toBeUndefined();
+  });
+
+  test('Claude leaves the floor entirely while the router is down', async ({ page }) => {
+    // AN ABSENT `cl` IS WHAT SAYS HE IS GONE — the office stops sending him rather
+    // than sending a stale position with a flag beside it — and `ca` is how long
+    // for. So the figure has to leave the DOM, not merely be moved somewhere.
+    const socket = await enterOffice(page);
+    await socket.snapshot();
+    await expect(page.getByTestId('fintech-claude')).toHaveCount(1);
+
+    await socket.snapshot({ cl: undefined, ca: 9000, rd: 45000 });
+    await expect(page.getByTestId('fintech-claude')).toHaveCount(0);
+    // And the row says how long, because a state with a duration you cannot read
+    // is a state you cannot decide against.
+    await expect(page.getByTestId('fintech-hud-buffs')).toContainText('9');
+    await expect(page.getByTestId('fintech-hud-buffs')).toContainText('клод');
+    // The button is spent, and visibly so.
+    await expect(page.getByTestId('fintech-router')).toBeDisabled();
+
+    // And he is back the moment the office sends him again.
+    await socket.snapshot({ cl: { x: 400, y: 1400, c: 30 }, rd: 30000 });
+    await expect(page.getByTestId('fintech-claude')).toHaveCount(1);
+    // Still on cooldown, though — the wait outlasts the absence on purpose.
+    await expect(page.getByTestId('fintech-router')).toBeDisabled();
+
+    await socket.snapshot({ cl: { x: 400, y: 1400, c: 30 } });
+    await expect(page.getByTestId('fintech-router')).toBeEnabled();
+  });
+
+  test('the caller says so, and every screen reads it off the same pool', async ({ page }) => {
+    // WHO DID IT is the balloon's job and it rides `p` for you and `pr[].p` for a
+    // colleague, so a second screen sees the announcement with no extra byte.
+    const socket = await enterOffice(page);
+    const routerIndex = CONFIG.player_lines.indexOf(ROUTER_SAY);
+    await socket.snapshot({
+      p: routerIndex,
+      pr: [{ i: 'AbCdEfGhIjKl', x: 500, y: 500, p: routerIndex }],
+    });
+    await expect(page.getByTestId('fintech-me-say')).toContainText(ROUTER_SAY);
+    await expect(page.getByTestId('fintech-peer-say')).toContainText(ROUTER_SAY);
+  });
+
+  test('the cheatsheet states the rule, from the served numbers', async ({ page }) => {
+    await openSplash(page);
+    const rules = page.getByTestId('fintech-rules');
+    await expect(rules).toContainText('9 с');
+    await expect(rules).toContainText('45 с');
+    // The half a hardcoded cheatsheet would get wrong: whose timer it is.
+    await expect(rules).toContainText('таймер офиса');
   });
 });
 
