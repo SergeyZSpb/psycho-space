@@ -1110,6 +1110,13 @@ func TestPointingHimAtSomebodyElseOverridesWhoIsNearest(t *testing.T) {
 	// of which can be drawn onto the very tile this test parks `a` on — and a man
 	// behind a cloud is a man the лысый cannot see, which would answer the question
 	// this test is asking with a different mechanic.
+	//
+	// AFTER A TICK, and that ordering is the whole of why this works. An office
+	// opens with one prop of each kind and grows to one per person on its first
+	// tick, so clearing the floor before that tick clears one bottle and one
+	// кальян and then has a fresh, STANDING кальян appended underneath the player.
+	// CI found it and a local run did not, because where a prop lands is a draw.
+	advance(o, 1)
 	noProps(o)
 	// `a` is much closer to him, so without the verb he is `a`'s problem.
 	place(t, o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})

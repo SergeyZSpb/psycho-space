@@ -361,6 +361,12 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// forty-byte unconditional field — is omitted entirely and replaced by
 	// `,"ca":12000`, so the twelve seconds after the button is pressed are the
 	// cheapest frames this game sends with a full office in it.
+	// AND THEN 407 AGAIN, measured, because one bottle per person cost nothing: the
+	// masks replaced two indexes AND their two timers, so `bt` and `hk` came off
+	// the frame while `bs` and `hs` grew by a character each. The budget is left at
+	// 436 rather than tightened to the measurement — the widest line index gains a
+	// character the day a pool passes a hundred entries, and a bound with no slack
+	// fails on a commit that added a joke rather than a field.
 	const budget = 436
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
