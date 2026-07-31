@@ -648,6 +648,21 @@ const (
 	RedirectSaySeconds = 3.0
 )
 
+// PropsPerPlayer is how many bottles and how many кальяны stand on the floor per
+// person working.
+//
+// ONE EACH, AND THE COUNT IS THE MECHANIC RATHER THAN A SETTING. A single bottle
+// in a room of three is not a third of a prop, it is a race: the nearest man wins
+// it every time, and the other two stop walking to it at all — so the strongest
+// effects in the game would belong to whoever happened to spawn near them. One
+// per person makes the walk worth taking whoever you are, and makes two people
+// arriving at two different bottles the ordinary case rather than a collision.
+//
+// It is capped by the catalogue rather than by this number: there are six bottle
+// spots and four hookah spots against three occupants, so the office never wants
+// more than it has places to put.
+const PropsPerPlayer = 1
+
 // The router verb — «РОУТЕР УПАЛ».
 //
 // The second thing a player can DO rather than dodge, and the first that acts on
@@ -1183,8 +1198,15 @@ type ClaudeConfig struct {
 // HookahConfig is «кальян», published so the plane can draw it where it actually
 // stands and the cheatsheet can state the rule without typing a number.
 type HookahConfig struct {
-	// Spots is every place one can appear; a frame names which by index.
+	// Spots is every place one can appear; a frame names which by a bit per spot.
 	Spots []Vec2 `json:"spots"`
+	// PerPlayer is how many stand on the floor per person working.
+	//
+	// SERVED BECAUSE THE CHEATSHEET STATES IT. «Одна на каждого» is a rule a player
+	// needs before they walk anywhere, and it is a NUMBER — so it is published and
+	// the sentence is generated, rather than typed out and made false the day it is
+	// retuned. It is the bottle's field exactly, on the same reasoning.
+	PerPlayer int `json:"per_player"`
 	// Reach is how close you have to get.
 	Reach float64 `json:"reach"`
 	// InvincibleMs is how long the cloud lasts.
@@ -1197,12 +1219,15 @@ type HookahConfig struct {
 // where it actually stands and the cheatsheet can state the rule without typing
 // a number.
 type BottleConfig struct {
-	// Spots is every place one can appear; a frame names which by index.
-	Spots    []Vec2  `json:"spots"`
-	Reach    float64 `json:"reach"`
-	DrunkMs  int     `json:"drunk_ms"`
-	ReturnMs int     `json:"return_ms"`
-	SlowPct  int     `json:"slow_pct"`
+	// Spots is every place one can appear; a frame names which by a bit per spot.
+	Spots []Vec2 `json:"spots"`
+	// PerPlayer is how many stand on the floor per person working — see
+	// HookahConfig.PerPlayer.
+	PerPlayer int     `json:"per_player"`
+	Reach     float64 `json:"reach"`
+	DrunkMs   int     `json:"drunk_ms"`
+	ReturnMs  int     `json:"return_ms"`
+	SlowPct   int     `json:"slow_pct"`
 }
 
 // VerbConfig publishes a verb: what it does and what it costs, so the control
@@ -1330,17 +1355,19 @@ func BuildConfig() Config {
 			SlowMs:  int(SlowSeconds * 1000),
 		},
 		Hookah: HookahConfig{
+			PerPlayer:    PropsPerPlayer,
 			Spots:        slices.Clone(HookahSpots),
 			Reach:        HookahReach,
 			InvincibleMs: int(InvincibleSeconds * 1000),
 			ReturnMs:     int(HookahReturn * 1000),
 		},
 		Bottle: BottleConfig{
-			Spots:    append([]Vec2(nil), BottleSpots...),
-			Reach:    BottleReach,
-			DrunkMs:  int(DrunkSeconds * 1000),
-			ReturnMs: int(BottleReturn * 1000),
-			SlowPct:  int(DrunkSpeed * 100),
+			PerPlayer: PropsPerPlayer,
+			Spots:     append([]Vec2(nil), BottleSpots...),
+			Reach:     BottleReach,
+			DrunkMs:   int(DrunkSeconds * 1000),
+			ReturnMs:  int(BottleReturn * 1000),
+			SlowPct:   int(DrunkSpeed * 100),
 		},
 		Tempo: TempoConfig{
 			EveryMs: int(LevelSeconds * 1000),

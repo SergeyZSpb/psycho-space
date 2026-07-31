@@ -696,6 +696,27 @@ func TestFintechWalkingOutWritesTheShift(t *testing.T) {
 	}
 }
 
+// firstSpot reads a prop mask off a frame and answers the lowest catalogue spot
+// that has one standing on it.
+//
+// A MASK RATHER THAN AN INDEX, because the office keeps one bottle and one кальян
+// per person on the floor — so «which spot» has as many answers as there are
+// people, and a walker only needs the nearest one to aim at. Lowest rather than
+// nearest keeps the fixture deterministic; a solo test has exactly one bit set
+// anyway.
+func firstSpot(raw any, spots int) (int, bool) {
+	mask, ok := raw.(float64)
+	if !ok {
+		return 0, false
+	}
+	for i := 0; i < spots; i++ {
+		if int(mask)&(1<<i) != 0 {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 func TestFintechTheRouterTakesClaudeOffTheWire(t *testing.T) {
 	// «РОУТЕР УПАЛ», END TO END over a real socket. The unit tests drive the office
 	// directly; this is the only place that proves the frame actually arrives with
@@ -1439,11 +1460,11 @@ func TestFintechBuyingHimARoundIsVisibleToTheWholeOffice(t *testing.T) {
 		f := waitForFintechFrame(t, framesA, tick, clock, "fintech_snap", 15*time.Second)
 		x, _ := f["x"].(float64)
 		y, _ := f["y"].(float64)
-		// Where the bottle is NOW: it moves, and the frame names which of the
-		// catalogue's spots it is on rather than where that spot is.
+		// Where a bottle is NOW: they move, and the frame names WHICH of the
+		// catalogue's spots have one as a bit per spot rather than as a position.
 		spot := gamefintech.BottleSpots[0]
-		if bs, ok := f["bs"].(float64); ok && int(bs) < len(gamefintech.BottleSpots) {
-			spot = gamefintech.BottleSpots[int(bs)]
+		if i, ok := firstSpot(f["bs"], len(gamefintech.BottleSpots)); ok {
+			spot = gamefintech.BottleSpots[i]
 		}
 		dx := spot.X - x/100
 		dy := spot.Y - y/100
@@ -1533,11 +1554,10 @@ func TestFintechWalkingToTheHookahPutsACloudOnTheWire(t *testing.T) {
 		f := waitForFintechFrame(t, frames, tick, clock, "fintech_snap", 15*time.Second)
 		x, _ := f["x"].(float64)
 		y, _ := f["y"].(float64)
-		// Where it is NOW: it moves, and the frame names which of the catalogue's
-		// spots it is on rather than where that spot is.
+		// Where one is NOW — the bottle's arrangement exactly.
 		spot := gamefintech.HookahSpots[0]
-		if hs, ok := f["hs"].(float64); ok && int(hs) < len(gamefintech.HookahSpots) {
-			spot = gamefintech.HookahSpots[int(hs)]
+		if i, ok := firstSpot(f["hs"], len(gamefintech.HookahSpots)); ok {
+			spot = gamefintech.HookahSpots[i]
 		}
 		dx := spot.X - x/100
 		dy := spot.Y - y/100

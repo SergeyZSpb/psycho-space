@@ -247,15 +247,23 @@ type Snapshot struct {
 	// Rc is the redirect verb's cooldown, milliseconds, rounded up and omitted
 	// when it is ready — the same rule and the same reason as `dc`.
 	Rc int `json:"rc,omitempty"`
-	// Bt is how long until a bottle stands in the office again, milliseconds,
-	// OMITTED WHILE ONE IS THERE — which is the common case, so the plane draws
-	// it on an absent field and costs nothing to say so.
-	Bt int `json:"bt,omitempty"`
-	// Bs is WHICH of the catalogue's BottleSpots it is standing on — an index,
-	// never a coordinate, exactly as a balloon is an index and never a sentence
-	// (ADR-037). Two positions on a frame that repeats ten times a second per
-	// viewer is twenty bytes forever to say something that changes once every ten
-	// seconds; one small integer is four. Omitted at zero like everything else.
+	// Bs is WHICH of the catalogue's BottleSpots have a bottle standing on them —
+	// a BIT PER SPOT, never a coordinate and no longer a single index.
+	//
+	// The office keeps one bottle per person on the floor, so «which spot» stopped
+	// being a question with one answer. A mask is the encoding that did not grow
+	// with it: eight bytes whatever it describes, where an array of indexes grows
+	// with the office and an array of positions would be twenty bytes a prop,
+	// twenty times a second, per viewer, to say something that changes once every
+	// ten seconds (ADR-037's rule, applied to a prop).
+	//
+	// Omitted at zero like every other index here, and zero means «not one of them
+	// is standing» — a state a busy office really reaches, and never «unchanged».
+	//
+	// THERE IS NO LONGER A `bt`. It said how long until the bottle came back, and
+	// with several of them it could only have meant «the soonest», which nothing
+	// draws: the mask already says what is on the floor, and what is not on the
+	// floor is not drawn.
 	Bs int `json:"bs,omitempty"`
 	// Np is Серега and Тёма, in catalogue order. Never omitted — they are always on
 	// the floor — and their positions come from the server because they amble towards
@@ -300,12 +308,9 @@ type Snapshot struct {
 	// while the server still has milliseconds left is a readout that lies at the
 	// exact moment it matters.
 	Iv int `json:"iv,omitempty"`
-	// Hk is how long until another кальян appears, milliseconds, omitted while one
-	// is standing there — the bottle's arrangement exactly, and the common case.
-	Hk int `json:"hk,omitempty"`
-	// Hs is which of the catalogue's hookah spots it stands on. An index, for the
-	// bottle's reason: it moves once every twenty seconds and a position would be
-	// twenty bytes forever to say so.
+	// Hs is which of the catalogue's hookah spots have one standing on them — the
+	// bottle's mask exactly, and one кальян per person on the floor for the same
+	// reason. `hk` went with `bt`, and for the same reason.
 	Hs int `json:"hs,omitempty"`
 	// The bald man.
 	B BossFrame `json:"b"`

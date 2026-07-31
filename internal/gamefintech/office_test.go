@@ -1106,6 +1106,11 @@ func TestPointingHimAtSomebodyElseOverridesWhoIsNearest(t *testing.T) {
 	o := NewOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
+	// Nothing on the floor to pick up: with two people there are two кальяны, one
+	// of which can be drawn onto the very tile this test parks `a` on — and a man
+	// behind a cloud is a man the лысый cannot see, which would answer the question
+	// this test is asking with a different mechanic.
+	noProps(o)
 	// `a` is much closer to him, so without the verb he is `a`'s problem.
 	place(t, o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
 	place(t, o, "b", Vec2{X: 2, Y: 2})
@@ -1293,21 +1298,22 @@ func TestTheBottleIsNotAButtonYouCanHold(t *testing.T) {
 	if drunkOf(o) > 0 {
 		t.Fatalf("he never sobered up — the bottle is refilling under him (%v, was %v)", drunkOf(o), first)
 	}
-	// The frame says when another one is due, so the plane can stop drawing it.
-	if snapOf(t, o, "a").Bt <= 0 {
-		t.Fatal("the frame does not say the bottle is gone, so a client would draw one that is not there")
+	// And the frame stops carrying its spot, so the plane stops drawing it: the
+	// mask is what says what is on the floor, and a bottle somebody has taken is
+	// simply not in it.
+	if snapOf(t, o, "a").Bs != 0 {
+		t.Fatal("the frame still shows a bottle standing where one was just taken")
 	}
 }
 
 func TestABottleNobodyHasReachedIsStillThere(t *testing.T) {
-	// Absent `bt` means "it is standing there", which is the common case and is
-	// why it costs nothing to say.
+	// The mask carries a bit for it, which is what the plane draws one from.
 	o := NewOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", Vec2{X: OfficeW - 1, Y: 1})
 	advance(o, 2)
-	if got := snapOf(t, o, "a").Bt; got != 0 {
-		t.Fatalf("an untouched bottle reports %d ms until it returns", got)
+	if got := snapOf(t, o, "a").Bs; got != 1<<spotOf(o) {
+		t.Fatalf("the mask is %b, want a single bit for spot %d", got, spotOf(o))
 	}
 	if drunkOf(o) != 0 {
 		t.Fatal("he got drunk with nobody near the bottle")
@@ -1326,11 +1332,16 @@ func parkBoss(o *Office) {
 	o.boss.Pos = Vec2{X: BossSpawnX, Y: BossSpawnY}
 }
 
-// spotOf is which spot the bottle is currently on.
+// spotOf is which spot the FIRST bottle is on.
+//
+// The office keeps one per occupant now, so «the bottle» is only a thing in a
+// one-player test — which is what nearly every test in this file is, and why this
+// helper is still the right shape for them. A test about several says so by
+// reading `o.bottles` itself.
 func spotOf(o *Office) int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.bottleSpot
+	return o.bottles[0].spot
 }
 
 func drunkOf(o *Office) float64 {
@@ -1356,19 +1367,25 @@ func TestTheBottleComesBackSomewhereElse(t *testing.T) {
 			t.Fatalf("round %d: standing on the bottle did not get him drunk", round)
 		}
 		// Walk away and wait it out, so nothing is picked up the instant it lands.
-		place(t, o, "a", Vec2{X: OfficeW / 2, Y: 1})
+		//
+		// AND «AWAY» HAS TO MEAN AWAY FROM EVERY SPOT, not just from this one. The
+		// old park was the middle of the top wall, which is within arm's reach of
+		// the spot at (8, 2) — harmless while the frame carried an INDEX (the index
+		// was right whether or not it had just been taken again) and visible the
+		// moment it carried a mask, which says what is actually standing there.
 		for i := 0; i < int(BottleReturn*SimHz)+2; i++ {
 			parkBoss(o)
-			place(t, o, "a", Vec2{X: OfficeW / 2, Y: 1})
+			place(t, o, "a", awayFromEveryProp())
 			advance(o, 1)
 		}
 		if now := spotOf(o); now == was {
 			t.Fatalf("round %d: it came back on the same spot (%d)", round, was)
 		}
-		// And the frame names the spot by INDEX, never by a coordinate.
+		// And the frame names the spot by a BIT, never by a coordinate — one player
+		// means one bottle, so the mask is exactly one bit wide here.
 		s := snapOf(t, o, "a")
-		if s.Bs != spotOf(o) {
-			t.Fatalf("the frame says spot %d, the office says %d", s.Bs, spotOf(o))
+		if want := 1 << spotOf(o); s.Bs != want {
+			t.Fatalf("the frame's mask is %b, the office's bottle is on spot %d", s.Bs, spotOf(o))
 		}
 	}
 	if len(seen) < 3 {
@@ -1376,10 +1393,56 @@ func TestTheBottleComesBackSomewhereElse(t *testing.T) {
 	}
 }
 
+// awayFromEveryProp is a place on the floor out of reach of every bottle and
+// кальян spot, and away from the bald man's own spawn.
+//
+// IT IS COMPUTED RATHER THAN TYPED OUT, because the catalogue moves: a spot added
+// next to a hand-picked corner would make a test about something else start
+// picking things up, which is the failure this replaced. Fatal if the floor has
+// no such place — that would mean the props cover the room, and every test that
+// parks somebody would be lying.
+func awayFromEveryProp() Vec2 {
+	best, bestGap := Vec2{X: PlayerRadius, Y: PlayerRadius}, -1.0
+	for x := 1.0; x < OfficeW-1; x += 0.5 {
+		for y := 1.0; y < OfficeH-1; y += 0.5 {
+			at := Vec2{X: x, Y: y}
+			gap := math.Hypot(at.X-BossSpawnX, at.Y-BossSpawnY)
+			for _, s := range append(append([]Vec2(nil), BottleSpots...), HookahSpots...) {
+				if d := math.Hypot(at.X-s.X, at.Y-s.Y); d < gap {
+					gap = d
+				}
+			}
+			if gap > bestGap {
+				best, bestGap = at, gap
+			}
+		}
+	}
+	return best
+}
+
+// noProps takes every bottle and кальян off the floor for the rest of a test.
+//
+// THE OFFICE KEEPS ONE OF EACH PER PERSON NOW, so a two-player test has four
+// props scattered over a floor sixteen metres wide, and a fixture that parks
+// somebody on a chosen coordinate can find itself standing on one — which turns
+// a test about the bald man into a test about being invisible to him. Tests that
+// are not ABOUT the props say so with this.
+func noProps(o *Office) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for i := range o.bottles {
+		o.bottles[i].gone = 1e6
+	}
+	for i := range o.hookahs {
+		o.hookahs[i].gone = 1e6
+	}
+}
+
+// hookahSpotOf is which spot the FIRST кальян is on — see spotOf.
 func hookahSpotOf(o *Office) int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.hookahSpot
+	return o.hookahs[0].spot
 }
 
 func cloudOf(o *Office, accountID string) float64 {
@@ -2181,4 +2244,122 @@ func claudeOf(o *Office) Vec2 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.claude.Pos
+}
+
+// --- one prop per person ----------------------------------------------------
+
+func propsOf(o *Office) (bottles, hookahs []prop) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]prop(nil), o.bottles...), append([]prop(nil), o.hookahs...)
+}
+
+func TestThereIsABottleAndAKalyanForEverybodyOnTheFloor(t *testing.T) {
+	// THE COUNT IS THE MECHANIC. One bottle in a room of three is a race the
+	// nearest man wins every time, and the other two stop walking to it — which
+	// hands the strongest effects in the game to whoever spawned near them.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	advance(o, 1)
+	if b, h := propsOf(o); len(b) != 1 || len(h) != 1 {
+		t.Fatalf("one player got %d bottles and %d кальянов", len(b), len(h))
+	}
+
+	join(t, o, "b", "s2")
+	join(t, o, "c", "s3")
+	advance(o, 1)
+	b, h := propsOf(o)
+	if len(b) != 3*PropsPerPlayer || len(h) != 3*PropsPerPlayer {
+		t.Fatalf("three players got %d bottles and %d кальянов", len(b), len(h))
+	}
+	// AND NO TWO OF THEM ON ONE TILE, or three bottles would be one bottle drawn
+	// three times.
+	for _, list := range [][]prop{b, h} {
+		seen := map[int]bool{}
+		for _, p := range list {
+			if seen[p.spot] {
+				t.Fatalf("two props are standing on spot %d: %+v", p.spot, list)
+			}
+			seen[p.spot] = true
+		}
+	}
+	// And the frame says so: one bit per standing prop, so a full office draws
+	// three of each.
+	if got := bits(snapOf(t, o, "a").Bs); got != 3 {
+		t.Fatalf("the mask says %d bottles are standing, want 3", got)
+	}
+	if got := bits(snapOf(t, o, "a").Hs); got != 3 {
+		t.Fatalf("the mask says %d кальянов are standing, want 3", got)
+	}
+}
+
+func TestAPropIsNeverSnatchedOffTheFloorWhenSomebodyLeaves(t *testing.T) {
+	// GROWTH IS IMMEDIATE, SHRINKING IS NOT. A joiner should find a prop of their
+	// own at once; one already standing must never vanish from under whoever is
+	// walking towards it. So an extra is dropped only once somebody has taken it.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	advance(o, 1)
+	if b, _ := propsOf(o); len(b) != 2 {
+		t.Fatalf("two players got %d bottles", len(b))
+	}
+
+	o.Leave("b")
+	advance(o, 1)
+	if b, _ := propsOf(o); len(b) != 2 {
+		t.Fatalf("a bottle vanished off the floor the moment somebody left: %d left", len(b))
+	}
+
+	// Take one, and the office comes back to one bottle rather than standing a
+	// replacement up for a person who is not there.
+	b, _ := propsOf(o)
+	place(t, o, "a", BottleSpots[b[0].spot])
+	advance(o, 1)
+	for i := 0; i < int(BottleReturn*SimHz)+4; i++ {
+		parkBoss(o)
+		place(t, o, "a", awayFromEveryProp())
+		advance(o, 1)
+	}
+	if got, _ := propsOf(o); len(got) != 1 {
+		t.Fatalf("the spare never went: %d bottles for one player", len(got))
+	}
+}
+
+func TestTwoPeopleCanDrinkFromTwoDifferentBottles(t *testing.T) {
+	// The whole point of the count, end to end: both of them reach a bottle of
+	// their own on the same tick, and both bottles go.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	join(t, o, "b", "s2")
+	advance(o, 1)
+	b, _ := propsOf(o)
+	if len(b) != 2 {
+		t.Fatalf("two players got %d bottles", len(b))
+	}
+	place(t, o, "a", BottleSpots[b[0].spot])
+	place(t, o, "b", BottleSpots[b[1].spot])
+	advance(o, 1)
+
+	after, _ := propsOf(o)
+	for i, p := range after {
+		if p.gone <= 0 {
+			t.Fatalf("bottle %d is still standing after somebody reached it: %+v", i, after)
+		}
+	}
+	if drunkOf(o) <= 0 {
+		t.Fatal("nobody got him drunk")
+	}
+	if got := snapOf(t, o, "a").Bs; got != 0 {
+		t.Fatalf("the frame still shows a bottle standing: mask %b", got)
+	}
+}
+
+// bits is how many spots a mask names.
+func bits(mask int) int {
+	n := 0
+	for ; mask > 0; mask >>= 1 {
+		n += mask & 1
+	}
+	return n
 }

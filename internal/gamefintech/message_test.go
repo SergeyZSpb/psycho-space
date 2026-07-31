@@ -234,12 +234,15 @@ func TestSnapshotStaysSmall(t *testing.T) {
 		// Somebody bought him a round moments ago: he is still wobbling AND the
 		// bottle has not come back. Both present at once is the real worst case,
 		// even though it only lasts as long as he stays drunk.
-		Bt: 10000, Bs: len(BottleSpots) - 1,
+		// EVERY BOTTLE STANDING AT ONCE, which is the widest the mask ever gets and
+		// is the ordinary state of a full office — one per person, nobody has been
+		// to one yet. A mask is the encoding that does not grow with the room.
+		Bs: (1 << len(BottleSpots)) - 1,
 		// AND A CLOUD, on you and on both colleagues at once, with the кальян also
 		// gone and its next spot the widest index. Four fields that are all
 		// omitempty and are all present together only in the few seconds after
 		// somebody smokes — which is exactly what a worst case is for.
-		Iv: 10000, Hk: 20000, Hs: len(HookahSpots) - 1,
+		Iv: 10000, Hs: (1 << len(HookahSpots)) - 1,
 		// AND CLAUDE, who is ALWAYS on the floor — the one unconditional addition in
 		// this batch — with his cigarette lit and his widest line index, plus the
 		// slow he leaves behind on you and on both colleagues.

@@ -281,8 +281,14 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
             `Лысый теряет тебя и идёт к кому-нибудь другому.`,
         },
         {
-          label: '⏳ и он один',
+          // HOW MANY OF THEM THERE ARE, derived from the served count rather than
+          // typed: «один на всех» was true when there was one and became a lie the
+          // day the office started standing up one per person.
+          label: '⏳ и сколько их',
           text:
+            (has(hookah.per_player) && hookah.per_player > 0
+              ? `По ${hookah.per_player} на каждого в офисе. `
+              : '') +
             `Новый появится через ${decimal((hookah.return_ms ?? 0) / 1000)} с — в другом месте. ` +
             `Кто первый дошёл, того и облако.`,
         },
@@ -325,7 +331,10 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
           label: '🚶 но он всё равно идёт',
           text:
             `Шатается, а не стоит. Через ${decimal(bottle.return_ms / 1000)} с ` +
-            `появится новая — в другом месте.`,
+            `появится новая — в другом месте. ` +
+            (has(bottle.per_player) && bottle.per_player > 0
+              ? `Бутылок на полу по ${bottle.per_player} на каждого.`
+              : ''),
         },
       ],
     });

@@ -203,11 +203,9 @@ type Office struct {
 	// nothing about the boss changes at all.
 	redirectTo   string
 	redirectLeft float64
-	// hookahGone and hookahSpot are the кальян's half of the same arrangement as
-	// the bottle's two fields below: zero `hookahGone` means one is standing on
-	// `hookahSpot` right now.
-	hookahGone float64
-	hookahSpot int
+	// hookahs is every кальян on the floor — see `bottles` below for the whole
+	// arrangement, which the two share exactly.
+	hookahs []prop
 	// claude is Claude Code, the second man on the floor. He is a separate value
 	// with a separate step for the reason chaser.go states: what happens when he
 	// arrives is different, and an interface over two implementations with one
@@ -248,14 +246,30 @@ type Office struct {
 	// reprieve.
 	routerAway float64
 	routerCool float64
-	// bottleGone is how long until another bottle appears, in seconds. Zero means
-	// one is standing there now, which is the common case and therefore the one
-	// that costs nothing on the wire.
-	bottleGone float64
-	// bottleSpot is which of BottleSpots it is standing on. It MOVES: a bottle
-	// that always came back to the same place would be a lever you stand next
-	// to, and the walk is supposed to be the price.
-	bottleSpot int
+	// bottles is every bottle on the floor, one slot each.
+	//
+	// A LIST RATHER THAN A SINGLE PROP, AND AS LONG AS THERE ARE PEOPLE. One
+	// bottle in a room of three is not a third of a mechanic, it is a race: the
+	// nearest man gets it every time and the other two stop walking to it at all.
+	// So the office keeps one per occupant, which makes the prop worth crossing
+	// the floor for whoever you are — and, in a full office, makes two people
+	// arriving at different bottles the ordinary case rather than a collision.
+	//
+	// The count is reconciled on the tick and only ever GROWS immediately: a slot
+	// past the target is dropped once somebody has taken it, never snatched off
+	// the floor from under whoever was walking towards it.
+	bottles []prop
+}
+
+// prop is one bottle or one кальян: which catalogue spot it stands on, and how
+// long until it is back if somebody has taken it.
+//
+// `gone` of zero means it is standing there right now, which is the common case
+// and therefore the one that costs nothing to say — the wire sends a MASK of the
+// spots that have one, and nothing at all about the ones that do not.
+type prop struct {
+	spot int
+	gone float64
 }
 
 // NewOffice opens the floor with both men at the far wall and nobody in it.
@@ -265,6 +279,10 @@ func NewOffice() *Office {
 		boss:      NewBoss(),
 		claude:    NewChaser(),
 		npcs:      NewNPCs(),
+		// One of each to open with, because an office is opened by one person
+		// joining. The tick reconciles the count from there.
+		bottles: []prop{{spot: 0}},
+		hookahs: []prop{{spot: 0}},
 	}
 	// Tick zero, seeded, so a rewind on the first few ticks reads where they
 	// actually were rather than the ring's zero value — which is the top-left
@@ -727,53 +745,36 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		}
 	}
 
-	// THE BOTTLE, and it is checked before he steps so a round bought this tick
-	// slows him on this tick rather than the next. Whoever reaches it gets it —
-	// in ascending account order, like every other decision here, so two people
-	// arriving on the same tick is settled the same way his choice of victim is.
-	if o.bottleGone > 0 {
-		o.bottleGone = math.Max(0, o.bottleGone-dt)
-		if o.bottleGone == 0 {
-			// It comes back SOMEWHERE ELSE. Drawn rather than cycled, because a
-			// rotation would be a pattern to learn and then to stand in front of.
-			o.bottleSpot = o.drawBottleSpot()
-		}
-	} else {
-		bottle := BottleSpots[o.bottleSpot]
-		for _, k := range keys {
-			occ := o.occupants[k]
-			if !occ.State.Alive {
-				continue
-			}
-			if math.Hypot(occ.State.Pos.X-bottle.X, occ.State.Pos.Y-bottle.Y) <= BottleReach+PlayerRadius {
-				o.boss.Drunk = DrunkSeconds
-				o.bottleGone = BottleReturn
-				break
-			}
+	// HOW MANY OF EACH PROP THERE ARE, which is one per person on the floor. A
+	// single bottle in a room of three is a race the nearest man wins every time,
+	// and the other two stop walking to it at all.
+	want := standing * PropsPerPlayer
+	if want < 1 {
+		want = 1
+	}
+	o.bottles = reconcileProps(o.bottles, BottleSpots, want)
+	o.hookahs = reconcileProps(o.hookahs, HookahSpots, want)
+
+	// THE BOTTLES, checked before he steps so a round bought this tick slows him
+	// on this tick rather than the next. Whoever reaches one gets it — in ascending
+	// account order, like every other decision here, so two people arriving on the
+	// same tick is settled the same way his choice of victim is.
+	for i := range o.bottles {
+		if taken := o.stepProp(&o.bottles[i], BottleSpots, o.bottles, BottleReturn, BottleReach, dt, keys); taken != nil {
+			// HIS state rather than the taker's: one Карен buys the round and
+			// everybody watches him wobble. Assigned rather than accumulated, so a
+			// second bottle in a full office extends the wobble rather than
+			// stacking it into something the game cannot be played against.
+			o.boss.Drunk = DrunkSeconds
 		}
 	}
 
-	// THE KALYAN, checked in the same place and for the same reason as the bottle:
-	// a cloud taken this tick hides you on this tick rather than the next, and two
-	// people arriving together is settled in ascending account order like every
-	// other decision here. First taker only — one cloud per hookah.
-	if o.hookahGone > 0 {
-		o.hookahGone = math.Max(0, o.hookahGone-dt)
-		if o.hookahGone == 0 {
-			o.hookahSpot = o.drawHookahSpot()
-		}
-	} else {
-		spot := HookahSpots[o.hookahSpot]
-		for _, k := range keys {
-			occ := o.occupants[k]
-			if !occ.State.Alive {
-				continue
-			}
-			if math.Hypot(occ.State.Pos.X-spot.X, occ.State.Pos.Y-spot.Y) <= HookahReach+PlayerRadius {
-				occ.Invincible = InvincibleSeconds
-				o.hookahGone = HookahReturn
-				break
-			}
+	// THE KALYANS, in the same place and for the same reason as the bottles: a
+	// cloud taken this tick hides you on this tick rather than the next. First
+	// taker only — one cloud per кальян.
+	for i := range o.hookahs {
+		if taken := o.stepProp(&o.hookahs[i], HookahSpots, o.hookahs, HookahReturn, HookahReach, dt, keys); taken != nil {
+			taken.Invincible = InvincibleSeconds
 		}
 	}
 
@@ -900,8 +901,7 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 			P: BossSays(o.bossState(), o.boss.Grin, o.tick, occ.Invincible > 0),
 			D: msUp(o.boss.Drunk),
 		},
-		Bt: msUp(o.bottleGone),
-		Bs: o.bottleSpot,
+		Bs: propMask(o.bottles),
 		Iv: msUp(occ.Invincible),
 		Sl: msUp(occ.State.SlowLeft),
 		// CLAUDE, OR NOTHING AT ALL. While the router is down he is off the floor,
@@ -911,8 +911,7 @@ func (o *Office) SnapshotFor(accountID string) ([]byte, bool) {
 		Cl: o.claudeFrame(),
 		Ca: msUp(o.routerAway),
 		Rd: msUp(o.routerCool),
-		Hk: msUp(o.hookahGone),
-		Hs: o.hookahSpot,
+		Hs: propMask(o.hookahs),
 		Np: o.npcsFor(),
 		Pr: o.peersFor(accountID),
 	}
@@ -1090,38 +1089,131 @@ func (o *Office) bossState() BossState {
 	}
 }
 
-// drawHookahSpot picks where the next кальян stands. Called with the lock held.
+// stepProp advances one prop and returns the occupant who just took it, or nil.
 //
-// Never the one it was just on, for the bottle's reason: a prop that reappeared
-// under your feet would hand you a second cloud for standing still, which is the
-// one thing this game already pays you for.
-func (o *Office) drawHookahSpot() int {
-	if len(HookahSpots) < 2 {
-		return 0
+// It is the whole of a prop's life in one place, and both kinds share it because
+// they differ only in WHAT taking one does — the caller applies that. Called with
+// the lock held.
+//
+// The order inside matters: a prop that is away is only counted down, so it
+// cannot be taken on the tick it returns, and the taker is the first occupant in
+// ascending account order within reach.
+func (o *Office) stepProp(p *prop, spots []Vec2, siblings []prop, back, reach, dt float64, keys []string) *Occupant {
+	if p.gone > 0 {
+		p.gone = math.Max(0, p.gone-dt)
+		if p.gone == 0 {
+			// It comes back SOMEWHERE ELSE. Drawn rather than cycled, because a
+			// rotation would be a pattern to learn and then to stand in front of.
+			p.spot = drawSpot(spots, siblings, p.spot)
+		}
+		return nil
 	}
-	//nolint:gosec // bounded by len(HookahSpots)-1, which is a handful
-	next := int(unitRand() * float64(len(HookahSpots)-1))
-	if next >= o.hookahSpot {
-		next++
+	at := spots[clampInt(p.spot, 0, len(spots)-1)]
+	for _, k := range keys {
+		occ := o.occupants[k]
+		if !occ.State.Alive {
+			continue
+		}
+		if math.Hypot(occ.State.Pos.X-at.X, occ.State.Pos.Y-at.Y) <= reach+PlayerRadius {
+			p.gone = back
+			return occ
+		}
 	}
-	return clampInt(next, 0, len(HookahSpots)-1)
+	return nil
 }
 
-// drawBottleSpot picks where the next bottle stands. Called with the lock held.
+// reconcileProps grows a kind's list to one per person and shrinks it only by
+// dropping something nobody can reach.
 //
-// Never the one it was just on: a bottle that reappeared under your feet would
-// make the whole mechanic a button rather than a walk, and "somewhere else" is
-// the entire point of it moving.
-func (o *Office) drawBottleSpot() int {
-	if len(BottleSpots) < 2 {
+// GROWTH IS IMMEDIATE, SHRINKING IS NOT, and the asymmetry is deliberate: a
+// joiner should find a prop of their own at once, but a prop already standing on
+// the floor must never vanish from under whoever is walking towards it. So an
+// extra one is dropped only while it is away — which is to say, after somebody
+// has taken it — and until then a half-empty office simply has a spare.
+func reconcileProps(props []prop, spots []Vec2, want int) []prop {
+	if want > len(spots) {
+		want = len(spots)
+	}
+	for len(props) < want {
+		props = append(props, prop{spot: drawSpot(spots, props, -1)})
+	}
+	for len(props) > want {
+		dropped := false
+		for i := range props {
+			if props[i].gone > 0 {
+				props = append(props[:i], props[i+1:]...)
+				dropped = true
+				break
+			}
+		}
+		if !dropped {
+			break
+		}
+	}
+	return props
+}
+
+// drawSpot picks where a prop stands: somewhere none of its siblings is, and
+// never where this one just was.
+//
+// «Never where it just was» is the rule that makes fetch-and-spend a walk rather
+// than a button — a prop reappearing under your feet would hand you a second
+// round for standing still, which is the one thing this game already pays for.
+// «Nowhere a sibling is» is its extension to a room with several: two bottles on
+// one tile is one bottle drawn twice.
+//
+// Both are preferences with a floor. If every spot is taken the avoid rule is
+// dropped first and the sibling rule second, because a prop somewhere is always
+// better than a prop nowhere. With three occupants against six bottle spots and
+// four hookah spots that floor is unreachable today; it is here so that shrinking
+// either catalogue cannot wedge the tick.
+func drawSpot(spots []Vec2, siblings []prop, avoid int) int {
+	if len(spots) == 0 {
 		return 0
 	}
-	//nolint:gosec // bounded by len(BottleSpots)-1, which is a handful
-	next := int(unitRand() * float64(len(BottleSpots)-1))
-	if next >= o.bottleSpot {
-		next++
+	used := make(map[int]bool, len(siblings))
+	for _, s := range siblings {
+		if s.spot != avoid {
+			used[s.spot] = true
+		}
 	}
-	return clampInt(next, 0, len(BottleSpots)-1)
+	free := make([]int, 0, len(spots))
+	for i := range spots {
+		if !used[i] && i != avoid {
+			free = append(free, i)
+		}
+	}
+	if len(free) == 0 {
+		for i := range spots {
+			if !used[i] {
+				free = append(free, i)
+			}
+		}
+	}
+	if len(free) == 0 {
+		return clampInt(avoid, 0, len(spots)-1)
+	}
+	//nolint:gosec // bounded by len(free), which is a handful
+	return free[int(unitRand()*float64(len(free)))%len(free)]
+}
+
+// propMask is which of a catalogue's spots have one standing on them right now,
+// as a bit per spot.
+//
+// A MASK RATHER THAN A LIST, and it is what keeps several props as cheap on the
+// wire as one was: `"bs":21` is eight bytes whatever it describes, where an array
+// of indexes grows with the office and an array of positions would be twenty
+// bytes a prop, twenty times a second, per viewer, to say something that changes
+// once every ten seconds. Omitted at zero like every other index here — and zero
+// means «none of them is standing», which is a state the office really has.
+func propMask(props []prop) int {
+	mask := 0
+	for _, p := range props {
+		if p.gone <= 0 {
+			mask |= 1 << p.spot
+		}
+	}
+	return mask
 }
 
 // AvatarFor is the picture to draw on the peer a frame calls handle, and whether

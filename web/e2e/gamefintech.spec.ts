@@ -106,9 +106,13 @@ const CONFIG = {
   // Marked like everything else in this stub, so a client that hardcoded the
   // label or the timers cannot pass the assertions below.
   bottle: {
+    // THREE SPOTS, because the office stands up one prop per person and holds
+    // three people — a stub with two could not describe a full floor, and the mask
+    // assertions below would be testing a room that cannot happen.
     spots: [
       { x: 3, y: 9 },
       { x: 9, y: 4 },
+      { x: 6, y: 16 },
     ],
     reach: 0.9,
     drunk_ms: 8500,
@@ -129,6 +133,7 @@ const CONFIG = {
     spots: [
       { x: 6, y: 14 },
       { x: 6, y: 4 },
+      { x: 2, y: 11 },
     ],
     reach: 0.9,
     invincible_ms: 11500,
@@ -293,6 +298,12 @@ async function stubSocket(page: Page): Promise<{
         st: 4500,
         dc: 1800,
         b: { x: 300, y: 1500, g: 40 },
+        // ONE OF EACH STANDING, on the catalogue's first spot. `bs` and `hs` are
+        // MASKS — a bit per spot, because the office keeps one prop per person —
+        // so the default frame has to say so: absent means «not one of them is on
+        // the floor», which is a real state and not the resting one.
+        bs: 1,
+        hs: 1,
         // Claude, as a nested object — a test that wants him GONE passes
         // `cl: undefined`, which is exactly what the office does while the router
         // is down.
@@ -955,11 +966,11 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» play', () => {
     // coordinates up in the catalogue it already fetched. A position on a frame
     // that repeats ten times a second would be twenty bytes forever to say
     // something that changes once every ten seconds.
-    await socket.snapshot({ bs: 1 });
+    await socket.snapshot({ bs: 1 << 1 });
     await expect(bottle).toHaveCSS('--x', String(CONFIG.bottle.spots[1].x / CONFIG.office.w));
 
     // Somebody drank it: it is gone, and he is drunk.
-    await socket.snapshot({ bt: 44000, b: { x: 300, y: 1500, g: 40, d: 8500 } });
+    await socket.snapshot({ bs: 0, b: { x: 300, y: 1500, g: 40, d: 8500 } });
     await expect(bottle).toHaveCount(0);
     await expect(page.getByTestId('fintech-boss')).toHaveAttribute('data-drunk', '1');
 
@@ -971,7 +982,7 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» play', () => {
     expect(boxed).toMatch(/none\|rgba\(0, 0, 0, 0\)/);
 
     // And he sobers up.
-    await socket.snapshot({ bt: 30000, b: { x: 300, y: 1500, g: 40 } });
+    await socket.snapshot({ bs: 0, b: { x: 300, y: 1500, g: 40 } });
     await expect(page.getByTestId('fintech-boss')).not.toHaveAttribute('data-drunk', '1');
   });
 
@@ -988,15 +999,16 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» play', () => {
     await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }] });
     await expect(page.getByTestId('fintech-pop')).toHaveCount(0);
 
-    // Somebody drank it — `bt` starts running.
-    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], bt: 9500 });
+    // Somebody drank it — its bit leaves the mask, which is both the edge and the
+    // place: the mark lands on the spot that lost its bottle.
+    await socket.snapshot({ pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }], bs: 0 });
     await expect(page.getByTestId('fintech-pop')).toHaveAttribute('data-kind', 'bottle');
 
     // He turned green — `d` starts running. A different kind, so two things in
     // the same second are still two things.
     await socket.snapshot({
       pr: [{ i: 'AbCdEfGhIjKl', x: 300, y: 600 }],
-      bt: 9000,
+      bs: 0,
       b: { x: 300, y: 1500, g: 40, d: 8500 },
     });
     await expect(page.getByTestId('fintech-pop')).toHaveAttribute('data-kind', 'drunk');
@@ -1673,16 +1685,46 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — the кальян and th
     page,
   }) => {
     const socket = await enterOffice(page);
-    await socket.snapshot({ hs: 1 });
+    await socket.snapshot({ hs: 1 << 1 });
     const hookah = page.getByTestId('fintech-hookah');
     await expect(hookah).toHaveCount(1);
     // From the catalogue by index, never from a coordinate on the frame.
     await expect(hookah).toHaveCSS('--x', String(CONFIG.hookah.spots[1].x / CONFIG.office.w));
     await expect(hookah).toHaveCSS('--y', String(CONFIG.hookah.spots[1].y / CONFIG.office.h));
 
-    // Absent while it is away, which is what an `hk` on the frame means.
-    await socket.snapshot({ hk: 19500, hs: 1 });
+    // Gone the moment its bit leaves the mask, which is the whole of what «it is
+    // not on the floor» is on this wire.
+    await socket.snapshot({ hs: 0 });
     await expect(hookah).toHaveCount(0);
+  });
+
+  test('a full office has one of each per person, and the plane draws all of them', async ({
+    page,
+  }) => {
+    // THE COUNT IS THE MECHANIC. One bottle in a room of three is a race the
+    // nearest man wins every time; one per person makes the walk worth taking
+    // whoever you are. On the wire that is a MASK — a bit per catalogue spot — so
+    // three props cost exactly what one did, and the plane draws a figure per bit.
+    const socket = await enterOffice(page);
+    await socket.snapshot({ bs: 0b101, hs: 0b11 });
+
+    const bottles = page.getByTestId('fintech-bottle');
+    await expect(bottles).toHaveCount(2);
+    await expect(page.getByTestId('fintech-hookah')).toHaveCount(2);
+
+    // AND EACH ON ITS OWN SPOT, from the catalogue by the index its bit names —
+    // two props drawn on one tile would be one prop drawn twice.
+    const xs = await bottles.evaluateAll((els) =>
+      els.map((el) => getComputedStyle(el).getPropertyValue('--x').trim()),
+    );
+    expect(new Set(xs).size, `both bottles are on ${xs[0]}`).toBe(2);
+    expect(xs).toContain(String(CONFIG.bottle.spots[0].x / CONFIG.office.w));
+    expect(xs).toContain(String(CONFIG.bottle.spots[2].x / CONFIG.office.w));
+
+    // One of them goes: the others stay, and the mark lands on the one that went.
+    await socket.snapshot({ bs: 0b001, hs: 0b11 });
+    await expect(bottles).toHaveCount(1);
+    await expect(page.getByTestId('fintech-pop')).toHaveAttribute('data-kind', 'bottle');
   });
 
   test('a cloud is drawn on you and on a colleague alike', async ({ page }) => {
@@ -2107,7 +2149,7 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» — the three things that h
     // wide base with a hose off the side: taller than it is wide, and both halves
     // have to paint.
     const socket = await enterOffice(page);
-    await socket.snapshot({ hs: 0 });
+    await socket.snapshot({ hs: 1 });
     const shape = await page.evaluate(() => {
       const el = document.querySelector('[data-testid="fintech-hookah"]')!;
       const r = el.getBoundingClientRect();

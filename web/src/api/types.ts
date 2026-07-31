@@ -981,14 +981,16 @@ export interface FintechConfig {
     seconds_ms: number;
     cooldown_ms: number;
   };
-  /** «Набухать лысого» — where the bottle stands and what drinking it does. */
+  /** «Набухать лысого» — where the bottles stand and what drinking one does. */
   bottle?: {
-    /** Every place one can appear; a frame names which by index. */
+    /** Every place one can appear; a frame names which by a bit per spot. */
     spots: { x: number; y: number }[];
     reach: number;
     drunk_ms: number;
     return_ms: number;
     slow_pct: number;
+    /** How many stand on the floor per person working. */
+    per_player?: number;
   };
   /**
    * Серега and Тёма — the two people in the office who are not playing.
@@ -1008,13 +1010,15 @@ export interface FintechConfig {
     slow_pct: number;
     slow_ms: number;
   };
-  /** «Кальян» — where it stands, and how long the cloud over you lasts. */
+  /** «Кальян» — where they stand, and how long the cloud over you lasts. */
   hookah?: {
-    /** Every place one can appear; a frame names which by index. */
+    /** Every place one can appear; a frame names which by a bit per spot. */
     spots: { x: number; y: number }[];
     reach: number;
     invincible_ms: number;
     return_ms: number;
+    /** How many stand on the floor per person working. */
+    per_player?: number;
   };
   /**
    * The tempo ramp: the office speeds both chasers up by `step_pct` of their base

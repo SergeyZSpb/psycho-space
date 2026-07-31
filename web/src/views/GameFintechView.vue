@@ -173,23 +173,24 @@
             data-testid="fintech-desk"
             :style="deskStyle(desk)"
           />
-          <!-- The bottle. Placed from the catalogue, drawn only while it is
-               there — `bt` is omitted while it stands, so an absent field means
-               present and the common case costs nothing to say. -->
+          <!-- THE BOTTLES — one per person on the floor, so this is a list. Each
+               is placed from the catalogue by the index its bit names; a spot with
+               no bit has nothing standing on it and draws nothing. -->
           <span
-            v-if="bottleAt && bottleMs === 0"
+            v-for="b in bottlesShown"
+            :key="b.i"
             class="fintech-bottle"
             data-testid="fintech-bottle"
-            :style="bottleStyle"
+            :style="propStyle(b)"
             aria-hidden="true"
           />
-          <!-- The кальян. Same arrangement as the bottle: placed from the
-               catalogue, drawn only while it is there. -->
+          <!-- The кальяны. The bottles' arrangement exactly. -->
           <span
-            v-if="hookahAt && hookahMs === 0"
+            v-for="h in hookahsShown"
+            :key="h.i"
             class="fintech-hookah"
             data-testid="fintech-hookah"
-            :style="hookahStyle"
+            :style="propStyle(h)"
             aria-hidden="true"
           />
           <!-- WHERE SOMETHING JUST HAPPENED. One short ring, keyed so that a
@@ -731,30 +732,18 @@ const redirectMs = ref(0);
 const routerMs = ref(0);
 const claudeAwayMs = ref(0);
 
-/** How long until another bottle stands in the office. Zero means one is there. */
-const bottleMs = ref(0);
-
-/** Which of the catalogue's spots it is on. Absent means the first, like every index here. */
-const bottleSpot = ref(0);
-
 /**
- * Where the bottle stands, in plane coordinates.
+ * WHICH SPOTS HAVE A BOTTLE ON THEM, as a bit per catalogue spot.
  *
- * From the catalogue by INDEX, never from a coordinate on the frame: it moves
- * every ten seconds, and two positions ten times a second per viewer would be
- * twenty bytes forever to say something that changes once in a hundred frames.
+ * The office keeps one per person on the floor, so «which spot» stopped being a
+ * question with one answer — and a mask is the encoding that did not grow with
+ * it. From the catalogue by INDEX either way, never from a coordinate on the
+ * frame: they move every ten seconds, and a position per prop would be twenty
+ * bytes each, twenty times a second, per viewer.
  */
-const bottleAt = computed(() => {
-  const spots = config.value?.bottle?.spots;
-  if (!spots || !spots.length || !constants) return null;
-  const at = spots[Math.min(bottleSpot.value, spots.length - 1)];
-  return at ? toPlane(at.x, at.y, constants.officeW, constants.officeH) : null;
-});
-
-/** How long until another кальян stands in the office. Zero means one is there. */
-const hookahMs = ref(0);
-/** Which of the catalogue's hookah spots it is on. */
-const hookahSpot = ref(0);
+const bottleMask = ref(0);
+/** The same, for the кальяны. */
+const hookahMask = ref(0);
 /** How long YOU are behind a cloud, in milliseconds. Zero means catchable. */
 const cloudMs = ref(0);
 /** How long the лысый stays drunk, for the row. */
@@ -773,26 +762,32 @@ const buffs = computed(() =>
 );
 
 /**
- * Where the кальян stands, in plane coordinates — the bottle's arrangement
- * exactly, and for the same reason: an index off the catalogue rather than a
- * position on a frame that repeats ten times a second.
+ * Every prop of one kind that is standing right now, ready to draw.
+ *
+ * PURE, AND SHARED BY BOTH KINDS, because a bottle and a кальян differ only in
+ * what they look like and what taking one does — neither of which is this
+ * function's business. It returns the catalogue INDEX beside the coordinates so
+ * the `v-for` has a stable key that survives a prop being taken somewhere else in
+ * the room.
  */
-const hookahAt = computed(() => {
-  const spots = config.value?.hookah?.spots;
-  if (!spots || !spots.length || !constants) return null;
-  const at = spots[Math.min(hookahSpot.value, spots.length - 1)];
-  return at ? toPlane(at.x, at.y, constants.officeW, constants.officeH) : null;
-});
+function standingProps(
+  spots: { x: number; y: number }[] | undefined,
+  mask: number,
+): { i: number; u: number; v: number }[] {
+  if (!spots || !spots.length || !constants) return [];
+  const out: { i: number; u: number; v: number }[] = [];
+  for (let i = 0; i < spots.length; i++) {
+    if (!(mask & (1 << i))) continue;
+    const at = toPlane(spots[i].x, spots[i].y, constants.officeW, constants.officeH);
+    out.push({ i, u: at.u, v: at.v });
+  }
+  return out;
+}
 
-const hookahStyle = computed(() => {
-  const at = hookahAt.value;
-  return at ? { '--x': String(at.u), '--y': String(at.v) } : {};
-});
+const bottlesShown = computed(() => standingProps(config.value?.bottle?.spots, bottleMask.value));
+const hookahsShown = computed(() => standingProps(config.value?.hookah?.spots, hookahMask.value));
 
-const bottleStyle = computed(() => {
-  const at = bottleAt.value;
-  return at ? { '--x': String(at.u), '--y': String(at.v) } : {};
-});
+const propStyle = (p: { u: number; v: number }) => ({ '--x': String(p.u), '--y': String(p.v) });
 
 /** A peer as the template needs him: identity, speech, and a face if he has one. */
 interface PeerShown extends PeerLook {
@@ -882,6 +877,35 @@ function mePlace(): { u: number; v: number } | null {
 function bossPlace(): { u: number; v: number } | null {
   if (!bossAt || !constants) return null;
   return toPlane(bossAt.x, bossAt.y, constants.officeW, constants.officeH);
+}
+
+/**
+ * Marks every prop of one kind that has just been taken.
+ *
+ * A BIT GOING 1 → 0 IS THE WHOLE EVENT: it says both that something was taken and
+ * WHICH ONE, so the ring lands on the spot it happened at rather than on "a
+ * bottle somewhere". A bit going the other way is a prop coming back, which is
+ * not a thing anybody did and gets no mark.
+ *
+ * It marks at most one per frame in practice — two props being taken on the same
+ * tick is possible in a full office, and the last one wins because there is one
+ * ring. That is the right trade: two rings a fifth of a second apart read as one
+ * flicker, and the plane's rule is that a mark says WHERE, briefly, and nothing
+ * more.
+ */
+function markTaken(
+  spots: { x: number; y: number }[] | undefined,
+  was: number,
+  now: number,
+  kind: string,
+): void {
+  if (!spots || !constants) return;
+  const taken = was & ~now;
+  if (!taken) return;
+  for (let i = 0; i < spots.length; i++) {
+    if (!(taken & (1 << i))) continue;
+    markAt(kind, toPlane(spots[i].x, spots[i].y, constants.officeW, constants.officeH));
+  }
 }
 
 /** Where Claude last was, which is where he walked off from. */
@@ -1280,12 +1304,11 @@ function teardownPlay(): void {
   redirectMs.value = 0;
   routerMs.value = 0;
   claudeAwayMs.value = 0;
-  bottleMs.value = 0;
-  hookahMs.value = 0;
+  bottleMask.value = 0;
+  hookahMask.value = 0;
   cloudMs.value = 0;
   drunkMs.value = 0;
   slowMs.value = 0;
-  bottleSpot.value = 0;
   peerEls.clear();
   peerInterp.clear();
   peerLines.clear();
@@ -1599,10 +1622,16 @@ function applySnapshot(frame: RealtimeFrame): void {
   // ten times a second for eight seconds. Both are read and compared BEFORE
   // either ref is written, because an assignment earlier in this function would
   // destroy the very edge being looked for. (It did, once.)
-  const bt = num(frame.bt);
-  if (bt > 0 && bottleMs.value === 0) markAt('bottle', bottleAt.value);
+  // THE PROPS, AND THE MARK COMES OFF THE MASK ITSELF. A bit that was set and is
+  // no longer means somebody has just taken THAT one — which is both the edge and
+  // the place, so the mark lands where it happened even in a room where three
+  // bottles are standing and one of them goes. Compared before the ref is written,
+  // because the previous value is what the comparison is against.
+  markTaken(config.value?.bottle?.spots, bottleMask.value, num(frame.bs), 'bottle');
+  markTaken(config.value?.hookah?.spots, hookahMask.value, num(frame.hs), 'hookah');
+  bottleMask.value = num(frame.bs);
+  hookahMask.value = num(frame.hs);
   redirectMs.value = num(frame.rc);
-  bottleMs.value = bt;
 
   // WHOEVER JUST SAID IT, WHEREVER THEY ARE STANDING. The redirect used to be
   // marked off your own cooldown starting, which meant only the person who
@@ -1616,7 +1645,6 @@ function applySnapshot(frame: RealtimeFrame): void {
   if (redirectLine.value >= 0 && meLine.value === redirectLine.value && wasMeLine !== redirectLine.value) {
     markAt('redirect', mePlace());
   }
-  bottleSpot.value = num(frame.bs);
 
   // THE CLOUD, marked on the EDGE and where it happened. A cloud is a buff rather
   // than an event, so it is drawn on the figure for the whole ten seconds — but its
@@ -1629,13 +1657,9 @@ function applySnapshot(frame: RealtimeFrame): void {
   const sl = num(frame.sl);
   if (sl > 0 && slowMs.value === 0) markAt('slow', mePlace());
   slowMs.value = sl;
-  const hk = num(frame.hk);
   const iv = num(frame.iv);
   if (iv > 0 && cloudMs.value === 0) markAt('cloud', mePlace());
-  if (hk > 0 && hookahMs.value === 0) markAt('hookah', hookahAt.value);
   cloudMs.value = iv;
-  hookahMs.value = hk;
-  hookahSpot.value = num(frame.hs);
 
   if (!predictor) {
     // The first authoritative position is what the predictor is seeded with —
