@@ -139,14 +139,20 @@
             >
               {{ p.icon }}{{ row.bag[p.grants] ?? 0 }}
             </span>
-            <!-- HOW OFTEN HE HAS BEEN PUT ON THE FLOOR, AND HOW MANY FRIENDS HE
-                 HAS PUT THERE. There is no kill column and there is not going to
-                 be one until there is something here worth killing: friendly
-                 fire is on and everybody in the building is a friend, so every
-                 kill is the second number and nothing else. Both are drawn as a
-                 zero rather than a blank, so the columns stay aligned down the
-                 list — the wire omits them, the readout does not. The word for
-                 the second one is on the splash screen, from the catalogue. -->
+            <!-- HOW MANY НЕЙРОСЛОПЫ HE HAS PUT DOWN, HOW OFTEN THE BUILDING HAS
+                 PUT HIM ON THE FLOOR, AND HOW MANY FRIENDS HE HAS PUT THERE.
+                 Three numbers, and they have to read as three different things
+                 at a glance on a phone: a friend shot scores NOTHING towards the
+                 first, he is published under his own heading instead, and the
+                 board therefore says in two columns what the game thinks of what
+                 you have been shooting. The kill column appeared with the thing
+                 it counts, which is the rule. All three are drawn as a zero
+                 rather than a blank, so the columns stay aligned down the list —
+                 the wire omits them, the readout does not. The words for the
+                 first and the last are on the splash, from the catalogue. -->
+            <span class="dum-board-num" data-testid="vanyadum-board-kills">
+              {{ KILLS_ICON }}{{ row.kills }}
+            </span>
             <span class="dum-board-num" data-testid="vanyadum-board-deaths">
               {{ DEATHS_ICON }}{{ row.deaths }}
             </span>
@@ -379,14 +385,16 @@ import {
 } from '../lib/vanyadumInput';
 import { createPredictor, type Predictor } from '../lib/vanyadumPredict';
 import { createGunAudio, type GunAudio } from '../lib/vanyadumSound';
-import { createInterpolator, type Interpolator, type PeerState } from '../lib/vanyadumInterp';
+import { createInterpolator, type Interpolator } from '../lib/vanyadumInterp';
 import {
   BETRAYALS_ICON,
   DEATHS_ICON,
+  KILLS_ICON,
   changedHands,
   clock,
   decodeBoard,
   decodePeers,
+  decodeSlops,
   type BoardRow,
 } from '../lib/vanyadumRoster';
 import type { VanyadumScene } from '../render/vanyadumScene';
@@ -414,11 +422,18 @@ const health = ref(0);
  * Whether the health readout is wearing its "that just went down" mark.
  *
  * DERIVED FROM A VALUE THE FRAME ALREADY CARRIES, which is this project's rule
- * for an acknowledgement: `hp` falling between two snapshots IS being shot, so
+ * for an acknowledgement: `hp` falling between two snapshots IS being hurt, so
  * nothing has to be published to say so — the server makes the same argument for
  * not putting a "you were hit" field on a payload that repeats twenty times a
  * second. Compared BEFORE `health` is overwritten, because a value overwritten
  * first is a transition nobody can see.
+ *
+ * IT COVERS BOTH WAYS OF LOSING HEALTH and does not distinguish them, which is
+ * deliberate rather than a gap: a barrel from a friend and a нейрослоп reaching
+ * you both arrive as the number going down, and the frame carries nothing that
+ * would tell them apart. It does not have to — the thing that hit you is either
+ * standing in front of you or was, and what this mark is for is the number,
+ * which is the same number either way.
  */
 const hurt = ref(false);
 /** Clears that mark on a timer. Held so leaving the building can cancel it. */
@@ -497,8 +512,6 @@ const link = ref<'connecting' | 'open' | 'lost'>('connecting');
  */
 const view = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 };
 
-/** What the interpolator says the peers look like this frame. */
-let peers: PeerState[] = [];
 /** The last snapshot tick we drew, echoed so the server can derive our latency. */
 let seenTick = 0;
 
@@ -1028,7 +1041,6 @@ function disposeWorld(): void {
   interp = null;
   predictor = null;
   outbox = [];
-  peers = [];
   floorMask = null;
   // The standings describe the building that has just been thrown away. Keeping
   // them would list the people who were standing in it for as long as it took
@@ -1121,10 +1133,18 @@ function drawFrame(now: number): void {
     view.pitch = v.pitch;
   }
 
-  // Peers are drawn in the recent past, because their intent cannot be
-  // predicted the way our own is. Empty until multiplayer fills it.
-  peers = interp ? interp.sample(now) : [];
-  scene.value?.setPeers(peers);
+  // Everything that is not us, drawn in the recent past: peers, because their
+  // intent cannot be predicted the way our own is, and нейрослопы, because they
+  // are entirely the server's. ONE SAMPLE for both — the server rewinds by the
+  // same delay to resolve a shot at either, so drawing them at two different
+  // instants would make a creature you have to lead differently from a person.
+  //
+  // The слопы are given the eye's own position because a billboard has to know
+  // which way it is being looked at, and the camera is not moved until `render`
+  // one line below.
+  const drawn = interp?.sample(now);
+  scene.value?.setPeers(drawn?.peers ?? []);
+  scene.value?.setSlops(drawn?.slops ?? [], view);
 
   scene.value?.render(view, moving(), dt);
   frameHandle = requestAnimationFrame(drawFrame);
@@ -1295,9 +1315,16 @@ function applySnapshot(frame: RealtimeFrame): void {
   // so this only happens if that board frame was dropped, and it heals within a
   // second. Dropping the peer instead would make somebody invisible; guessing a
   // name would put the wrong one on him.
+  //
+  // The нейрослопы ride the same call and the same timeline, under their own
+  // key: `f`, never `z`, which is the reader's own eye height. They carry
+  // neither an angle nor a state — a слоп's facing is the way it has just moved,
+  // and there is no state one can be in that a viewer has to be told about, so
+  // being absent from the next frame is the whole of having been shot.
   if (interp && world && config.value) {
     interp.push(
       decodePeers(frame.p, world.level, config.value.player.eye_height),
+      decodeSlops(frame.f, world.level),
       tick,
       performance.now(),
     );
@@ -1843,7 +1870,7 @@ watch(
   white-space: nowrap;
 }
 
-/* The name is the only column that gives, so two more numeric columns cost the
+/* The name is the only column that gives, so the three numeric columns cost the
    pseudonym a few characters of ellipsis and nothing else. */
 .dum-board-num {
   opacity: 0.85;

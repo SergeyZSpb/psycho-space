@@ -405,18 +405,31 @@ func (l *Level) placePickups(rng *rand.Rand) {
 	count := 2 + rng.Intn(2)
 	for i := 0; i < count; i++ {
 		s := l.Sectors[1+rng.Intn(len(l.Sectors)-1)]
-		// Kept a clear player-radius off the walls, so nothing generates
-		// half-buried in the concrete or out of reach behind a jamb.
-		inset := PlayerRadius * 2
-		p := Vec2{
-			X: s.MinX + inset + rng.Float64()*math.Max(0, (s.MaxX-s.MinX)-2*inset),
-			Y: s.MinY + inset + rng.Float64()*math.Max(0, (s.MaxY-s.MinY)-2*inset),
-		}
 		l.Pickups = append(l.Pickups, Pickup{
 			ID:     i,
 			Kind:   Pickups[rng.Intn(len(Pickups))].Key,
 			Sector: s.ID,
-			Pos:    p,
+			Pos:    randomSpot(rng, s),
 		})
+	}
+}
+
+// randomSpot draws a point inside a room, kept a clear player-radius off the
+// walls so that nothing lands half-buried in the concrete or out of reach behind
+// a jamb.
+//
+// TWO CALLERS, WHICH IS WHY IT IS A FUNCTION: the generator scattering beer, and
+// the spawner deciding where a нейрослоп appears (world.go, spawnSlop). The
+// second one is what made it worth extracting — the inset argument is the same
+// argument in both cases, and a слоп generated inside a wall would be pushed out
+// by the resolver on its first step in a direction nobody chose.
+//
+// It draws X and then Y, in that order, because a level is reproducible from its
+// seed and the order the numbers are drawn in IS part of that reproduction.
+func randomSpot(rng *rand.Rand, s Sector) Vec2 {
+	inset := PlayerRadius * 2
+	return Vec2{
+		X: s.MinX + inset + rng.Float64()*math.Max(0, (s.MaxX-s.MinX)-2*inset),
+		Y: s.MinY + inset + rng.Float64()*math.Max(0, (s.MaxY-s.MinY)-2*inset),
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -334,40 +335,43 @@ func TestSnapshotStaysSmall(t *testing.T) {
 // REPEATS — because a phone does not care which frame type the bytes belonged
 // to, and what it can afford is a steady rate rather than an instant.
 //
-// TWO THINGS ARE OUTSIDE THE ARITHMETIC BELOW AND NEITHER IS UNBOUNDED. Saying
-// so is the point: a test that counted one board a second while the server sends
-// more than that would be a ceiling that agrees with itself rather than with the
-// wire.
+// EVERYTHING SUSTAINED IS COUNTED IN THE ARITHMETIC BELOW, and the нейрослопы are
+// why it now has to be. They took the headroom from 528 B/s to 71, at which point
+// "far under the ceiling" stopped being something anybody can claim by eye:
+// Snapshot.Events was stated here and left out at ~28 B/s on the grounds of being
+// two orders of magnitude under the headroom, and 28 against 71 is not two orders
+// under anything — it is 39% of what was left. So it is a term of the sum now
+// (worstEventCost), priced at its own rate rather than at the frame rate, and the
+// headroom the sum reports is the real one: 32 B/s.
 //
-//   - STANDINGS FRAMES OUT OF TURN. One goes to everybody on the tick the roster
-//     changes, and one goes to a single connection the first time it is served
-//     and again on the tick after each accepted hello (service.go, the ledger).
-//     The roster moves only when somebody genuinely joins or is taken out past
-//     AbandonGrace, so at MaxOccupants that is a handful of extra frames a minute
-//     — noise against 20 snapshots a second. The hello is the larger term and it
-//     is self-inflicted: the socket allows ten inbound frames a second
-//     (internal/realtime/conn.go) and a tick sends a connection at most one
-//     board, so a client that sent nothing but hellos could pull ten a second,
-//     ~2.9 kB/s, to its OWN socket and to nobody else's. It is bounded by a rate
-//     limit that already exists, it costs an honest client one frame per attach,
-//     and the headroom below absorbs it.
-//   - Snapshot.Events. They ride the snapshot, are delivered ONCE and cleared, and
-//     the only one that exists is a pickup at ~28 bytes. A thing can be collected
-//     again only after PickupRespawn, so a player standing on the densest heap a
-//     level can hold sustains at most MaxWirePickups/PickupRespawn ≈ 1 event a
-//     second, ~28 B/s. The instantaneous burst — several things collected on one
-//     tick — is bounded by the same 32.
+// ONE THING IS STILL OUTSIDE THE SUM, and it is bounded rather than negligible:
+// STANDINGS FRAMES OUT OF TURN. One goes to everybody on the tick the roster
+// changes, and one goes to a single connection the first time it is served and
+// again on the tick after each accepted hello (service.go, the ledger). The
+// roster moves only when somebody genuinely joins or is taken out past
+// AbandonGrace — a handful of frames a minute at MaxOccupants, against twenty
+// snapshots a second.
 //
-// Folding either in would mean inventing a worst case for a term two orders of
-// magnitude under the headroom, so they are stated and left out. If a future
-// event fires per tick rather than per action, it belongs INSIDE the arithmetic
-// and not in this list.
+// The hello is the large one, and the honest statement of it is not that there is
+// room for it. The socket allows ten inbound frames a second
+// (internal/realtime/conn.go) and a tick sends a connection at most one board, so
+// a client sending nothing but hellos pulls ten boards a second — about 2.9 kB/s,
+// ninety times the headroom below, and nothing in this budget absorbs it. What
+// bounds it is that it is SELF-INFLICTED AND SELF-DIRECTED: those frames go to
+// that client's own socket and to nobody else's, the inbound rate limit is what
+// caps them, and an honest client pays exactly one extra board per attach. A phone
+// that floods its own connection gets the connection it asked for; every other
+// phone in the building is untouched, and it is the per-viewer cost of an ordinary
+// viewer that MaxOccupants is derived from.
+//
+// If a future event fires per tick rather than per action, it belongs in
+// worstSnapshot rather than in a term of its own.
 const wireCeiling = 8000
 
 // worstSnapshot is the widest frame the wire can carry for a building of n
-// people — deliberately larger than a generated level produces, because the
-// capacity is budgeted on the worst case and a phone on bad mobile data is
-// precisely when the worst case is the case.
+// people and f нейрослопы — deliberately larger than a generated level produces,
+// because the capacity is budgeted on the worst case and a phone on bad mobile
+// data is precisely when the worst case is the case.
 //
 // Yaw is at the far end of the wrapped range (five characters where an ordinary
 // one is four), positions are ±1234 m where a заброшка is tens of metres across,
@@ -389,12 +393,12 @@ const wireCeiling = 8000
 // essentially all the time, and a capacity derived from anything softer would
 // fail the first time somebody was being spawn-camped.
 //
-// That is exactly the shape Peer.Fired's predecessor priced at 640 B/s and
-// refused. It is bought this time because there is no cheaper one: a hit and a
-// death move nobody, so neither can be derived from a value the frame already
-// carries, and the alternative to spending the bytes is a game where being shot
-// is invisible.
-func worstSnapshot(n int) Snapshot {
+// EVERY СЛОП IS COUNTED, ALL OF THEM, and that is the same rule read for the
+// second kind of entity. They all walk at the nearest man, so the room he is
+// standing in is where they end up — the population IS the number visible at
+// once, and a budget taken on a filtered set would be a budget that fails at the
+// exact moment the game is worth playing.
+func worstSnapshot(n, f int) Snapshot {
 	s := Snapshot{
 		T: TypeSnapshot, Tick: 999999, Ack: 999999,
 		X: 123456, Y: -123456, Z: 12345, Yaw: -6283, Sector: 12, Health: 100,
@@ -412,61 +416,97 @@ func worstSnapshot(n int) Snapshot {
 	for i := 0; i < n-1; i++ {
 		s.Peers = append(s.Peers, Peer{Slot: 9, X: 123456, Y: -123456, Sector: 12, Yaw: -6283, St: PeerProtected})
 	}
+	for i := 0; i < f; i++ {
+		s.Slops = append(s.Slops, Foe{ID: 9, X: 123456, Y: -123456, Sector: 12})
+	}
 	return s
 }
 
+// worstEventCost is what Snapshot.Events costs one viewer per second, sustained,
+// and it is a term of the ceiling rather than a note beside it.
+//
+// PRICED AT ITS OWN RATE AND NOT AT SnapshotHz, which is the whole reason it is
+// not simply a field on worstSnapshot: an event is delivered ONCE and cleared on
+// the next frame, so multiplying it by twenty would be a twenty-fold pessimism —
+// and this budget is what decides how many people fit in the building, so a lie in
+// either direction costs somebody a place.
+//
+// THE RATE IS THE DENSEST HEAP A LEVEL CAN HOLD. A thing comes back only after
+// PickupRespawn, so the most a player can be handed is every pickup in the
+// building once per respawn — MaxWirePickups of them, that being the width of the
+// mask the client reads them from (message.go, Snapshot.Left). The instantaneous
+// burst, several things collected on one tick, is bounded by the same number and
+// is not what a ceiling measured in bytes per second is about.
+func worstEventCost(t *testing.T) int {
+	t.Helper()
+	// The widest event this game can emit: the only kind there is, its key, and the
+	// highest index the mask can carry.
+	raw, err := json.Marshal([]Event{{E: EventPickup, K: AmmoCounter, ID: MaxWirePickups - 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The array does not travel alone — it costs its own key and the comma joining
+	// it to the frame as well.
+	return (len(raw) + len(`,"ev":`)) * MaxWirePickups / int(PickupRespawn/time.Second)
+}
+
 // worstStandings is the widest standings frame for a building of n people: a
-// twelve-character pseudonym each, a bag, a stay of eleven days, and the two
-// counters this iteration added — a career of deaths and a career of friends
-// shot, both at six figures.
+// twelve-character pseudonym each, a bag, a stay of eleven days, and the three
+// counters — a career of deaths, a career of слопы and a career of friends shot,
+// all at six figures.
 func worstStandings(n int) Standings {
 	b := Standings{T: TypeStandings}
 	for i := 0; i < n; i++ {
 		b.Rows = append(b.Rows, StandingsRow{
 			Slot: 9, Name: "K3jf9sLm2QpZ", Seconds: 999999, Bag: map[string]int{"beer": 9},
-			Deaths: 999999, Betrayals: 999999,
+			Deaths: 999999, Kills: 999999, Betrayals: 999999,
 		})
 	}
 	return b
 }
 
 func TestEverythingAFullBuildingSendsAViewerFitsTheCeiling(t *testing.T) {
-	// THE SOLO FRAME IS THE FLOOR, NOT THE COST, and MaxOccupants is what this
-	// test exists to derive. A viewer pays two things: a snapshot built for them
-	// SnapshotHz times a second carrying everybody else, and a standings frame
-	// once a second carrying everybody including them. Both are counted, because
-	// leaving the cheaper one out would be moving the ceiling rather than meeting
-	// it — which is how the constant came to be six before anybody measured a
-	// peer.
+	// THE SOLO FRAME IS THE FLOOR, NOT THE COST, and MaxOccupants and
+	// SlopPopulation are what this test exists to derive. A viewer pays three
+	// things: a snapshot built for them SnapshotHz times a second carrying
+	// everybody else AND every нейрослоп they can see, a standings frame once a
+	// second carrying everybody including them, and the events he is handed as he
+	// collects things. All three are counted, because leaving one out would be
+	// moving the ceiling rather than meeting it — which is how the capacity came to
+	// be six before anybody measured a peer.
 	//
 	// Measured at the widest quantisation the wire can carry: 180 bytes of self,
-	// +63 for the first peer (the entry plus the `p` array around it), +57 for
-	// each one after; a standings frame is 104 bytes with one row and +76 a row
-	// after that. So a full house of four is 357 × 20 + 332 = 7472 B/s, where five
-	// would be 414 × 20 + 408 = 8688 and over. That is the whole derivation of
-	// MaxOccupants, and this is what turns it into a gate: raising the constant,
-	// or growing either frame, fails here rather than on somebody's mobile data.
+	// +63 for the first peer and +57 for each one after, +44 for the first слоп
+	// and +38 for each one after; a standings frame is 115 bytes with one row and
+	// +87 a row after that; and events sustain 39 B/s at the densest heap a level
+	// can hold (worstEventCost). So three people and two слопы is 382 × 20 + 289 +
+	// 39 = 7968 B/s, where a third слоп would be 8728 and a fourth person 9195 —
+	// both over, and both by more than the whole of the headroom. That is the
+	// derivation of the two constants, and this is what turns it into a gate:
+	// raising either, or growing any of the three frames, fails here rather than
+	// on somebody's mobile data.
 	//
-	// SHOOTING PEOPLE COST THE FIFTH PLACE, which the previous version of this
-	// comment named as the price of the next field of that size. The peer state is
-	// 7 bytes on every peer on every tick — 420 B/s at four — because two of its
-	// four values are durations rather than instants and there is no honest duty
-	// cycle to discount by (worstSnapshot). The two self timers and the two
-	// standings counters are the rest of it. The arithmetic above is what says
-	// four rather than five; the answer to wanting five back is the binary codec.
+	// THE НЕЙРОСЛОПЫ COST THE FOURTH PLACE, and not by a margin worth arguing
+	// about: four people and ONE слоп is 8435 B/s, so the building was over the
+	// ceiling before the antagonist arrived. A слоп is already the cheapest entity
+	// this wire can carry — 37 bytes against a peer's 56, with no yaw and no state
+	// field, because it has nothing to say with either (message.go, Foe). The
+	// arithmetic above is what says three people rather than four; the answer to
+	// wanting the fourth back is the binary codec.
 	//
 	// 19 of that 180 assumes a gun reloading AND on its firing cadence while its
 	// owner is simultaneously dead and freshly protected, which is four states at
 	// once and none of them compatible. The pessimism is on purpose (see
-	// worstSnapshot) and it is worth about 380 B/s of the headroom below.
+	// worstSnapshot) and it is worth about 380 B/s — which is to say the headroom
+	// this leaves is a good deal smaller than the pessimism inside the number.
 	//
-	// WHAT IS NOT COUNTED, AND WHY IT DOES NOT HAVE TO BE, is on wireCeiling: the
-	// out-of-turn standings frames and a snapshot's events, both bounded and both
-	// far under the headroom this leaves. Nor is the peer array taken filtered —
-	// interest management and the hold that keeps a peer on the frame a moment
-	// after he leaves the visible set (visibleHold) both act on a set that is
-	// already whole here, because the worst case is everybody in one room.
-	snap, err := json.Marshal(worstSnapshot(MaxOccupants))
+	// WHAT IS STILL NOT COUNTED IS ON wireCeiling: the out-of-turn standings
+	// frames, bounded by an inbound rate limit and delivered to the socket that
+	// asked for them. Nor is any of the three arrays taken filtered — interest
+	// management and the hold that keeps something on the frame a moment after it
+	// leaves the visible set (visibleHold) both act on a set that is already whole
+	// here, because the worst case is everybody and everything in one room.
+	snap, err := json.Marshal(worstSnapshot(MaxOccupants, SlopPopulation))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,29 +514,76 @@ func TestEverythingAFullBuildingSendsAViewerFitsTheCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	perSecond := len(snap)*SimHz + len(board)*int(time.Second/StandingsInterval)
-	t.Logf("MaxOccupants=%d: snapshot %d B × %d Hz + standings %d B = %d B/s, ceiling %d",
-		MaxOccupants, len(snap), SimHz, len(board), perSecond, wireCeiling)
+	events := worstEventCost(t)
+	perSecond := len(snap)*SimHz + len(board)*int(time.Second/StandingsInterval) + events
+	t.Logf("MaxOccupants=%d SlopPopulation=%d: snapshot %d B × %d Hz + standings %d B + events %d B/s = %d B/s, ceiling %d (headroom %d)",
+		MaxOccupants, SlopPopulation, len(snap), SimHz, len(board), events, perSecond, wireCeiling, wireCeiling-perSecond)
 	if perSecond > wireCeiling {
-		t.Fatalf("a full building costs a viewer %d B/s, the ceiling is %d — %d-byte snapshot × %d Hz plus a %d-byte standings\nsnapshot: %s\nstandings: %s",
-			perSecond, wireCeiling, len(snap), SimHz, len(board), snap, board)
+		t.Fatalf("a full building costs a viewer %d B/s, the ceiling is %d — %d-byte snapshot × %d Hz plus a %d-byte standings plus %d B/s of events\nsnapshot: %s\nstandings: %s",
+			perSecond, wireCeiling, len(snap), SimHz, len(board), events, snap, board)
 	}
 
-	// And the step this constant is one below really is over the line, so the
-	// test cannot pass by the arithmetic having drifted somewhere generous.
-	next, err := json.Marshal(worstSnapshot(MaxOccupants + 1))
-	if err != nil {
-		t.Fatal(err)
+	// And BOTH of the steps these constants are one below really are over the
+	// line, so the test cannot pass by the arithmetic having drifted somewhere
+	// generous — and so that a future change cannot quietly buy a place back by
+	// shrinking a frame without saying so.
+	for _, over := range []struct {
+		what        string
+		people, slo int
+	}{
+		{"people", MaxOccupants + 1, SlopPopulation},
+		{"слопы", MaxOccupants, SlopPopulation + 1},
+	} {
+		nextSnap, err := json.Marshal(worstSnapshot(over.people, over.slo))
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextBoard, err := json.Marshal(worstStandings(over.people))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The same three terms as above: an extra place in the building would be
+		// paid for out of the same viewer's second.
+		cost := len(nextSnap)*SimHz + len(nextBoard)*int(time.Second/StandingsInterval) + events
+		t.Logf("one more of the %s (%d people, %d слопы) would be %d B/s", over.what, over.people, over.slo, cost)
+		if cost <= wireCeiling {
+			t.Fatalf("%d people and %d слопы would cost %d B/s, inside the %d ceiling — the %s constant is one too low",
+				over.people, over.slo, cost, wireCeiling, over.what)
+		}
 	}
-	nextBoard, err := json.Marshal(worstStandings(MaxOccupants + 1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	over := len(next)*SimHz + len(nextBoard)*int(time.Second/StandingsInterval)
-	t.Logf("MaxOccupants+1=%d would be %d B/s", MaxOccupants+1, over)
-	if over <= wireCeiling {
-		t.Fatalf("%d people would cost %d B/s, inside the %d ceiling — MaxOccupants is a place too low",
-			MaxOccupants+1, over, wireCeiling)
+}
+
+func TestNoTwoFieldsOnAFrameShareAWireKey(t *testing.T) {
+	// A KEY COLLISION IS SILENT, AND IT DELETES BOTH FIELDS. encoding/json
+	// resolves two fields at the same level with the same tag by emitting NEITHER
+	// — no error, no panic, no log line. The frame simply comes out short.
+	//
+	// It is not a hypothetical. The слоп array shipped as `"z"` for exactly as
+	// long as it took to measure it, and `z` was already the eye height: the
+	// snapshot lost both, so every player would have been drawn standing on the
+	// floor of sector zero and no слоп would ever have appeared. Nothing in the
+	// type system says a word about it, and the only reason it was caught is that
+	// the byte count refused to move.
+	//
+	// Keys are one and two characters on these frames deliberately (see the file
+	// header), which is exactly the regime in which a collision is easy — so this
+	// is asserted over the struct tags of every type that reaches the wire rather
+	// than left to whoever adds the next field noticing.
+	for _, frame := range []any{Snapshot{}, Peer{}, Foe{}, Standings{}, StandingsRow{}, Ready{}, Full{}, Event{}, InputFrame{}, wireCommand{}} {
+		typ := reflect.TypeOf(frame)
+		seen := make(map[string]string, typ.NumField())
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			key, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+			if key == "" || key == "-" {
+				continue
+			}
+			if first, dup := seen[key]; dup {
+				t.Fatalf("%s.%s and %s.%s both serialise as %q — encoding/json emits neither",
+					typ.Name(), first, typ.Name(), f.Name, key)
+			}
+			seen[key] = f.Name
+		}
 	}
 }
 
@@ -510,7 +597,7 @@ func TestNoNameAndNoScoreRidesTheRepeatingFrame(t *testing.T) {
 	// Asserted over the serialised bytes rather than over the struct, because
 	// what this forbids is a field REACHING THE WIRE — a helpfully-named Go field
 	// with the wrong json tag would pass any check made against the type.
-	raw, err := json.Marshal(worstSnapshot(MaxOccupants))
+	raw, err := json.Marshal(worstSnapshot(MaxOccupants, SlopPopulation))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +627,7 @@ func TestNoNameAndNoScoreRidesTheRepeatingFrame(t *testing.T) {
 	var resting struct {
 		Peers []map[string]any `json:"p"`
 	}
-	calm := worstSnapshot(MaxOccupants)
+	calm := worstSnapshot(MaxOccupants, SlopPopulation)
 	for i := range calm.Peers {
 		calm.Peers[i].St = 0
 	}

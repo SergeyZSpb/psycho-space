@@ -350,10 +350,10 @@ type Snapshot struct {
 	Reload   int            `json:"r,omitempty"`
 	Bag      map[string]int `json:"c,omitempty"`
 	Events   []Event        `json:"ev,omitempty"`
-	// Peers is everything in the building that is not you AND THAT YOU COULD
-	// PLAUSIBLY SEE — the other people in the заброшка today, the нейрослопы when
-	// they arrive. Omitted entirely when there is nobody, which is the common
-	// case and the one that should cost nothing.
+	// Peers is every PERSON in the building that is not you and that you could
+	// plausibly see. Omitted entirely when there is nobody, which is the common
+	// case and the one that should cost nothing. The нейрослопы are beside it in
+	// their own array, for the byte reason stated on Slops.
 	//
 	// FILTERED TO THE VIEWER'S OWN ROOM AND THE ROOMS THROUGH ITS DOORWAYS
 	// (level.go, buildVisibility), plus anybody who was in one of those within the
@@ -380,6 +380,24 @@ type Snapshot struct {
 	// A peer is drawn INTERPOLATED, about a hundred milliseconds in the past,
 	// because its intent cannot be predicted the way your own is.
 	Peers []Peer `json:"p,omitempty"`
+	// Slops is every нейрослоп the reader could plausibly see, on the same terms
+	// and through the same filter as Peers: the reader's own room, the rooms
+	// through its doorways, and anything that was in one of those within the last
+	// visibleHold. Omitted entirely when there is nothing to draw.
+	//
+	// A SEPARATE ARRAY AND NOT A KIND FLAG ON Peers, which is a byte decision
+	// before it is a tidiness one. Merged, every entry would carry a discriminator
+	// — 7 bytes at the JSON floor, on every peer as well as every слоп, twenty
+	// times a second — to say something the array it is in already says. Separated,
+	// the cost is `,"f":[]` once per frame that has any, and each kind carries only
+	// the fields its own kind needs.
+	//
+	// It is idempotent full state exactly as Peers is, and ABSENCE IS THE WHOLE OF
+	// DYING: a слоп killed on this tick is simply not in the array on the next one.
+	// That is also the only acknowledgement a shot at one gets, which is what makes
+	// SlopHealth's relationship to BarrelDamage load-bearing rather than a tuning
+	// choice (content.go).
+	Slops []Foe `json:"f,omitempty"`
 }
 
 // MaxWirePickups is how many pickups a level may contain, because it is the
@@ -481,6 +499,45 @@ type Peer struct {
 	St int `json:"st,omitempty"`
 }
 
+// Foe is one нейрослоп as the wire carries it. The simulation's own creature is
+// gamevanyadum.Slop; this is the third of it that leaves the building.
+//
+// FOUR FIELDS, AND EVERY ONE OF THEM IS SOMETHING THE CLIENT COULD NOT DERIVE.
+// What a peer carries and this does not is the argument for the whole type:
+//
+//   - NO YAW. A слоп walks at the man it is chasing and does nothing else, so
+//     the direction it is facing IS the direction it is travelling — two
+//     consecutive frames give it, for peers' viewers as well as for its own, and
+//     the client is already holding both in order to interpolate between them.
+//     A player's yaw is not like that: he can stand still and look somewhere
+//     else, which is most of what aiming is. 12 bytes a слоп a tick, derived.
+//   - NO STATE. The four things `Peer.St` exists to say are firing, being hit,
+//     being down and being protected, and a слоп does none of them: it has no
+//     gun, it is never on the floor (one barrel is the whole of it, so it dies
+//     rather than falling), and nothing protects it. 7 bytes a слоп a tick, not
+//     applicable rather than derived.
+//   - NO HEALTH, for the same reason and it is the load-bearing one. See
+//     content.go, SlopHealth: the creature is worth exactly one barrel precisely
+//     so that "it is gone from the array" can be the whole acknowledgement of a
+//     hit.
+//
+// 37 bytes at the widest quantisation the wire can carry, against a peer's 56.
+// The two the client CANNOT derive are the position and the room: a sector is a
+// floor height and a light level it could not have worked out from x and y
+// without disagreeing with the server at every doorway — the same argument
+// Peer.Sector makes, and слопы live in doorways.
+type Foe struct {
+	// ID is the place in the building this слоп holds, reused once it is dead.
+	// Unlike a slot it is never published against a name, because a слоп does not
+	// have one: it exists so that two frames can be recognised as being about the
+	// same creature, which is what interpolation runs on.
+	ID int `json:"n"`
+	X  int `json:"x"`
+	Y  int `json:"y"`
+	// Sector is the room it is in: how high to draw it, and how dark.
+	Sector int `json:"s"`
+}
+
 // The values St takes. They are wire constants rather than catalogue entries:
 // the client switches on them to choose a colour, which is a rendering decision
 // and not a rule a player is told.
@@ -493,8 +550,10 @@ const (
 	// own barrel count is on his own frame — so this is how everybody else finds
 	// out, which is the whole reason it exists.
 	PeerFired = 1
-	// PeerHit is a shot landing on him. It is what tells the ROOM that somebody
-	// was hit, and it is also how the SHOOTER learns he connected: he knows he
+	// PeerHit is something hurting him: a barrel landing, or a нейрослоп reaching
+	// him, which the room is told about identically because neither one moves the
+	// man it happens to. It is what tells the ROOM that somebody was hit, and when
+	// it was a shot it is also how the SHOOTER learns he connected: he knows he
 	// fired this tick, because his own `b` fell, and the man he was pointing at
 	// is marked on the same frame. That derivation is why there is no separate
 	// "you hit him" field addressed to the shooter.
@@ -576,22 +635,25 @@ type StandingsRow struct {
 	// which is everybody for their first minute — and everybody again once the
 	// gun has drunk what they found.
 	Bag map[string]int `json:"c,omitempty"`
-	// Deaths is how many times the building has put them on the floor, and
-	// Betrayals is how many friends they have put there.
+	// Deaths is how many times the building has put them on the floor, Kills is
+	// how many нейрослопы they have put down, and Betrayals is how many friends
+	// they have.
 	//
-	// THERE IS NO KILL COLUMN, AND THAT IS THE JOKE RATHER THAN AN OMISSION.
-	// Friendly fire is on and the нейрослопы have not arrived, so every kill in
-	// this заброшка is a friend's — it scores nothing, it is not added to any
-	// total, and it is published on its own line under the name the catalogue
-	// gives it (content.go, BetrayalsTitle). A kill total appears on the day
-	// there is something here worth killing.
+	// THE KILL COLUMN AND THE BETRAYAL COLUMN ARE THE JOKE, and it only became one
+	// when there was something here worth killing. Friendly fire is still on, and a
+	// friend shot still scores NOTHING: he is not added to the kills, he is
+	// published on his own line under his own heading (content.go, KillsTitle and
+	// BetrayalsTitle), and the board therefore says in two columns what the game
+	// thinks of what you have been doing. Before the слопы arrived there was only
+	// the confession, because every kill there was was a friend's.
 	//
 	// ON THIS FRAME AND NOT ON THE SNAPSHOT, which is the rule that made this
-	// frame exist: both numbers move a few times a MINUTE, and restating them
+	// frame exist: all three numbers move a few times a MINUTE, and restating them
 	// twenty times a second per viewer is exactly what a once-a-second readout is
-	// for. Omitted at zero, so a building where nobody has shot anybody carries
-	// neither.
+	// for. Omitted at zero, so a building where nobody has shot anything carries
+	// none of them.
 	Deaths    int `json:"d,omitempty"`
+	Kills     int `json:"k,omitempty"`
 	Betrayals int `json:"br,omitempty"`
 }
 

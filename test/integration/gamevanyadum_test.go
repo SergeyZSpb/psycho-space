@@ -223,6 +223,7 @@ func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 	var cfg struct {
 		Player   map[string]float64 `json:"player"`
 		Gun      map[string]any     `json:"gun"`
+		Slop     map[string]any     `json:"slop"`
 		Pickups  []map[string]any   `json:"pickups"`
 		Surfaces []map[string]any   `json:"surfaces"`
 		Sim      map[string]float64 `json:"sim"`
@@ -268,6 +269,40 @@ func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 	// rules do without either typing it out.
 	if got, _ := cfg.World["betrayals_title"].(string); got != gamevanyadum.BetrayalsTitle {
 		t.Fatalf("the catalogue calls the column %q, the game calls it %q", got, gamevanyadum.BetrayalsTitle)
+	}
+	// And the нейрослоп, every number of which is a rule the player has to know:
+	// how many are in the building, what one is worth against the barrel published
+	// beside it, what being reached costs and how often, and — the only thing that
+	// really matters — that he is faster than it is.
+	if got, _ := cfg.Slop["population"].(float64); int(got) != gamevanyadum.SlopPopulation {
+		t.Fatalf("the catalogue says %v слопы, the building holds %d", cfg.Slop["population"], gamevanyadum.SlopPopulation)
+	}
+	if got, _ := cfg.Slop["health"].(float64); int(got) != gamevanyadum.SlopHealth {
+		t.Fatalf("the catalogue says a слоп is worth %v, the world says %d", cfg.Slop["health"], gamevanyadum.SlopHealth)
+	}
+	if got, _ := cfg.Slop["damage"].(float64); int(got) != gamevanyadum.SlopDamage {
+		t.Fatalf("the catalogue says being reached costs %v, the world takes %d", cfg.Slop["damage"], gamevanyadum.SlopDamage)
+	}
+	if got, _ := cfg.Slop["touch_seconds"].(float64); got != gamevanyadum.SlopTouchInterval.Seconds() {
+		t.Fatalf("the catalogue says it may hurt you every %vs, the world says %v",
+			cfg.Slop["touch_seconds"], gamevanyadum.SlopTouchInterval)
+	}
+	if got, _ := cfg.Slop["speed"].(float64); got <= 0 || got >= cfg.Player["walk_speed"] {
+		t.Fatalf("a слоп walks at %v against a man's %v — running away has to be an answer that always works",
+			cfg.Slop["speed"], cfg.Player["walk_speed"])
+	}
+	if got, _ := cfg.Slop["health"].(float64); got > cfg.Gun["damage"].(float64) {
+		t.Fatalf("a слоп is worth %v against a barrel's %v — a hit that does not kill is one the frame cannot report",
+			got, cfg.Gun["damage"])
+	}
+	// The two standings columns are named HERE, in Russian, so the splash screen
+	// and the board say the same words as the rules do without either typing them
+	// out. The pair is the joke: слопы score, friends do not.
+	if got, _ := cfg.Slop["kills_title"].(string); got != gamevanyadum.KillsTitle {
+		t.Fatalf("the catalogue calls the kill column %q, the game calls it %q", got, gamevanyadum.KillsTitle)
+	}
+	if title, _ := cfg.Slop["title"].(string); title == "" {
+		t.Fatalf("the catalogue does not say what the creature is called: %+v", cfg.Slop)
 	}
 	// How tall a man is to be shot at, which is also how tall he should be drawn:
 	// a figure shorter than the server shoots at is a hitbox nobody can see.
@@ -656,7 +691,7 @@ func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
 	// middle of one.
 	target := level.Pickups[0]
 	before := b.lastSeen(t, a.slot)
-	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, level.SpawnSector, target.Sector, target.Pos))
+	dumWalkTo(t, tick, clk, room, a, level, target.Pos)
 	after := b.lastSeen(t, a.slot)
 	if moved := math.Hypot(float64(after.X-before.X), float64(after.Y-before.Y)) / 100; moved < 1 {
 		t.Fatalf("a crossed the заброшка and b saw him move %.2f m", moved)
@@ -673,8 +708,9 @@ func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
 	// cared to work out where a man he had never been sent was standing — free
 	// while nothing here could shoot, and a target the day something could.
 	const bit = uint32(1) << 0
-	dumWalkTo(t, tick, clk, room, b, dumRouteTo(t, level, level.SpawnSector, target.Sector, dumCornerAwayFrom(t, level, target)))
-	dumWaitFor(t, tick, clk, room, "the beer to be gone for both of them",
+	corner := dumCornerAwayFrom(t, level, target)
+	dumWalkTo(t, tick, clk, room, b, level, corner)
+	dumStandingBy(t, tick, clk, room, b, level, corner, "the beer to be gone for both of them",
 		func() bool { return a.last.Left&bit == 0 && b.last.Left&bit == 0 })
 
 	// Then it comes back, on the tick the catalogue promised and not before. The
@@ -685,8 +721,8 @@ func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
 	// and the bit would never be seen set. B stays in the room — in the corner,
 	// well out of reach of it — which is what makes him the one who is shown it
 	// coming back.
-	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, target.Sector, level.SpawnSector, level.Spawn))
-	dumWaitFor(t, tick, clk, room, "the beer to come back for the man standing in the room with it",
+	dumWalkTo(t, tick, clk, room, a, level, level.Spawn)
+	dumStandingBy(t, tick, clk, room, b, level, corner, "the beer to come back for the man standing in the room with it",
 		func() bool { return b.last.Left&bit != 0 })
 
 	// And then everybody goes home. Closing the socket is the only way out of the
@@ -772,8 +808,8 @@ func TestVanyadumYouAreSentWhatYouCanSeeAndToldAboutEverybody(t *testing.T) {
 	if apart < 2 {
 		t.Fatalf("seed %d generated %d rooms with no two of them a room apart", level.Seed, len(level.Sectors))
 	}
-	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, level.SpawnSector, here, level.Sectors[here].Center()))
-	dumWalkTo(t, tick, clk, room, b, dumRouteTo(t, level, level.SpawnSector, there, level.Sectors[there].Center()))
+	dumWalkTo(t, tick, clk, room, a, level, level.Sectors[here].Center())
+	dumWalkTo(t, tick, clk, room, b, level, level.Sectors[there].Center())
 
 	dumWaitFor(t, tick, clk, room, "each of them to drop off the other's frame",
 		func() bool { return len(a.last.Peers) == 0 && len(b.last.Peers) == 0 })
@@ -805,7 +841,7 @@ func TestVanyadumYouAreSentWhatYouCanSeeAndToldAboutEverybody(t *testing.T) {
 	// And walking back into the same room puts each of them back on the other's
 	// frame. Nothing announces either direction: the peers array is full state,
 	// so being in it and not being in it is the whole of the protocol.
-	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, here, there, level.Sectors[there].Center()))
+	dumWalkTo(t, tick, clk, room, a, level, level.Sectors[there].Center())
 	dumWaitFor(t, tick, clk, room, "them to see each other again",
 		func() bool { return len(a.last.Peers) > 0 && len(b.last.Peers) > 0 })
 }
@@ -1013,11 +1049,24 @@ type dumRow struct {
 	Name    string         `json:"i"`
 	Seconds int            `json:"s"`
 	Bag     map[string]int `json:"c"`
-	// Deaths is how often the building has put him on the floor and Betrayals is
-	// how many friends he has put there. There is no kill column: every kill in
-	// this заброшка is a friend's, which is the joke.
+	// Deaths is how often the building has put him on the floor, Kills is how many
+	// нейрослопы he has put down and Betrayals is how many friends he has. The
+	// kills and the betrayals are separate columns and neither is a subtotal of the
+	// other, which is the joke: a friend shot still scores nothing at all.
 	Deaths    int `json:"d"`
+	Kills     int `json:"k"`
 	Betrayals int `json:"br"`
+}
+
+// dumFoe is one нейрослоп as the wire carries it: an id, where it is, and which
+// room that is. There is deliberately nothing else on it — no facing, because two
+// consecutive frames give that; no state, because it never fires, never falls and
+// is never protected; no health, because one barrel is the whole of it.
+type dumFoe struct {
+	ID     int `json:"n"`
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Sector int `json:"s"`
 }
 
 type dumBoard struct {
@@ -1043,6 +1092,7 @@ type dumSnapshot struct {
 	Down    int       `json:"dn"`
 	Protect int       `json:"pr"`
 	Peers   []dumPeer `json:"p"`
+	Slops   []dumFoe  `json:"f"`
 }
 
 // dumWire is the browser's send loop, reduced to the part the world can tell
@@ -1427,47 +1477,124 @@ func dumPortalMid(p gamevanyadum.Portal) gamevanyadum.Vec2 {
 // nudged sideways by the collision resolver still counts as through.
 const dumArrived = 0.5
 
-// dumWalkTo steers one socket along a route, over the real wire, until it has
-// reached the last waypoint.
+// dumWalkTo steers one socket to a spot, the way a browser steers: batches of
+// sub-steps aimed at where the frames say he is, through whatever doorways are
+// in the way.
 //
-// The whole room is pumped throughout, because every tick publishes to every
-// connection and an unread socket is an evicted one. Bounded by a deadline.
+// THE WAY IS RE-DERIVED EVERY BATCH RATHER THAN COMPUTED ONCE, and that is not
+// tidiness — it is what makes the walk survive the building. There are
+// нейрослопы in the заброшка now, one of them is always walking at the nearest
+// man, and four touches puts him on the floor: he gets up at the spawn, which is
+// nowhere near the waypoint he was heading for, and a route worked out in advance
+// then describes a journey nobody is on. Taking the next doorway from where he
+// ACTUALLY is costs one breadth-first search over a dozen rooms per batch and
+// cannot go stale.
 //
-// Each frame carries up to MaxCommandsPerFrame sub-steps of up to MaxStepSeconds
-// — four metres of walking in one message — which is what makes a walk across
-// the заброшка affordable inside the socket's ten-messages-a-second budget. The
-// last sub-step of a batch is cut to the distance that is actually left, so the
-// player lands on the waypoint rather than past it.
-func dumWalkTo(t *testing.T, tick chan time.Time, clk *dumClock, room []*dumWire, who *dumWire, route []gamevanyadum.Vec2) {
+// AND IT ONLY FIRES A TICK WHEN THERE IS INPUT IN FLIGHT, which is a reversal of
+// how the pacing used to work and needs saying. The gap between frames is the
+// socket's rate limit (dumSendGap) and it used to be enforced by SKIPPING a send
+// while going on firing ticks, on the grounds that a tick is real work and
+// sleeping is not. That was true while the world had nothing in it that moved by
+// itself: a tick nobody had sent input for advanced nothing at all. It is now
+// false, and expensively so — this loop fires a tick per round trip, so a hundred
+// and twenty milliseconds of waiting is hundreds of ticks in which the player
+// stands perfectly still and a слоп walks sixteen centimetres at him on every
+// one. Measured before the change: the walker never arrived, because the building
+// was simulating half a minute of pursuit for every four metres he was given.
+//
+// So the loop now ticks exactly as far as the input it has supplied, and waits out
+// the rate limit without simulating anything. That keeps the simulated clock
+// proportional to the walking, which is the only regime in which "he walks faster
+// than it does" means anything.
+func dumWalkTo(t *testing.T, tick chan time.Time, clk *dumClock, room []*dumWire, who *dumWire, l *gamevanyadum.Level, to gamevanyadum.Vec2) {
 	t.Helper()
 	step := gamevanyadum.WalkSpeed * gamevanyadum.MaxStepSeconds
-	for n, at := range route {
-		deadline := time.Now().Add(30 * time.Second)
-		for {
-			dx := at.X - float64(who.last.X)/100
-			dy := at.Y - float64(who.last.Y)/100
-			left := math.Hypot(dx, dy)
-			if left <= dumArrived {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("waypoint %d of %d is %.2f m away and he stopped getting closer", n+1, len(route), left)
-			}
-			// Only when the previous batch has been fully folded in, so the aim
-			// is taken from where he actually is — and only as often as the
-			// socket's rate limit allows.
-			if who.ack >= who.seq && time.Since(who.lastSend) >= dumSendGap {
-				yaw := math.Atan2(dx/left, dy/left) // yaw zero looks along +Y
-				var batch []dumCommand
-				for remaining := left; remaining > 1e-6 && len(batch) < gamevanyadum.MaxCommandsPerFrame; {
-					d := math.Min(step, remaining)
-					batch = append(batch, dumCommand{Dt: d / gamevanyadum.WalkSpeed, MY: 1, Yaw: yaw})
-					remaining -= d
-				}
-				who.sendExactly(t, batch)
-			}
-			dumPump(t, tick, clk, room...)
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		here := dumWhere(who)
+		left := math.Hypot(to.X-here.X, to.Y-here.Y)
+		if left <= dumArrived {
+			return
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("he is %.2f m from %v and has stopped getting closer", left, to)
+		}
+		switch {
+		case who.last.Health == 0:
+			// On the floor. A dead man does not walk, so this waits out DownTime
+			// and the next pass re-derives the way from the spawn he gets up at.
+			dumPump(t, tick, clk, room...)
+		case who.ack < who.seq:
+			// Finish simulating what he has already been given, and nothing more.
+			dumPump(t, tick, clk, room...)
+		case time.Since(who.lastSend) < dumSendGap:
+			// The socket's rate limit, waited out WITHOUT a tick — see above.
+			time.Sleep(dumSendGap - time.Since(who.lastSend))
+		default:
+			aim := dumAimAt(t, l, here, to)
+			dx, dy := aim.X-here.X, aim.Y-here.Y
+			reach := math.Hypot(dx, dy)
+			if reach < 1e-9 {
+				dumPump(t, tick, clk, room...)
+				continue
+			}
+			yaw := math.Atan2(dx/reach, dy/reach) // yaw zero looks along +Y
+			var batch []dumCommand
+			for remaining := reach; remaining > 1e-6 && len(batch) < gamevanyadum.MaxCommandsPerFrame; {
+				d := math.Min(step, remaining)
+				batch = append(batch, dumCommand{Dt: d / gamevanyadum.WalkSpeed, MY: 1, Yaw: yaw})
+				remaining -= d
+			}
+			who.sendExactly(t, batch)
+		}
+	}
+}
+
+// dumWhere is where the newest frame says this socket's own man is standing, in
+// metres. Positions are centimetres on the wire.
+func dumWhere(w *dumWire) gamevanyadum.Vec2 {
+	return gamevanyadum.Vec2{X: float64(w.last.X) / 100, Y: float64(w.last.Y) / 100}
+}
+
+// dumAimAt is the next point to walk at on the way from one spot to another: the
+// first doorway on the route that has not been reached yet, or the destination
+// itself once there is nothing in the way.
+func dumAimAt(t *testing.T, l *gamevanyadum.Level, here, to gamevanyadum.Vec2) gamevanyadum.Vec2 {
+	t.Helper()
+	from, dest := l.SectorAt(here), l.SectorAt(to)
+	if from < 0 || dest < 0 {
+		return to
+	}
+	for _, wp := range dumRouteTo(t, l, from, dest, to) {
+		if math.Hypot(wp.X-here.X, wp.Y-here.Y) > dumArrived {
+			return wp
+		}
+	}
+	return to
+}
+
+// dumStandingBy pumps the simulation until a condition holds, keeping one man
+// where the test put him.
+//
+// EVERY ASSERTION THAT DEPENDS ON WHERE SOMEBODY IS STANDING NEEDS THIS NOW. A
+// нейрослоп walks at the nearest man and four touches put him on the floor, so a
+// player parked somewhere for a long simulated wait — a pickup respawn is thirty
+// seconds — gets up at the spawn rather than in the corner the test left him in.
+// Waiting with dumWaitFor instead is waiting for a condition about a room he is
+// no longer in.
+func dumStandingBy(t *testing.T, tick chan time.Time, clk *dumClock, room []*dumWire, who *dumWire, l *gamevanyadum.Level, at gamevanyadum.Vec2, why string, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(120 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatalf("waited for %s and it never came", why)
+		}
+		here := dumWhere(who)
+		if who.last.Health > 0 && math.Hypot(at.X-here.X, at.Y-here.Y) > dumArrived {
+			dumWalkTo(t, tick, clk, room, who, l, at)
+			continue
+		}
+		dumPump(t, tick, clk, room...)
 	}
 }
 
@@ -1845,4 +1972,118 @@ func dumCornerAwayFrom(t *testing.T, l *gamevanyadum.Level, p gamevanyadum.Picku
 		t.Fatalf("the furthest corner of room %d is %.2f m from the bottle in it, which is close enough to drink it", p.Sector, d)
 	}
 	return corner
+}
+
+// slopOn is the нейрослоп the newest frame carries, if it carries one, together
+// with how far away it is in metres. Positions are centimetres on the wire, and
+// the arithmetic below is the arithmetic a browser does.
+func slopOn(w *dumWire) (dumFoe, float64, bool) {
+	if len(w.last.Slops) == 0 {
+		return dumFoe{}, 0, false
+	}
+	s := w.last.Slops[0]
+	dx, dy := float64(s.X-w.last.X)/100, float64(s.Y-w.last.Y)/100
+	return s, math.Hypot(dx, dy), true
+}
+
+func TestVanyadumANeuroslopComesForYouAndTheObrezIsTheAnswer(t *testing.T) {
+	// THE WHOLE OF C2, END TO END, through a real socket: a creature nobody placed
+	// appears in a building somebody walked into, finds its way across it to the
+	// only man there, takes health off him when it arrives, and is worth a kill on
+	// the standings when he shoots it.
+	//
+	// Everything about it is server-owned — where it spawns, where it walks, when
+	// it lands and whether the shot connected — so what this test drives is exactly
+	// what a browser drives: a hello, then nothing at all until the frames say
+	// something has arrived, and then one trigger pull aimed by the arithmetic the
+	// client would do on the two positions it was sent.
+	app, tick, _ := buildAppVanyadum(t, dumVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cli := loginAs(t, srv.URL, "910017", "user")
+	clk := newDumClock()
+
+	conn, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cli, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	w := newDumWire(conn, readFrames(t, conn))
+	room := []*dumWire{w}
+	w.attach(t)
+
+	// THE BUILDING IS QUIET FIRST. Nothing materialises on the tick a socket says
+	// hello — the client is still building its meshes — so the first слоп is a
+	// whole SlopSpawnInterval away, and it then has to walk to him from a room he
+	// could not see into.
+	dumWaitFor(t, tick, clk, room, "a нейрослоп to appear on the frame", func() bool {
+		_, _, ok := slopOn(w)
+		return ok
+	})
+	foe, away, _ := slopOn(w)
+	if away <= 0 {
+		t.Fatalf("it arrived on top of him at once: %+v", foe)
+	}
+
+	// IT WALKS AT HIM, and the man is standing perfectly still — so every metre it
+	// closes is the pathing crossing rooms and doorways rather than anything this
+	// test did.
+	dumWaitFor(t, tick, clk, room, "it to reach him and take health off him", func() bool {
+		return w.last.Health < gamevanyadum.StartHealth
+	})
+	if got := w.last.Health; got != gamevanyadum.StartHealth-gamevanyadum.SlopDamage {
+		t.Fatalf("being reached left him on %d of %d", got, gamevanyadum.StartHealth)
+	}
+
+	// AND THE ОБРЕЗ IS THE ANSWER. Aimed with the arithmetic a browser does on the
+	// two positions it was sent — yaw zero looks along +Y, which is what makes this
+	// atan2(dx, dy) rather than the other way about — and fired at the range the
+	// creature has just walked into, where a body two thirds of a metre away fills
+	// sixty degrees of the aim.
+	//
+	// A full gun is two barrels and one barrel is one слоп, so a second pull is the
+	// whole margin this has; the shot is therefore taken close rather than early.
+	before := w.last.Loaded
+	killed := false
+	for shots := 0; shots < gamevanyadum.Barrels && !killed; shots++ {
+		dumWaitFor(t, tick, clk, room, "the gun to be ready and the слоп to be in front of him", func() bool {
+			_, at, ok := slopOn(w)
+			return ok && at <= 1.5 && w.last.Loaded > 0 && w.last.Protect == 0
+		})
+		foe, _, _ = slopOn(w)
+		dx, dy := float64(foe.X-w.last.X)/100, float64(foe.Y-w.last.Y)/100
+		w.send(t, 1, dumCommand{Dt: 0.025, Yaw: math.Atan2(dx, dy), Fire: true})
+		dumWaitFor(t, tick, clk, room, "the barrel to be spent", func() bool {
+			return w.last.Loaded < before
+		})
+		before = w.last.Loaded
+		// ABSENCE IS THE WHOLE OF DYING. There is no death event and no health on a
+		// слоп — one barrel is all of it, so the creature simply stops being in the
+		// array, which is the same reading the client already makes of the pickup
+		// mask (message.go, Snapshot.Slops).
+		for i := 0; i < 4 && !killed; i++ {
+			dumPump(t, tick, clk, room...)
+			killed = len(w.last.Slops) == 0 || w.last.Slops[0].ID != foe.ID
+		}
+	}
+	if !killed {
+		t.Fatalf("a full gun emptied into a слоп at point blank and it is still there: %+v", w.last.Slops)
+	}
+
+	// AND IT IS WORTH SOMETHING, which is what the нейрослопы changed. The kill
+	// column exists because there is finally something here worth killing; the
+	// betrayal column beside it stays at nought, because he shot nobody.
+	dumWaitFor(t, tick, clk, room, "the standings to publish the kill", func() bool {
+		for _, r := range w.board.Rows {
+			if r.Slot == w.slot && r.Kills == 1 {
+				return true
+			}
+		}
+		return false
+	})
+	for _, r := range w.board.Rows {
+		if r.Slot == w.slot && r.Betrayals != 0 {
+			t.Fatalf("shooting a слоп scored him %d betrayals", r.Betrayals)
+		}
+	}
 }

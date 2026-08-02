@@ -175,3 +175,113 @@ export function createPeerFlashes(frames: number = FLASH_FRAMES) {
 }
 
 export type PeerFlashes = ReturnType<typeof createPeerFlashes>;
+
+/** A нейрослоп as the frame being drawn describes it, for mark purposes only. */
+export interface MarkedSlop {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Where a slop-sized mark belongs in the world this frame. */
+export interface Spot {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Which marks the нейрослопы are leaving behind in the frame now being drawn. */
+export interface SlopMarks {
+  /** Keyed by the id that has just left the picture, at the place it left it. */
+  gone: Map<number, Spot>;
+}
+
+/**
+ * The mark a нейрослоп leaves by ceasing to exist.
+ *
+ * ABSENCE IS THE WHOLE OF DYING, and that is the server's design rather than a
+ * gap in it. A слоп is worth exactly one barrel, so there is no wounded state to
+ * report and no health on the wire to fall; the creature is simply not in the
+ * next frame's array. That makes "it was here and now it is not" the ONLY thing
+ * a client can mark on — and an unmarked kill is an unfinished action, because
+ * the whole acknowledgement for emptying a barrel into something would be a
+ * silence indistinguishable from a miss.
+ *
+ * IT IS DERIVED, NOT ANNOUNCED, which is what makes it affordable: the frame
+ * already carries the array, so this costs nothing on the wire, and it is the
+ * same mark for every viewer because everybody's array loses the creature on the
+ * same tick.
+ *
+ * THE ONE THING IT CANNOT TELL APART, stated plainly because it is the price. A
+ * слоп also leaves the array by walking out of what the reader can see — his own
+ * room and the rooms through its doorways — so a departure two rooms away is
+ * marked as a death. Three things keep that cheap rather than misleading. The
+ * server holds a creature in the array for `visibleHold` after it stops being
+ * visible, so the last position anybody is given is one it walked to AFTER
+ * leaving, which is inside a room the reader cannot see into; the mark is drawn
+ * in the world with depth testing, so the wall that hid the слоп hides the mark
+ * for it; and the standings carry the kill count, which is what actually says
+ * whether anything died. What is left is a puff of light behind a wall, and the
+ * alternative — marking nothing — makes every kill in the game silent. The link
+ * going down empties the buffer and therefore marks everything in it, which is
+ * the same trade at its least useful: three frames of light beside a notice
+ * already saying the connection has gone.
+ *
+ * COUNTED IN DRAWN FRAMES and not in seconds, and cleared by being drawn, for
+ * the reasons at the top of this file: it survives `prefers-reduced-motion`
+ * intact, and a phone managing twenty frames a second still gets one.
+ *
+ * KEYED BY ID, which is a place in the building rather than a creature, so the
+ * map is bounded by the population however many are shot. An id is not reused
+ * for a whole spawn interval, so a mark can never be carried over onto its
+ * successor.
+ */
+export function createSlopMarks(frames: number = FLASH_FRAMES) {
+  /** One mark per id, created on the first death there and reused after. */
+  const marks = new Map<number, Flash>();
+  /** Where each running mark is being drawn. */
+  const where = new Map<number, Spot>();
+  /** Where each нейрослоп was on the previous drawn frame. */
+  const last = new Map<number, Spot>();
+
+  return {
+    /**
+     * One call per drawn frame, given whatever the interpolator produced for it.
+     */
+    frame(slops: readonly MarkedSlop[]): SlopMarks {
+      const here = new Set<number>();
+      for (const s of slops) here.add(s.id);
+
+      // READ, then overwrite — this project's rule stated exactly. What is being
+      // compared is the previous frame's membership against this one's, so the
+      // previous frame's has to still be here when the comparison happens.
+      for (const [id, at] of last) {
+        if (here.has(id)) continue;
+        let flash = marks.get(id);
+        if (!flash) {
+          flash = createFlash(frames);
+          marks.set(id, flash);
+        }
+        flash.fire();
+        // The place it was LAST SEEN, not where it is — there is no longer a
+        // where. A mark is about the spot something happened at, and that spot
+        // stops moving the instant the creature does.
+        where.set(id, at);
+      }
+      last.clear();
+      for (const s of slops) last.set(s.id, { x: s.x, y: s.y, z: s.z });
+
+      const gone = new Map<number, Spot>();
+      for (const [id, flash] of marks) {
+        // Spent by being drawn, exactly once per frame, for every mark that
+        // exists — including the ones that have already burnt out, because
+        // `frame` is what makes them burn out.
+        if (!flash.frame()) continue;
+        const at = where.get(id);
+        if (at) gone.set(id, at);
+      }
+      return { gone };
+    },
+  };
+}

@@ -5,8 +5,9 @@ import (
 	"testing"
 )
 
-// The ray, tested without a world: shoot takes geometry and bodies and returns a
-// slot, so every rule it has can be stated as one call and one assertion.
+// The ray, tested without a world: shoot takes geometry and bodies and returns
+// the one it landed on, so every rule it has can be stated as one call and one
+// assertion.
 //
 // The world's half — who is a legal target, where he was when the shooter saw
 // him, and what a hit costs him — is in world_test.go. This file is only about
@@ -25,19 +26,19 @@ func openRoom() *Level { return room(0, 0, 20, 20, 0) }
 // at is one target standing on the ground floor, which is every fixture below
 // except the two about height.
 func at(slot int, x, y float64) body {
-	return body{slot: slot, pos: Vec2{X: x, Y: y}}
+	return body{at: ref{N: slot}, pos: Vec2{X: x, Y: y}}
 }
 
 // fire aims from (2,5) due east at eye height, which is where every shooter in
 // this file stands unless the case is about standing somewhere else.
-func fire(l *Level, targets ...body) (int, bool) {
+func fire(l *Level, targets ...body) (ref, bool) {
 	return shoot(l, Vec2{X: 2, Y: 5}, EyeHeight, eastward, 0, targets)
 }
 
 func TestTheShotLandsOnWhoeverIsInFrontOfIt(t *testing.T) {
-	slot, ok := fire(openRoom(), at(3, 6, 5))
-	if !ok || slot != 3 {
-		t.Fatalf("a man four metres in front was answered with (%d, %v)", slot, ok)
+	hit, ok := fire(openRoom(), at(3, 6, 5))
+	if !ok || hit != (ref{N: 3}) {
+		t.Fatalf("a man four metres in front was answered with (%+v, %v)", hit, ok)
 	}
 }
 
@@ -45,8 +46,8 @@ func TestAShotBesideSomebodyIsAMiss(t *testing.T) {
 	// A metre off the line, which on a 0.7 m body is a clean miss. Nothing in
 	// this game bends a bullet towards a target, and nothing should: the whole
 	// contract of a hitscan is that the shot went where the crosshair was.
-	if slot, ok := fire(openRoom(), at(3, 6, 6)); ok {
-		t.Fatalf("a shot a metre wide of him hit slot %d", slot)
+	if hit, ok := fire(openRoom(), at(3, 6, 6)); ok {
+		t.Fatalf("a shot a metre wide of him hit %+v", hit)
 	}
 }
 
@@ -68,8 +69,8 @@ func TestConcreteStopsTheShot(t *testing.T) {
 	// two rooms' worth of distance away along Y = 8, which the doorway does not
 	// reach.
 	l := twoRooms(0)
-	if slot, ok := shoot(l, Vec2{X: 2, Y: 8}, EyeHeight, eastward, 0, []body{at(1, 15, 8)}); ok {
-		t.Fatalf("a shot through a solid wall hit slot %d", slot)
+	if hit, ok := shoot(l, Vec2{X: 2, Y: 8}, EyeHeight, eastward, 0, []body{at(1, 15, 8)}); ok {
+		t.Fatalf("a shot through a solid wall hit %+v", hit)
 	}
 	// And the same shot with the wall taken out of the picture does land, so the
 	// miss above is the concrete rather than the arithmetic.
@@ -81,8 +82,8 @@ func TestConcreteStopsTheShot(t *testing.T) {
 	// a hit test that only ever fired east would not notice the day it stopped
 	// holding, and a shot that is blocked one way and lands the other is the
 	// unfairest bug this file could ship.
-	if slot, ok := shoot(l, Vec2{X: 15, Y: 8}, EyeHeight, eastward+math.Pi, 0, []body{at(1, 2, 8)}); ok {
-		t.Fatalf("the same wall let a shot back through it westward, onto slot %d", slot)
+	if hit, ok := shoot(l, Vec2{X: 15, Y: 8}, EyeHeight, eastward+math.Pi, 0, []body{at(1, 2, 8)}); ok {
+		t.Fatalf("the same wall let a shot back through it westward, onto %+v", hit)
 	}
 }
 
@@ -96,8 +97,8 @@ func TestAShotGoesThroughTheDoorway(t *testing.T) {
 	}
 	// A hand's width off the opening and it is a jamb, which is what stops
 	// somebody rounding a corner through the wall beside a door.
-	if slot, ok := shoot(l, Vec2{X: 2, Y: 6.4}, EyeHeight, eastward, 0, []body{at(2, 15, 6.4)}); ok {
-		t.Fatalf("a shot past the edge of the opening hit slot %d through the jamb", slot)
+	if hit, ok := shoot(l, Vec2{X: 2, Y: 6.4}, EyeHeight, eastward, 0, []body{at(2, 15, 6.4)}); ok {
+		t.Fatalf("a shot past the edge of the opening hit %+v through the jamb", hit)
 	}
 }
 
@@ -108,17 +109,17 @@ func TestTheNearestBodyTakesIt(t *testing.T) {
 	l := openRoom()
 	near, far := at(1, 6, 5), at(2, 9, 5)
 	for _, order := range [][]body{{near, far}, {far, near}} {
-		slot, ok := fire(l, order...)
-		if !ok || slot != near.slot {
-			t.Fatalf("targets in order %v answered (%d, %v), expected the near man in slot %d",
-				[]int{order[0].slot, order[1].slot}, slot, ok, near.slot)
+		hit, ok := fire(l, order...)
+		if !ok || hit != near.at {
+			t.Fatalf("targets in order %v answered (%+v, %v), expected the near man %+v",
+				[]ref{order[0].at, order[1].at}, hit, ok, near.at)
 		}
 	}
 }
 
 func TestNobodyBehindTheShooterIsHit(t *testing.T) {
-	if slot, ok := fire(openRoom(), at(1, -3, 5)); ok {
-		t.Fatalf("a man behind him was shot in the back by his own barrel: slot %d", slot)
+	if hit, ok := fire(openRoom(), at(1, -3, 5)); ok {
+		t.Fatalf("a man behind him was shot in the back by his own barrel: %+v", hit)
 	}
 }
 
@@ -156,11 +157,11 @@ func TestABodyStandsOnItsOwnFloorAndNotOnTheShootersOne(t *testing.T) {
 	// are is a fact about the room he is in. A step up puts his whole body inside
 	// a level shot; a pit deep enough puts all of him under it.
 	l := openRoom()
-	raised := body{slot: 1, pos: Vec2{X: 8, Y: 5}, floorZ: 0.6}
+	raised := body{at: ref{N: 1}, pos: Vec2{X: 8, Y: 5}, floorZ: 0.6}
 	if _, ok := fire(l, raised); !ok {
 		t.Fatal("a man standing a step higher was not hit by a level shot")
 	}
-	sunken := body{slot: 1, pos: Vec2{X: 8, Y: 5}, floorZ: -2}
+	sunken := body{at: ref{N: 1}, pos: Vec2{X: 8, Y: 5}, floorZ: -2}
 	if _, ok := fire(l, sunken); ok {
 		t.Fatal("a man whose head is below the muzzle was hit by a level shot")
 	}
@@ -182,14 +183,14 @@ func TestTheRayIsTheSameGeometryInEveryDirection(t *testing.T) {
 		}
 		// And the man diametrically behind that one is not also hit.
 		behind := at(2, from.X-sin*away, from.Y-cos*away)
-		if slot, ok := shoot(l, from, EyeHeight, yaw, 0, []body{behind}); ok {
-			t.Fatalf("a shot at yaw %.2f hit slot %d standing behind him", yaw, slot)
+		if hit, ok := shoot(l, from, EyeHeight, yaw, 0, []body{behind}); ok {
+			t.Fatalf("a shot at yaw %.2f hit %+v standing behind him", yaw, hit)
 		}
 	}
 }
 
 func TestAShotWithNobodyInItHitsNobody(t *testing.T) {
-	if slot, ok := shoot(openRoom(), Vec2{X: 2, Y: 5}, EyeHeight, eastward, 0, nil); ok {
-		t.Fatalf("an empty building answered slot %d", slot)
+	if hit, ok := shoot(openRoom(), Vec2{X: 2, Y: 5}, EyeHeight, eastward, 0, nil); ok {
+		t.Fatalf("an empty building answered %+v", hit)
 	}
 }

@@ -62,7 +62,7 @@ const emitted = (tick: number) => ORIGIN + tick * TICK;
  * particular tick.
  */
 function impliedOffset(i: ReturnType<typeof build>, nowMs: number): number {
-  const x = i.sample(nowMs)[0].x;
+  const x = i.sample(nowMs).peers[0].x;
   const tick = FIRST_TICK + x / PER_TICK;
   return nowMs - DELAY - tick * TICK;
 }
@@ -116,10 +116,10 @@ describe('the timeline is the server tick, not the arrival', () => {
     const lastArrival = arrivals[arrivals.length - 1].at;
     for (let now = arrivals[0].at; now <= lastArrival + 200; now += 16) {
       while (next < arrivals.length && arrivals[next].at <= now) {
-        i.push([peer(1, walkX(arrivals[next].tick))], arrivals[next].tick, arrivals[next].at);
+        i.push([peer(1, walkX(arrivals[next].tick))], [], arrivals[next].tick, arrivals[next].at);
         next++;
       }
-      const out = i.sample(now);
+      const out = i.sample(now).peers;
       if (out.length) drawn.push({ at: now, x: out[0].x });
     }
 
@@ -150,10 +150,10 @@ describe('the timeline is the server tick, not the arrival', () => {
     // On a tick timeline a gap is self-describing: the missing tick is simply not
     // there, and the two frames either side are two steps apart.
     const i = build();
-    i.push([peer(1, 0)], 100, 1000);
-    i.push([peer(1, 20)], 102, 1100); // tick 101 never arrived
+    i.push([peer(1, 0)], [], 100, 1000);
+    i.push([peer(1, 20)], [], 102, 1100); // tick 101 never arrived
     // Half way between them in time is half way between them in space.
-    expect(i.sample(1050 + DELAY)[0].x).toBeCloseTo(10, 6);
+    expect(i.sample(1050 + DELAY).peers[0].x).toBeCloseTo(10, 6);
   });
 
   it('keeps a burst of buffered frames spaced as the server sent them', () => {
@@ -163,8 +163,8 @@ describe('the timeline is the server tick, not the arrival', () => {
     // collapses to nothing; on the server's timeline they carry their own
     // spacing, however long they spent queued.
     const i = build();
-    i.push([peer(1, 0)], 200, 1000);
-    for (let n = 1; n <= 6; n++) i.push([peer(1, n * 10)], 200 + n, 1500 + n);
+    i.push([peer(1, 0)], [], 200, 1000);
+    for (let n = 1; n <= 6; n++) i.push([peer(1, n * 10)], [], 200 + n, 1500 + n);
     /** When the last of the burst landed — the six arrive a millisecond apart. */
     const settled = 1506;
 
@@ -180,12 +180,12 @@ describe('the timeline is the server tick, not the arrival', () => {
     // A hundred milliseconds of the server's timeline is then two ticks of
     // walking, whether the two frames describing them arrived a hundred
     // milliseconds apart or one.
-    const early = i.sample(settled + DELAY - 200)[0].x;
-    const later = i.sample(settled + DELAY - 100)[0].x;
+    const early = i.sample(settled + DELAY - 200).peers[0].x;
+    const later = i.sample(settled + DELAY - 100).peers[0].x;
     expect(later - early).toBeCloseTo(20, 6);
     // And past everything held it holds at the newest, which is the documented
     // answer to a sender that has gone quiet.
-    expect(i.sample(4000)[0].x).toBeCloseTo(60, 6);
+    expect(i.sample(4000).peers[0].x).toBeCloseTo(60, 6);
   });
 });
 
@@ -198,7 +198,7 @@ describe('the clock offset estimator', () => {
     const delays = [90, 40, 70, 25, 60, 80, 35, 55, 45, 75];
     for (let n = 0; n < delays.length; n++) {
       const tick = FIRST_TICK + n;
-      i.push([peer(1, walkX(tick))], tick, emitted(tick) + delays[n]);
+      i.push([peer(1, walkX(tick))], [], tick, emitted(tick) + delays[n]);
     }
     // The middle of what is buffered, so the drawn instant is interpolated rather
     // than held.
@@ -214,11 +214,11 @@ describe('the clock offset estimator', () => {
     // the two machines' clocks pushes the drawn instant past the newest frame
     // held, which shows as every peer pausing more and more often.
     const i = build();
-    i.push([peer(1, walkX(FIRST_TICK))], FIRST_TICK, emitted(FIRST_TICK));
+    i.push([peer(1, walkX(FIRST_TICK))], [], FIRST_TICK, emitted(FIRST_TICK));
     const settled = 100;
     for (let n = 1; n <= 400; n++) {
       const tick = FIRST_TICK + n;
-      i.push([peer(1, walkX(tick))], tick, emitted(tick) + settled);
+      i.push([peer(1, walkX(tick))], [], tick, emitted(tick) + settled);
     }
     const off = impliedOffset(i, emitted(FIRST_TICK + 390) + DELAY);
     // It has moved a long way off the pin...
@@ -241,7 +241,7 @@ describe('the clock offset estimator', () => {
     const delays = [20, 85, 60, 88, 55, 80, 62, 87];
     for (let n = 0; n < delays.length; n++) {
       const tick = FIRST_TICK + n;
-      i.push([peer(1, walkX(tick))], tick, emitted(tick) + delays[n]);
+      i.push([peer(1, walkX(tick))], [], tick, emitted(tick) + delays[n]);
     }
     const off = impliedOffset(i, emitted(FIRST_TICK + 4) + DELAY);
     // Eight frames of creep under sixty-odd milliseconds of jitter move the
@@ -260,7 +260,7 @@ describe('the clock offset estimator', () => {
     const step = 200;
     for (let n = 0; n < 10; n++) {
       const tick = FIRST_TICK + n;
-      i.push([peer(1, walkX(tick))], tick, emitted(tick) + (n === 0 ? lucky : step));
+      i.push([peer(1, walkX(tick))], [], tick, emitted(tick) + (n === 0 ? lucky : step));
     }
     const off = impliedOffset(i, emitted(FIRST_TICK + 6) + DELAY);
 
@@ -303,7 +303,7 @@ describe('the clock offset estimator', () => {
     const drawn: { x: number; newest: number }[] = [];
     for (let now = arrivals[0].at; now <= arrivals[arrivals.length - 1].at; now += 16) {
       while (next < arrivals.length && arrivals[next].at <= now) {
-        i.push([peer(1, walkX(arrivals[next].tick))], arrivals[next].tick, arrivals[next].at);
+        i.push([peer(1, walkX(arrivals[next].tick))], [], arrivals[next].tick, arrivals[next].at);
         next++;
       }
       // The warm-up is skipped rather than measured. Until a few frames are in,
@@ -311,7 +311,7 @@ describe('the clock offset estimator', () => {
       // that oldest frame is a documented degradation rather than the defect
       // under test — it just happens to look identical from outside.
       if (next < 4) continue;
-      drawn.push({ x: i.sample(now)[0].x, newest: walkX(arrivals[next - 1].tick) });
+      drawn.push({ x: i.sample(now).peers[0].x, newest: walkX(arrivals[next - 1].tick) });
     }
 
     // Enough draws to be a claim about the connection rather than about a frame.
@@ -332,12 +332,12 @@ describe('the clock offset estimator', () => {
     // be dropped for ever, and every peer would freeze for as long as this
     // client stayed connected.
     const i = build();
-    i.push([peer(1, 0)], 900, 1000);
-    i.push([peer(1, 10)], 902, 1100);
-    i.push([peer(1, 50)], 3, 1200);
-    i.push([peer(1, 99)], 5, 1300);
+    i.push([peer(1, 0)], [], 900, 1000);
+    i.push([peer(1, 10)], [], 902, 1100);
+    i.push([peer(1, 50)], [], 3, 1200);
+    i.push([peer(1, 99)], [], 5, 1300);
     expect(i.size()).toBe(2);
-    expect(i.sample(1300 + DELAY)[0].x).toBeCloseTo(99, 6);
+    expect(i.sample(1300 + DELAY).peers[0].x).toBeCloseTo(99, 6);
   });
 
   it('forgets the offset on reset, not merely the frames', () => {
@@ -346,59 +346,59 @@ describe('the clock offset estimator', () => {
     // ticks from zero, so an estimate made against the previous one would put
     // every frame of the new one minutes into the past.
     const i = build();
-    i.push([peer(1, 5)], 900, 1000);
+    i.push([peer(1, 5)], [], 900, 1000);
     i.reset();
     expect(i.size()).toBe(0);
-    expect(i.sample(2000)).toEqual([]);
-    i.push([peer(1, 1)], 2, 9000);
-    i.push([peer(1, 2)], 4, 9100);
-    expect(i.sample(9100 + DELAY)[0].x).toBeCloseTo(2, 6);
+    expect(i.sample(2000).peers).toEqual([]);
+    i.push([peer(1, 1)], [], 2, 9000);
+    i.push([peer(1, 2)], [], 4, 9100);
+    expect(i.sample(9100 + DELAY).peers[0].x).toBeCloseTo(2, 6);
   });
 });
 
 describe('what arrives out of order', () => {
   it('ignores a late frame rather than sorting it in', () => {
     const i = build();
-    i.push([peer(1, 0)], 20, 1000);
-    i.push([peer(1, 10)], 22, 1100);
-    i.push([peer(1, 999)], 21, 1050); // late, and a tick already passed
+    i.push([peer(1, 0)], [], 20, 1000);
+    i.push([peer(1, 10)], [], 22, 1100);
+    i.push([peer(1, 999)], [], 21, 1050); // late, and a tick already passed
     expect(i.size()).toBe(2);
-    expect(i.sample(1100 + DELAY)[0].x).toBeCloseTo(10, 6);
-    expect(i.sample(1050 + DELAY)[0].x).toBeCloseTo(5, 6);
+    expect(i.sample(1100 + DELAY).peers[0].x).toBeCloseTo(10, 6);
+    expect(i.sample(1050 + DELAY).peers[0].x).toBeCloseTo(5, 6);
   });
 
   it('ignores a duplicate tick, which would otherwise be a span of zero', () => {
     const i = build();
-    i.push([peer(1, 0)], 20, 1000);
-    i.push([peer(1, 10)], 22, 1100);
-    i.push([peer(1, 999)], 22, 1110);
+    i.push([peer(1, 0)], [], 20, 1000);
+    i.push([peer(1, 10)], [], 22, 1100);
+    i.push([peer(1, 999)], [], 22, 1110);
     expect(i.size()).toBe(2);
-    expect(i.sample(1100 + DELAY)[0].x).toBeCloseTo(10, 6);
+    expect(i.sample(1100 + DELAY).peers[0].x).toBeCloseTo(10, 6);
   });
 });
 
 describe('drawing the past', () => {
   it('draws nothing before anything has arrived', () => {
     // A peer never heard of has no last known position to hold.
-    expect(build().sample(1000)).toEqual([]);
+    expect(build().sample(1000).peers).toEqual([]);
   });
 
   it('interpolates between the two frames bracketing the render instant', () => {
     const i = build();
-    i.push([peer(1, 0)], 20, 1000);
-    i.push([peer(1, 10)], 22, 1100);
-    const [p] = i.sample(1050 + DELAY);
+    i.push([peer(1, 0)], [], 20, 1000);
+    i.push([peer(1, 10)], [], 22, 1100);
+    const [p] = i.sample(1050 + DELAY).peers;
     expect(p.x).toBeCloseTo(5, 6);
   });
 
   it('draws the past, not the present — that is the whole idea', () => {
     const i = build();
-    i.push([peer(1, 0)], 20, 1000);
-    i.push([peer(1, 10)], 22, 1100);
+    i.push([peer(1, 0)], [], 20, 1000);
+    i.push([peer(1, 10)], [], 22, 1100);
     // A whole delay after the newest frame, its world is the one on screen.
-    expect(i.sample(1100 + DELAY)[0].x).toBeCloseTo(10, 6);
+    expect(i.sample(1100 + DELAY).peers[0].x).toBeCloseTo(10, 6);
     // ...and a moment earlier we are genuinely behind it.
-    expect(i.sample(1060 + DELAY)[0].x).toBeLessThan(10);
+    expect(i.sample(1060 + DELAY).peers[0].x).toBeLessThan(10);
   });
 
   it('holds the newest frame rather than extrapolating when the buffer runs dry', () => {
@@ -406,23 +406,23 @@ describe('drawing the past', () => {
     // Holding makes them pause: a worse-looking correct answer, and correct
     // wins.
     const i = build();
-    i.push([peer(1, 0)], 20, 1000);
-    i.push([peer(1, 10)], 22, 1100);
-    expect(i.sample(5000)[0].x).toBe(10);
+    i.push([peer(1, 0)], [], 20, 1000);
+    i.push([peer(1, 10)], [], 22, 1100);
+    expect(i.sample(5000).peers[0].x).toBe(10);
   });
 
   it('shows the oldest frame when asked about a time before it', () => {
     // Stale, and saying so by being visibly behind beats guessing.
     const i = build();
-    i.push([peer(1, 7)], 20, 1000);
-    expect(i.sample(1000)[0].x).toBe(7);
+    i.push([peer(1, 7)], [], 20, 1000);
+    expect(i.sample(1000).peers[0].x).toBe(7);
   });
 
   it('shows a peer that appeared mid-gap at the position it appeared in', () => {
     const i = build();
-    i.push([peer(1, 0)], 20, 1000);
-    i.push([peer(1, 10), peer(2, 42)], 22, 1100);
-    const out = i.sample(1050 + DELAY);
+    i.push([peer(1, 0)], [], 20, 1000);
+    i.push([peer(1, 10), peer(2, 42)], [], 22, 1100);
+    const out = i.sample(1050 + DELAY).peers;
     expect(out.find((p) => p.slot === 2)?.x).toBe(42);
   });
 
@@ -432,9 +432,9 @@ describe('drawing the past', () => {
     // him. A figure kept alive because nothing said to remove it is a man
     // standing in a doorway he left a minute ago.
     const i = build();
-    i.push([peer(1, 0), peer(2, 1)], 20, 1000);
-    i.push([peer(1, 10)], 22, 1100);
-    expect(i.sample(1050 + DELAY).map((p) => p.slot)).toEqual([1]);
+    i.push([peer(1, 0), peer(2, 1)], [], 20, 1000);
+    i.push([peer(1, 10)], [], 22, 1100);
+    expect(i.sample(1050 + DELAY).peers.map((p) => p.slot)).toEqual([1]);
   });
 
   it('takes the short way round when a peer turns through the wrap point', () => {
@@ -442,9 +442,9 @@ describe('drawing the past', () => {
     // peer turning from just under π to just over −π spins a full circle on the
     // spot.
     const i = build();
-    i.push([peer(1, 0, Math.PI - 0.1)], 20, 1000);
-    i.push([peer(1, 0, -Math.PI + 0.1)], 22, 1100);
-    const yaw = i.sample(1050 + DELAY)[0].yaw;
+    i.push([peer(1, 0, Math.PI - 0.1)], [], 20, 1000);
+    i.push([peer(1, 0, -Math.PI + 0.1)], [], 22, 1100);
+    const yaw = i.sample(1050 + DELAY).peers[0].yaw;
     expect(Math.abs(yaw)).toBeGreaterThan(Math.PI - 0.2);
   });
 
@@ -456,15 +456,15 @@ describe('drawing the past', () => {
     // draws an INSTANT has to mark the transition rather than the value — see
     // vanyadumFlash.
     const i = build();
-    i.push([peer(1, 0)], 20, 1000);
-    i.push([{ ...peer(1, 10), st: PEER_FIRED }], 22, 1100);
-    expect(i.sample(1050 + DELAY)[0].st).toBe(PEER_FIRED);
+    i.push([peer(1, 0)], [], 20, 1000);
+    i.push([{ ...peer(1, 10), st: PEER_FIRED }], [], 22, 1100);
+    expect(i.sample(1050 + DELAY).peers[0].st).toBe(PEER_FIRED);
     // And once that tick is behind the drawn instant it is over — the value is
     // on one frame, never smeared forward into the next one. Spelled out as a
     // zero rather than left off, because that is what `decodePeers` produces: it
     // sets the field on every peer so the object it builds has one shape.
-    i.push([{ ...peer(1, 20), st: 0 }], 24, 1200);
-    expect(i.sample(1150 + DELAY)[0].st).toBe(0);
+    i.push([{ ...peer(1, 20), st: 0 }], [], 24, 1200);
+    expect(i.sample(1150 + DELAY).peers[0].st).toBe(0);
   });
 
   it('carries a state that LASTS on every frame of it, so nothing has to hold it', () => {
@@ -473,9 +473,9 @@ describe('drawing the past', () => {
     // buffer skips a frame never loses a corpse the way he can lose a muzzle
     // flash — there is nothing to mark and nothing to remember.
     const i = build();
-    i.push([{ ...peer(1, 0), st: PEER_DOWN }], 20, 1000);
-    i.push([{ ...peer(1, 0), st: PEER_DOWN }], 22, 1100);
-    expect(i.sample(1050 + DELAY)[0].st).toBe(PEER_DOWN);
+    i.push([{ ...peer(1, 0), st: PEER_DOWN }], [], 20, 1000);
+    i.push([{ ...peer(1, 0), st: PEER_DOWN }], [], 22, 1100);
+    expect(i.sample(1050 + DELAY).peers[0].st).toBe(PEER_DOWN);
   });
 
   it('interpolates the height too, so a doorway is a step up and not a jump', () => {
@@ -484,9 +484,9 @@ describe('drawing the past', () => {
     // would be a discrete value changing on the frame the peer crossed the
     // threshold, and everybody would hop up steps.
     const i = build();
-    i.push([{ ...peer(1, 0), z: 1.65 }], 20, 1000);
-    i.push([{ ...peer(1, 10), z: 2.05 }], 22, 1100);
-    expect(i.sample(1050 + DELAY)[0].z).toBeCloseTo(1.85, 6);
+    i.push([{ ...peer(1, 0), z: 1.65 }], [], 20, 1000);
+    i.push([{ ...peer(1, 10), z: 2.05 }], [], 22, 1100);
+    expect(i.sample(1050 + DELAY).peers[0].z).toBeCloseTo(1.85, 6);
   });
 
   it('forgets one slot without pausing anybody else', () => {
@@ -495,10 +495,10 @@ describe('drawing the past', () => {
     // man sliding into another man's position. Only the changed place goes —
     // `reset` would stall every other peer every time anybody walked in.
     const i = build();
-    i.push([peer(1, 0), peer(2, 100)], 20, 1000);
-    i.push([peer(1, 10), peer(2, 200)], 22, 1100);
+    i.push([peer(1, 0), peer(2, 100)], [], 20, 1000);
+    i.push([peer(1, 10), peer(2, 200)], [], 22, 1100);
     i.forget(1);
-    const out = i.sample(1050 + DELAY);
+    const out = i.sample(1050 + DELAY).peers;
     expect(out.map((p) => p.slot)).toEqual([2]);
     expect(out[0].x).toBeCloseTo(150, 6);
     // The frames themselves are untouched — it is one peer that was dropped, not
@@ -508,10 +508,10 @@ describe('drawing the past', () => {
 
   it('bounds the buffer, so a tab left open does not accumulate a world', () => {
     const i = build();
-    for (let n = 0; n < 500; n++) i.push([peer(1, n)], 100 + n, 1000 + n * TICK);
+    for (let n = 0; n < 500; n++) i.push([peer(1, n)], [], 100 + n, 1000 + n * TICK);
     expect(i.size()).toBeLessThanOrEqual(BUFFER_FRAMES);
     // And still draws correctly from what it kept.
-    expect(i.sample(1000 + 499 * TICK + DELAY)[0].x).toBeCloseTo(499, 6);
+    expect(i.sample(1000 + 499 * TICK + DELAY).peers[0].x).toBeCloseTo(499, 6);
   });
 });
 
@@ -529,5 +529,86 @@ describe('shortestTurn', () => {
         expect(Math.abs(shortestTurn(a, b))).toBeLessThanOrEqual(Math.PI + 1e-9);
       }
     }
+  });
+});
+
+describe('the нейрослопы ride the same buffer as the people', () => {
+  /** One creature, addressed by the id the wire names it by. */
+  const foe = (id: number, x: number, z = 0) => ({ id, x, y: 0, z });
+
+  it('is drawn at the same instant as the man standing next to it', () => {
+    // THE WHOLE REASON THEY SHARE THIS BUFFER. The server rewinds the building
+    // by exactly `interp_delay_ms` to resolve a shot at either, so two buffers
+    // estimating the same clock offset from the same arrivals would be two
+    // answers to keep in step by hand — and the day they drifted, a слоп would
+    // be a thing you have to lead differently from a person, for no reason a
+    // player could ever discover.
+    const i = build();
+    i.push([peer(1, 0)], [foe(0, 0)], 20, 1000);
+    i.push([peer(1, 10)], [foe(0, 10)], 22, 1100);
+    const drawn = i.sample(1050 + DELAY);
+    expect(drawn.peers[0].x).toBeCloseTo(5, 6);
+    expect(drawn.slops[0].x).toBeCloseTo(5, 6);
+  });
+
+  it('interpolates a creature between the two frames that bracket the instant', () => {
+    const i = build();
+    i.push([], [foe(0, 0), foe(1, 100)], 20, 1000);
+    i.push([], [foe(0, 20), foe(1, 200)], 22, 1100);
+    const { slops } = i.sample(1050 + DELAY);
+    expect(slops.map((s) => s.id)).toEqual([0, 1]);
+    expect(slops[0].x).toBeCloseTo(10, 6);
+    expect(slops[1].x).toBeCloseTo(150, 6);
+  });
+
+  it('glides one up a step rather than snapping it, because the height is blended', () => {
+    // A слоп walks through doorways between rooms at different floor heights,
+    // and the height is derived at ingest for exactly this reason.
+    const i = build();
+    i.push([], [foe(0, 0, 0)], 20, 1000);
+    i.push([], [foe(0, 10, 0.4)], 22, 1100);
+    expect(i.sample(1050 + DELAY).slops[0].z).toBeCloseTo(0.2, 6);
+  });
+
+  it('draws a creature that appeared during the gap where it actually is', () => {
+    // There is nothing to interpolate from, and blending towards it from
+    // anywhere would drag a слоп across the заброшка on the frame it walked
+    // into view — or on the frame the building put a new one somewhere else.
+    const i = build();
+    i.push([], [], 20, 1000);
+    i.push([], [foe(0, 42)], 22, 1100);
+    expect(i.sample(1050 + DELAY).slops[0].x).toBe(42);
+  });
+
+  it('stops drawing one the newest frame does not name', () => {
+    // ABSENCE IS THE WHOLE OF DYING, and of walking out of the rooms this
+    // reader can see into. Either way, keeping a creature alive because nothing
+    // said to remove it leaves something standing in a doorway it left a minute
+    // ago — and this one would be standing there after it had been shot.
+    const i = build();
+    i.push([], [foe(0, 0), foe(1, 5)], 20, 1000);
+    i.push([], [foe(1, 6)], 22, 1100);
+    expect(i.sample(1050 + DELAY).slops.map((s) => s.id)).toEqual([1]);
+  });
+
+  it('answers with nothing at all before any frame has arrived', () => {
+    expect(build().sample(1000)).toEqual({ peers: [], slops: [] });
+  });
+
+  it('holds the newest frame rather than walking a creature into a wall', () => {
+    // The same degradation the peers get: extrapolation is what makes something
+    // walk through a wall and snap back, and a pause is a worse-looking correct
+    // answer.
+    const i = build();
+    i.push([], [foe(0, 0)], 20, 1000);
+    i.push([], [foe(0, 10)], 22, 1100);
+    expect(i.sample(9000).slops[0].x).toBe(10);
+  });
+
+  it('is emptied with everything else when the building is thrown away', () => {
+    const i = build();
+    i.push([peer(1, 0)], [foe(0, 0)], 20, 1000);
+    i.reset();
+    expect(i.sample(1050 + DELAY)).toEqual({ peers: [], slops: [] });
   });
 });

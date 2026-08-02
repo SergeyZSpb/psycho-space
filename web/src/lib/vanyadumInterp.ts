@@ -72,11 +72,60 @@ export interface PeerState {
   st?: number;
 }
 
+/**
+ * One нейрослоп as a snapshot describes it, already converted from the wire.
+ *
+ * IDENTIFIED BY AN ID that is a PLACE rather than a creature, exactly as a
+ * peer's slot is: the building holds a fixed number of them and the number is
+ * handed to the next one when its holder is shot. The server clears its rewind
+ * ring on a kill for the same reason this buffer does not have to — see
+ * `sample`, and the eight-second replacement interval that keeps a dead слоп's
+ * frames out of a live one's history.
+ *
+ * NO YAW AND NO STATE, and both absences are the server's measurement rather
+ * than this client's convenience. A слоп walks at whoever it is chasing and does
+ * nothing else, so the way it faces is the way it moves and two consecutive
+ * positions give it (see `slopFacing`); and the four things a peer's `st` exists
+ * to say — firing, being hit, being down, being protected — are all things a
+ * слоп cannot do. It dies to one barrel, so there is no wounded state to report:
+ * being absent from the next frame is the whole of having been shot.
+ */
+export interface SlopState {
+  id: number;
+  x: number;
+  y: number;
+  /**
+   * The FLOOR of the room it is standing in, not an eye height — a слоп is drawn
+   * as a billboard standing on the ground. Derived from the sector the wire
+   * named, for the reason a peer's height is: see `decodeSlops`.
+   */
+  z: number;
+}
+
 /** One received snapshot, placed on the server's own timeline. */
 interface Frame {
   /** The simulation tick this frame describes. The timeline — see `push`. */
   tick: number;
   peers: Map<number, PeerState>;
+  slops: Map<number, SlopState>;
+}
+
+/**
+ * The world as one instant of the past looked: everybody in it, and everything
+ * hunting them.
+ *
+ * ONE SAMPLE AND NOT TWO, which is the reason the нейрослопы share this buffer
+ * rather than getting one of their own. They are drawn interpolated at the same
+ * delay as peers because the server rewinds by exactly that delay to resolve a
+ * shot at either — so a слоп drawn at a different instant from the man it is
+ * standing next to would be a creature you have to lead differently from a
+ * person, for no reason a player could ever discover. Two buffers estimating the
+ * same clock offset from the same arrivals is two answers to keep in step by
+ * hand; this is one.
+ */
+export interface WorldSample {
+  peers: PeerState[];
+  slops: SlopState[];
 }
 
 /**
@@ -163,6 +212,12 @@ export function createInterpolator(delayMs: number, tickMs: number) {
   /** A frame's place on the local clock. */
   const timeOf = (f: Frame) => f.tick * perTick + (offset ?? 0);
 
+  /** One buffered frame taken whole, for the two ends of the honest degradations. */
+  const whole = (f: Frame): WorldSample => ({
+    peers: [...f.peers.values()],
+    slops: [...f.slops.values()],
+  });
+
   return {
     /**
      * Records the peers the server published on `tick`, arriving now.
@@ -203,7 +258,7 @@ export function createInterpolator(delayMs: number, tickMs: number) {
      * here needs the estimate to be right in absolute terms — only stable —
      * because everything drawn is a difference.
      */
-    push(peers: PeerState[], tick: number, nowMs: number): void {
+    push(peers: PeerState[], slops: SlopState[], tick: number, nowMs: number): void {
       // Out-of-order or duplicate ticks are ignored rather than sorted in: the
       // transport delivers in order, so this is belt and braces — and a repeat
       // would make a span of zero.
@@ -238,7 +293,9 @@ export function createInterpolator(delayMs: number, tickMs: number) {
 
       const m = new Map<number, PeerState>();
       for (const p of peers) m.set(p.slot, p);
-      frames.push({ tick, peers: m });
+      const f = new Map<number, SlopState>();
+      for (const s of slops) f.set(s.id, s);
+      frames.push({ tick, peers: m, slops: f });
       if (frames.length > BUFFER_FRAMES) frames = frames.slice(frames.length - BUFFER_FRAMES);
     },
 
@@ -289,13 +346,13 @@ export function createInterpolator(delayMs: number, tickMs: number) {
      *     them pause. A pause is a worse-looking correct answer, and correct
      *     wins.
      */
-    sample(nowMs: number): PeerState[] {
-      if (frames.length === 0) return [];
+    sample(nowMs: number): WorldSample {
+      if (frames.length === 0) return { peers: [], slops: [] };
       const target = nowMs - delay;
 
-      if (target <= timeOf(frames[0])) return [...frames[0].peers.values()];
+      if (target <= timeOf(frames[0])) return whole(frames[0]);
       const newest = frames[frames.length - 1];
-      if (target >= timeOf(newest)) return [...newest.peers.values()];
+      if (target >= timeOf(newest)) return whole(newest);
 
       let a = frames[0];
       let b = newest;
@@ -338,7 +395,32 @@ export function createInterpolator(delayMs: number, tickMs: number) {
           st: bs.st,
         });
       }
-      return out;
+
+      // The нейрослопы, on exactly the same terms and out of the same pair of
+      // frames — which is the whole reason they are in this buffer. Fewer fields
+      // to blend, because the wire carries fewer: no angle, because a слоп's
+      // facing is derived from where it has just been, and no state, because
+      // there is no state a слоп can be in that a viewer has to be told about.
+      const foes: SlopState[] = [];
+      for (const [id, bs] of b.slops) {
+        const as = a.slops.get(id);
+        if (!as) {
+          // Present only in the later frame. It walked into view during the gap,
+          // or the building has just put a new one where the last one died —
+          // either way its later position is the only one that was ever true,
+          // and blending towards it from anywhere would drag a creature across
+          // the заброшка.
+          foes.push(bs);
+          continue;
+        }
+        foes.push({
+          id,
+          x: as.x + (bs.x - as.x) * t,
+          y: as.y + (bs.y - as.y) * t,
+          z: as.z + (bs.z - as.z) * t,
+        });
+      }
+      return { peers: out, slops: foes };
     },
 
     /**
@@ -355,6 +437,26 @@ export function createInterpolator(delayMs: number, tickMs: number) {
      * a place has changed hands (see `changedHands`). It cannot be `reset`,
      * because that would pause every OTHER peer in the building every time
      * anybody walked in or out.
+     *
+     * PEERS ONLY, AND THE НЕЙРОСЛОПЫ NEED NO EQUIVALENT IN THIS BUFFER even
+     * though their ids are reused on exactly the same terms. The server keeps
+     * the building full of them, so the clock for the next one starts when the
+     * last place is taken: an id is therefore free for a whole SlopSpawnInterval
+     * before anything can stand in it, which is eight seconds against this
+     * buffer's BUFFER_FRAMES of history. The dead one's frames have aged out
+     * several times over before the newcomer's first arrives, and nothing on the
+     * wire would tell this client the hand-over happened in any case.
+     *
+     * IT SAYS NOTHING ABOUT ANYTHING ELSE KEYED BY СЛОП ID, and the distinction
+     * is worth stating because it was got wrong once. The argument above is
+     * about the FRAMES held here — it works only because they expire, which is a
+     * property of this buffer and of nothing downstream of it. A map that is not
+     * bounded by BUFFER_FRAMES keeps whatever it was told until something clears
+     * it, so it owns the hand-over itself: the renderer's facing memory forgets
+     * what a frame did not carry (lib/vanyadumSlop, createSlopFacings) and a
+     * death mark is spent by being drawn, a fixed count of frames after the
+     * departure that started it (lib/vanyadumFlash, createSlopMarks). Each states
+     * its own rule; this paragraph is not a licence for the next one to skip it.
      */
     forget(slot: number): void {
       for (const f of frames) f.peers.delete(slot);

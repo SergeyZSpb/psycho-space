@@ -23,6 +23,7 @@ var epoch = time.Unix(0, 0)
 func newTestWorld(t *testing.T, seed int64) (*World, string) {
 	t.Helper()
 	w := NewWorld(uuid.New(), seed)
+	noSlops(w)
 	acc := uuid.New().String()
 	if _, ok := w.Join(acc, "pseudo-"+acc[:8], epoch); !ok {
 		t.Fatal("a fresh заброшка refused its first occupant")
@@ -30,6 +31,24 @@ func newTestWorld(t *testing.T, seed int64) (*World, string) {
 	settled(w, acc)
 	return w, acc
 }
+
+// noSlops pushes the spawner's deadline out of reach, which is the state almost
+// every test in this file wants: a building holding nobody but the people the
+// test put in it.
+//
+// IT IS THE SAME KIND OF THING settled IS. A нейрослоп walks at the nearest man
+// and takes health off him when it arrives, so a fixture that let one appear
+// would be asserting the слоп's rules rather than the one it is about — and a
+// test that passes or fails depending on how far a creature happened to walk is
+// a test nobody can read. The слопы have their own file, where the deadline is
+// put back deliberately (slop_test.go, slopsFrom).
+//
+// A DEADLINE RATHER THAN A FLAG, because there is no flag: nothing in production
+// can turn the spawner off, and a switch that existed only for tests would be
+// exactly the test-only machinery in a production path this project forbids. The
+// tick counter is an int64 and a world lives in memory, so a deadline at the end
+// of the range is one no заброшка will ever reach.
+func noSlops(w *World) { w.slopSpawnAt = math.MaxInt64 }
 
 // settled ends somebody's walk-in protection, which is the state almost every
 // test below wants him in: a man who has been in the building a while.
@@ -782,8 +801,13 @@ func TestPeersArriveInAStableOrder(t *testing.T) {
 	// holder is in the building — and it is the order the standings lists the same
 	// people in, so a client reading the two frames together never has to sort
 	// either.
+	//
+	// The building is filled from MaxOccupants rather than from a list of names,
+	// so the day the capacity moves — and it has, to pay for the нейрослопы — this
+	// test still fills it rather than being refused at the door.
 	w := NewWorld(uuid.Nil, 11)
-	for _, id := range []string{"account-a", "account-c", "account-b", "account-d"} {
+	names := []string{"account-a", "account-c", "account-b", "account-d", "account-e"}[:MaxOccupants]
+	for _, id := range names {
 		if _, ok := w.Join(id, "pseudo-"+id, epoch); !ok {
 			t.Fatalf("%s was refused", id)
 		}
@@ -792,7 +816,10 @@ func TestPeersArriveInAStableOrder(t *testing.T) {
 
 	// The order they walked in, and not the order their accounts sort in: c took
 	// the second place because he arrived second.
-	want := []int{1, 2, 3}
+	want := make([]int, 0, MaxOccupants-1)
+	for i := 1; i < MaxOccupants; i++ {
+		want = append(want, i)
+	}
 	for i := 0; i < 100; i++ {
 		got := make([]int, 0, len(want))
 		for _, p := range mustSnapshot(t, w, "account-a").Peers {
@@ -873,22 +900,19 @@ func TestOnlyYourOwnRoomAndTheOnesThroughItsDoorwaysAreSent(t *testing.T) {
 	}
 	me.State.Sector = w.Level.SpawnSector
 
-	// Somebody in the reader's own room.
-	roommate, _ := w.Join("account-roommate", "pseudo-roommate", epoch)
-	roommate.State.Sector = w.Level.SpawnSector
 	// Somebody through a doorway, which is what a neighbouring sector means.
 	neighbour, _ := w.Join("account-neighbour", "pseudo-neighbour", epoch)
 	neighbour.State.Sector = near
-	// And somebody two rooms away.
+	// And somebody two rooms away. Three people rather than the four this used to
+	// place, because that is the whole building now (MaxOccupants) — the man in
+	// the reader's own room is the stranger, at the end, once he has walked all
+	// the way in.
 	stranger, _ := w.Join("account-stranger", "pseudo-stranger", epoch)
 	stranger.State.Sector = far
 
 	sent := map[int]bool{}
 	for _, p := range mustSnapshot(t, w, "account-me").Peers {
 		sent[p.Slot] = true
-	}
-	if !sent[roommate.Slot] {
-		t.Fatal("somebody standing in the same room was filtered out")
 	}
 	if !sent[neighbour.Slot] {
 		t.Fatalf("somebody in sector %d, through a doorway from sector %d, was filtered out",
@@ -911,12 +935,26 @@ func TestOnlyYourOwnRoomAndTheOnesThroughItsDoorwaysAreSent(t *testing.T) {
 	// And walking back into view puts him back on the frame. Absence is full
 	// state and not an event, so nothing has to announce either direction.
 	stranger.State.Sector = near
-	for _, p := range mustSnapshot(t, w, "account-me").Peers {
-		if p.Slot == stranger.Slot {
-			return
+	if !inFrame(t, w, "account-me", stranger.Slot) {
+		t.Fatal("he stepped into the next room and was still not sent")
+	}
+	// And all the way into the reader's own room, which is the case the filter
+	// must never touch.
+	stranger.State.Sector = w.Level.SpawnSector
+	if !inFrame(t, w, "account-me", stranger.Slot) {
+		t.Fatal("somebody standing in the same room was filtered out")
+	}
+}
+
+// inFrame reports whether one viewer's snapshot names a peer.
+func inFrame(t *testing.T, w *World, viewer string, slot int) bool {
+	t.Helper()
+	for _, p := range mustSnapshot(t, w, viewer).Peers {
+		if p.Slot == slot {
+			return true
 		}
 	}
-	t.Fatal("he stepped into the next room and was still not sent")
+	return false
 }
 
 func TestAReaderJitteringInADoorwayDoesNotStrobeThePeopleAroundHim(t *testing.T) {
@@ -1231,12 +1269,43 @@ func worldDigest(t *testing.T, w *World, ids ...string) string {
 		Loaded   int
 		Cooldown float64
 		Reload   float64
+		// The three counters are here for the same reason, and they are the ones
+		// the нейрослопы made worth hashing: a transcript in which the same shots
+		// landed on different targets, or in which one run's слоп reached a
+		// different man, produces identical positions on the tick after the death
+		// and different careers for ever.
+		Kills     int
+		Deaths    int
+		Betrayals int
+	}
+	// The нейрослопы are in the digest because they are in the world, and the
+	// replay property is about the WORLD rather than about the people in it. A
+	// digest that hashed only the occupants would go on agreeing with itself while
+	// the spawner drew a different room, the pathing sent a creature through a
+	// different doorway, or the separation rule broke a tie the other way — which
+	// is precisely the class of change this test exists to catch.
+	type slopState struct {
+		ID      int
+		Pos     Vec2
+		Sector  int
+		Health  int
+		TouchAt int64
 	}
 	out := struct {
-		Tick  int64
-		Ready []int64
-		Occs  []occupantState
-	}{Tick: w.Tick, Ready: w.ready}
+		Tick    int64
+		Ready   []int64
+		Occs    []occupantState
+		Slops   []slopState
+		SpawnAt int64
+	}{Tick: w.Tick, Ready: w.ready, SpawnAt: w.slopSpawnAt}
+	for _, sl := range w.slops {
+		if sl == nil {
+			continue
+		}
+		out.Slops = append(out.Slops, slopState{
+			ID: sl.ID, Pos: sl.Pos, Sector: sl.Sector, Health: sl.Health, TouchAt: sl.touchAt,
+		})
+	}
 	for _, id := range ids {
 		o := w.Occupant(id)
 		if o == nil {
@@ -1246,6 +1315,7 @@ func worldDigest(t *testing.T, w *World, ids ...string) string {
 			ID: id, Pos: o.State.Pos, Sector: o.State.Sector,
 			Health: o.State.Health, LastSeq: o.State.LastSeq, Counters: o.State.Counters,
 			Loaded: o.State.Loaded, Cooldown: o.State.CooldownLeft, Reload: o.State.ReloadLeft,
+			Kills: o.kills, Deaths: o.deaths, Betrayals: o.betrayals,
 		})
 	}
 	// encoding/json sorts map keys, so the maps in here contribute the same bytes
@@ -1566,7 +1636,10 @@ func TestEverybodyWatchingIsToldAboutTheSameShot(t *testing.T) {
 	//
 	// An event is addressed to one person and is right to be consumed; a gunshot
 	// belongs to the building.
-	w, shooter, watchers := watching(t, 3)
+	// Everybody else the building can hold, which is what makes "the same shot"
+	// mean "every viewer there is" — and is derived rather than typed, because the
+	// нейрослопы took a place out of the заброшка (MaxOccupants).
+	w, shooter, watchers := watching(t, MaxOccupants-1)
 	slot := w.Occupant(shooter).Slot
 
 	fireOnTheWire(w, shooter, 1)
@@ -1639,6 +1712,8 @@ func worldIn(t *testing.T, l *Level) *World {
 	w.Level = l
 	w.ready = make([]int64, len(l.Pickups))
 	w.visible = buildVisibility(l)
+	w.routes = buildRoutes(l)
+	noSlops(w)
 	return w
 }
 

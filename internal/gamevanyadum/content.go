@@ -136,14 +136,22 @@ const SpawnProtectSeconds = 2.0
 // where DownTime is a duration.
 const protectTicks = int64(SpawnProtectSeconds * float64(time.Second) / float64(SimStep))
 
-// BetrayalsTitle is what the standings column is called, in Russian.
+// BetrayalsTitle and KillsTitle are what the two standings columns are called,
+// in Russian.
 //
-// Friendly fire is on and the нейрослопы have not arrived, so every kill in this
-// building is a friend's — the counter is not a score, it is a confession. It is
-// published in the catalogue rather than typed into the client for the reason
-// every other word here is: the splash screen's rules cheatsheet is generated
-// from what is served, so this is the one place the joke is written down.
-const BetrayalsTitle = "предательства"
+// THE PAIR IS THE JOKE, and it only became one when the нейрослопы arrived. A
+// слоп is worth a kill; a friend is worth nothing at all and is published under
+// his own heading, so the board says in two columns what the game thinks of you.
+// Before there was anything here but friends there was only the confession.
+//
+// Both are published in the catalogue rather than typed into the client for the
+// reason every other word here is: the splash screen's rules cheatsheet is
+// generated from what is served, so this is the one place either word is written
+// down.
+const (
+	BetrayalsTitle = "предательства"
+	KillsTitle     = "слопы"
+)
 
 // The gun: a double-barrelled обрез, and пиво is what goes in it. The bottles
 // the building has been scattering since the first iteration finally spend on
@@ -254,84 +262,222 @@ const PickupRespawn = 30 * time.Second
 // so the two can never disagree.
 const pickupRespawnTicks = int64(PickupRespawn / SimStep)
 
+// The нейрослоп: the first thing in this заброшка that is not a friend.
+//
+// It walks at the nearest man, room by room, and hurts whoever it reaches. It
+// has no gun, no plan and no line of sight beyond "where is he" — which is the
+// whole joke, and is also why the numbers below are the entire creature.
+const (
+	// SlopTitle is what it is called, in Russian. Published so the cheatsheet
+	// names it without the word being typed on the client.
+	SlopTitle = "нейрослоп"
+
+	// SlopBlurb is one line of Russian about what it is for. Prose rather than a
+	// derived line, and NUMBER-FREE for the same reason a pickup's blurb is: the
+	// cheatsheet generates the numbers from what is served, so a constant spelled
+	// out here would go stale beside a generated line that had it right.
+	SlopBlurb = "Ходит на тебя. Ничего не говорит, потому что сказать ему нечего."
+
+	// SlopSpeed is metres per second, and it is deliberately BELOW WalkSpeed.
+	// Running away has to be an answer that always works — the заброшка is small,
+	// there is one spawn, and a creature you cannot outrun in a building you
+	// cannot leave is not a game. Two thirds of a walk is slow enough to escape
+	// and fast enough that ignoring one costs you the room you were standing in.
+	SlopSpeed = 3.2
+
+	// SlopHealth is what one is worth, and it is EXACTLY BarrelDamage because
+	// nothing on the wire could say otherwise.
+	//
+	// A слоп is drawn from the position on a snapshot and nothing else — no
+	// health, no state field, not a byte beyond where it is (message.go, Foe). So
+	// the only acknowledgement a hit can have is the creature ceasing to be on
+	// the frame, and that is the truth only while one barrel is the whole of it.
+	// Raise this above BarrelDamage and shooting a слоп becomes an action with no
+	// acknowledgement at all, which this project treats as an unfinished action —
+	// and the field that would fix it costs a place in the building
+	// (MaxOccupants). Pinned by
+	// TestASlopDiesToOneBarrelBecauseNothingOnTheWireCouldSayOtherwise.
+	SlopHealth = BarrelDamage
+
+	// SlopDamage is what touching one costs, and SlopTouchInterval is how often
+	// the same слоп may charge it.
+	//
+	// FOUR TOUCHES IS A DEATH, spread over three seconds of standing in one. The
+	// cooldown is the whole of what makes contact survivable: without it a
+	// creature that overlaps you is twenty hits a second, so walking into one
+	// would be indistinguishable from walking into a wall that kills you. With
+	// it, being caught is a warning first and a death fourth — long enough to
+	// fire two barrels, which is exactly what the gun holds.
+	//
+	// TWO OF THEM HALVE IT, deliberately: the interval is per слоп rather than
+	// per victim, so being cornered by the pair is twice as expensive as being
+	// caught by one. That is what makes the second one worth shooting first.
+	SlopDamage        = 25
+	SlopTouchInterval = time.Second
+
+	// SlopReach is how close it has to be to hurt you: the two discs touching.
+	//
+	// A слоп is THE SAME DISC AS A MAN — PlayerRadius, walked with the player's
+	// own collision resolver and shot with the player's own body model. One
+	// radius, one meaning, exactly as BodyHeight argues for the hit test: what
+	// fits through a doorway is what can be shot through it, and now also what
+	// can follow you through it.
+	//
+	// IT IS NOT WHAT KEEPS ONE OUT OF THE NEXT ROOM, and it must not become that
+	// again. Two discs flush against opposite sides of a shared wall are pushed
+	// PlayerRadius clear of it each (sim.go, pushOut), so they stand exactly this
+	// distance apart — and a reach test on its own therefore calls that a touch,
+	// through concrete. What refuses it is the wall sweep contact damage now runs
+	// (slop.go, touches), which is the same sweep that stops a barrel. So this
+	// number is free to be retuned for how it FEELS: raise it and a слоп reaches
+	// further into the room it is standing in, and no further into the one next
+	// door.
+	//
+	// IT IS ALSO HOW FAR APART TWO СЛОПЫ ARE KEPT (slop.go, separate), and that is
+	// the same quantity rather than a second constant borrowed for a second job:
+	// two discs of PlayerRadius stop overlapping at exactly this distance,
+	// whichever pair of them it is. Two numbers here would be two numbers to keep
+	// equal by hand, and the day they diverged one слоп would be standing inside
+	// the reach of another.
+	SlopReach = 2 * PlayerRadius
+
+	// SlopPopulation is how many нейрослопы the building holds.
+	//
+	// IT IS A WIRE BUDGET AND NOT A DIFFICULTY KNOB. Everything visible is on the
+	// frame and everything in this building can become visible at once — they all
+	// walk at the same man, so they converge on him by construction — which makes
+	// the population the worst case rather than a typical one. Two is what is left
+	// of the 8 kB/s ceiling once three people are in the room; see MaxOccupants
+	// for the arithmetic and for what raising either would cost.
+	//
+	// It is also why there is no second constant for "how many may be drawn": a
+	// cap on the frame below the population would be a creature that can hurt you
+	// without being drawn, which is the one thing this game's visibility rules
+	// exist to forbid.
+	SlopPopulation = 2
+
+	// SlopSpawnInterval is how long the building waits between нейрослопы.
+	//
+	// ONE AT A TIME, AND THE FIRST ONE IS NOT FREE: the deadline starts full, so a
+	// заброшка somebody has just walked into is empty for this long. Nothing
+	// materialises on the tick a socket says hello — the client is still building
+	// its meshes, and being killed by something you have not been drawn yet is the
+	// worst first impression a game can make.
+	//
+	// It is also the whole replacement rate. Kill both and the building is quiet
+	// for this long, then one arrives, then the other: clearing a room buys time
+	// rather than ending anything, which is the only shape available in a match
+	// that does not end.
+	SlopSpawnInterval = 8 * time.Second
+)
+
+// slopTouchTicks and slopSpawnTicks are those intervals as whole numbers of
+// simulation steps, which is the unit the world keeps both deadlines in. Derived
+// rather than typed out, so they can never disagree with the seconds above.
+const (
+	slopTouchTicks = int64(SlopTouchInterval / SimStep)
+	slopSpawnTicks = int64(SlopSpawnInterval / SimStep)
+)
+
+// doorwayStep is how far past a doorway a слоп aims when it is walking into the
+// next room.
+//
+// IT AIMS PAST THE OPENING AND NOT AT IT, and that is a correctness rule rather
+// than a nicety. A portal lies ON the boundary the two rooms share, and a shared
+// boundary belongs to the lower-numbered room (level.go, SectorAt) — so a слоп
+// that arrived exactly at the middle of a doorway would still be in the room it
+// came from, would be told to head for the same point it is already standing on,
+// and would stand in the doorway for ever. Aiming a body's width into the room
+// beyond it is the smallest offset that cannot round back.
+const doorwayStep = PlayerRadius
+
 // MaxOccupants is how many people may be in the заброшка at once.
 //
-// FOUR IS A MEASURED LIMIT AND NOT A PREFERENCE. What a viewer is sent is two
-// things: a snapshot built for them twenty times a second which carries
-// everybody else, and the standings frame once a second which carries everybody
-// including them. The ceiling is 8 kB/s PER VIEWER — the number this game's
-// design named as the point at which interest management stops being optional —
-// and the capacity is simply the largest N whose total fits under it.
+// THREE IS A MEASURED LIMIT AND NOT A PREFERENCE. What a viewer is sent is three
+// things: a snapshot built for them twenty times a second which carries everybody
+// else AND every нейрослоп they can see, the standings frame once a second which
+// carries everybody including them, and the events he is handed as he collects
+// things. The ceiling is 8 kB/s PER VIEWER — the number this game's design named
+// as the point at which interest management stops being optional — and the
+// capacity is simply the largest N whose total fits under it once the слопы have
+// been paid for.
 //
-// THE MEASUREMENT, at the widest quantisation the wire can carry (yaw is
-// wrapped rather than normalised, so it reaches five characters; positions are
-// far beyond anything a generated level produces):
+// THE MEASUREMENT, at the widest quantisation the wire can carry (yaw is wrapped
+// rather than normalised, so it reaches five characters; positions are far beyond
+// anything a generated level produces):
 //
 //	solo snapshot             180 bytes
 //	the first peer            +63  (the entry, plus the `p` array around it)
 //	each further peer         +57
-//	standings with one row    104
-//	each further row          +76
+//	the first слоп            +44  (the entry, plus the `f` array around it)
+//	each further слоп         +38
+//	standings with one row    115
+//	each further row          +87
+//	events, sustained         39 B/s (the densest heap a level can hold, once
+//	                          per PickupRespawn each — it does not grow with the
+//	                          building, since a man collects only what he walks on)
 //
-// So a viewer pays 20 × (180 + 63 + (N−2)×57) + (104 + (N−1)×76) a second:
+// So a viewer pays 20 × the snapshot + the standings + the events, and the whole
+// grid of answers is this:
 //
-//	N = 3    300 × 20 + 256 = 6256 B/s
-//	N = 4    357 × 20 + 332 = 7472 B/s
-//	N = 5    414 × 20 + 408 = 8688 B/s — over
+//	3 people, 0 слопы    300 × 20 + 289 + 39 = 6328 B/s
+//	3 people, 2 слопы    382 × 20 + 289 + 39 = 7968 B/s   ← what ships
+//	3 people, 3 слопы    420 × 20 + 289 + 39 = 8728 B/s — over
+//	4 people, 0 слопы    357 × 20 + 376 + 39 = 7555 B/s
+//	4 people, 1 слоп     401 × 20 + 376 + 39 = 8435 B/s — over
 //
-// Four, with 528 B/s of headroom. Pinned by
-// TestEverythingAFullBuildingSendsAViewerFitsTheCeiling, which fails when this
-// constant is raised or when either frame grows a field.
+// Three people and two слопы, with 32 B/s of headroom. Pinned by
+// TestEverythingAFullBuildingSendsAViewerFitsTheCeiling, which fails when either
+// constant is raised or when any of the three frames grows a field.
 //
-// IT WAS FIVE, AND SHOOTING PEOPLE IS WHAT COST THE FIFTH PLACE. That is the
-// trade the previous version of this comment named in advance — "the next field
-// of that size is the one that costs a place, and the answer then is a smaller
-// building or the binary codec, not a larger ceiling" — and this is it being
-// paid rather than argued out of. Where it went:
+// IT WAS FOUR, AND THE НЕЙРОСЛОПЫ COST THE FOURTH PLACE. Read the grid again and
+// the crunch is stark: FOUR PEOPLE AND ONE СЛОП DO NOT FIT — the building is over
+// the ceiling before the antagonist has arrived at all. So this is not a case of
+// trimming a field until it fits. What went, and what it bought:
 //
-//   - THE PEER STATE, +7 bytes on EVERY peer on EVERY tick (message.go,
-//     Peer.St). That is 560 B/s at the old capacity, and it is the shape the
-//     muzzle flash's own comment measured at 640 B/s and refused. It is bought
-//     now because two of its four values are DURATIONS — a man is down for
-//     DownTime and protected for SpawnProtectSeconds — and neither can be
-//     derived from anything the frame already carries, because being shot moves
-//     nobody. There is no honest duty cycle to discount by: a player killed the
-//     instant his protection expires is flagged essentially always. The flag it
-//     replaced was 9 bytes at three a second, so this is a 7-byte field costing
-//     seven times what a 9-byte one did — the rate is everything.
-//   - THE TWO SELF TIMERS, `dn` and `pr`, +20 bytes on the solo frame at the
-//     pessimism this budget is measured with (they cannot both be set, and
-//     neither can be set beside the gun's two).
-//   - THE TWO STANDINGS COUNTERS, +23 bytes a row at six figures each, on a
-//     frame that goes out once a second.
+//   - THE FOURTH OCCUPANT, −57 bytes a snapshot and −87 a standings row: 1227 B/s,
+//     which is what the слопы are bought with.
+//   - THE KILL COLUMN, +11 bytes a standings row at six figures, on a frame that
+//     goes out once a second. It is not optional: a kill counter that is not
+//     published is a kill counter nobody has.
 //
-// THE STANDINGS FRAME IS INSIDE THE CEILING AND NOT BESIDE IT. It is traffic to
-// the same viewer, so leaving it out would be moving the line rather than
-// meeting it — which is how this constant came to be six before anybody measured
-// a peer.
+// AND A СЛОП IS ALREADY THE CHEAPEST ENTITY THIS WIRE CAN CARRY — 37 bytes against
+// a peer's 56, because it has no yaw (its facing IS its direction of travel, which
+// two consecutive frames give for free) and no state field (it never fires, never
+// falls and is never protected). See message.go, Foe, for what each omission cost
+// and why it was available. There is no third field to take off it: what is left
+// is an id, two coordinates, a room, and punctuation.
 //
-// INTEREST MANAGEMENT BOUGHT NONE OF IT, which is worth stating plainly rather
-// than letting the two changes be credited together. Filtering peers to the
-// viewer's own sector and the rooms through its doorways (level.go,
-// buildVisibility) makes the TYPICAL frame much smaller, which is what a phone
-// on mobile data actually experiences and is why it is worth having. But the
-// budget is taken on the WORST case, and the worst case is everybody standing in
-// one room — where the filter removes nothing at all. A capacity derived from
-// the typical frame would be a capacity that fails the first time four people
-// crowd into one doorway. The same argument covers the hold that keeps a peer on
-// the frame for a moment after he leaves the set (visibleHold): it can only ADD
-// to a filtered set, and the unfiltered set is what is budgeted here.
+// THE POPULATION IS THE WORST CASE AND NOT A TYPICAL ONE. Every слоп walks at the
+// nearest man, so they converge on him by construction — a filter that helps when
+// they are spread out helps least at exactly the moment they are all in the room
+// with you. The same argument covers the people: the worst case is everybody
+// standing in one room, where interest management removes nothing at all
+// (level.go, buildVisibility). A capacity derived from the typical frame is a
+// capacity that fails the first time the game gets interesting.
 //
-// GETTING THE PLACE BACK NEEDS THE BINARY CODEC. There is no further byte worth
-// finding in JSON: a peer is six integers behind keys of one to three
-// characters, and what is left of the entry is punctuation. The design doc
-// earmarked a binary codec as an iteration of its own, and that — rather than
-// another round of trimming — is what the fifth place now costs.
+// WHAT THE ALTERNATIVES WERE, since a place in a building is not a small thing to
+// spend. A cap on the frame BELOW the population — drawing only the nearest two of
+// three слопы — buys a place and creates a creature that can hurt you without
+// being drawn, which is the one thing this game's visibility rules exist to forbid
+// (Snapshot.Peers, targetsFor). Raising the ceiling is not available: it is a
+// phone on RU mobile data, and the number is the design's own trigger. So the
+// honest choices were a smaller building or the binary codec, and this is the
+// smaller building.
+//
+// 32 B/s IS A BYTE AND A HALF OF A SNAPSHOT, AND THAT IS THE FINDING. JSON is
+// exhausted here: there is no further byte worth trimming — a peer is six integers
+// behind keys of one to three characters and a слоп is four, and the rest is
+// punctuation — so the NEXT field of any size at all, on any of the three frames,
+// costs the third occupant. Getting a place back, or a third слоп, needs the
+// binary codec the design doc earmarked as an iteration of its own. That is not a
+// thing to discover from somebody's data allowance; it is written here, and the
+// test above is what makes it impossible to walk past.
 //
 // A refusal is a refusal and never a queue: somebody who arrives at a full
 // заброшка is told so (the `vanyadum_full` frame) rather than being put on hold,
 // because there is nothing to hold them for — nothing here ends.
-const MaxOccupants = 4
+const MaxOccupants = 3
 
 // Pickups is every kind that can be generated into a level.
 //
@@ -431,10 +577,43 @@ const (
 type Config struct {
 	Player   PlayerConfig `json:"player"`
 	Gun      GunConfig    `json:"gun"`
+	Slop     SlopConfig   `json:"slop"`
 	Pickups  []PickupKind `json:"pickups"`
 	Surfaces []Surface    `json:"surfaces"`
 	Sim      SimConfig    `json:"sim"`
 	World    WorldConfig  `json:"world"`
+}
+
+// SlopConfig is everything about the нейрослоп a player has to be told before he
+// walks in, and it is served for the reason the gun's numbers are: the splash
+// screen's rules cheatsheet is GENERATED from this, so retuning a constant
+// changes what the player is told with no client change and no chance of the two
+// drifting apart.
+//
+// Barrels is not here and is deliberately absent. How many shots a слоп takes is
+// Health against the gun's own Damage, both already published, and the cheatsheet
+// divides — a third number saying the same thing is a third number to keep in
+// step by hand.
+type SlopConfig struct {
+	Title string `json:"title"`
+	Blurb string `json:"blurb"`
+	// Population is how many are in the building at once, Health is what one is
+	// worth against GunConfig.Damage, Damage is what being reached costs, and
+	// TouchSeconds is how often the same слоп may charge it.
+	Population   int     `json:"population"`
+	Health       int     `json:"health"`
+	Damage       int     `json:"damage"`
+	TouchSeconds float64 `json:"touch_seconds"`
+	// Speed is metres per second, published against PlayerConfig.WalkSpeed so the
+	// cheatsheet can say the one thing that actually matters about it: you are
+	// faster, so you can always leave.
+	Speed float64 `json:"speed"`
+	// SpawnSeconds is how long the building waits between them, which is both the
+	// quiet a new arrival gets and the replacement rate after a kill.
+	SpawnSeconds float64 `json:"spawn_seconds"`
+	// KillsTitle is what to call the standings column that counts them. See the
+	// constant for why it and BetrayalsTitle are a pair.
+	KillsTitle string `json:"kills_title"`
 }
 
 // GunConfig is everything about the обрез the client has to know: enough to draw
@@ -544,6 +723,17 @@ func BuildConfig() Config {
 			ReloadCost:          ReloadCost,
 			Ammo:                AmmoCounter,
 			Damage:              BarrelDamage,
+		},
+		Slop: SlopConfig{
+			Title:        SlopTitle,
+			Blurb:        SlopBlurb,
+			Population:   SlopPopulation,
+			Health:       SlopHealth,
+			Damage:       SlopDamage,
+			TouchSeconds: SlopTouchInterval.Seconds(),
+			Speed:        SlopSpeed,
+			SpawnSeconds: SlopSpawnInterval.Seconds(),
+			KillsTitle:   KillsTitle,
 		},
 		Pickups:  Pickups,
 		Surfaces: Surfaces,

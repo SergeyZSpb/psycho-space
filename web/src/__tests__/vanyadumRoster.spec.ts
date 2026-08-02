@@ -10,6 +10,7 @@ import {
   clock,
   decodeBoard,
   decodePeers,
+  decodeSlops,
 } from '../lib/vanyadumRoster';
 
 /**
@@ -133,27 +134,86 @@ describe('decodePeers', () => {
   });
 });
 
+describe('decodeSlops', () => {
+  it('reads a нейрослоп by its id, in the quantisation the wire uses', () => {
+    const [foe] = decodeSlops([{ n: 1, x: 1234, y: -567, s: 1 }], LEVEL);
+    expect(foe.id).toBe(1);
+    expect(foe.x).toBeCloseTo(12.34, 9);
+    expect(foe.y).toBeCloseTo(-5.67, 9);
+  });
+
+  it('stands it on the floor of the room the wire named, not at an eye height', () => {
+    // A слоп is drawn as a billboard standing on the ground, so what it needs
+    // from the sector is the ground. Room 1 is a step up from room 0.
+    expect(decodeSlops([{ n: 0, x: 0, y: 0, s: 0 }], LEVEL)[0].z).toBeCloseTo(0, 9);
+    expect(decodeSlops([{ n: 0, x: 0, y: 0, s: 1 }], LEVEL)[0].z).toBeCloseTo(0.4, 9);
+  });
+
+  it('falls back to ground level for a room it has never heard of', () => {
+    // The client one deploy behind a level format, or a frame that arrived
+    // while the building was being rebuilt. A creature on the ground floor is a
+    // safe answer; a creature at NaN is a sprite that vanishes.
+    expect(decodeSlops([{ n: 0, x: 0, y: 0, s: 99 }], LEVEL)[0].z).toBe(0);
+  });
+
+  it('carries no angle and no state, because the wire has neither to give', () => {
+    // A слоп walks at whoever it is chasing and does nothing else, so its facing
+    // is derived from two of its own positions (vanyadumSlop) — and the four
+    // things a peer's `st` exists to say are all things a слоп cannot do. Four
+    // fields against a peer's six, on a payload that repeats twenty times a
+    // second, is what a second creature in the building is paid for.
+    expect(decodeSlops([{ n: 0, x: 100, y: 100, s: 0 }], LEVEL)[0]).toEqual({
+      id: 0,
+      x: 1,
+      y: 1,
+      z: 0,
+    });
+  });
+
+  it('answers with nothing when the array is absent, which is most frames', () => {
+    // Omitted entirely when there is nothing to draw — a building that has just
+    // been walked into is empty of them for a whole spawn interval, and they are
+    // cut to the rooms the reader can see into after that.
+    expect(decodeSlops(undefined, LEVEL)).toEqual([]);
+    expect(decodeSlops([], LEVEL)).toEqual([]);
+    expect(decodeSlops('nonsense', LEVEL)).toEqual([]);
+  });
+
+  it('skips an entry that is not an object rather than drawing one at nowhere', () => {
+    const foes = decodeSlops([null, 7, { n: 1, x: 100, y: 100, s: 0 }], LEVEL);
+    expect(foes).toHaveLength(1);
+    expect(foes[0].id).toBe(1);
+  });
+});
+
 describe('decodeBoard', () => {
   it('reads a row, the bag it is carrying, and what it has done', () => {
-    const [row] = decodeBoard([{ n: 1, i: 'K3jf9sLm2QpZ', s: 137, c: { beer: 4 }, d: 2, br: 5 }]);
+    const [row] = decodeBoard([
+      { n: 1, i: 'K3jf9sLm2QpZ', s: 137, c: { beer: 4 }, d: 2, k: 9, br: 5 },
+    ]);
     expect(row).toEqual({
       slot: 1,
       name: 'K3jf9sLm2QpZ',
       seconds: 137,
       bag: { beer: 4 },
       deaths: 2,
+      // THREE DIFFERENT NUMBERS, and the two on either side of the deaths are
+      // the joke: a нейрослоп put down scores here, a friend put down scores
+      // only on the confession below, and nothing adds one to the other.
+      kills: 9,
       betrayals: 5,
     });
   });
 
   it('reads somebody carrying nothing as carrying nothing, not as a missing field', () => {
     // The bag is omitted rather than sent as an empty object, which is everybody
-    // for their first minute — and so are the two counters, which is everybody in
-    // a building where nobody has shot anybody yet. Absent means none, not
+    // for their first minute — and so are all three counters, which is everybody
+    // in a building where nobody has shot anything yet. Absent means none, not
     // unknown, so the readout draws a zero and the columns stay aligned.
     const [row] = decodeBoard([{ n: 0, i: 'aaaaaaaaaaaa', s: 3 }]);
     expect(row.bag).toEqual({});
     expect(row.deaths).toBe(0);
+    expect(row.kills).toBe(0);
     expect(row.betrayals).toBe(0);
   });
 
@@ -170,6 +230,7 @@ describe('changedHands', () => {
     seconds: 0,
     bag: {},
     deaths: 0,
+    kills: 0,
     betrayals: 0,
   });
 
@@ -235,10 +296,10 @@ describe('a snapshot that arrives before the standings that explain it', () => {
     // guessing a name is worse than both. Nothing about the decode consults the
     // board at all, which is what makes that true by construction.
     const i = createInterpolator(DELAY, TICK);
-    i.push(decodePeers([{ n: 3, x: 700, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), 20, 1000);
-    i.push(decodePeers([{ n: 3, x: 900, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), 22, 1100);
+    i.push(decodePeers([{ n: 3, x: 700, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), [], 20, 1000);
+    i.push(decodePeers([{ n: 3, x: 900, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), [], 22, 1100);
 
-    const drawn = i.sample(1050 + DELAY);
+    const drawn = i.sample(1050 + DELAY).peers;
     expect(drawn.map((p) => p.slot)).toEqual([3]);
     expect(drawn[0].x).toBeCloseTo(8, 6);
     // And the standings say nothing about him, because a board that never
@@ -254,16 +315,16 @@ describe('a snapshot that arrives before the standings that explain it', () => {
     // the next snapshot re-establishes him from scratch. One frame of history
     // lost, against a man drawn sliding out of somebody else's position.
     const i = createInterpolator(DELAY, TICK);
-    i.push(decodePeers([{ n: 3, x: 700, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), 20, 1000);
-    i.push(decodePeers([{ n: 3, x: 900, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), 22, 1100);
+    i.push(decodePeers([{ n: 3, x: 700, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), [], 20, 1000);
+    i.push(decodePeers([{ n: 3, x: 900, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), [], 22, 1100);
 
     const board = decodeBoard([{ n: 3, i: 'K3jf9sLm2QpZ', s: 4 }]);
     for (const slot of changedHands([], board)) i.forget(slot);
-    expect(i.sample(1050 + DELAY)).toEqual([]);
+    expect(i.sample(1050 + DELAY).peers).toEqual([]);
 
     // ...and he is back on the very next frame, which is fifty milliseconds.
-    i.push(decodePeers([{ n: 3, x: 1100, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), 24, 1200);
-    expect(i.sample(1200 + DELAY).map((p) => p.slot)).toEqual([3]);
+    i.push(decodePeers([{ n: 3, x: 1100, y: 500, s: 0, yaw: 0 }], LEVEL, EYE), [], 24, 1200);
+    expect(i.sample(1200 + DELAY).peers.map((p) => p.slot)).toEqual([3]);
   });
 
   it('leaves everybody else alone when one place changes hands', () => {
@@ -280,8 +341,8 @@ describe('a snapshot that arrives before the standings that explain it', () => {
         LEVEL,
         EYE,
       );
-    i.push(at(700, 100), 20, 1000);
-    i.push(at(900, 300), 22, 1100);
+    i.push(at(700, 100), [], 20, 1000);
+    i.push(at(900, 300), [], 22, 1100);
 
     const before = decodeBoard([
       { n: 3, i: 'aaaaaaaaaaaa', s: 30 },
@@ -293,7 +354,7 @@ describe('a snapshot that arrives before the standings that explain it', () => {
     ]);
     for (const slot of changedHands(before, after)) i.forget(slot);
 
-    const drawn = i.sample(1050 + DELAY);
+    const drawn = i.sample(1050 + DELAY).peers;
     expect(drawn.map((p) => p.slot)).toEqual([4]);
     // Still being interpolated, exactly as if nothing had happened next door.
     expect(drawn[0].x).toBeCloseTo(2, 6);
@@ -318,16 +379,16 @@ describe('a peer who walks out of view', () => {
       LEVEL,
       EYE,
     );
-    i.push(pair, 20, 1000);
-    i.push(decodePeers([{ n: 1, x: 300, y: 0, s: 0, yaw: 0 }], LEVEL, EYE), 22, 1100);
-    expect(i.sample(1050 + DELAY).map((p) => p.slot)).toEqual([1]);
+    i.push(pair, [], 20, 1000);
+    i.push(decodePeers([{ n: 1, x: 300, y: 0, s: 0, yaw: 0 }], LEVEL, EYE), [], 22, 1100);
+    expect(i.sample(1050 + DELAY).peers.map((p) => p.slot)).toEqual([1]);
 
     // And once every frame that ever mentioned him has aged out of the bounded
     // buffer, there is nothing left of him at all — a tab left open while people
     // wander in and out does not accumulate a building.
     for (let n = 1; n <= 40; n++) {
-      i.push(decodePeers([{ n: 1, x: 300 + n, y: 0, s: 0, yaw: 0 }], LEVEL, EYE), 22 + n, 1100 + n * TICK);
+      i.push(decodePeers([{ n: 1, x: 300 + n, y: 0, s: 0, yaw: 0 }], LEVEL, EYE), [], 22 + n, 1100 + n * TICK);
     }
-    expect(i.sample(1100 + 40 * TICK + DELAY).map((p) => p.slot)).toEqual([1]);
+    expect(i.sample(1100 + 40 * TICK + DELAY).peers.map((p) => p.slot)).toEqual([1]);
   });
 });

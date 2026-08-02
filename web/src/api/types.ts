@@ -892,9 +892,43 @@ export interface VanyadumGunConfig {
   damage: number;
 }
 
+/**
+ * The нейрослоп: the first thing in the заброшка that is not a friend.
+ *
+ * Every field is something a player has to be told before he walks in, so all of
+ * them are derived onto the splash screen rather than typed out beside the
+ * server's constants — including the WORD for the standings column it fills,
+ * which is the half of the joke the catalogue owns.
+ *
+ * HOW MANY BARRELS ONE TAKES IS NOT HERE, deliberately. It is `health` against
+ * `gun.damage`, both already published, and the cheatsheet divides — a third
+ * number saying the same thing is a third number to keep in step by hand. There
+ * is no appearance here either: what a слоп looks like is a rendering decision,
+ * and this client generates every pixel of it (see `lib/vanyadumSlop`).
+ */
+export interface VanyadumSlopConfig {
+  title: string;
+  /** One line of Russian, number-free — the numbers are generated around it. */
+  blurb: string;
+  /** How many are in the building at once. */
+  population: number;
+  /** What one is worth against `gun.damage`. */
+  health: number;
+  /** What being reached costs, and how often the same one may charge it. */
+  damage: number;
+  touch_seconds: number;
+  /** Metres per second, published against `player.walk_speed`: you are faster. */
+  speed: number;
+  /** How long the building waits between them — the quiet after a kill. */
+  spawn_seconds: number;
+  /** What to call the standings column that counts them. */
+  kills_title: string;
+}
+
 export interface VanyadumConfig {
   player: VanyadumPlayerConfig;
   gun: VanyadumGunConfig;
+  slop: VanyadumSlopConfig;
   pickups: VanyadumPickupKind[];
   surfaces: VanyadumSurfaceKind[];
   sim: VanyadumSimConfig;

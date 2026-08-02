@@ -22,10 +22,16 @@
  * names as its own escape hatch, rather than a reversal of it.
  */
 
-import { createFlash, createPeerFlashes } from '../lib/vanyadumFlash';
+import { createFlash, createPeerFlashes, createSlopMarks } from '../lib/vanyadumFlash';
 import type { LevelMeshes, VanyadumLevel } from '../lib/vanyadumLevel';
 import { buildLevelMeshes, levelBounds } from '../lib/vanyadumLevel';
 import { PEER_DOWN, PEER_PROTECTED } from '../lib/vanyadumRoster';
+import {
+  SLOP_SPRITE_SIZE,
+  createSlopFacings,
+  generateSlopSprites,
+  slopSpriteIndex,
+} from '../lib/vanyadumSlop';
 import type { VanyadumSurface } from '../lib/vanyadumTexture';
 import { TEXTURE_SIZE, generateTexture, surfaceTint } from '../lib/vanyadumTexture';
 
@@ -59,13 +65,13 @@ export interface SceneOptions {
   /**
    * Honoured by damping the view bob and the recoil; never by hiding anything
    * informative. EVERY MARK STAYS — both muzzle flashes, the blow on whoever was
-   * hit, the grey of a man on the floor and the blue of one who cannot be
-   * touched — because each of them is what says something happened, and somebody
-   * who asked for less movement still has to be told. None of them is animated
-   * in any case: a mark is in a frame or it is not and is cleared by a count of
-   * frames rather than by an animation ending, and a state is a colour. That is
-   * the shape this project requires of an acknowledgement precisely so that
-   * turning motion off cannot silence it.
+   * hit, the flash where a нейрослоп stopped being, the grey of a man on the
+   * floor and the blue of one who cannot be touched — because each of them is
+   * what says something happened, and somebody who asked for less movement still
+   * has to be told. None of them is animated in any case: a mark is in a frame
+   * or it is not and is cleared by a count of frames rather than by an animation
+   * ending, and a state is a colour. That is the shape this project requires of
+   * an acknowledgement precisely so that turning motion off cannot silence it.
    */
   reducedMotion: boolean;
 }
@@ -321,9 +327,11 @@ export async function createScene(opts: SceneOptions) {
   //
   // Keying on the slot also BOUNDS this map, where keying on a pseudonym did not:
   // there are only ever MaxOccupants places, so a tab left open through a hundred
-  // people arriving and leaving holds four capsules rather than a hundred. A slot
-  // changing hands reuses the same capsule, which is right — nothing about the
-  // figure is per-person.
+  // people arriving and leaving holds one capsule per place rather than a
+  // hundred. The number itself is deliberately not written down here — it is the
+  // server's, it has already moved once, and a comment naming it is a comment
+  // that goes stale silently. A slot changing hands reuses the same capsule,
+  // which is right: nothing about the figure is per-person.
   /** A body, the flash at the end of his gun, and the blow that landed on him. */
   interface PeerFigure {
     body: InstanceType<typeof THREE.Mesh>;
@@ -505,6 +513,187 @@ export async function createScene(opts: SceneOptions) {
     }
   }
 
+  // --- the нейрослопы ------------------------------------------------------
+  // BILLBOARDS, AND THE ONLY THING IN THIS SCENE THAT IS NOT BUILT OUT OF BOXES.
+  // The reasoning is in lib/vanyadumSlop and it is about what the creature has to
+  // SAY: a нейрослоп is supposed to look like something a bad model generated,
+  // which a deliberately over-rendered sprite can express and a capsule cannot.
+  // Every pixel of it is generated here from the building's own seed — this game
+  // ships no art (ADR-051) — so the whole cost is a few milliseconds at startup
+  // and nothing on the wire ever.
+  //
+  // A THREE.Sprite rather than a quad that is turned to face the camera every
+  // frame: it is screen-aligned by the engine for free, it stays upright, and it
+  // sorts and fogs like any other object.
+  const slopSprites = generateSlopSprites(
+    // The torso against the creature's own height, which is what the sprite is
+    // proportioned in — and it is the HITBOX, so both numbers are the
+    // catalogue's. The server walks a слоп with the player's own collision
+    // resolver and shoots at it with the player's own body model.
+    opts.player.radius / Math.max(0.01, opts.player.bodyHeight),
+    opts.level.seed,
+  );
+  const slopMaterials = slopSprites.map((bytes) => {
+    const tex = new THREE.DataTexture(
+      bytes,
+      SLOP_SPRITE_SIZE,
+      SLOP_SPRITE_SIZE,
+      THREE.RGBAFormat,
+    );
+    // Nearest for the reason every other texture here is: a filtered 64-pixel
+    // sprite is a smear, and a crunchy one is the joke.
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.needsUpdate = true;
+    return new THREE.SpriteMaterial({
+      map: tex,
+      // The sprite's alpha is 0 or 255 and never between (see the generator), so
+      // an alpha TEST is enough and the material can stay opaque: it writes
+      // depth, sorts with the world, and a слоп behind a wall is behind it. A
+      // translucent material would need sorting against everything else
+      // transparent in the scene and would let a player see the wall through the
+      // creature's own outline.
+      alphaTest: 0.5,
+      // Fogged like everything else in the building. Its SHADING deliberately
+      // belongs to no light in here, but its distance does — an unfogged sprite
+      // at the far wall would be a bright cut-out pasted over the murk.
+      fog: true,
+    });
+  });
+  /**
+   * One billboard per id — a place in the building, reused after a kill.
+   *
+   * IT HOLDS NOTHING ABOUT THE CREATURE STANDING IN THAT PLACE, which is the
+   * whole of why this map may outlive one: an id is handed on when its holder is
+   * shot, so anything remembered here per id is remembered across the hand-over.
+   * A sprite and which rotation is currently on it are safe — both are
+   * overwritten from this frame's own numbers before anything is drawn. The
+   * creature's facing is NOT, because it is derived from where it was one frame
+   * ago, and that is kept in a map which forgets what a frame did not carry
+   * (lib/vanyadumSlop, createSlopFacings).
+   */
+  interface SlopFigure {
+    sprite: InstanceType<typeof THREE.Sprite>;
+    /** Which rotation is currently on it, so an unchanged one is not reassigned. */
+    drawnAngle: number;
+  }
+  const slopFigures = new Map<number, SlopFigure>();
+  /**
+   * Which way each нейрослоп is walking, DERIVED rather than sent.
+   *
+   * A слоп walks at whoever it is chasing and does nothing else, so the way it
+   * points is the way it moves — and the wire is therefore twelve bytes a
+   * creature a tick lighter for it. The memory that needs, and the forgetting
+   * that memory needs, are stated in `createSlopFacings`.
+   */
+  const slopFacings = createSlopFacings();
+  /** Half the creature's height: a sprite is placed by its centre. */
+  const slopHalf = opts.player.bodyHeight / 2;
+  /**
+   * The flash where one stopped being.
+   *
+   * WIDER THAN THE CREATURE AND UNFOGGED, exactly as the blow on a peer is and
+   * for the same two reasons: a mark inside the silhouette is hidden by it, and
+   * the murk is at its thickest precisely where a player most needs telling that
+   * the thing walking at him has gone. It is DEPTH-TESTED, though, which the
+   * peer's is too — and here that is load-bearing rather than incidental: a слоп
+   * also leaves the picture by walking out of the rooms this player can see
+   * into, and the wall that hid the creature is what hides the mark for it. See
+   * createSlopMarks for the whole argument.
+   *
+   * CYAN, because it is the creature's own rim light and because the only other
+   * mark in this game is red. Two things that can land in the same second are
+   * told apart by colour, which is what this project asks of a mark.
+   */
+  const slopDeathGeometry = new THREE.SphereGeometry(opts.player.radius + 0.22, 8, 6);
+  const slopDeathMaterial = new THREE.MeshBasicMaterial({
+    color: 0x8fe3ff,
+    fog: false,
+    transparent: true,
+    opacity: 0.6,
+    depthWrite: false,
+  });
+  const slopDeaths = new Map<number, InstanceType<typeof THREE.Mesh>>();
+  /**
+   * WHICH НЕЙРОСЛОПЫ HAVE JUST STOPPED BEING DRAWN, and where they were.
+   *
+   * The transition is computed per id and BEFORE the previous frame's membership
+   * is overwritten, which is this project's rule for a mark: a value overwritten
+   * first is a transition nobody can see. Counted in frames rather than seconds,
+   * so it survives both a slow phone and `prefers-reduced-motion`.
+   */
+  const slopMarks = createSlopMarks();
+
+  /**
+   * Places every нейрослоп the interpolator produced, and marks the ones it did
+   * not.
+   *
+   * CALLED EXACTLY ONCE PER DRAWN FRAME, for the reason `setPeers` is and for one
+   * more of its own: the death marks are counted in frames, so a second call
+   * inside one frame would spend a mark that was never rendered — and the
+   * facings are measured against the previous frame, so a second call would
+   * compare every creature against itself and hold them all pointing where they
+   * were.
+   *
+   * `viewer` is where the camera is standing THIS frame, in the server's floor
+   * plane. It is passed in rather than read off the camera because the camera is
+   * not moved until `render`, one call later — and a sprite chosen against last
+   * frame's viewpoint would lag the world by exactly the amount a fast turn
+   * makes visible.
+   */
+  function setSlops(
+    slops: { id: number; x: number; y: number; z: number }[],
+    viewer: { x: number; y: number },
+  ): void {
+    if (disposed) return;
+    // Both before the loop, so every mark and every angle is decided against the
+    // same frame — and both of them read the previous frame, so neither may run
+    // after anything has begun overwriting it.
+    const marks = slopMarks.frame(slops);
+    // Every слоп this frame, with the two angles that choose its sprite attached
+    // to it: which way it is walking, derived from two of its own positions, and
+    // where the eye watching it is. Both come from this client, so nothing here
+    // has to agree with the wire.
+    const drawn = slopFacings.frame(slops, viewer);
+    for (const figure of slopFigures.values()) figure.sprite.visible = false;
+    for (const s of drawn) {
+      let figure = slopFigures.get(s.id);
+      if (!figure) {
+        const sprite = new THREE.Sprite(slopMaterials[0]);
+        sprite.scale.set(opts.player.bodyHeight, opts.player.bodyHeight, 1);
+        scene.add(sprite);
+        figure = { sprite, drawnAngle: -1 };
+        slopFigures.set(s.id, figure);
+      }
+
+      const index = slopSpriteIndex(s.facing, s.bearing, slopMaterials.length);
+      if (index !== figure.drawnAngle) {
+        figure.drawnAngle = index;
+        // Swapping the whole material rather than the map on one, so nothing
+        // ever has to be recompiled: one small material per rotation, against a
+        // shader program rebuilt every time a слоп turns a corner.
+        figure.sprite.material = slopMaterials[index];
+      }
+      // `z` is the FLOOR of the room it is in, and a sprite is placed by its
+      // centre, so the creature stands on the ground rather than hovering over
+      // it or sinking into it.
+      figure.sprite.position.set(s.x, s.z + slopHalf, -s.y);
+      figure.sprite.visible = true;
+    }
+
+    for (const mesh of slopDeaths.values()) mesh.visible = false;
+    for (const [id, at] of marks.gone) {
+      let mesh = slopDeaths.get(id);
+      if (!mesh) {
+        mesh = new THREE.Mesh(slopDeathGeometry, slopDeathMaterial);
+        scene.add(mesh);
+        slopDeaths.set(id, mesh);
+      }
+      mesh.position.set(at.x, at.z + slopHalf, -at.y);
+      mesh.visible = true;
+    }
+  }
+
   /**
    * Shows exactly what is lying on the floor, and hides the rest.
    *
@@ -551,10 +740,18 @@ export async function createScene(opts: SceneOptions) {
       mesh.material?.dispose();
     });
     for (const tex of textures.values()) tex.dispose();
+    // The rotations a слоп is NOT currently wearing are held by nothing in the
+    // scene graph, so the traversal above cannot reach them: all but one sprite
+    // texture per creature would survive a building being torn down and rebuilt,
+    // and this game rebuilds one whenever it empties.
+    for (const material of slopMaterials) {
+      material.map?.dispose();
+      material.dispose();
+    }
     renderer.dispose();
   }
 
-  return { render, resize, setOnFloor, setPeers, fire, dispose };
+  return { render, resize, setOnFloor, setPeers, setSlops, fire, dispose };
 }
 
 /**

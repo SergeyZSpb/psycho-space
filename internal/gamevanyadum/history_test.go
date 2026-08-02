@@ -20,6 +20,12 @@ import (
 
 func spot(x, y float64) Spot { return Spot{Pos: Vec2{X: x, Y: y}, Alive: true} }
 
+// man names one occupant in the ring, by the place he is standing in. The ring's
+// key is a ref rather than a bare number so that a слоп and an occupant counting
+// from zero cannot collide (history.go), and this keeps the fixtures below
+// readable.
+func man(slot int) ref { return ref{N: slot} }
+
 func TestHistoryInterpolatesBetweenRecordedFrames(t *testing.T) {
 	// Interpolated rather than snapped to the nearest tick, because the shooter
 	// was themselves looking at an interpolated world — their client draws peers
@@ -27,12 +33,12 @@ func TestHistoryInterpolatesBetweenRecordedFrames(t *testing.T) {
 	// reconstruct a world nobody ever saw.
 	h := newHistory()
 	base := time.Unix(100, 0)
-	h.record(1, base, map[int]Spot{0: spot(0, 0)})
-	h.record(2, base.Add(100*time.Millisecond), map[int]Spot{0: spot(10, 20)})
+	h.record(1, base, map[ref]Spot{man(0): spot(0, 0)})
+	h.record(2, base.Add(100*time.Millisecond), map[ref]Spot{man(0): spot(10, 20)})
 
 	got := h.at(base.Add(50 * time.Millisecond))
-	if math.Abs(got[0].Pos.X-5) > 1e-9 || math.Abs(got[0].Pos.Y-10) > 1e-9 {
-		t.Fatalf("halfway between the two frames is %+v", got[0].Pos)
+	if math.Abs(got[man(0)].Pos.X-5) > 1e-9 || math.Abs(got[man(0)].Pos.Y-10) > 1e-9 {
+		t.Fatalf("halfway between the two frames is %+v", got[man(0)].Pos)
 	}
 }
 
@@ -42,14 +48,14 @@ func TestHistoryClampsRatherThanFabricating(t *testing.T) {
 	// something that was never there is worse than a hit that misses.
 	h := newHistory()
 	base := time.Unix(100, 0)
-	h.record(1, base, map[int]Spot{0: spot(1, 1)})
-	h.record(2, base.Add(100*time.Millisecond), map[int]Spot{0: spot(9, 9)})
+	h.record(1, base, map[ref]Spot{man(0): spot(1, 1)})
+	h.record(2, base.Add(100*time.Millisecond), map[ref]Spot{man(0): spot(9, 9)})
 
-	if got := h.at(base.Add(-time.Hour)); got[0].Pos.X != 1 {
-		t.Fatalf("before the window should clamp to the oldest frame, got %+v", got[0].Pos)
+	if got := h.at(base.Add(-time.Hour)); got[man(0)].Pos.X != 1 {
+		t.Fatalf("before the window should clamp to the oldest frame, got %+v", got[man(0)].Pos)
 	}
-	if got := h.at(base.Add(time.Hour)); got[0].Pos.X != 9 {
-		t.Fatalf("after the window should clamp to the newest frame, got %+v", got[0].Pos)
+	if got := h.at(base.Add(time.Hour)); got[man(0)].Pos.X != 9 {
+		t.Fatalf("after the window should clamp to the newest frame, got %+v", got[man(0)].Pos)
 	}
 }
 
@@ -67,7 +73,7 @@ func TestHistoryDoesNotGrow(t *testing.T) {
 	h := newHistory()
 	base := time.Unix(0, 0)
 	for i := 0; i < historyCapacity()*5; i++ {
-		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[int]Spot{0: spot(float64(i), 0)})
+		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[ref]Spot{man(0): spot(float64(i), 0)})
 	}
 	if len(h.frames) != historyCapacity() {
 		t.Fatalf("ring grew to %d frames", len(h.frames))
@@ -85,41 +91,42 @@ func TestHistoryKeepsWorkingAfterItWraps(t *testing.T) {
 	base := time.Unix(0, 0)
 	n := historyCapacity() + historyCapacity()/2
 	for i := 0; i < n; i++ {
-		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[int]Spot{0: spot(float64(i), 0)})
+		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[ref]Spot{man(0): spot(float64(i), 0)})
 	}
 	newest := h.at(base.Add(time.Duration(n) * SimStep))
-	if want := float64(n - 1); newest[0].Pos.X != want {
-		t.Fatalf("newest frame is %v, expected %v", newest[0].Pos.X, want)
+	if want := float64(n - 1); newest[man(0)].Pos.X != want {
+		t.Fatalf("newest frame is %v, expected %v", newest[man(0)].Pos.X, want)
 	}
 	// And a point midway through the surviving window is still interpolated
 	// rather than clamped.
 	mid := h.at(base.Add(time.Duration(n-3)*SimStep + SimStep/2))
-	if mid[0].Pos.X <= float64(n-4) || mid[0].Pos.X >= float64(n-2) {
-		t.Fatalf("midway lookup after wrap returned %v", mid[0].Pos.X)
+	if mid[man(0)].Pos.X <= float64(n-4) || mid[man(0)].Pos.X >= float64(n-2) {
+		t.Fatalf("midway lookup after wrap returned %v", mid[man(0)].Pos.X)
 	}
 }
 
 func TestForgettingAPlaceTakesItOutOfTheWholeRing(t *testing.T) {
-	// The ring is keyed by slot, and a slot outlives its holder — so freeing one
-	// has to erase its past as well as its present, or the next man to stand in
-	// it inherits somebody else's positions for the whole window (history.forget,
-	// and world.go, release). Every frame, including the ones the ring has not
-	// wrapped past yet, and only the place being freed.
+	// The ring is keyed by the wire's own names, and every one of those outlives
+	// its holder — so freeing one has to erase its past as well as its present, or
+	// whatever takes the number next inherits somebody else's positions for the
+	// whole window (history.forget, and world.go, release and killSlop). Every
+	// frame, including the ones the ring has not wrapped past yet, and only the
+	// name being freed.
 	h := newHistory()
 	base := time.Unix(0, 0)
 	for i := 0; i < historyCapacity(); i++ {
-		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[int]Spot{
-			0: spot(float64(i), 0),
-			1: spot(0, float64(i)),
+		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[ref]Spot{
+			man(0): spot(float64(i), 0),
+			man(1): spot(0, float64(i)),
 		})
 	}
-	h.forget(0)
+	h.forget(man(0))
 
 	for i := range h.frames {
-		if _, still := h.frames[i].spots[0]; still {
+		if _, still := h.frames[i].spots[man(0)]; still {
 			t.Fatalf("frame %d still remembers the place that was freed", i)
 		}
-		if _, gone := h.frames[i].spots[1]; !gone {
+		if _, gone := h.frames[i].spots[man(1)]; !gone {
 			t.Fatalf("frame %d lost the place nobody freed", i)
 		}
 	}
@@ -135,9 +142,9 @@ func TestHistoryDoesNotResurrectTheDead(t *testing.T) {
 	// it is not interpolated — and a span in which somebody died counts as dead.
 	h := newHistory()
 	base := time.Unix(0, 0)
-	h.record(1, base, map[int]Spot{0: {Pos: Vec2{}, Alive: true}})
-	h.record(2, base.Add(100*time.Millisecond), map[int]Spot{0: {Pos: Vec2{}, Alive: false}})
-	if h.at(base.Add(50 * time.Millisecond))[0].Alive {
+	h.record(1, base, map[ref]Spot{man(0): {Pos: Vec2{}, Alive: true}})
+	h.record(2, base.Add(100*time.Millisecond), map[ref]Spot{man(0): {Pos: Vec2{}, Alive: false}})
+	if h.at(base.Add(50 * time.Millisecond))[man(0)].Alive {
 		t.Fatal("rewound into a span where the target died and found them alive")
 	}
 }
@@ -152,11 +159,12 @@ func TestTheWorldRecordsEveryTick(t *testing.T) {
 		t.Fatalf("ten ticks recorded %d frames", w.history.count)
 	}
 	// Keyed by SLOT, so a rewound world and a published one name the same things
-	// — which is what lets a future hit test take the id it was shot at straight
-	// from the client's aim, and a slot is the only name a client has for
-	// anybody.
+	// — which is what lets the hit test take what it landed on straight back to
+	// the wire, and a slot is the only name a client has for anybody. The слопы
+	// share the ring under their own kind of key, which is what a ref is for
+	// (history.go).
 	got := w.history.at(base.Add(5 * SimStep))
-	if _, ok := got[w.Occupant(acc).Slot]; !ok {
+	if _, ok := got[man(w.Occupant(acc).Slot)]; !ok {
 		t.Fatalf("history is keyed by something other than the slot: %+v", got)
 	}
 }
@@ -174,7 +182,7 @@ func tickedHistory(t *testing.T, w *World, frames int) time.Time {
 	base := time.Unix(0, 0)
 	for i := 0; i < frames; i++ {
 		at := base.Add(time.Duration(i) * SimStep)
-		w.history.record(int64(i), at, map[int]Spot{0: spot(float64(i), 0)})
+		w.history.record(int64(i), at, map[ref]Spot{man(0): spot(float64(i), 0)})
 	}
 	return base.Add(time.Duration(frames-1) * SimStep)
 }
@@ -184,7 +192,7 @@ func tickedHistory(t *testing.T, w *World, frames int) time.Time {
 func rewoundTick(t *testing.T, w *World, now time.Time, rtt time.Duration) float64 {
 	t.Helper()
 	got := w.RewindTo(now, rtt)
-	s, ok := got[0]
+	s, ok := got[man(0)]
 	if !ok {
 		t.Fatalf("rewind returned no spot for the only entity there is: %+v", got)
 	}

@@ -2,14 +2,15 @@
 //
 // Ваня, the last real defender of traditional Russian rap values, walks a
 // generated заброшка with a double-barrelled обрез, loads it with the beer he
-// finds on the way, and eventually kills нейрослопы with punchlines.
+// finds on the way, and shoots the нейрослопы that walk out of it at him. The
+// punchlines are still to come; the shotgun arrived first.
 //
 // # One building, always running, and nothing that ends
 //
 // There is ONE заброшка for the whole process and everybody is in it. No
 // matchmaking, no rooms, no runs and no objective: you open a socket, you are in
-// the building, the pickups come back, and you leave when your connections stop
-// coming back. The world is generated on demand and torn down when the last
+// the building, the pickups come back, the нейрослопы come back, and you leave
+// when your connections stop coming back. The world is generated on demand and torn down when the last
 // person walks out, so the next arrival gets a fresh seed and nothing ever
 // regenerates under anybody's feet.
 //

@@ -31,6 +31,24 @@ const config: VanyadumConfig = {
     ammo: 'beer',
     damage: 50,
   },
+  // Deliberately not the server's numbers, exactly like everything else here: a
+  // cheatsheet with any of them typed into it would pass against production and
+  // fail on this fixture, which is what makes "derived" a claim rather than a
+  // hope. `health` against the gun's `damage` above is what says how many
+  // barrels one takes, and `damage` against the player's `max_health` is what
+  // says how many touches a man survives — both totals are joins, neither is a
+  // field.
+  slop: {
+    title: 'нейрослоп',
+    blurb: 'Ходит на тебя.',
+    population: 3,
+    health: 150,
+    damage: 20,
+    touch_seconds: 2,
+    speed: 3.5,
+    spawn_seconds: 12,
+    kills_title: 'слопы',
+  },
   pickups: [
     {
       key: 'beer',
@@ -322,6 +340,33 @@ describe('buildRules', () => {
     expect(text).toContain('не стреляешь');
   });
 
+  it('says the spawn shield stops нейрослопы as well as bullets', () => {
+    // C2's rule, and the half of the shield a player cannot work out for
+    // himself: that bullets stop is demonstrated the first time somebody shoots
+    // at him, but a creature not setting off towards him is a thing that does
+    // not happen, and nothing that does not happen leaves a mark on the screen.
+    // The server builds the слоп's targets AND its victims out of the same
+    // filter the hit test uses, so a protected man is neither walked at nor
+    // touched — which is what makes the seconds after getting up survivable at a
+    // spawn everybody knows the way to.
+    const block = buildRules(config).find((b) => b.title === 'Смерть');
+    const shield = block?.lines.find((l) => l.label.includes('щит'));
+    expect(shield?.text).toContain('нейрослопы не трогают');
+    expect(shield?.text).toContain('не идут в твою сторону');
+  });
+
+  it('says нейрослопы ignore a man on the floor', () => {
+    // The same filter, read the other way round, and the same reason it is on
+    // the screen: a player lying there watching one walk past has no way of
+    // telling whether he was spared or merely missed. Typed out rather than
+    // derived — the catalogue publishes how long he lies there and carries no
+    // field at all for who ignores him while he does.
+    const block = buildRules(config).find((b) => b.title === 'Смерть');
+    const down = block?.lines.find((l) => l.label.includes('лёг'));
+    expect(down?.text).toContain('к лежачему не идут');
+    expect(down?.text).toContain('не трогают его');
+  });
+
   it('says friends are killable and that killing them scores nothing', () => {
     // THE RULE THE WHOLE ITERATION TURNS ON. Every other shooter has trained a
     // player to expect that the man beside him is safe from him; here he is not,
@@ -359,15 +404,110 @@ describe('buildRules', () => {
     expect(text).not.toContain('отнять его некому');
   });
 
-  it('names the two new standings columns from the catalogue', () => {
-    // The board grew 💀 and 🔪 with the thing they count, and the line describing
-    // the board has to grow with it — a cheatsheet that lists two of a row's four
-    // numbers is a cheatsheet a player stops reading.
-    const block = buildRules(config).find((b) => b.title === 'Заброшка');
+  it('names all three standings columns from the catalogue', () => {
+    // The board grows a column with the thing it counts, which is the rule: 💀
+    // and 🔪 arrived with the обрез reaching people, and 👾 arrived with there
+    // being something in the building worth killing. The line describing the
+    // board has to grow with it — a cheatsheet that lists three of a row's five
+    // numbers is a cheatsheet a player stops reading. Two of the three words are
+    // the SERVER's, so a retune of either follows here.
+    const renamed = {
+      ...config,
+      slop: { ...config.slop, kills_title: 'слопики' },
+      world: { ...config.world, betrayals_title: 'подставы' },
+    };
+    const block = buildRules(renamed).find((b) => b.title === 'Заброшка');
     const line = block?.lines.find((l) => l.label.includes('табло'));
+    expect(line?.text).toContain('👾');
     expect(line?.text).toContain('💀');
     expect(line?.text).toContain('🔪');
-    expect(line?.text).toContain(config.world.betrayals_title);
+    expect(line?.text).toContain('слопики');
+    expect(line?.text).toContain('подставы');
+    // And it says they are different numbers, because two counters a player
+    // cannot tell apart are worse than one.
+    expect(line?.text).toContain('три разных числа');
+  });
+
+  it('states the нейрослоп’s rules, every number of them derived', () => {
+    // C2's rules change, and the biggest one since the обрез started landing:
+    // there is now something in the building that is not a friend, it walks at
+    // you, and standing still is what it punishes. Every number is the fixture's
+    // rather than production's, so a hand-typed cheatsheet fails here.
+    const block = buildRules(config).find((b) => b.title === 'Нейрослопы');
+    const text = block?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
+    expect(text).toContain('нейрослоп');
+    expect(text).toContain('Ходит на тебя.');
+    // How many of them, what a touch costs, how often it may charge it, how fast
+    // it walks and how long the building waits before making another.
+    expect(text).toContain('3');
+    expect(text).toContain('20 здоровья');
+    expect(text).toContain('2 с');
+    expect(text).toContain('3,5 м/с');
+    expect(text).toContain('12 с');
+    // None of it was typed out.
+    expect(block?.prose).toBeFalsy();
+  });
+
+  it('says how many barrels one takes by joining its health to the gun', () => {
+    // A JOIN AND NOT A FIELD, exactly like the ammunition line: the server
+    // publishes the creature's health and the gun's damage and no total, because
+    // a third number saying the same thing is a third number to keep in step by
+    // hand. 150 against 50 is three; against 75 it is two.
+    const line = (damage: number) =>
+      buildRules({ ...config, gun: { ...config.gun, damage } })
+        .find((b) => b.title === 'Нейрослопы')
+        ?.lines.find((l) => l.label.includes('убить'))?.text ?? '';
+    expect(line(50)).toContain('нужно: 3');
+    expect(line(75)).toContain('нужно: 2');
+    expect(line(1000)).toContain('нужно: 1');
+  });
+
+  it('says how many touches a man survives by joining it to his own health', () => {
+    // The other join, the other way round: what the creature does against what
+    // the player has. 100 against 20 is five.
+    const line = (max: number) =>
+      buildRules({ ...config, player: { ...config.player, max_health: max } })
+        .find((b) => b.title === 'Нейрослопы')
+        ?.lines.find((l) => l.label.includes('достанет'))?.text ?? '';
+    expect(line(100)).toContain('Касаний до смерти: 5');
+    expect(line(50)).toContain('Касаний до смерти: 3');
+  });
+
+  it('says you are faster than it, which is the rule that makes it fair', () => {
+    // Both speeds are served, so the sentence states which is bigger rather than
+    // asking a player to hold two figures in his head — and it is the one thing
+    // that makes a creature you cannot leave a building to escape survivable.
+    const block = buildRules(config).find((b) => b.title === 'Нейрослопы');
+    const line = block?.lines.find((l) => l.label.includes('медленнее'));
+    expect(line?.text).toContain('3,5 м/с');
+    expect(line?.text).toContain('5 м/с');
+    expect(line?.text).toContain('уйти можно всегда');
+  });
+
+  it('no longer claims there is nobody in the building but friends', () => {
+    // THE CLAIM THIS ITERATION MADE FALSE, and the rule that a cheatsheet
+    // describing the previous version of a game is worse than none: «чужих тут
+    // нет» was true for exactly two iterations and would now be a lie about the
+    // central rule of the game.
+    const text = buildRules(config)
+      .flatMap((b) => b.lines)
+      .map((l) => `${l.label} ${l.text}`)
+      .join(' ');
+    expect(text).not.toContain('чужих тут нет');
+    expect(text).not.toContain('все убийства свои');
+    // And a friend shot still scores nothing towards the kills, which is what
+    // makes the two columns a joke rather than a total.
+    expect(text).toContain('В слопы он не пойдёт');
+  });
+
+  it('says what a hit on each kind of target looks like, because nothing else will', () => {
+    // A rendering decision rather than a rule, so it is prose — and it is the
+    // only thing distinguishing a shot that connected from one that missed. The
+    // two kinds look different, so both are named.
+    const prose = buildRules(config).find((b) => b.prose);
+    const text = prose?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
+    expect(text).toContain('красным');
+    expect(text).toContain('голубым');
   });
 
   it('describes every pickup the catalogue carries, and only those', () => {

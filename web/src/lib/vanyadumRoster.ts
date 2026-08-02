@@ -38,7 +38,7 @@
  * the drawing needs a browser.
  */
 
-import type { PeerState } from './vanyadumInterp';
+import type { PeerState, SlopState } from './vanyadumInterp';
 import type { VanyadumLevel } from './vanyadumLevel';
 import { eyeZ } from './vanyadumStep';
 
@@ -87,22 +87,25 @@ export interface BoardRow {
   /** What they are carrying, keyed by the catalogue's `grants`. */
   bag: Record<string, number>;
   /**
-   * How often the building has put them on the floor, and how many friends they
-   * have put there.
+   * How often the building has put them on the floor, how many нейрослопы they
+   * have put down, and how many friends they have put there.
    *
-   * THERE IS NO KILL COLUMN, and that is the joke rather than an omission:
-   * friendly fire is on and there is nothing else here to shoot, so every kill
-   * is a betrayal and no total anywhere is increased by it. Both ride the
-   * standings at 1 Hz rather than the snapshot at 20, because both move a few
-   * times a MINUTE — and both are omitted at zero, so a building where nobody
-   * has shot anybody carries neither.
+   * THE KILL COLUMN AND THE BETRAYAL COLUMN ARE THE JOKE, and it became one the
+   * day there was something in the building worth killing. Friendly fire is
+   * still on and a friend shot still scores NOTHING: he is not added to the
+   * kills, he is published on his own line under his own heading, and the two
+   * columns therefore say in two numbers what the game thinks of what you have
+   * been doing. All three ride the standings at 1 Hz rather than the snapshot at
+   * 20, because all three move a few times a MINUTE — and all three are omitted
+   * at zero, so a building where nobody has shot anything carries none of them.
    */
   deaths: number;
+  kills: number;
   betrayals: number;
 }
 
 /**
- * The glyphs those two columns are labelled with.
+ * The glyphs those three columns are labelled with.
  *
  * SHARED BECAUSE THEY HAVE TWO USES TODAY, which is this project's bar for a
  * seam: the standings draw them, and the splash cheatsheet names them when it
@@ -111,10 +114,17 @@ export interface BoardRow {
  * says nothing.
  *
  * NOT FROM THE CATALOGUE, unlike a pickup's icon, because the server publishes
- * no icon for either — it publishes the WORD for the second one
- * (`world.betrayals_title`), which is the part of the joke it owns.
+ * no icon for any of them — it publishes the WORD for two (`slop.kills_title`
+ * and `world.betrayals_title`), which is the part of the joke it owns.
+ *
+ * THREE THAT HAVE TO READ AS THREE DIFFERENT NUMBERS on a 360 px screen, at a
+ * glance, with no room for a heading over any of them. So they are three
+ * different KINDS of picture rather than three shades of one: a skull for what
+ * the building did to you, a creature for what you shot, a knife for who you
+ * shot. Two numbers a player cannot tell apart are worse than one number.
  */
 export const DEATHS_ICON = '💀';
+export const KILLS_ICON = '👾';
 export const BETRAYALS_ICON = '🔪';
 
 /**
@@ -174,6 +184,47 @@ export function decodePeers(
 }
 
 /**
+ * Reads the нейрослоп array off a snapshot.
+ *
+ * A SEPARATE ARRAY UNDER ITS OWN KEY, which is a byte decision on the server
+ * before it is a tidiness one here: merged into the peers, every entry would
+ * carry a discriminator to say something the array it is in already says — seven
+ * bytes at the JSON floor, on every man as well as every creature, twenty times
+ * a second. Separated, each kind carries only the fields its own kind needs, and
+ * a слоп is four of them against a peer's six.
+ *
+ * THE KEY IS `f` AND NOT `z`, and it is worth knowing why that is written down:
+ * `z` is the reader's own eye height, and Go's encoder emits NEITHER of two
+ * fields that share a tag. A collision here would have silently deleted the
+ * player's eye height and every creature in the building at once.
+ *
+ * THE HEIGHT IS THE ROOM'S FLOOR, not an eye — a слоп is drawn as a billboard
+ * standing on the ground, so what it needs is the ground. Derived from the
+ * sector the wire named for the same reason a peer's is: this client holds the
+ * level, and resolving the room from the POSITION instead would disagree with
+ * the server at every doorway, which is exactly where слопы live. Derived here
+ * at ingest, so the interpolator blends it and a слоп crossing between two rooms
+ * at different heights glides up the step instead of snapping to it.
+ */
+export function decodeSlops(raw: unknown, level: VanyadumLevel): SlopState[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SlopState[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const s = entry as Record<string, unknown>;
+    out.push({
+      id: num(s.n),
+      x: num(s.x) / 100,
+      y: num(s.y) / 100,
+      // Zero eye height: `eyeZ` is "the floor of this room plus however much you
+      // want", and what a thing standing on that floor wants is none.
+      z: eyeZ(level, num(s.s), 0),
+    });
+  }
+  return out;
+}
+
+/**
  * Reads the standings frame's rows.
  *
  * FULL STATE, exactly as a snapshot is: the newest board is the truth, and it is
@@ -199,9 +250,10 @@ export function decodeBoard(raw: unknown): BoardRow[] {
       name: typeof r.i === 'string' ? r.i : '',
       seconds: num(r.s),
       bag,
-      // Both omitted at zero on the wire, so absent reads as none — which is
-      // every row in a building where nobody has shot anybody yet.
+      // All three omitted at zero on the wire, so absent reads as none — which
+      // is every row in a building where nobody has shot anything yet.
       deaths: num(r.d),
+      kills: num(r.k),
       betrayals: num(r.br),
     });
   }

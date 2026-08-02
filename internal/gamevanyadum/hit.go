@@ -39,25 +39,32 @@ import "math"
 // and the set of people the shooter was actually SENT (world.go, resolveShot) —
 // a leash shorter than any number typed here, and one that already exists.
 
-// body is one target the ray can land on: where he stands, and how high the
-// floor under him is.
+// body is one target the ray can land on: what it is, where it stands, and how
+// high the floor under it is.
 //
 // A VALUE RATHER THAN A POINTER TO AN Occupant, so nothing in here can reach the
 // world, mutate a player, or read a field that is not part of the geometry. The
 // caller does the rewinding and hands over positions; this file has no opinion
 // about which instant they belong to.
+//
+// A MAN AND A НЕЙРОСЛОП ARE THE SAME BODY, which is why `at` is a ref rather than
+// a slot and why there is nothing else here to tell them apart. Both are a disc
+// of PlayerRadius standing BodyHeight tall on the floor of their room, so the ray
+// has no reason to know which it hit and every reason not to — a second hit path
+// for the second kind of target is two ray tests to keep in agreement, and the
+// day they disagree is the day a слоп can be shot through a wall a man cannot.
 type body struct {
-	slot   int
+	at     ref
 	pos    Vec2
 	floorZ float64
 }
 
-// shoot resolves one shot, reporting the slot it landed on.
+// shoot resolves one shot, reporting what it landed on.
 //
 // The eye height is passed rather than derived because the caller knows which
 // sector the shooter is standing in and this file deliberately does not read
 // players.
-func shoot(l *Level, from Vec2, eyeZ, yaw, pitch float64, targets []body) (int, bool) {
+func shoot(l *Level, from Vec2, eyeZ, yaw, pitch float64, targets []body) (ref, bool) {
 	sin, cos := math.Sincos(yaw)
 	dir := Vec2{X: sin, Y: cos}
 
@@ -73,15 +80,17 @@ func shoot(l *Level, from Vec2, eyeZ, yaw, pitch float64, targets []body) (int, 
 	// is standing in it.
 	stop := wallDistance(l, from, dir)
 
-	best, nearest := -1, math.Inf(1)
+	// A ref cannot say "nothing" by itself — every field of it is a legal value —
+	// so the miss is carried by the distance rather than by a sentinel key.
+	best, nearest, hit := ref{}, math.Inf(1), false
 	for _, b := range targets {
 		at, ok := bodyDistance(from, dir, eyeZ, rise, b)
 		if !ok || at >= stop || at >= nearest {
 			continue
 		}
-		best, nearest = b.slot, at
+		best, nearest, hit = b.at, at, true
 	}
-	return best, best >= 0
+	return best, hit
 }
 
 // wallDistance is how far the shot travels before the building stops it, in

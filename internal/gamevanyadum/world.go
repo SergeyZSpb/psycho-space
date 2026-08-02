@@ -2,6 +2,7 @@ package gamevanyadum
 
 import (
 	"math"
+	"math/rand"
 	"sort"
 	"time"
 
@@ -165,18 +166,20 @@ type Occupant struct {
 	// (web/src/lib/vanyadumPredict.ts, `raw`), which is a value it already has.
 	firedOn int64
 
-	// hitOn is the tick on which a shot last landed on this occupant, and it is
-	// the same mechanism firedOn is for the same reason: read per viewer against
-	// World.Tick rather than consumed, so all three people watching a man get
-	// shot are told about it and not merely whichever one was rendered first.
+	// hitOn is the tick on which this occupant was last hurt — by a barrel or by a
+	// нейрослоп arriving, which are the two things in the building that can do it
+	// — and it is the same mechanism firedOn is for the same reason: read per
+	// viewer against World.Tick rather than consumed, so all three people watching
+	// a man get hit are told about it and not merely whichever one was rendered
+	// first.
 	//
 	// IT IS THE ONLY ACKNOWLEDGEMENT A HIT GETS, and it does two jobs at once.
 	// The room learns somebody was hit, which is a thing nothing else on the
-	// frame can say — a shot moves nobody, so there is no value already there to
-	// derive it from. And the SHOOTER learns he connected, because he knows he
-	// fired on this tick (his own barrel count fell) and the man he was aiming at
-	// is marked on the very same frame. That is why there is no second field
-	// addressed to the shooter.
+	// frame can say — neither a shot nor a touch moves the man it lands on, so
+	// there is no value already there to derive it from. And the SHOOTER learns
+	// he connected, because he knows he fired on this tick (his own barrel count
+	// fell) and the man he was aiming at is marked on the very same frame. That
+	// is why there is no second field addressed to the shooter.
 	//
 	// The one case that derivation misses is a victim who has walked out of the
 	// shooter's visible set in the time being rewound over: he was hit where the
@@ -228,19 +231,24 @@ type Occupant struct {
 	// the same argument, as downUntil.
 	protectedUntil int64
 
-	// deaths is how often this occupant has been put on the floor, and betrayals
-	// is how many friends he has put there. Both ride the standings frame at 1 Hz
-	// (message.go, StandingsRow) and neither goes anywhere near a snapshot.
+	// deaths is how often this occupant has been put on the floor, kills is how
+	// many нейрослопы he has put down, and betrayals is how many friends he has.
+	// All three ride the standings frame at 1 Hz (message.go, StandingsRow) and
+	// none goes anywhere near a snapshot.
 	//
-	// EVERY KILL IN THIS BUILDING IS A BETRAYAL, because friendly fire is on and
-	// there is nothing else here to shoot yet. So there is no kill counter beside
-	// this one — a total that would be identical to it is not a second number.
+	// A KILL AND A BETRAYAL ARE DIFFERENT NUMBERS AND NEITHER IS A SUBTOTAL OF THE
+	// OTHER. Friendly fire is on, so both a слоп and a friend can be at the end of
+	// the same barrel — and shooting the friend adds to nothing at all, which is
+	// the whole joke now that there is something else in the building to shoot.
+	// Until the слопы arrived there was only the confession, because every kill
+	// there was was a friend's.
 	//
 	// NOT PERSISTED. The visit row records what somebody found (migrations/015,
-	// immutable), and adding a column for this is a migration this iteration does
+	// immutable), and adding a column for these is a migration this iteration does
 	// not need: the standings is a readout of the building rather than a career,
 	// and nothing here ends.
 	deaths    int
+	kills     int
 	betrayals int
 
 	// collected is everything this occupant has picked up during this visit,
@@ -294,9 +302,10 @@ func (o *Occupant) firedThisTick(tick int64) bool {
 	return o.firedOn != 0 && o.firedOn == tick
 }
 
-// hitThisTick reports whether a shot landed on this occupant on the tick the
-// world is currently standing on. Zero is "never", for exactly the reason it is
-// on firedThisTick.
+// hitThisTick reports whether anything hurt this occupant on the tick the world
+// is currently standing on — a barrel or a нейрослоп arriving, which the room is
+// told about identically because neither one moves him. Zero is "never", for
+// exactly the reason it is on firedThisTick.
 func (o *Occupant) hitThisTick(tick int64) bool {
 	return o.hitOn != 0 && o.hitOn == tick
 }
@@ -349,6 +358,39 @@ type World struct {
 	// for what it approximates, and canSee for how it is read.
 	visible [][]bool
 
+	// routes is the walk from any room to any other, precomputed from the same
+	// sector graph and read twice a tick by the нейрослопы. See buildRoutes
+	// (slop.go).
+	routes [][]route
+
+	// slops[i] is the нейрослоп holding place i, and nil is a place nothing
+	// occupies.
+	//
+	// THE SAME SHAPE AS THE SLOT TABLE, and for the same three reasons: it is the
+	// wire's addressing (message.go, Foe), it is the capacity — the building is
+	// full of слопы exactly when there is no nil left, so nothing counts them to
+	// decide whether another may appear — and a fixed-width array walked in index
+	// order is a stable iteration that allocates nothing on a tick.
+	//
+	// A PLACE IS REUSED once its holder is dead, which is what obliges killSlop to
+	// wipe the two memories keyed by it: the visibility hold below and the rewind
+	// ring. Getting that wrong is a слоп shot where the last one stood.
+	slops [SlopPopulation]*Slop
+
+	// slopSpawnAt is the earliest tick the next нейрослоп may appear.
+	//
+	// IT STARTS FULL rather than at zero, so a заброшка somebody has just walked
+	// into is quiet for SlopSpawnInterval — see that constant for why nothing
+	// materialises on the tick a socket says hello.
+	slopSpawnAt int64
+
+	// rng draws where a нейрослоп appears. Seeded from the same number the level
+	// was generated from, so the same building spawns them in the same rooms in
+	// the same order — the replay property the whole simulation is tested against
+	// covers the spawner too, or a transcript would stop reproducing the world the
+	// moment anything walked into it.
+	rng *rand.Rand
+
 	// lastVisible[a][b] is the last TICK on which the occupant holding place b
 	// was inside the potentially-visible set of the occupant holding place a, and
 	// it is the whole of the hysteresis described on visibleHold: a peer is sent
@@ -370,6 +412,22 @@ type World struct {
 	// last holder's memory. Keyed by slot for the same reason the wire is: it is
 	// a fixed-width array rather than a map, so nothing allocates on a tick.
 	lastVisible [MaxOccupants][MaxOccupants]int64
+
+	// lastVisibleSlop[a][i] is the same memory for the нейрослоп holding place i,
+	// as seen by the occupant holding place a. Same table, same hysteresis, same
+	// reasoning — a слоп walks through doorways too, and without the hold it would
+	// strobe at the tick rate for everybody adjacent to one of the two rooms.
+	//
+	// NOT SYMMETRIC, AND IT DOES NOT NEED TO BE. The occupant table is symmetric
+	// because a peer you were sent is a peer you may shoot, so an asymmetric hold
+	// would be a man killed by somebody his own client never drew. A слоп has no
+	// gun and no opinion about what it can see: the only thing it can do to you is
+	// arrive, and arriving means standing SlopReach away, which is the same room or
+	// a doorway between two — so anything that can touch you was drawn.
+	//
+	// CLEARED IN BOTH DIRECTIONS, by release for a row and by killSlop for a
+	// column, because both numbers are handed on.
+	lastVisibleSlop [MaxOccupants][SlopPopulation]int64
 
 	// ready[i] is the TICK at which the pickup at index i is back on the floor,
 	// and the whole of what "taken" means here. Zero is the resting state — the
@@ -396,7 +454,9 @@ type World struct {
 	Tick int64
 }
 
-// NewWorld generates a заброшка with nobody in it.
+// NewWorld generates a заброшка with nobody in it — and, for the same reason,
+// nothing in it: the first нейрослоп is SlopSpawnInterval away, exactly as every
+// one after it is.
 func NewWorld(id uuid.UUID, seed int64) *World {
 	l := Generate(seed)
 	return &World{
@@ -406,6 +466,12 @@ func NewWorld(id uuid.UUID, seed int64) *World {
 		ready:     make([]int64, len(l.Pickups)),
 		history:   newHistory(),
 		visible:   buildVisibility(l),
+		routes:    buildRoutes(l),
+		// A second stream from the same seed. Generate has consumed its own by the
+		// time this is drawn, so the two never interleave, and where a слоп appears
+		// is as reproducible from one number as where the rooms are.
+		rng:         rand.New(rand.NewSource(seed)), //nolint:gosec // where a слоп appears, not security: crypto/rand would make a building unreproducible from its seed, which is the whole point.
+		slopSpawnAt: slopSpawnTicks,
 	}
 }
 
@@ -499,11 +565,17 @@ func (w *World) release(o *Occupant) {
 		w.lastVisible[o.Slot][i] = 0
 		w.lastVisible[i][o.Slot] = 0
 	}
+	// And what this place remembered about the нейрослопы, which is one direction
+	// rather than two: that table records what an occupant could see, and a слоп
+	// has no memory of anybody.
+	for i := range w.lastVisibleSlop[o.Slot] {
+		w.lastVisibleSlop[o.Slot][i] = 0
+	}
 	// And this place's PAST, for the same reason one step further back: the
 	// rewind buffer is keyed by slot too, so a shot resolved in the next
 	// RewindMax would otherwise place the next holder of this place wherever the
 	// man who has just left it was standing. See history.forget.
-	w.history.forget(o.Slot)
+	w.history.forget(ref{N: o.Slot})
 	w.roster++
 }
 
@@ -568,6 +640,14 @@ func (w *World) rememberVisibility() {
 				w.lastVisible[a][b] = w.Tick
 			}
 		}
+		for i, s := range w.slops {
+			if s == nil {
+				continue
+			}
+			if w.canSee(from, s.Sector) {
+				w.lastVisibleSlop[a][i] = w.Tick
+			}
+		}
 	}
 }
 
@@ -584,6 +664,17 @@ func (w *World) heldVisible(from, at int) bool {
 		return false
 	}
 	last := w.lastVisible[from][at]
+	return last > 0 && w.Tick-last < visibleHoldTicks
+}
+
+// heldVisibleSlop is heldVisible for a нейрослоп: whether the слоп holding place
+// `id` was inside the visible set of the occupant holding place `from` recently
+// enough to still belong on his frame. Same hold, same window, same reasoning.
+func (w *World) heldVisibleSlop(from, id int) bool {
+	if from < 0 || from >= MaxOccupants || id < 0 || id >= SlopPopulation {
+		return false
+	}
+	last := w.lastVisibleSlop[from][id]
 	return last > 0 && w.Tick-last < visibleHoldTicks
 }
 
@@ -962,6 +1053,21 @@ func (w *World) Advance(dt float64, now time.Time) []*Occupant {
 		w.collect(o)
 	}
 
+	// AND THEN THE НЕЙРОСЛОПЫ, after every man has moved and never before.
+	//
+	// THE ORDER IS THE FAIRNESS. A слоп walks at where somebody IS, so stepping it
+	// against last tick's positions would make it permanently 50 ms behind — which
+	// at WalkSpeed is a quarter of a metre of free ground, every tick, for the
+	// whole chase. Contact is then tested against the instant both of them have
+	// actually reached, which is the same instant the snapshot about to go out
+	// describes.
+	//
+	// The spawner goes first so that a слоп arriving on this tick is stepped and
+	// can be reached on it, rather than standing still for one frame for no reason
+	// a player could see.
+	w.spawnSlop(ids)
+	w.stepSlops(dt, ids)
+
 	// Both of these are recorded AFTER the step, so they describe the world as the
 	// snapshot about to go out describes it. Recording before would leave the
 	// rewind buffer a tick behind everything that reads it, and would hold peers
@@ -1049,6 +1155,264 @@ func (w *World) collect(o *Occupant) {
 	}
 }
 
+// spawnSlop keeps the building's population of нейрослопы up.
+//
+// A POPULATION-KEEPING SPAWNER RATHER THAN A GENERATOR THAT SCATTERS THEM ONCE,
+// which is the difference between a building and a game: nothing here ends, so a
+// заброшка stocked at generation time is one that is permanently cleared the
+// first time somebody with a full gun tours it. The rate is the whole of the
+// difficulty — see SlopSpawnInterval.
+//
+// ONE AT A TIME, so clearing both buys two intervals rather than one and the
+// building never refills in a burst.
+//
+// NOTHING SPAWNS INTO AN EMPTY BUILDING, and that is what makes "no leak when
+// everybody leaves" true by construction rather than by the service happening to
+// stop ticking. A слоп with nobody to walk at is a creature standing in a room
+// nobody is in, holding one of SlopPopulation places, in a world that is about to
+// be torn down anyway.
+func (w *World) spawnSlop(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	free := -1
+	for i, s := range w.slops {
+		if s == nil {
+			free = i
+			break
+		}
+	}
+	if free < 0 {
+		// Full. The clock for the next one runs from NOW, so killing one is
+		// followed by a whole interval of quiet rather than by whatever was left of
+		// a timer that had been counting down under a building that needed nothing.
+		w.slopSpawnAt = w.Tick + slopSpawnTicks
+		return
+	}
+	if w.Tick < w.slopSpawnAt {
+		return
+	}
+	sector := w.spawnSlopSector(ids)
+	if sector < 0 {
+		return
+	}
+	w.slops[free] = &Slop{
+		ID:     free,
+		Pos:    randomSpot(w.rng, w.Level.Sectors[sector]),
+		Sector: sector,
+		Health: SlopHealth,
+	}
+	w.slopSpawnAt = w.Tick + slopSpawnTicks
+}
+
+// spawnSlopSector picks the room a нейрослоп appears in: one that nobody in the
+// building can see into.
+//
+// OUT OF SIGHT, BECAUSE APPEARING IS NOT A MOVE. Everything else in this world
+// arrives by walking through a doorway, and a creature that materialises in the
+// room you are standing in is one you could not have avoided and cannot explain.
+// The visible set is already the answer to "which rooms is somebody looking at"
+// (level.go, buildVisibility), so this is a table lookup per room per occupant on
+// the rare tick something spawns.
+//
+// A BUILDING WITH NOWHERE OUT OF SIGHT FALLS BACK TO ANY ROOM rather than
+// refusing to spawn. It cannot happen in a generated заброшка — seven rooms at
+// least, and the visible set is one doorway deep — but a small fixture can leave
+// every room visible, and a spawner that gave up there would be one that quietly
+// stopped working on exactly the levels a test builds by hand.
+func (w *World) spawnSlopSector(ids []string) int {
+	if len(w.Level.Sectors) == 0 {
+		return -1
+	}
+	hidden := make([]int, 0, len(w.Level.Sectors))
+	for i := range w.Level.Sectors {
+		seen := false
+		for _, id := range ids {
+			o := w.occupants[id]
+			// A man on the floor is looking at nothing, and something appearing
+			// beside a corpse is out of sight of everybody who matters.
+			if o.State.Health <= 0 {
+				continue
+			}
+			if w.canSee(o.State.Sector, i) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			hidden = append(hidden, i)
+		}
+	}
+	if len(hidden) == 0 {
+		return w.rng.Intn(len(w.Level.Sectors))
+	}
+	return hidden[w.rng.Intn(len(hidden))]
+}
+
+// stepSlops walks every нейрослоп one step and applies whatever it reached.
+//
+// THE TARGET LIST IS BUILT ONCE AND IN keys' ORDER, which is what settles a tie
+// between two men standing exactly the same distance away (slop.go, nearestPrey).
+// Never map order: a tie decided by a coin the runtime tosses is a world that
+// stops replaying from its transcript, which is the property everything else in
+// this package is arranged to keep.
+//
+// A MAN ON THE FLOOR AND A MAN INSIDE HIS PROTECTION ARE NOT TARGETS. The floor
+// is obvious. The protection is the same rule the hit test already applies
+// (targetsFor) read the only way it can be: a window that stops a barrel and not
+// a слоп would make getting up at the one spawn everybody knows about survivable
+// against friends and fatal against the building — and being unable to shoot for
+// two seconds is exactly when a creature walking at you is worst.
+//
+// TWO PASSES, DELIBERATELY. Everything moves, and only then does anything land:
+// contact resolved inside the movement loop would test the first слоп against a
+// position the second is about to be pushed out of, so which of two touching
+// creatures hurt you would depend on the order they were stepped in.
+func (w *World) stepSlops(dt float64, ids []string) {
+	// Nothing to walk and nothing to be reached by, so nothing is built. It is a
+	// guard on ALLOCATION rather than on correctness: the two slices below are per
+	// tick, and a simulation loop that allocates twenty times a second to describe
+	// an empty building is a self-inflicted garbage problem.
+	empty := true
+	for _, s := range w.slops {
+		if s != nil {
+			empty = false
+			break
+		}
+	}
+	if empty {
+		return
+	}
+
+	targets := make([]prey, 0, len(ids))
+	victims := make([]*Occupant, 0, len(ids))
+	for _, id := range ids {
+		o := w.occupants[id]
+		if o.State.Health <= 0 || w.protected(o) {
+			continue
+		}
+		targets = append(targets, prey{Pos: o.State.Pos, Sector: o.State.Sector})
+		victims = append(victims, o)
+	}
+
+	for i := range w.slops {
+		s := w.slops[i]
+		if s == nil {
+			continue
+		}
+		if at, ok := nearestPrey(s.Pos, targets); ok {
+			*s = stepSlop(w.Level, w.routes, *s, at, dt)
+		}
+		// Clear of everything that has already moved, which is everything with a
+		// lower id — so the lowest never yields and the order is the id order
+		// rather than whatever the loop happened to be. See separate.
+		for j := 0; j < i; j++ {
+			if other := w.slops[j]; other != nil {
+				*s = separate(w.Level, *s, *other)
+			}
+		}
+	}
+
+	for _, s := range w.slops {
+		if s != nil {
+			w.touch(s, victims)
+		}
+	}
+}
+
+// touch is one нейрослоп reaching somebody, and it is the second thing in this
+// building that can put a man on the floor.
+//
+// THE DEATH LOOP IS THE ONE THAT ALREADY EXISTED. A слоп does not get a way of
+// killing you — it gets a way of taking health off you, and everything about
+// being on the floor, getting up, the spawn and the protection is whatever the
+// обрез already made happen (hurt). What is different is only what it scores:
+// nobody betrayed you, so nothing is added to anybody.
+//
+// THE ROOM IS TOLD, on the same field a shot uses (Occupant.hitOn). Being hurt by
+// something is exactly as invisible as being shot — neither moves the man it
+// happens to — so a слоп landing on somebody has to mark him for the same reason
+// and, since the field is read per viewer against the tick, everybody watching is
+// told rather than whoever was rendered first.
+//
+// ONE MAN PER TOUCH, because the cooldown belongs to the слоп: a creature
+// standing between two people is not hitting both of them twenty times a second.
+//
+// AND IT IS THE NEAREST OF THEM, which is a fairness rule before it is an
+// intuitive one. Walking the list in its own order and taking the first man in
+// reach hands every touch to the lexicographically smaller uuid for the life of
+// both accounts — the thing turnOrder exists to prevent, and which it describes as
+// a coin that never gets tossed rather than one landing badly. Nearest needs no
+// rotation to fix that: it is a property of where the two of them are standing
+// rather than of what they are called, and it is what somebody watching a creature
+// arrive would expect of it. An exact tie keeps the earlier of the list, which is
+// keys' order and therefore the same on every process replaying the transcript.
+//
+// The list is re-checked as it is walked, because an earlier слоп on this same
+// tick may already have put its man down.
+func (w *World) touch(s *Slop, victims []*Occupant) {
+	if w.Tick < s.touchAt {
+		return
+	}
+	var nearest *Occupant
+	shortest := math.Inf(1)
+	for _, o := range victims {
+		if o.State.Health <= 0 || w.protected(o) {
+			continue
+		}
+		// Reach AND a clear line to him: concrete between the two of them refuses
+		// it, whichever of them is on which side (slop.go, touches).
+		dist, ok := touches(w.Level, s.Pos, o.State.Pos)
+		// Strictly nearer, so an exact tie keeps the earlier man.
+		if !ok || dist >= shortest {
+			continue
+		}
+		nearest, shortest = o, dist
+	}
+	if nearest == nil {
+		return
+	}
+	s.touchAt = w.Tick + slopTouchTicks
+	nearest.hitOn = w.Tick
+	w.hurt(nearest, SlopDamage)
+}
+
+// hitSlop applies one barrel to a нейрослоп, and takes it out of the building if
+// that was the last of it.
+//
+// ONE BARREL IS ALWAYS THE LAST OF IT (content.go, SlopHealth), so the subtraction
+// below is arithmetic rather than a branch anybody reaches — and it is written as
+// arithmetic anyway, because the constant is what makes it true and a constant is
+// a thing somebody retunes. The test that pins the two together is where the
+// reasoning lives.
+func (w *World) hitSlop(shooter *Occupant, id int) {
+	s := w.slops[id]
+	if s == nil {
+		return
+	}
+	s.Health -= BarrelDamage
+	if s.Health > 0 {
+		return
+	}
+	w.killSlop(id)
+	shooter.kills++
+}
+
+// killSlop takes a нейрослоп out of the building and frees the place it held. It
+// is the ONLY way one leaves, which is what keeps the pool, the visibility memory
+// and the rewind ring unable to disagree — the same guarantee, and the same three
+// clears, that release gives for a man.
+func (w *World) killSlop(id int) {
+	w.slops[id] = nil
+	for a := range w.lastVisibleSlop {
+		w.lastVisibleSlop[a][id] = 0
+	}
+	// The number is handed to the next слоп, and the ring holds RewindMax of the
+	// last one's walk. Without this the newcomer is shot where its predecessor
+	// died, for half a second, in a room it has never been in. See history.forget.
+	w.history.forget(ref{Slop: true, N: id})
+}
+
 // rise puts somebody who has been on the floor long enough back on his feet, at
 // the spawn, with a full bar and a full gun.
 //
@@ -1102,11 +1466,20 @@ func (w *World) resolveShot(o *Occupant, now time.Time) {
 	if len(targets) == 0 {
 		return
 	}
-	slot, ok := shoot(w.Level, o.State.Pos, EyeZ(w.Level, o.State), o.State.Yaw, o.State.Pitch, targets)
+	at, ok := shoot(w.Level, o.State.Pos, EyeZ(w.Level, o.State), o.State.Yaw, o.State.Pitch, targets)
 	if !ok {
 		return
 	}
-	w.wound(o, w.occupants[w.slots[slot]])
+	// ONE RAY, TWO CONSEQUENCES, AND THE SPLIT IS HERE AND NOWHERE ELSE. A слоп
+	// and a man are the same body to the geometry (hit.go), so the only thing that
+	// differs is what happens afterwards: one is worth a kill, the other is worth a
+	// confession. A second hit path for the second kind of target would be two ray
+	// tests to keep in agreement.
+	if at.Slop {
+		w.hitSlop(o, at.N)
+		return
+	}
+	w.wound(o, w.occupants[w.slots[at.N]])
 }
 
 // targetsFor is everybody this shot is allowed to land on, standing where the
@@ -1126,13 +1499,14 @@ func (w *World) resolveShot(o *Occupant, now time.Time) {
 // since died is not killed twice, and somebody who has since got up is untouchable
 // for as long as his protection lasts. history.go states that division for the
 // buffer; this is the one place it is applied.
-func (w *World) targetsFor(shooter *Occupant, past map[int]Spot) []body {
+func (w *World) targetsFor(shooter *Occupant, past map[ref]Spot) []body {
 	var out []body
 	for slot, id := range w.slots {
 		if id == "" || slot == shooter.Slot {
 			continue
 		}
 		t := w.occupants[id]
+		at := ref{N: slot}
 		// Protection is read from the WORLD's deadline rather than from the
 		// countdown on his Player, because the countdown is drained by commands he
 		// sends and this is the half of the rule he must not be able to extend
@@ -1141,7 +1515,7 @@ func (w *World) targetsFor(shooter *Occupant, past map[int]Spot) []body {
 			continue
 		}
 		pos, sector := t.State.Pos, t.State.Sector
-		if spot, ok := past[slot]; ok {
+		if spot, ok := past[at]; ok {
 			if !spot.Alive {
 				// He was a corpse at the instant being shot at. Where he is
 				// standing now is not where the shooter was aiming.
@@ -1152,32 +1526,78 @@ func (w *World) targetsFor(shooter *Occupant, past map[int]Spot) []body {
 		if !w.canSee(shooter.State.Sector, sector) && !w.heldVisible(shooter.Slot, slot) {
 			continue
 		}
-		floorZ := 0.0
-		if sector >= 0 && sector < len(w.Level.Sectors) {
-			floorZ = w.Level.Sectors[sector].FloorZ
+		out = append(out, body{at: at, pos: pos, floorZ: w.floorOf(sector)})
+	}
+
+	// And the нейрослопы, through the same rewind and the same filter. There is
+	// nothing to disqualify them by in the present beyond existing: a слоп is never
+	// on the floor — one barrel is the whole of it, so it dies rather than falling
+	// — and nothing protects it.
+	for i, s := range w.slops {
+		if s == nil {
+			continue
 		}
-		out = append(out, body{slot: slot, pos: pos, floorZ: floorZ})
+		at := ref{Slop: true, N: i}
+		pos, sector := s.Pos, s.Sector
+		if spot, ok := past[at]; ok {
+			pos, sector = spot.Pos, spot.Sector
+		}
+		if !w.canSee(shooter.State.Sector, sector) && !w.heldVisibleSlop(shooter.Slot, i) {
+			continue
+		}
+		out = append(out, body{at: at, pos: pos, floorZ: w.floorOf(sector)})
 	}
 	return out
+}
+
+// floorOf is how high the floor of one room is, or zero for a room that does not
+// exist — which nothing in a generated level produces, and which is answered
+// rather than trusted because the hit test would otherwise index a slice with a
+// sector some rewound frame recorded before the building was replaced.
+func (w *World) floorOf(sector int) float64 {
+	if sector < 0 || sector >= len(w.Level.Sectors) {
+		return 0
+	}
+	return w.Level.Sectors[sector].FloorZ
 }
 
 // wound applies one barrel to whoever it landed on, and puts him on the floor if
 // that was the last of him.
 //
-// THE KILL IS A BETRAYAL AND SCORES NOTHING. There is nothing else in this
-// заброшка to shoot, so every kill is a friend's: it goes on its own counter,
-// everybody can read it on the standings, and no total anywhere is increased by
-// it. The day the нейрослопы arrive is the day there is a kill worth counting.
+// THE KILL IS A BETRAYAL AND STILL SCORES NOTHING, and now that there is
+// something else in the заброшка to shoot, that is a statement rather than an
+// accounting of what exists. A friend goes on his own counter, everybody reads it
+// on the standings, and no total anywhere grows by it — where a нейрослоп at the
+// end of the same barrel is a kill (hitSlop). Same gun, same ray, same damage;
+// the building simply has an opinion about which one you pointed it at.
 //
 // WHICH OF TWO MEN WHO SHOT EACH OTHER ON THE SAME TICK DIES is decided by the
 // step order, and that order rotates by the tick (turnOrder) precisely so it is
 // not the same account every time. The loser's own trigger is then refused by
 // Step, because a man with no health does nothing at all.
 func (w *World) wound(shooter, victim *Occupant) {
-	victim.State.Health -= BarrelDamage
 	victim.hitOn = w.Tick
+	if w.hurt(victim, BarrelDamage) {
+		shooter.betrayals++
+	}
+}
+
+// hurt takes health off somebody and puts him on the floor if that was the last
+// of him, reporting whether it was.
+//
+// TWO THINGS IN THIS BUILDING CAN DO IT — a barrel and a нейрослоп — and this is
+// the whole of what they share. What they do NOT share is the bookkeeping either
+// side of it: only a shot marks a shooter, and only a shot at a friend is a
+// betrayal, so both of those stay with their callers. A слоп arriving is nobody's
+// fault.
+//
+// It reports the kill rather than leaving the caller to compare health before and
+// after, because "did that finish him" is exactly the question both callers ask
+// and there is one right way to answer it.
+func (w *World) hurt(victim *Occupant, damage int) bool {
+	victim.State.Health -= damage
 	if victim.State.Health > 0 {
-		return
+		return false
 	}
 	victim.State.Health = 0
 	// The gun stops with him. Leaving a reload running would finish it under a
@@ -1189,7 +1609,7 @@ func (w *World) wound(shooter, victim *Occupant) {
 	victim.protectedUntil = 0
 	victim.downUntil = w.Tick + downTicks
 	victim.deaths++
-	shooter.betrayals++
+	return true
 }
 
 // spots is every entity's position this instant, in the shape the rewind buffer
@@ -1212,11 +1632,22 @@ func (w *World) wound(shooter, victim *Occupant) {
 // ANSWER, because a map does not remember what order it was filled in. It takes
 // the caller's list so that the frame recorded for a tick is of exactly the
 // occupants that tick stepped, rather than of a second reading of the roster.
-func (w *World) spots(ids []string) map[int]Spot {
-	out := make(map[int]Spot, len(ids))
+func (w *World) spots(ids []string) map[ref]Spot {
+	out := make(map[ref]Spot, len(ids)+SlopPopulation)
 	for _, id := range ids {
 		o := w.occupants[id]
-		out[o.Slot] = Spot{Pos: o.State.Pos, Sector: o.State.Sector, Alive: o.State.Health > 0}
+		out[ref{N: o.Slot}] = Spot{Pos: o.State.Pos, Sector: o.State.Sector, Alive: o.State.Health > 0}
+	}
+	// The нейрослопы are recorded on exactly the same terms and for exactly the
+	// same reason: they are drawn interpolated in the past like everything else the
+	// viewer does not predict, so a shot at one is only honest if it is resolved
+	// where the shooter saw it. Always alive, because one killed has already left
+	// the building (killSlop) and is not in the array to record.
+	for i, s := range w.slops {
+		if s == nil {
+			continue
+		}
+		out[ref{Slop: true, N: i}] = Spot{Pos: s.Pos, Sector: s.Sector, Alive: true}
 	}
 	return out
 }
@@ -1249,7 +1680,7 @@ func (w *World) Standings(now time.Time) Standings {
 		}
 		row := StandingsRow{
 			Slot: slot, Name: o.Pseudonym, Seconds: secs,
-			Deaths: o.deaths, Betrayals: o.betrayals,
+			Deaths: o.deaths, Kills: o.kills, Betrayals: o.betrayals,
 		}
 		if len(o.State.Counters) > 0 {
 			row.Bag = make(map[string]int, len(o.State.Counters))
@@ -1381,6 +1812,26 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 			Sector: o.State.Sector,
 			Yaw:    mrad(o.State.Yaw),
 			St:     w.peerState(o),
+		})
+	}
+	// And the нейрослопы, in id order and through the same filter — the viewer's
+	// own room, the rooms through its doorways, and anything that was in one of
+	// those recently enough to still be held. A слоп that has walked out of view is
+	// simply absent, exactly as a peer is, and so is one that has just been shot:
+	// this array is idempotent full state and dying is the same thing as not being
+	// in it (message.go, Snapshot.Slops).
+	for i, sl := range w.slops {
+		if sl == nil {
+			continue
+		}
+		if !w.canSee(me.State.Sector, sl.Sector) && !w.heldVisibleSlop(me.Slot, i) {
+			continue
+		}
+		s.Slops = append(s.Slops, Foe{
+			ID:     sl.ID,
+			X:      cm(sl.Pos.X),
+			Y:      cm(sl.Pos.Y),
+			Sector: sl.Sector,
 		})
 	}
 	me.events = nil

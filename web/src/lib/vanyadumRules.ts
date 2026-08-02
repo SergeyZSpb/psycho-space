@@ -23,7 +23,7 @@
  */
 
 import type { VanyadumConfig, VanyadumPickupKind } from '../api/types';
-import { BETRAYALS_ICON, DEATHS_ICON } from './vanyadumRoster';
+import { BETRAYALS_ICON, DEATHS_ICON, KILLS_ICON } from './vanyadumRoster';
 
 /**
  * The catalogue entry the gun's ammunition comes from, or null.
@@ -139,7 +139,7 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
         // control. What cannot be derived — that a snapshot is cut to the rooms
         // you can see at all — is prose, below.
         label: '📋 табло',
-        text: `Справа сверху — все, кто сейчас на заброшке, даже те, кого не видно: сколько времени внутри${carriedList(config)}. Там же ${DEATHS_ICON} сколько раз лёг и ${BETRAYALS_ICON} ${config.world.betrayals_title}. Твоя строка со стрелкой.`,
+        text: `Справа сверху — все, кто сейчас на заброшке, даже те, кого не видно: сколько времени внутри${carriedList(config)}. Там же ${KILLS_ICON} ${config.slop.kills_title}, ${DEATHS_ICON} сколько раз лёг и ${BETRAYALS_ICON} ${config.world.betrayals_title} — три разных числа, не перепутай. Твоя строка со стрелкой.`,
       },
     ],
   });
@@ -197,6 +197,61 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
     blocks.push({ title: 'Обрез', lines });
   }
 
+  // THE НЕЙРОСЛОП, which is the first thing in this building that is not a
+  // friend, and the reason the обрез finally has a use that is not a betrayal.
+  // Every number is served — how many there are, what one costs to be reached
+  // by, how fast it walks and how long the building waits before making another
+  // — so retuning any of them on the server changes what a player is told with
+  // no client change at all.
+  //
+  // TWO OF THESE LINES ARE JOINS RATHER THAN FIELDS, which is the same trick the
+  // gun's ammunition line plays. How many barrels one takes is its health
+  // against the gun's damage, and how many touches a man survives is his health
+  // against the слоп's — both pairs are published, neither total is, and a third
+  // number saying the same thing is a third number to keep in step by hand.
+  {
+    const slop = config.slop;
+    const barrels = Math.max(1, Math.ceil(slop.health / Math.max(1, config.gun.damage)));
+    const touches = Math.max(
+      1,
+      Math.ceil(config.player.max_health / Math.max(1, slop.damage)),
+    );
+    blocks.push({
+      title: 'Нейрослопы',
+      lines: [
+        {
+          label: `${KILLS_ICON} ${slop.title}`,
+          text: `${slop.blurb} Больше ${slop.population} штук разом в заброшке не бывает.`,
+        },
+        {
+          // «Попаданий нужно: N» rather than «N попаданий», because the number
+          // is DERIVED and Russian agreement after a numeral depends on it. The
+          // same reasoning as the capacity line above: a phrasing that reads
+          // correctly for every value beats a prettier one that goes wrong the
+          // afternoon somebody retunes the обрез.
+          label: '💥 чем убить',
+          text: `Попаданий из обреза нужно: ${barrels}. Больше о попадании никто не скажет — здоровья у него нет, падать он не умеет, просто пропадает со вспышкой.`,
+        },
+        {
+          label: '🩸 если достанет',
+          text: `${slop.damage} здоровья за касание, не чаще раза в ${num(slop.touch_seconds)} с. Касаний до смерти: ${touches}. Счёт у каждого свой, так что вдвоём они снимают вдвое быстрее.`,
+        },
+        {
+          // THE ONE RULE THAT MAKES THE CREATURE FAIR, and it is a comparison
+          // rather than a number: both speeds are served, so the sentence says
+          // which is bigger instead of asking a player to hold two figures in
+          // his head.
+          label: '🏃 медленнее тебя',
+          text: `${num(slop.speed)} м/с против твоих ${num(config.player.walk_speed)} — уйти можно всегда. Стоять на месте нельзя.`,
+        },
+        {
+          label: '⏳ приходят сами',
+          text: `Раз в ${num(slop.spawn_seconds, 0)} с в заброшке заводится новый, пока их не станет ${slop.population}. Перебил всех — столько же тишины, и всё сначала.`,
+        },
+      ],
+    });
+  }
+
   // WHAT HAPPENS WHEN SOMEBODY HITS YOU, and it is its own block because it is
   // the newest and most surprising set of rules in the game: the обрез now
   // reaches people, the people it reaches are your friends, and none of it
@@ -206,8 +261,15 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
     title: 'Смерть',
     lines: [
       {
+        // THE NUMBER IS DERIVED AND THE НЕЙРОСЛОП CLAUSE IS TYPED OUT, which is
+        // this file's standing division stated once more: the catalogue
+        // publishes how long a man lies there and carries no field at all for
+        // who ignores him while he does. A слоп neither walks at a man on the
+        // floor nor touches one — the world builds its targets and its victims
+        // out of the same filter (world.go, stepSlops) — so a change to that
+        // filter has to come back and edit this sentence by hand.
         label: '💀 лёг',
-        text: `Здоровье кончилось — валяешься ${num(config.world.down_seconds, 0)} с. Смотреть по сторонам можно, идти и стрелять нельзя. Потом сам встаёшь на спавне с полным обрезом, а собранное остаётся при тебе.`,
+        text: `Здоровье кончилось — валяешься ${num(config.world.down_seconds, 0)} с. Смотреть по сторонам можно, идти и стрелять нельзя. Нейрослопы к лежачему не идут и не трогают его. Потом сам встаёшь на спавне с полным обрезом, а собранное остаётся при тебе.`,
       },
       {
         // BOTH WAYS OF ARRIVING AT THE SPAWN, because the window now opens for
@@ -219,16 +281,32 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
         // pulling a dead trigger for his first two seconds in the building with
         // nothing on the screen to explain it, which reads as a broken обрез.
         //
-        // The number stays derived, which is the part that goes stale. WHAT opens
-        // the window is typed out — the catalogue publishes how long it lasts and
-        // carries no field for what starts one — so a third way of becoming
-        // untouchable would have to come back and edit this sentence.
+        // The number stays derived, which is the part that goes stale. WHAT
+        // opens the window and WHAT IT STOPS are both TYPED OUT — the catalogue
+        // publishes how long it lasts and carries no field for either — so a
+        // third way of becoming untouchable, or anything new the shield turns
+        // out not to cover, has to come back and edit this sentence by hand.
+        //
+        // AND THE НЕЙРОСЛОПЫ ARE THE HALF A PLAYER CANNOT WORK OUT FOR HIMSELF.
+        // That bullets stop is demonstrated the first time somebody shoots at
+        // him; that a creature will not even set off towards him is a thing that
+        // does not happen, and nothing that does not happen leaves a mark on the
+        // screen. It is the same filter the hit test applies, read the only way
+        // it can be (world.go, stepSlops builds its targets and its victims out
+        // of it), and it is what makes the seconds after getting up survivable
+        // at a spawn everybody in the building knows the way to — so it is worth
+        // its clause.
         label: '🛡 щит на спавне',
-        text: `Первые ${num(config.world.protect_seconds, 0)} с на спавне — и когда только зашёл, и когда встал после смерти — пули тебя не берут, но и сам не стреляешь и не перезаряжаешься. Кто светится синим, того трогать бесполезно.`,
+        text: `Первые ${num(config.world.protect_seconds, 0)} с на спавне — и когда только зашёл, и когда встал после смерти — пули тебя не берут, нейрослопы не трогают и даже не идут в твою сторону, но и сам не стреляешь и не перезаряжаешься. Кто светится синим, того трогать бесполезно.`,
       },
       {
+        // THE LINE THAT SAID THERE WAS NOTHING HERE BUT FRIENDS IS GONE, and its
+        // own comment on the block above predicted exactly this. There are
+        // strangers in the building now, so «чужих тут нет» would be a lie about
+        // the central rule of the game — and the joke is better for it: the two
+        // columns are what the board thinks of what you have been shooting.
         label: `${BETRAYALS_ICON} ${config.world.betrayals_title}`,
-        text: `Огонь по своим включён, а чужих тут нет — значит все убийства свои. За них не дают ничего, только строчку «${config.world.betrayals_title}» на табло рядом с ${DEATHS_ICON}.`,
+        text: `Огонь по своим включён, и друг от обреза ложится, как и всё остальное. В ${config.slop.kills_title} он не пойдёт: за него отдельная строчка «${config.world.betrayals_title}» на табло рядом с ${DEATHS_ICON}, и больше ничего.`,
       },
     ],
   });
@@ -264,8 +342,9 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
  * cut to the room you are standing in and the rooms through its doorways, so a
  * man who walked further off is genuinely not on your screen. And what a HIT
  * LOOKS LIKE, which is a rendering decision rather than a rule: the server sends
- * a small integer saying somebody was shot, and the choice to draw that as red
- * spreading over him belongs to this client alone.
+ * a small integer saying somebody was shot and simply stops sending a нейрослоп
+ * that has been, and the choice to draw the first as red spreading over him and
+ * the second as a blue flash where he stood belongs to this client alone.
  *
  * The absences and the lifecycle matter more than any number on this screen. A
  * player who assumes there is a win condition will spend the whole visit
@@ -295,7 +374,7 @@ export const VANYADUM_PROSE: RuleLine[] = [
   },
   {
     label: '💥 попал или нет',
-    text: 'Попал — по нему разойдётся красным. Промазал — не будет ничего. Больше тебе об этом никто не скажет.',
+    text: 'По человеку попал — по нему разойдётся красным. По нейрослопу — на его месте вспыхнет голубым, и его не станет. Промазал — не будет ничего. Больше тебе об этом никто не скажет.',
   },
   {
     label: '⌨️ на компьютере',
@@ -303,7 +382,7 @@ export const VANYADUM_PROSE: RuleLine[] = [
   },
   {
     label: '👀 видно не всех',
-    text: 'На экране только те, кто в твоей комнате или в соседней через проём. Ушёл человек дальше — пропадает, хотя он никуда не делся; вернулся — снова видно. Остальные — на табло.',
+    text: 'На экране только те, кто в твоей комнате или в соседней через проём. Ушёл человек дальше — пропадает, хотя он никуда не делся; вернулся — снова видно. Нейрослопы прячутся так же, поэтому вспышка за стеной ничего не значит. Остальные — на табло.',
   },
   {
     label: '🎯 цели нет',

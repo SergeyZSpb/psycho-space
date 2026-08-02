@@ -31,16 +31,37 @@ type historyFrame struct {
 	tick int64
 	at   time.Time
 	// spots is every entity's position at that instant, keyed by the same
-	// identity the snapshot publishes — the SLOT, because a slot is all a client
-	// has to name what it was aiming at with.
-	spots map[int]Spot
+	// identity the snapshot publishes — the SLOT for a man and the ID for a слоп,
+	// because those two numbers are all a client has to name what it was aiming at
+	// with.
+	spots map[ref]Spot
+}
+
+// ref names one thing the rewind ring and the hit test can talk about.
+//
+// TWO NUMBERING SCHEMES SHARE ONE MAP, and this type is what keeps them apart. A
+// place in the building and a нейрослоп are both counted from zero, both are
+// small, and both are reused the moment their holder is gone — so a bare integer
+// key would silently resolve a shot at слоп 1 against whoever holds place 1, and
+// would do it only when both happened to exist. A two-field key costs nothing at
+// runtime and makes the collision unrepresentable rather than unlikely.
+//
+// It is also what the hit test hands back (hit.go, shoot), so the answer to "what
+// did this ray land on" arrives already saying which kind of thing it was.
+type ref struct {
+	// Slop tells the two kinds apart.
+	Slop bool
+	// N is the slot for a man and the id for a слоп.
+	N int
 }
 
 // Spot is one entity's place in the world at one instant.
 type Spot struct {
 	Pos    Vec2
 	Sector int
-	// Alive is recorded so a rewind cannot resurrect a corpse to be hit.
+	// Alive is recorded so a rewind cannot resurrect a corpse to be hit. A слоп is
+	// never recorded dead — one leaves the building on the tick it is killed
+	// (world.go, killSlop) — so this is only ever false for a man on the floor.
 	Alive bool
 }
 
@@ -78,10 +99,10 @@ func newHistory() *history {
 
 // record stores one instant. The map is reused rather than reallocated when the
 // ring wraps, for the same reason the ring is fixed-size.
-func (h *history) record(tick int64, at time.Time, spots map[int]Spot) {
+func (h *history) record(tick int64, at time.Time, spots map[ref]Spot) {
 	f := &h.frames[h.next]
 	if f.spots == nil {
-		f.spots = make(map[int]Spot, len(spots)+2)
+		f.spots = make(map[ref]Spot, len(spots)+2)
 	} else {
 		clear(f.spots)
 	}
@@ -95,34 +116,37 @@ func (h *history) record(tick int64, at time.Time, spots map[int]Spot) {
 	}
 }
 
-// forget takes one slot out of every frame in the ring, so nothing recorded
-// while its last holder stood there can be read back for whoever holds it next.
+// forget takes one entity out of every frame in the ring, so nothing recorded
+// while it existed can be read back for whatever takes its number next.
 //
-// IT IS THE PRICE OF KEYING BY SLOT, and it is worth paying rather than
-// avoiding. `spots` is keyed by slot deliberately — the rewind and the wire then
-// name the same things, which is what lets the hit test hand the slot it landed
-// on straight back to the world (world.go, resolveShot) — but a slot is REUSED
-// the moment its holder leaves, and the ring does not expire for RewindMax after
-// that. Without this purge a newcomer taking a freed place is placed, for the
-// whole of that window, wherever the departed man was standing: he is shot on a
-// line he was never on, at the far end of a building he has just walked into.
+// IT IS THE PRICE OF KEYING BY THE WIRE'S OWN NAMES, and it is worth paying
+// rather than avoiding. `spots` is keyed by slot and by слоп id deliberately —
+// the rewind and the wire then name the same things, which is what lets the hit
+// test hand what it landed on straight back to the world (world.go, resolveShot)
+// — but BOTH of those numbers are REUSED the moment their holder is gone, and the
+// ring does not expire for RewindMax after that. Without this purge whoever takes
+// a freed number is placed, for the whole of that window, wherever its last
+// holder was standing: shot on a line it was never on, at the far end of a
+// building it has just walked into.
 //
-// It is reachable on the ordinary path rather than in theory. Advance records
-// the frame and THEN releases whoever has been abandoned, so the last thing the
-// ring learns about a slot is where its previous holder stood on the tick he
-// left it.
+// IT IS REACHABLE ON THE ORDINARY PATH FOR BOTH KINDS, rather than in theory.
+// Advance records the frame and THEN releases whoever has been abandoned, so the
+// last thing the ring learns about a slot is where its previous holder stood on
+// the tick he left it — and a слоп is killed mid-tick by a shot, so the ring is
+// already carrying half a second of a creature that no longer exists when its id
+// is handed to the next one.
 //
 // A DELETION FROM EVERY FRAME RATHER THAN A RE-KEYING OF THE RING. Keying the
 // past by account would survive reuse by itself, and would cost the whole
 // correspondence between the rewound world and the published one — every read
 // would have to translate an account back into the slot the wire names. This is
-// one pass over a fixed-size ring, on the rare tick somebody leaves.
-func (h *history) forget(slot int) {
+// one pass over a fixed-size ring, on the rare tick something leaves.
+func (h *history) forget(r ref) {
 	for i := range h.frames {
 		// A frame the ring has not reached yet has no map at all, and deleting
 		// from a nil map is a no-op rather than a panic, so there is nothing to
 		// guard.
-		delete(h.frames[i].spots, slot)
+		delete(h.frames[i].spots, r)
 	}
 }
 
@@ -140,7 +164,7 @@ func (h *history) forget(slot int) {
 // future clamps to the newest. Both are honest answers: the alternative is
 // fabricating a position, and a fabricated position is a hit registered against
 // something that was never there.
-func (h *history) at(instant time.Time) map[int]Spot {
+func (h *history) at(instant time.Time) map[ref]Spot {
 	if h.count == 0 {
 		return nil
 	}
@@ -173,7 +197,7 @@ func (h *history) at(instant time.Time) map[int]Spot {
 			return b.spots
 		}
 		t := float64(instant.Sub(a.at)) / float64(span)
-		out := make(map[int]Spot, len(b.spots))
+		out := make(map[ref]Spot, len(b.spots))
 		for id, bs := range b.spots {
 			as, ok := a.spots[id]
 			if !ok {
@@ -222,7 +246,7 @@ func (h *history) at(instant time.Time) map[int]Spot {
 // against a world seconds old. The clamp is on the composition and not only on
 // the sample: the two terms are added here, so this is the only place their sum
 // exists.
-func (w *World) RewindTo(now time.Time, rtt time.Duration) map[int]Spot {
+func (w *World) RewindTo(now time.Time, rtt time.Duration) map[ref]Spot {
 	if rtt < 0 {
 		rtt = 0
 	}

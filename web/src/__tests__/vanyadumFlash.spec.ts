@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FLASH_FRAMES, createFlash, createPeerFlashes } from '../lib/vanyadumFlash';
+import { FLASH_FRAMES, createFlash, createPeerFlashes, createSlopMarks } from '../lib/vanyadumFlash';
 import { PEER_DOWN, PEER_FIRED, PEER_HIT, PEER_PROTECTED } from '../lib/vanyadumRoster';
 
 /**
@@ -167,5 +167,78 @@ describe('createPeerFlashes', () => {
     expect(flashes.frame([{ slot: 3, st: PEER_FIRED }]).fired.has(3)).toBe(true);
     for (let i = 0; i < 4; i++) expect(flashes.frame([]).fired.size).toBe(0);
     expect(flashes.frame([{ slot: 3 }]).fired.has(3)).toBe(true);
+  });
+});
+
+describe('createSlopMarks', () => {
+  const at = (id: number, x: number) => ({ id, x, y: 2, z: 0.5 });
+
+  it('marks the place a нейрослоп stopped being, on the frame it stopped', () => {
+    // ABSENCE IS THE WHOLE OF DYING, because the wire carries no health, no
+    // state and no death event for one: a слоп is worth exactly one barrel, so
+    // it is simply not in the next frame's array. That makes this the only
+    // acknowledgement a kill can have, and a kill with none would be
+    // indistinguishable from a miss.
+    const marks = createSlopMarks();
+    expect(marks.frame([at(0, 5)]).gone.size).toBe(0);
+    const gone = marks.frame([]).gone;
+    expect(gone.get(0)).toEqual({ x: 5, y: 2, z: 0.5 });
+  });
+
+  it('marks where it was last seen rather than where it is, because it is not', () => {
+    const marks = createSlopMarks();
+    marks.frame([at(0, 1)]);
+    marks.frame([at(0, 9)]);
+    expect(marks.frame([]).gone.get(0)).toEqual({ x: 9, y: 2, z: 0.5 });
+  });
+
+  it('lasts a count of frames and then stops, whatever the frame rate is', () => {
+    // Counted in DRAWN FRAMES rather than in seconds, for the reason at the top
+    // of this file: a mark on a clock can expire inside the very frame that was
+    // about to draw it, and a phone managing twenty frames a second is exactly
+    // where that happens.
+    const marks = createSlopMarks(3);
+    marks.frame([at(1, 0)]);
+    const shown: boolean[] = [];
+    for (let i = 0; i < 5; i++) shown.push(marks.frame([]).gone.has(1));
+    expect(shown).toEqual([true, true, true, false, false]);
+  });
+
+  it('marks nothing at all while everything is still standing there', () => {
+    // The commonest frame in the game, and the one that has to cost nothing.
+    const marks = createSlopMarks();
+    marks.frame([at(0, 1), at(1, 2)]);
+    for (let i = 0; i < 6; i++) {
+      expect(marks.frame([at(0, 1 + i), at(1, 2)]).gone.size).toBe(0);
+    }
+  });
+
+  it('is per creature, so one dying does not mark the one beside it', () => {
+    const marks = createSlopMarks();
+    marks.frame([at(0, 1), at(1, 7)]);
+    const gone = marks.frame([at(1, 7)]).gone;
+    expect([...gone.keys()]).toEqual([0]);
+  });
+
+  it('marks the transition and not the absence, so an empty building is quiet', () => {
+    // The rule this project states for every mark: compare against the previous
+    // frame per entity, BEFORE the value being compared to is overwritten. Drawn
+    // off "there is no слоп with this id" instead, the mark would be lit on
+    // every frame of the eight seconds the building waits for the next one.
+    const marks = createSlopMarks(3);
+    marks.frame([at(0, 4)]);
+    for (let i = 0; i < 3; i++) expect(marks.frame([]).gone.has(0)).toBe(true);
+    for (let i = 0; i < 20; i++) expect(marks.frame([]).gone.size).toBe(0);
+  });
+
+  it('marks again when the place is taken and emptied a second time', () => {
+    // An id is a place in the building and is handed to the next creature after
+    // a spawn interval, so the same number dies more than once in a visit.
+    const marks = createSlopMarks(2);
+    marks.frame([at(0, 1)]);
+    expect(marks.frame([]).gone.has(0)).toBe(true);
+    for (let i = 0; i < 5; i++) marks.frame([]);
+    marks.frame([at(0, 30)]);
+    expect(marks.frame([]).gone.get(0)).toEqual({ x: 30, y: 2, z: 0.5 });
   });
 });

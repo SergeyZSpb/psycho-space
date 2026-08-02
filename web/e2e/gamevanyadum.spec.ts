@@ -54,6 +54,23 @@ const CONFIG = {
     ammo: 'beer',
     damage: 40,
   },
+  // Not production's population, damage, speed or spawn interval either, and the
+  // reason has not changed: the splash states the creature's rules and it must
+  // state THESE. The two totals a player actually wants — how many barrels one
+  // takes, and how many touches he survives — are deliberately absent, because
+  // they are joins against the gun's damage and the player's health above, and a
+  // third number saying the same thing is a third number to keep in step by hand.
+  slop: {
+    title: 'нейрослоп',
+    blurb: 'Ходит на тебя.',
+    population: 4,
+    health: 120,
+    damage: 16,
+    touch_seconds: 3,
+    speed: 2.5,
+    spawn_seconds: 14,
+    kills_title: 'слопики',
+  },
   pickups: [
     {
       key: 'beer',
@@ -305,8 +322,10 @@ function fullHouse(): Record<string, unknown>[] {
     c: { beer: 9 },
     // Two digits of each, which is wider than a заброшка of this size will ever
     // really produce — the layout case is the widest row that can be asked for,
-    // not a plausible one.
+    // not a plausible one. Three numeric columns now, and they are what the name
+    // gives its width to.
     d: 12,
+    k: 56,
     br: 34,
   }));
 }
@@ -472,8 +491,39 @@ test.describe('«ВАНЯДУМ» splash', () => {
     // And the claim that replaced is gone. It was true for exactly one
     // iteration, its own comment predicted this, and believed it would now be a
     // lie about the central rule of the game.
-    await expect(rules).not.toContainText('нейрослопов');
     await expect(rules).not.toContainText('Пока отнять его некому');
+  });
+
+  test('and it states the нейрослоп’s rules, every number of them derived', async ({ page }) => {
+    // C2's rules change, and the biggest one since the обрез started landing:
+    // there is now something in the building that is not a friend. Every number
+    // is the stub's rather than production's — including the word the standings
+    // column is headed with, which the server chooses — so a hand-typed
+    // cheatsheet passes against production and fails here.
+    await openSplash(page);
+    const rules = page.getByTestId('vanyadum-rules');
+    await expect(rules).toContainText('нейрослоп');
+    await expect(rules).toContainText('Ходит на тебя.');
+    // How many are in the building, what a touch costs and how often, how fast
+    // it walks against the player's own speed, and how long the building waits
+    // before making another.
+    await expect(rules).toContainText('Больше 4 штук');
+    await expect(rules).toContainText('16 здоровья');
+    await expect(rules).toContainText('3 с');
+    await expect(rules).toContainText('2,5 м/с');
+    await expect(rules).toContainText('14 с');
+    // The two joins, and they are the numbers the server deliberately does not
+    // publish: 120 of health against a barrel's 40 is three shots, and 16 a
+    // touch against 80 of health is five touches.
+    await expect(rules).toContainText('нужно: 3');
+    await expect(rules).toContainText('Касаний до смерти: 5');
+    // And the word for the column it fills, which is the half of the joke the
+    // catalogue owns.
+    await expect(rules).toContainText('слопики');
+
+    // The claim this iteration made false is gone: there ARE strangers in the
+    // building now, and a friend shot still scores nothing towards them.
+    await expect(rules).not.toContainText('чужих тут нет');
   });
 
   test('and it says you cannot see everybody, and where the rest are listed', async ({ page }) => {
@@ -1124,25 +1174,67 @@ test.describe('«ВАНЯДУМ» play', () => {
     expect(overflow).toBeLessThanOrEqual(0);
   });
 
-  test('the standings count deaths and betrayals, and nothing else', async ({ page }) => {
-    // THERE IS NO KILL COLUMN, and that is the joke rather than an omission:
-    // friendly fire is on and everybody in the building is a friend, so every
-    // kill is the second number. Both are omitted at zero on the wire and drawn
-    // as a zero here, so the columns stay aligned down the list.
+  test('the standings count kills, deaths and betrayals as three different things', async ({
+    page,
+  }) => {
+    // THE KILL COLUMN AND THE BETRAYAL COLUMN ARE THE JOKE, and it only became
+    // one when there was something in the building worth killing. A friend shot
+    // scores NOTHING towards the первый — he is published on his own line under
+    // his own heading — so the two must be legible as different numbers rather
+    // than as two shades of the same one, which is why they are three different
+    // KINDS of picture. All three are omitted at zero on the wire and drawn as a
+    // zero here, so the columns stay aligned down the list.
     const socket = await stubSocket(page);
     await openSplash(page);
     await walkIn(page);
 
     await socket.board([
-      { n: 0, i: 'K3jf9sLm2QpZ', s: 137, c: { beer: 4 }, d: 2, br: 3 },
+      { n: 0, i: 'K3jf9sLm2QpZ', s: 137, c: { beer: 4 }, d: 2, k: 8, br: 3 },
       { n: 1, i: 'Qq1Ww2Ee3Rr4', s: 7 },
     ]);
 
     const rows = page.getByTestId('vanyadum-board-row');
+    await expect(rows.nth(0)).toContainText('👾8');
     await expect(rows.nth(0)).toContainText('💀2');
     await expect(rows.nth(0)).toContainText('🔪3');
+    await expect(rows.nth(1)).toContainText('👾0');
     await expect(rows.nth(1)).toContainText('💀0');
     await expect(rows.nth(1)).toContainText('🔪0');
+    // Three separate cells, so a wide number in one cannot run into the next.
+    await expect(rows.nth(0).getByTestId('vanyadum-board-kills')).toHaveText('👾8');
+    await expect(rows.nth(0).getByTestId('vanyadum-board-betrayals')).toHaveText('🔪3');
+  });
+
+  test('a snapshot carrying нейрослопы is still a snapshot', async ({ page }) => {
+    // The creatures themselves are inside the canvas and cannot be looked at
+    // (ADR-047), and the sprite that draws them is asserted on in vitest, over
+    // its bytes. What IS observable here is that the frame carrying them decodes
+    // — `f` is a new array on a payload this client has been reading for four
+    // iterations, and a decode that threw would take the health and shell
+    // readouts down with it, on the same snapshot, silently.
+    //
+    // Deliberately needs no render loop: the readouts below are written when the
+    // frame ARRIVES, not when a frame is drawn, so a backgrounded page still
+    // sees them.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.snapshot({
+      hp: 44,
+      b: 1,
+      f: [
+        { n: 0, x: 640, y: 480, s: 0 },
+        { n: 1, x: 1450, y: 260, s: 1 },
+      ],
+    });
+    await expect(page.getByTestId('vanyadum-health')).toHaveText('♥ 44');
+    await expect(page.getByTestId('vanyadum-shells')).toContainText(`1/${CONFIG.gun.barrels}`);
+
+    // And a building with nothing hunting anybody in it, which is what the array
+    // being omitted means and what most frames look like.
+    await socket.snapshot({ hp: 41, b: 2 });
+    await expect(page.getByTestId('vanyadum-health')).toHaveText('♥ 41');
   });
 
   test('holding the trigger reaches the server', async ({ page }) => {
