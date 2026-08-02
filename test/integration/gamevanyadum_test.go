@@ -20,12 +20,10 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/session"
 	"github.com/SergeyZSpb/psycho-space/internal/vk"
 	"github.com/coder/websocket"
-	"github.com/google/uuid"
 )
 
-// «ВАНЯДУМ» end to end: a real HTTP server, a real WebSocket, a real
-// PostgreSQL, and the game's own simulation loop driven by a channel this test
-// fires.
+// «ВАНЯДУМ» end to end: a real HTTP server, real WebSockets, a real PostgreSQL,
+// and the game's own simulation loop driven by a channel this test fires.
 //
 // Its own harness rather than a share of the yard's, which is the same rule that
 // keeps the two games' packages apart applied to their tests: this file can be
@@ -52,6 +50,10 @@ func dumVK(t *testing.T) string {
 
 // buildAppVanyadum builds the app with a running hub and «ВАНЯДУМ» wired to it,
 // returning the tick channel that drives the simulation and the service itself.
+//
+// The tick channel is UNBUFFERED: a send returns only once the simulation has
+// taken it, so "the world advanced" is something this file knows rather than
+// hopes.
 func buildAppVanyadum(t *testing.T, vkBaseURL string) (http.Handler, chan time.Time, *gamevanyadum.Service) {
 	t.Helper()
 	hub := realtime.NewHub()
@@ -102,28 +104,74 @@ func dialVanyadum(t *testing.T, appURL, cookie, room string) (*websocket.Conn, *
 	return websocket.Dial(ctx, wsURL(appURL, "/api/realtime?room="+room), &websocket.DialOptions{HTTPHeader: h})
 }
 
-// startRun begins a run over HTTP and returns the decoded body.
-func startRun(t *testing.T, cli *http.Client, base string) map[string]any {
+// fetchWorld reads the заброшка over HTTP: which building it is and the whole
+// geometry to build meshes from. It is the only place the level is ever sent.
+func fetchWorld(t *testing.T, cli *http.Client, base string) (string, *gamevanyadum.Level) {
 	t.Helper()
-	resp, err := cli.Post(base+"/api/game-vanyadum/runs", "application/json", nil)
+	resp, err := cli.Get(base + "/api/game-vanyadum/world")
 	if err != nil {
-		t.Fatalf("start run: %v", err)
+		t.Fatalf("get world: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("start run: status %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get world: status %d", resp.StatusCode)
 	}
-	var out map[string]any
+	var out struct {
+		WorldID string              `json:"world_id"`
+		Seed    int64               `json:"seed"`
+		Level   *gamevanyadum.Level `json:"level"`
+		Room    string              `json:"room"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatalf("decode run: %v", err)
+		t.Fatalf("decode world: %v", err)
 	}
-	return out
+	if out.Level == nil {
+		t.Fatal("the world came back without a level in it")
+	}
+	if out.Seed != out.Level.Seed {
+		t.Fatalf("the response says seed %d and the level says %d", out.Seed, out.Level.Seed)
+	}
+	if out.Room != gamevanyadum.Room {
+		t.Fatalf("the world names room %q", out.Room)
+	}
+	return out.WorldID, out.Level
 }
+
+// dumClock is the instant the tick carries, shared by every socket in a test
+// because the tick channel is.
+//
+// BASED AT time.Now() AND NEVER AT A FIXED EPOCH: the hello is the join and it
+// stamps the occupant's arrival from the wall clock, exactly as production does
+// where the injected tick IS a time.Ticker. A clock starting in 1970 would give
+// every occupant a visit that began fifty years after it ended.
+type dumClock struct {
+	now   time.Time
+	ticks int64
+}
+
+func newDumClock() *dumClock { return &dumClock{now: time.Now()} }
+
+// step fires one tick and advances the clock by one simulation step, which is
+// what the production ticker does.
+func (c *dumClock) step(t *testing.T, tick chan time.Time) {
+	t.Helper()
+	select {
+	case tick <- c.now:
+		c.now = c.now.Add(gamevanyadum.SimStep)
+		c.ticks++
+	case <-time.After(10 * time.Second):
+		t.Fatal("the simulation loop stopped taking ticks")
+	}
+}
+
+// jump moves the clock forward without ticking, which is how a test reaches the
+// far side of the abandon grace without waiting two real minutes for it.
+func (c *dumClock) jump(d time.Duration) { c.now = c.now.Add(d) }
 
 // waitForFrame pumps the simulation until a frame of the given type arrives.
 // It advances the world rather than waiting for it, which is what keeps this
 // file free of sleeps.
-func waitForFrame(t *testing.T, frames <-chan []byte, tick chan time.Time, want string) map[string]any {
+func waitForFrame(t *testing.T, frames <-chan []byte, tick chan time.Time, clk *dumClock, want string) map[string]any {
 	t.Helper()
 	// Bounded by TIME, not by a count of iterations.
 	//
@@ -137,7 +185,8 @@ func waitForFrame(t *testing.T, frames <-chan []byte, tick chan time.Time, want 
 	// happened to interleave differently, which is the worst way for a test to
 	// be wrong.
 	deadline := time.After(10 * time.Second)
-	for i := 0; ; i++ {
+	for {
+		at := clk.now
 		select {
 		case raw := <-frames:
 			var f map[string]any
@@ -147,7 +196,9 @@ func waitForFrame(t *testing.T, frames <-chan []byte, tick chan time.Time, want 
 			if f["t"] == want {
 				return f
 			}
-		case tick <- time.Unix(int64(i), 0):
+		case tick <- at:
+			clk.now = clk.now.Add(gamevanyadum.SimStep)
+			clk.ticks++
 		case <-deadline:
 			t.Fatalf("no %s frame arrived", want)
 			return nil
@@ -174,6 +225,7 @@ func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 		Pickups  []map[string]any   `json:"pickups"`
 		Surfaces []map[string]any   `json:"surfaces"`
 		Sim      map[string]float64 `json:"sim"`
+		World    map[string]float64 `json:"world"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
 		t.Fatal(err)
@@ -190,90 +242,44 @@ func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 	if cfg.Sim["input_hz"] <= 0 || cfg.Sim["max_commands"] <= 0 {
 		t.Fatalf("the client is not told the rates it has to match: %+v", cfg.Sim)
 	}
+	// And the building's own two rules, both of which a player has to know before
+	// walking in: how many people fit, and how long a thing takes to come back.
+	if cfg.World["max_occupants"] != gamevanyadum.MaxOccupants {
+		t.Fatalf("the catalogue says %v people fit, the building holds %d",
+			cfg.World["max_occupants"], gamevanyadum.MaxOccupants)
+	}
+	if cfg.World["respawn_seconds"] != gamevanyadum.PickupRespawn.Seconds() {
+		t.Fatalf("the catalogue says things come back after %vs, the world says %v",
+			cfg.World["respawn_seconds"], gamevanyadum.PickupRespawn)
+	}
 }
 
-func TestVanyadumRunIsCreatedWithAWholeLevel(t *testing.T) {
+func TestVanyadumEverybodyIsSentTheSameBuilding(t *testing.T) {
+	// One заброшка for the whole process. Two people fetching it get the same
+	// world id and the same geometry, which is what makes "we are in this
+	// together" true rather than a claim.
 	app, _, _ := buildAppVanyadum(t, dumVK(t))
 	srv := httptest.NewServer(app)
 	defer srv.Close()
-	cli := loginAs(t, srv.URL, "910002", "user")
+	cliA := loginAs(t, srv.URL, "910002", "user")
+	cliB := loginAs(t, srv.URL, "910003", "user")
 
-	body := startRun(t, cli, srv.URL)
-	level, ok := body["level"].(map[string]any)
-	if !ok {
-		t.Fatalf("no level in %v", body)
+	idA, levelA := fetchWorld(t, cliA, srv.URL)
+	idB, levelB := fetchWorld(t, cliB, srv.URL)
+
+	if idA != idB {
+		t.Fatalf("two people were sent two buildings: %s and %s", idA, idB)
+	}
+	if levelA.Seed != levelB.Seed {
+		t.Fatalf("same world id, different seeds: %d and %d", levelA.Seed, levelB.Seed)
 	}
 	// The level is sent ONCE, here, and never on a snapshot — which is the
 	// single most expensive mistake available in this game.
-	for _, key := range []string{"sectors", "walls", "pickups", "spawn"} {
-		if level[key] == nil {
-			t.Fatalf("level is missing %q", key)
-		}
+	if len(levelA.Sectors) < 2 {
+		t.Fatalf("a заброшка with %d rooms is not one", len(levelA.Sectors))
 	}
-	if sectors, _ := level["sectors"].([]any); len(sectors) < 2 {
-		t.Fatalf("a заброшка with %d rooms is not one", len(sectors))
-	}
-}
-
-func TestVanyadumSecondRunIsRefusedAndResumable(t *testing.T) {
-	app, _, _ := buildAppVanyadum(t, dumVK(t))
-	srv := httptest.NewServer(app)
-	defer srv.Close()
-	cli := loginAs(t, srv.URL, "910003", "user")
-
-	first := startRun(t, cli, srv.URL)
-
-	// A refusal rather than a silent replacement: dropping the arena would throw
-	// away a run open on the player's other tab.
-	resp, err := cli.Post(srv.URL+"/api/game-vanyadum/runs", "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("second start: status %d, want 409", resp.StatusCode)
-	}
-
-	// And the run is resumable, which is what a page reload does.
-	cur, err := cli.Get(srv.URL + "/api/game-vanyadum/runs/current")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cur.Body.Close()
-	var resumed map[string]any
-	if err := json.NewDecoder(cur.Body).Decode(&resumed); err != nil {
-		t.Fatal(err)
-	}
-	if resumed["run_id"] != first["run_id"] {
-		t.Fatalf("resumed a different run: %v vs %v", resumed["run_id"], first["run_id"])
-	}
-}
-
-func TestVanyadumGivingUpWritesNothing(t *testing.T) {
-	// A run somebody walked out of is not a result, so the only rows in this
-	// game's one table are runs that actually ended.
-	app, tick, _ := buildAppVanyadum(t, dumVK(t))
-	srv := httptest.NewServer(app)
-	defer srv.Close()
-	cli := loginAs(t, srv.URL, "910004", "user")
-
-	startRun(t, cli, srv.URL)
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/game-vanyadum/runs/current", nil)
-	resp, err := cli.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("abandon: status %d", resp.StatusCode)
-	}
-
-	// Give the loop a few ticks to have written something, if it were going to.
-	for i := 0; i < 5; i++ {
-		tick <- time.Unix(int64(i), 0)
-	}
-	if n := runRowCount(t, "910004"); n != 0 {
-		t.Fatalf("an abandoned run left %d rows behind", n)
+	if len(levelA.Walls) == 0 || len(levelA.Pickups) == 0 {
+		t.Fatalf("the level has %d walls and %d pickups", len(levelA.Walls), len(levelA.Pickups))
 	}
 }
 
@@ -282,8 +288,9 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 	cli := loginAs(t, srv.URL, "910005", "user")
+	clk := newDumClock()
 
-	body := startRun(t, cli, srv.URL)
+	worldID, _ := fetchWorld(t, cli, srv.URL)
 	conn, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cli, srv.URL), gamevanyadum.Room)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -292,15 +299,17 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 	frames := readFrames(t, conn)
 
 	ctx := context.Background()
+	// THE HELLO IS THE JOIN. There is no start endpoint: the room already carries
+	// an authenticated account, so being in the room is being in the building.
 	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"t":"vanyadum_hello"}`)); err != nil {
 		t.Fatal(err)
 	}
-	ready := waitForFrame(t, frames, tick, "vanyadum_ready")
-	if ready["run_id"] != body["run_id"] {
-		t.Fatalf("attached to %v, started %v", ready["run_id"], body["run_id"])
+	ready := waitForFrame(t, frames, tick, clk, "vanyadum_ready")
+	if ready["world_id"] != worldID {
+		t.Fatalf("let into %v, fetched the geometry of %v", ready["world_id"], worldID)
 	}
 
-	first := waitForFrame(t, frames, tick, "vanyadum_snap")
+	first := waitForFrame(t, frames, tick, clk, "vanyadum_snap")
 	startX, startY := first["x"], first["y"]
 
 	// Walk in several directions, so the test does not depend on which way the
@@ -334,7 +343,7 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 		// Several steps per frame, so the whole batch is actually simulated: the
 		// time budget only lets a tick spend a tick's worth of it.
 		for k := 0; k < perFrame; k++ {
-			tick <- time.Unix(int64(i*perFrame+k), 0)
+			clk.step(t, tick)
 		}
 	}
 
@@ -343,7 +352,9 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 	// and would compare equal for reasons that have nothing to do with the
 	// simulation. Keep pumping until the position actually differs.
 	var moved map[string]any
-	for i := 0; i < 200 && moved == nil; i++ {
+	deadline := time.Now().Add(10 * time.Second)
+	for moved == nil && time.Now().Before(deadline) {
+		at := clk.now
 		select {
 		case raw := <-frames:
 			var f map[string]any
@@ -351,7 +362,9 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 				(f["x"] != startX || f["y"] != startY) {
 				moved = f
 			}
-		case tick <- time.Unix(int64(1000+i), 0):
+		case tick <- at:
+			clk.now = clk.now.Add(gamevanyadum.SimStep)
+			clk.ticks++
 		}
 	}
 	if moved == nil {
@@ -364,7 +377,7 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 	}
 	// The timeline entity interpolation runs on. A snapshot without it cannot
 	// be placed between two others.
-	if tick, _ := moved["k"].(float64); tick < 1 {
+	if k, _ := moved["k"].(float64); k < 1 {
 		t.Fatalf("snapshot carries no tick: %v", moved["k"])
 	}
 	if _, ok := moved["hp"]; !ok {
@@ -379,21 +392,30 @@ func TestVanyadumRedundantInputBuysInsuranceAndNotDistance(t *testing.T) {
 	// THIS IS THE DEFECT «СИМУЛЯТОР ФИНТЕХА» FOUND, in the game that shipped it
 	// first. A client repeats the tail of everything it has not seen
 	// acknowledged so that one lost packet costs no input, and that is only free
-	// while the arena drops the repeats. Dropping them by the last APPLIED
+	// while the world drops the repeats. Dropping them by the last APPLIED
 	// sequence drops the repeats of commands already stepped and accepts the
 	// repeats of commands still WAITING — so the redundancy window buys
 	// simulation instead of insurance, and the player is dragged forward while
 	// walking and keeps walking after he lets go.
 	//
-	// The arena's own tests pin the queue arithmetic. This one pins that nothing
+	// The world's own tests pin the queue arithmetic. This one pins that nothing
 	// between the browser and that queue undoes it: the real frame, the real
 	// per-frame cap in parseInput, the real socket, the real service loop.
-	app, tick, svc := buildAppVanyadum(t, dumVK(t))
+	app, tick, _ := buildAppVanyadum(t, dumVK(t))
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 	cli := loginAs(t, srv.URL, "910008", "user")
+	clk := newDumClock()
 
-	startRun(t, cli, srv.URL)
+	// Where he starts and how much room he has, taken from the level rather than
+	// from a snapshot. A level is a pure function of its seed and is never
+	// written to after it is generated, so this is the same geometry the
+	// simulation is using — and the walk has to be measured from a position no
+	// rounding has touched.
+	_, level := fetchWorld(t, cli, srv.URL)
+	spawn := level.Spawn
+	room := level.Sectors[level.SpawnSector]
+
 	conn, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cli, srv.URL), gamevanyadum.Room)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -402,22 +424,6 @@ func TestVanyadumRedundantInputBuysInsuranceAndNotDistance(t *testing.T) {
 	wire := newDumWire(conn, readFrames(t, conn))
 
 	wire.attach(t)
-
-	// Where he starts and how much room he has, taken from the level rather than
-	// from a snapshot. A level is a pure function of its seed and is never
-	// written to after it is generated, so reading one while the simulation runs
-	// is safe in a way that reading a player's position would not be — and the
-	// walk has to be measured from a position no rounding has touched.
-	accountID, err := uuid.Parse(accountIDByUID(t, "910008"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	arena, ok := svc.CurrentRun(accountID)
-	if !ok {
-		t.Fatal("no arena for the run that was just started")
-	}
-	spawn := arena.Level.Spawn
-	room := arena.Level.Sectors[arena.Level.SpawnSector]
 
 	// One send window's worth of sampling, at the rates the catalogue publishes:
 	// MaxCommandsPerFrame sub-steps of 1/(InputHz*MaxCommandsPerFrame) seconds
@@ -436,8 +442,8 @@ func TestVanyadumRedundantInputBuysInsuranceAndNotDistance(t *testing.T) {
 	// He walks in a straight line inside the room he spawned in, and the walk is
 	// short enough that no wall can shorten it: the spawn is the room's centre,
 	// every room is at least RoomMin across, and the generator never puts a
-	// pickup in the spawn room, so nothing here can end the run underneath the
-	// assertion either. Checked rather than assumed, because retuning RoomMin
+	// pickup in the spawn room, so nothing here can collect anything underneath
+	// the assertion either. Checked rather than assumed, because retuning RoomMin
 	// would otherwise turn this test into a slow puzzle about collision.
 	if clear := (room.MaxX-room.MinX)/2 - gamevanyadum.PlayerRadius; clear <= asked {
 		t.Fatalf("the spawn room leaves %.2f m of clear floor eastward and this walk asks for %.2f m", clear, asked)
@@ -462,43 +468,43 @@ func TestVanyadumRedundantInputBuysInsuranceAndNotDistance(t *testing.T) {
 	// only order in which the client's redundancy tail means anything.
 	for w := 0; w < windows; w++ {
 		wire.send(t, gamevanyadum.MaxCommandsPerFrame, dumCommand{Dt: subStep, MY: 1, Yaw: eastward})
-		wire.attach(t) // the barrier: the frame is in the arena before a tick fires
+		wire.attach(t) // the barrier: the frame is in the world before a tick fires
 		ticks := 2
 		if w == 0 {
 			ticks = 1
 		}
 		for i := 0; i < ticks; i++ {
-			wire.step(t, tick)
+			clk.step(t, tick)
 		}
-		wire.draw(t)
+		wire.draw(t, clk)
 	}
 
 	// The drive granted 2*windows-1 ticks against windows*100 ms of input, so the
-	// arena cannot have caught up here — and if a retune ever makes it catch up,
+	// world cannot have caught up here — and if a retune ever makes it catch up,
 	// every frame lands on an empty queue and this test quietly stops testing
 	// anything.
 	if wire.ack >= total {
-		t.Fatalf("the arena acknowledged all %d commands during the walk, so no frame ever landed on a queue with anything in it", total)
+		t.Fatalf("the world acknowledged all %d commands during the walk, so no frame ever landed on a queue with anything in it", total)
 	}
 
 	// Now let it finish what it was asked for.
-	acked := wire.pumpUntil(t, tick, "every command acknowledged",
+	acked := wire.pumpUntil(t, tick, clk, "every command acknowledged",
 		func(s dumSnapshot) bool { return s.Ack >= total })
 
 	// And then keep ticking with nothing left to send, which is what letting go
 	// of the controls looks like from here. The queue holds at most maxPending
-	// commands of subStep each — the expression is arena.go's, mirrored because
+	// commands of subStep each — the expression is world.go's, mirrored because
 	// the constant is unexported — so this many ticks empties whatever the
 	// acknowledgement did not account for. Arithmetic on a bounded queue rather
 	// than a wait on anything that could be slow.
 	const queueCap = 4 * (gamevanyadum.MaxCommandsPerFrame + gamevanyadum.RedundantCommands)
 	settleTicks := int64(math.Ceil(queueCap * subStep * gamevanyadum.SimHz))
-	settled := wire.pumpUntil(t, tick, "the walk to settle",
+	settled := wire.pumpUntil(t, tick, clk, "the walk to settle",
 		func(s dumSnapshot) bool { return s.Tick >= acked.Tick+settleTicks })
 
 	// THE ACK IS A PROMISE THAT THERE IS NOTHING LEFT. A client drops everything
-	// at or below it and stops predicting it, so movement an arena produces after
-	// acknowledging the input that caused it is movement the client has no record
+	// at or below it and stops predicting it, so movement produced after the
+	// input that caused it was acknowledged is movement the client has no record
 	// of and cannot reconcile against — it can only be corrected to, as a jump.
 	if drag := math.Hypot(float64(settled.X-acked.X), float64(settled.Y-acked.Y)) / 100; drag > 0.02 {
 		t.Fatalf("all %d commands were acknowledged and he then walked another %.2f m", total, drag)
@@ -515,102 +521,211 @@ func TestVanyadumRedundantInputBuysInsuranceAndNotDistance(t *testing.T) {
 	}
 }
 
-func TestVanyadumAFinishedRunIsWrittenDown(t *testing.T) {
-	// The other end of the loop, and the only two database statements this game
-	// makes. Driven by walking the player onto every pickup — reaching into the
-	// arena would test the arena, which its own unit tests already do.
-	app, tick, svc := buildAppVanyadum(t, dumVK(t))
+func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
+	// THE WHOLE ITERATION, END TO END. Two accounts, two real sockets, one
+	// заброшка, over a real Postgres: they see each other move, the bottle one of
+	// them drinks disappears from the other's world too, it comes back on the
+	// tick the catalogue says it will, and walking away writes one visit each.
+	app, tick, _ := buildAppVanyadum(t, dumVK(t))
 	srv := httptest.NewServer(app)
 	defer srv.Close()
-	cli := loginAs(t, srv.URL, "910006", "user")
+	cliA := loginAs(t, srv.URL, "910010", "user")
+	cliB := loginAs(t, srv.URL, "910011", "user")
+	clk := newDumClock()
 
-	startRun(t, cli, srv.URL)
+	worldID, level := fetchWorld(t, cliA, srv.URL)
+
+	connA, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cliA, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial a: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cliB, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial b: %v", err)
+	}
+	defer connB.CloseNow()
+
+	a := newDumWire(connA, readFrames(t, connA))
+	b := newDumWire(connB, readFrames(t, connB))
+	room := []*dumWire{a, b}
+
+	// Both walk in, and both are let into the SAME building — which is what the
+	// world id on the ready frame is for.
+	for _, w := range room {
+		if got := w.attach(t); got != worldID {
+			t.Fatalf("let into %s, the geometry everybody fetched is %s", got, worldID)
+		}
+	}
+
+	// A few ticks so both of them are in a frame, then each must be able to see
+	// the other. A peer is named by a twelve-character handle and never by an
+	// account id (ADR-037).
+	deadline := time.Now().Add(20 * time.Second)
+	for (len(a.last.Peers) == 0 || len(b.last.Peers) == 0) && time.Now().Before(deadline) {
+		dumPump(t, tick, clk, room...)
+	}
+	if len(a.last.Peers) == 0 || len(b.last.Peers) == 0 {
+		t.Fatalf("a sees %d peers and b sees %d; they are not in the same building",
+			len(a.last.Peers), len(b.last.Peers))
+	}
+	if a.last.Peers[0].ID == b.last.Peers[0].ID {
+		t.Fatalf("both frames name the peer %q — somebody is looking at himself", a.last.Peers[0].ID)
+	}
+	for who, s := range map[string]dumSnapshot{"a": a.last, "b": b.last} {
+		if len(s.Peers[0].ID) != 12 {
+			t.Fatalf("%s's neighbour is called %q, which is not a handle", who, s.Peers[0].ID)
+		}
+	}
+
+	// A walks somewhere. B must SEE him move — a peer whose position never
+	// changes is a figure drawn once, which is not the same thing as a shared
+	// world.
+	target := level.Pickups[0]
+	before := b.last.Peers[0]
+	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, level.SpawnSector, target.Sector, target.Pos))
+	after := b.peerNamed(t, before.ID)
+	if moved := math.Hypot(float64(after.X-before.X), float64(after.Y-before.Y)) / 100; moved < 1 {
+		t.Fatalf("a crossed the заброшка and b saw him move %.2f m", moved)
+	}
+
+	// And the bottle he walked over is gone from BOTH their worlds. The mask is
+	// idempotent full state — bit i is the pickup at index i of the level — so
+	// this is the same field for everybody rather than a per-player view of it.
+	const bit = uint32(1) << 0
+	dumWaitFor(t, tick, clk, room, "the beer to be gone for both of them",
+		func() bool { return a.last.Left&bit == 0 && b.last.Left&bit == 0 })
+
+	// Then it comes back, on the tick the catalogue promised and not before. The
+	// respawn rides the mask and nothing else: there is no event for it, because
+	// the frame already says so twenty times a second.
+	//
+	// A walks away first, or he would take it again on the very tick it returned
+	// and the bit would never be seen set.
+	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, target.Sector, level.SpawnSector, level.Spawn))
+	dumWaitFor(t, tick, clk, room, "the beer to come back for both of them",
+		func() bool { return a.last.Left&bit != 0 && b.last.Left&bit != 0 })
+
+	// And then everybody goes home. Closing the socket is the only way out of the
+	// building — there is no quit button, because nothing here ends — so what
+	// records the visit is the abandon grace expiring with nobody connected.
+	if err := connA.Close(websocket.StatusNormalClosure, "done"); err != nil {
+		t.Fatalf("close a: %v", err)
+	}
+	if err := connB.Close(websocket.StatusNormalClosure, "done"); err != nil {
+		t.Fatalf("close b: %v", err)
+	}
+	clk.jump(gamevanyadum.AbandonGrace + time.Second)
+
+	for _, uid := range []string{"910010", "910011"} {
+		waitForVisits(t, tick, clk, uid, 1)
+	}
+	// Exactly one each, and not one per tick after the grace: the occupant is
+	// taken out of the building by the same tick that queues the row.
+	for i := 0; i < 20; i++ {
+		clk.step(t, tick)
+	}
+	for _, uid := range []string{"910010", "910011"} {
+		if n := visitRowCount(t, uid); n != 1 {
+			t.Fatalf("%s left once and has %d visits", uid, n)
+		}
+	}
+
+	// The row says which building they were in, which is the only thing anybody
+	// has ever wanted to ask of it.
+	var seed int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT seed FROM game_vanyadum_visits WHERE account_id = $1::uuid`,
+		accountIDByUID(t, "910010")).Scan(&seed); err != nil {
+		t.Fatalf("read the visit: %v", err)
+	}
+	if seed != level.Seed {
+		t.Fatalf("the visit records building %d, they were in %d", seed, level.Seed)
+	}
+}
+
+func TestVanyadumMyVisitsReadsBackWhatWasWritten(t *testing.T) {
+	// The splash screen's list, and the reason it exists: it makes "the visit was
+	// written" something a person can check in production without opening a
+	// database.
+	app, tick, _ := buildAppVanyadum(t, dumVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cli := loginAs(t, srv.URL, "910012", "user")
+	clk := newDumClock()
+
+	_, level := fetchWorld(t, cli, srv.URL)
 	conn, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cli, srv.URL), gamevanyadum.Room)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer conn.CloseNow()
-	frames := readFrames(t, conn)
-	ctx := context.Background()
-	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"t":"vanyadum_hello"}`)); err != nil {
-		t.Fatal(err)
-	}
-	waitForFrame(t, frames, tick, "vanyadum_ready")
+	w := newDumWire(conn, readFrames(t, conn))
+	w.attach(t)
 
-	// Walking the whole заброшка with a wandering bot would be a flaky test, so
-	// the pickups are collected by pointing the player at each one in turn: the
-	// arena is the test's to arrange, and the thing under test is what the
-	// SERVICE does when the last one is taken.
-	accountID, err := uuid.Parse(accountIDByUID(t, "910006"))
-	if err != nil {
-		t.Fatal(err)
+	// Long enough to be worth recording, driven on the tick's own clock rather
+	// than on a wall-clock wait.
+	for i := 0; i < 5; i++ {
+		dumPump(t, tick, clk, w)
 	}
-	arena, ok := svc.CurrentRun(accountID)
-	if !ok {
-		t.Fatal("no arena for the run that was just started")
-	}
-	total := len(arena.Level.Pickups)
+	clk.jump(30 * time.Second)
+	dumPump(t, tick, clk, w)
 
-	over := func() map[string]any {
-		for i := 0; i < 400; i++ {
-			select {
-			case raw := <-frames:
-				var f map[string]any
-				if json.Unmarshal(raw, &f) == nil && f["t"] == "vanyadum_over" {
-					return f
-				}
-			default:
-			}
-			// Stand on whichever pickup is next, then advance one step.
-			for _, p := range arena.Level.Pickups {
-				if !arena.Taken[p.ID] {
-					owner := arena.Owner()
-					owner.State.Pos = p.Pos
-					owner.State.Sector = p.Sector
-					break
-				}
-			}
-			tick <- time.Unix(int64(i), 0)
-		}
-		t.Fatal("the run never ended")
-		return nil
-	}()
-
-	if over["success"] != true {
-		t.Fatalf("collecting everything should be a success: %v", over)
+	if err := conn.Close(websocket.StatusNormalClosure, "done"); err != nil {
+		t.Fatalf("close: %v", err)
 	}
+	clk.jump(gamevanyadum.AbandonGrace + time.Second)
+	waitForVisits(t, tick, clk, "910012", 1)
 
-	// And it reaches Postgres, which is the whole point: the arena is ephemeral
-	// and this row is the only thing that outlives it.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if runRowCount(t, "910006") == 1 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if n := runRowCount(t, "910006"); n != 1 {
-		t.Fatalf("finished run wrote %d rows", n)
-	}
-
-	// And the player can see it without opening a database, which is what makes
-	// this half of the iteration verifiable in production.
-	resp, err := cli.Get(srv.URL + "/api/game-vanyadum/runs/me")
+	resp, err := cli.Get(srv.URL + "/api/game-vanyadum/visits/me")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	var mine struct {
-		Runs []struct {
-			Success bool `json:"success"`
-			Beer    int  `json:"beer"`
-		} `json:"runs"`
+		Visits []struct {
+			Seed     int64     `json:"seed"`
+			Seconds  int       `json:"seconds"`
+			Beer     int       `json:"beer"`
+			JoinedAt time.Time `json:"joined_at"`
+		} `json:"visits"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&mine); err != nil {
 		t.Fatal(err)
 	}
-	if len(mine.Runs) != 1 || !mine.Runs[0].Success || mine.Runs[0].Beer != total {
-		t.Fatalf("my runs reads back wrong: %+v (expected %d beers)", mine.Runs, total)
+	if len(mine.Visits) != 1 {
+		t.Fatalf("my visits reads back %d rows", len(mine.Visits))
+	}
+	v := mine.Visits[0]
+	if v.Seed != level.Seed {
+		t.Fatalf("the visit names building %d, the world was %d", v.Seed, level.Seed)
+	}
+	// Thirty seconds of clock passed with the socket connected, and the two
+	// minutes of grace after it must not be in this number.
+	if v.Seconds < 25 || v.Seconds > 40 {
+		t.Fatalf("the visit records %d seconds; about thirty were spent in the building", v.Seconds)
+	}
+	if v.JoinedAt.IsZero() {
+		t.Fatal("the visit does not say when it started")
+	}
+}
+
+func TestVanyadumTheVisitsTableReplacedTheRunsTable(t *testing.T) {
+	// The migration, asserted rather than assumed. A run had an objective and a
+	// result; a visit has neither, so the old table is dropped in the same change
+	// that adds the new one — this codebase does not carry two ways of storing
+	// the same thing while somebody works out which is live.
+	var visits, runs *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT to_regclass('public.game_vanyadum_visits')::text,
+		        to_regclass('public.game_vanyadum_runs')::text`).Scan(&visits, &runs); err != nil {
+		t.Fatalf("look up the tables: %v", err)
+	}
+	if visits == nil {
+		t.Fatal("game_vanyadum_visits does not exist")
+	}
+	if runs != nil {
+		t.Fatalf("game_vanyadum_runs is still there as %q", *runs)
 	}
 }
 
@@ -667,18 +782,27 @@ type dumInput struct {
 	Cmds []dumCommand `json:"cmds"`
 }
 
-// dumSnapshot is the part of a snapshot a driving test reads. Typed rather than
-// the map[string]any the assertions above use, because every field of it is a
-// number this one does arithmetic on.
-type dumSnapshot struct {
-	T    string `json:"t"`
-	Tick int64  `json:"k"`
-	Ack  int64  `json:"ack"`
-	X    int    `json:"x"`
-	Y    int    `json:"y"`
+// dumPeer is one other person in the building, as the frame names him.
+type dumPeer struct {
+	ID string `json:"i"`
+	X  int    `json:"x"`
+	Y  int    `json:"y"`
 }
 
-// dumWire is the browser's send loop, reduced to the part the arena can tell
+// dumSnapshot is the part of a snapshot a driving test reads. Typed rather than
+// the map[string]any the assertions above use, because every field of it is
+// something this file does arithmetic or comparisons on.
+type dumSnapshot struct {
+	T     string    `json:"t"`
+	Tick  int64     `json:"k"`
+	Ack   int64     `json:"ack"`
+	X     int       `json:"x"`
+	Y     int       `json:"y"`
+	Left  uint32    `json:"pk"`
+	Peers []dumPeer `json:"p"`
+}
+
+// dumWire is the browser's send loop, reduced to the part the world can tell
 // apart: a monotonic per-command sequence, the commands not yet acknowledged,
 // and the last snapshot drawn. Everything the real client additionally does with
 // a frame — prediction, replay, interpolation — is client-side and invisible
@@ -688,24 +812,38 @@ type dumWire struct {
 	conn   *websocket.Conn
 	frames <-chan []byte
 
-	// now is the clock handed to the simulation loop, advanced by one SimStep
-	// per tick because that is what the production ticker does. ticks counts
-	// them, and is therefore also the arena's own tick number: nothing else in
-	// the test fires one.
-	now   time.Time
-	ticks int64
-
 	seq     int64
 	unacked []dumCommand
 	// ack is the highest acknowledgement any snapshot has carried, and seen is
 	// the tick of the last one — the number the server derives round trip from.
 	ack  int64
 	seen int64
+	// last is the newest snapshot folded in, which is what the steering below
+	// aims from.
+	last dumSnapshot
+	// lastSend is when a frame was last written, and it is what keeps a driving
+	// test inside the socket's own rate limit — see dumSendGap.
+	lastSend time.Time
 }
 
 func newDumWire(conn *websocket.Conn, frames <-chan []byte) *dumWire {
-	return &dumWire{conn: conn, frames: frames, now: time.Unix(0, 0)}
+	return &dumWire{conn: conn, frames: frames}
 }
+
+// dumSendGap is the shortest interval this file will put between two input
+// frames on one socket.
+//
+// THE SOCKET'S LIMIT IS TEN MESSAGES A SECOND with a burst of twenty
+// (internal/realtime/conn.go), and a driving test fires ticks as fast as the
+// scheduler will take them — so a steering loop that wrote whenever it had
+// something to say would exhaust the burst within milliseconds and be
+// disconnected. That presents as "no frame arrived" rather than as a rate-limit
+// error, which is why the pacing is here rather than discovered.
+//
+// It is enforced by SKIPPING a send, never by sleeping: the loop goes on firing
+// ticks, which is real work, and the next pass writes once enough of them have
+// gone by. Nothing in this file waits on the clock to synchronise.
+const dumSendGap = 120 * time.Millisecond
 
 // send writes one input frame: n fresh sub-steps of proto, preceded by the tail
 // of everything still unacknowledged, which is buildInputFrame's shape exactly.
@@ -724,6 +862,20 @@ func (w *dumWire) send(t *testing.T, n int, proto dumCommand) {
 		c.Seq = w.seq
 		fresh = append(fresh, c)
 	}
+	w.sendExactly(t, fresh)
+}
+
+// sendExactly writes the commands it is given, stamping each with the next
+// sequence number, and is what the steering loop uses when the sub-steps are not
+// all the same length.
+func (w *dumWire) sendExactly(t *testing.T, fresh []dumCommand) {
+	t.Helper()
+	for i := range fresh {
+		if fresh[i].Seq == 0 {
+			w.seq++
+			fresh[i].Seq = w.seq
+		}
+	}
 	tail := w.unacked
 	if len(tail) > gamevanyadum.RedundantCommands {
 		tail = tail[len(tail)-gamevanyadum.RedundantCommands:]
@@ -740,37 +892,26 @@ func (w *dumWire) send(t *testing.T, n int, proto dumCommand) {
 		t.Fatalf("send input frame: %v", err)
 	}
 	w.unacked = append(w.unacked, fresh...)
+	w.lastSend = time.Now()
 }
 
-// step fires one simulation tick.
-func (w *dumWire) step(t *testing.T, tick chan time.Time) {
-	t.Helper()
-	select {
-	case tick <- w.now:
-		w.now = w.now.Add(gamevanyadum.SimStep)
-		w.ticks++
-	case <-time.After(10 * time.Second):
-		t.Fatal("the simulation loop stopped taking ticks")
-	}
-}
-
-// attach sends a hello and waits for the ready it is answered with, folding in
+// attach sends a hello and returns the world id it is answered with, folding in
 // any snapshot that arrives on the way.
 //
-// It is the handshake, and it is ALSO this file's delivery barrier. One
-// connection's messages are read in order on one read pump, so a ready proves
-// that everything written before the hello has already reached the arena. Without
-// it the gap between Write returning and the read pump enqueueing is settled by
-// the goroutine scheduler, and a test that fires a tick into that gap measures a
-// cadence it did not choose — which is how a phase-sensitive test comes to pass
-// on one machine and fail on another.
+// It is the JOIN — there is no start endpoint — and it is ALSO this file's
+// delivery barrier. One connection's messages are read in order on one read
+// pump, so a ready proves that everything written before the hello has already
+// reached the world. Without it the gap between Write returning and the read
+// pump enqueueing is settled by the goroutine scheduler, and a test that fires a
+// tick into that gap measures a cadence it did not choose — which is how a
+// phase-sensitive test comes to pass on one machine and fail on another.
 //
 // No tick is fired while waiting, deliberately. An idle tick is not free to the
 // occupant it ticks: each one banks another SimStep of unspent time budget, up
 // to TimeBudgetCap's half second, and an occupant holding half a second of credit
 // swallows a whole backlog in a single step — which is precisely the condition
-// the walk above is built to create.
-func (w *dumWire) attach(t *testing.T) {
+// the redundancy walk above is built to create.
+func (w *dumWire) attach(t *testing.T) string {
 	t.Helper()
 	if err := w.conn.Write(context.Background(), websocket.MessageText,
 		[]byte(`{"t":"`+gamevanyadum.TypeHello+`"}`)); err != nil {
@@ -787,10 +928,17 @@ func (w *dumWire) attach(t *testing.T) {
 				continue
 			}
 			var f struct {
-				T string `json:"t"`
+				T       string `json:"t"`
+				WorldID string `json:"world_id"`
 			}
-			if json.Unmarshal(raw, &f) == nil && f.T == gamevanyadum.TypeReady {
-				return
+			if json.Unmarshal(raw, &f) != nil {
+				continue
+			}
+			switch f.T {
+			case gamevanyadum.TypeReady:
+				return f.WorldID
+			case gamevanyadum.TypeFull:
+				t.Fatal("the заброшка refused this socket as full")
 			}
 		case <-deadline:
 			t.Fatal("no ready frame arrived")
@@ -798,16 +946,16 @@ func (w *dumWire) attach(t *testing.T) {
 	}
 }
 
-// draw folds in snapshots until one describes the last tick this test fired, and
+// draw folds in snapshots until one describes the last tick that was fired, and
 // returns it — so the acknowledgement the next frame is composed against is as
 // current as the world it is answering. That is what the browser has, and it is
-// what makes the redundancy tail this test sends the tail a browser would.
+// what makes the redundancy tail this file sends the tail a browser would.
 //
 // It waits on a tick already fired and never fires one itself; see attach on why
 // an idle tick is not free.
-func (w *dumWire) draw(t *testing.T) dumSnapshot {
+func (w *dumWire) draw(t *testing.T, clk *dumClock) dumSnapshot {
 	t.Helper()
-	want := w.ticks
+	want := clk.ticks
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
@@ -824,8 +972,20 @@ func (w *dumWire) draw(t *testing.T) dumSnapshot {
 	}
 }
 
+// peerNamed is the entry for one handle on this socket's newest frame.
+func (w *dumWire) peerNamed(t *testing.T, id string) dumPeer {
+	t.Helper()
+	for _, p := range w.last.Peers {
+		if p.ID == id {
+			return p
+		}
+	}
+	t.Fatalf("this frame does not mention %q at all: %+v", id, w.last.Peers)
+	return dumPeer{}
+}
+
 // apply reads one delivered frame, reporting the snapshot it was — anything
-// else on this socket is a ready or an over, and neither says anything about
+// else on this socket is a ready or a refusal, and neither says anything about
 // what has been simulated.
 func (w *dumWire) apply(raw []byte) (dumSnapshot, bool) {
 	var s dumSnapshot
@@ -833,6 +993,7 @@ func (w *dumWire) apply(raw []byte) (dumSnapshot, bool) {
 		return dumSnapshot{}, false
 	}
 	w.seen = s.Tick
+	w.last = s
 	if s.Ack > w.ack {
 		w.ack = s.Ack
 	}
@@ -866,12 +1027,12 @@ func (w *dumWire) apply(raw []byte) (dumSnapshot, bool) {
 // Bounded by a DEADLINE and never by a count of ticks: how long a tick takes is a
 // property of the machine the suite is running on, so a count that is generous
 // here runs out mid-convergence on a loaded runner and reports the wrong reason.
-func (w *dumWire) pumpUntil(t *testing.T, tick chan time.Time, why string, done func(dumSnapshot) bool) dumSnapshot {
+func (w *dumWire) pumpUntil(t *testing.T, tick chan time.Time, clk *dumClock, why string, done func(dumSnapshot) bool) dumSnapshot {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		w.step(t, tick)
-		if s := w.draw(t); done(s) {
+		clk.step(t, tick)
+		if s := w.draw(t, clk); done(s) {
 			return s
 		}
 		if time.Now().After(deadline) {
@@ -880,15 +1041,189 @@ func (w *dumWire) pumpUntil(t *testing.T, tick chan time.Time, why string, done 
 	}
 }
 
-// runRowCount counts an account's rows in the game's one table.
-func runRowCount(t *testing.T, uid string) int {
+// dumPump fires one tick and reads the frame it produced on EVERY socket.
+//
+// Every socket, on every tick, for the reason spelled out on pumpUntil: each
+// tick publishes to each connection, so a loop that ticked without reading fills
+// the send buffers and the hub evicts the sockets as slow consumers. With two
+// people in the building that arrives twice as fast.
+func dumPump(t *testing.T, tick chan time.Time, clk *dumClock, room ...*dumWire) {
+	t.Helper()
+	clk.step(t, tick)
+	for _, w := range room {
+		w.draw(t, clk)
+	}
+}
+
+// dumWaitFor pumps the whole room until a condition over its newest frames
+// holds. Bounded by a DEADLINE rather than by a count of ticks, because how long
+// a tick takes is a property of the machine and not of the game.
+func dumWaitFor(t *testing.T, tick chan time.Time, clk *dumClock, room []*dumWire, why string, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatalf("waited for %s and it never came", why)
+		}
+		dumPump(t, tick, clk, room...)
+	}
+}
+
+// dumRouteTo is the sequence of points to walk through to get from one sector to a
+// spot in another: the midpoint of every doorway on the way, and then the spot
+// itself.
+//
+// THE PORTAL GRAPH IS A TREE. Every room is attached to one that already exists
+// (level.go), so there is exactly one path between any two rooms and a
+// breadth-first search finds it. Walking a straight line between consecutive
+// waypoints stays inside the geometry, because every room is a rectangle — hence
+// convex — and a doorway's midpoint lies on the boundary of exactly the two
+// rooms it joins.
+//
+// A doorway is DoorWidth wide against a player radius of PlayerRadius, so its
+// midpoint is somewhere the player genuinely fits: the nearest jamb is half the
+// doorway away, which is comfortably more than his radius.
+func dumRouteTo(t *testing.T, l *gamevanyadum.Level, from, to int, at gamevanyadum.Vec2) []gamevanyadum.Vec2 {
+	t.Helper()
+	if from == to {
+		return []gamevanyadum.Vec2{at}
+	}
+	// via[s] is the portal that reaches sector s, and back[s] is where it was
+	// reached from.
+	via := map[int]int{}
+	back := map[int]int{from: from}
+	queue := []int{from}
+	for len(queue) > 0 && back[to] == 0 && to != from {
+		cur := queue[0]
+		queue = queue[1:]
+		for i, p := range l.Portals {
+			var next int
+			switch cur {
+			case p.A:
+				next = p.B
+			case p.B:
+				next = p.A
+			default:
+				continue
+			}
+			if _, seen := back[next]; seen {
+				continue
+			}
+			via[next], back[next] = i, cur
+			queue = append(queue, next)
+		}
+		if _, done := back[to]; done {
+			break
+		}
+	}
+	if _, ok := back[to]; !ok {
+		t.Fatalf("no way from sector %d to sector %d; the portal graph is not a tree", from, to)
+	}
+
+	var doors []gamevanyadum.Vec2
+	for s := to; s != from; s = back[s] {
+		doors = append(doors, dumPortalMid(l.Portals[via[s]]))
+	}
+	// Collected from the destination backwards, so it goes on the wire the other
+	// way round.
+	out := make([]gamevanyadum.Vec2, 0, len(doors)+1)
+	for i := len(doors) - 1; i >= 0; i-- {
+		out = append(out, doors[i])
+	}
+	return append(out, at)
+}
+
+// dumPortalMid is the middle of a doorway, which is the point a player walks
+// through it at.
+func dumPortalMid(p gamevanyadum.Portal) gamevanyadum.Vec2 {
+	if p.Vertical {
+		return gamevanyadum.Vec2{X: p.At, Y: (p.Lo + p.Hi) / 2}
+	}
+	return gamevanyadum.Vec2{X: (p.Lo + p.Hi) / 2, Y: p.At}
+}
+
+// dumArrived is how close counts as having reached a waypoint. Generous against
+// PickupReach's 0.9 m, and generous against a doorway's half-width, so a player
+// nudged sideways by the collision resolver still counts as through.
+const dumArrived = 0.5
+
+// dumWalkTo steers one socket along a route, over the real wire, until it has
+// reached the last waypoint.
+//
+// The whole room is pumped throughout, because every tick publishes to every
+// connection and an unread socket is an evicted one. Bounded by a deadline.
+//
+// Each frame carries up to MaxCommandsPerFrame sub-steps of up to MaxStepSeconds
+// — four metres of walking in one message — which is what makes a walk across
+// the заброшка affordable inside the socket's ten-messages-a-second budget. The
+// last sub-step of a batch is cut to the distance that is actually left, so the
+// player lands on the waypoint rather than past it.
+func dumWalkTo(t *testing.T, tick chan time.Time, clk *dumClock, room []*dumWire, who *dumWire, route []gamevanyadum.Vec2) {
+	t.Helper()
+	step := gamevanyadum.WalkSpeed * gamevanyadum.MaxStepSeconds
+	for n, at := range route {
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			dx := at.X - float64(who.last.X)/100
+			dy := at.Y - float64(who.last.Y)/100
+			left := math.Hypot(dx, dy)
+			if left <= dumArrived {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("waypoint %d of %d is %.2f m away and he stopped getting closer", n+1, len(route), left)
+			}
+			// Only when the previous batch has been fully folded in, so the aim
+			// is taken from where he actually is — and only as often as the
+			// socket's rate limit allows.
+			if who.ack >= who.seq && time.Since(who.lastSend) >= dumSendGap {
+				yaw := math.Atan2(dx/left, dy/left) // yaw zero looks along +Y
+				var batch []dumCommand
+				for remaining := left; remaining > 1e-6 && len(batch) < gamevanyadum.MaxCommandsPerFrame; {
+					d := math.Min(step, remaining)
+					batch = append(batch, dumCommand{Dt: d / gamevanyadum.WalkSpeed, MY: 1, Yaw: yaw})
+					remaining -= d
+				}
+				who.sendExactly(t, batch)
+			}
+			dumPump(t, tick, clk, room...)
+		}
+	}
+}
+
+// visitRowCount counts an account's rows in the game's one table.
+func visitRowCount(t *testing.T, uid string) int {
 	t.Helper()
 	var n int
 	err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM game_vanyadum_runs WHERE account_id = $1::uuid`,
+		`SELECT count(*) FROM game_vanyadum_visits WHERE account_id = $1::uuid`,
 		accountIDByUID(t, uid)).Scan(&n)
 	if err != nil {
-		t.Fatalf("count runs: %v", err)
+		t.Fatalf("count visits: %v", err)
 	}
 	return n
+}
+
+// waitForVisits pumps the simulation until an account has the expected number of
+// recorded visits.
+//
+// The write is queued by the tick and performed by the service's own writer
+// goroutine, so the row appears a moment after the tick that caused it — which
+// is why this both TICKS and re-reads, bounded by a deadline rather than by a
+// number of attempts.
+func waitForVisits(t *testing.T, tick chan time.Time, clk *dumClock, uid string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if n := visitRowCount(t, uid); n >= want {
+			if n != want {
+				t.Fatalf("%s has %d visits, expected %d", uid, n, want)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never reached %d recorded visits", uid, want)
+		}
+		clk.step(t, tick)
+	}
 }

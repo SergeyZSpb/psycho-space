@@ -1,10 +1,22 @@
 // Package gamevanyadum is «ВАНЯДУМ» — the third game, and the first in 3D.
 //
 // Ваня, the last real defender of traditional Russian rap values, walks a
-// generated заброшка looking for the keys, drinks the beer he finds on the way,
-// and eventually kills нейрослопы with punchlines. This iteration is the
-// walking skeleton: a generated non-flat level, a server-owned simulation, and
-// one pickup.
+// generated заброшка, drinks the beer he finds on the way, and eventually kills
+// нейрослопы with punchlines.
+//
+// # One building, always running, and nothing that ends
+//
+// There is ONE заброшка for the whole process and everybody is in it. No
+// matchmaking, no rooms, no runs and no objective: you open a socket, you are in
+// the building, the pickups come back, and you leave when your connections stop
+// coming back. The world is generated on demand and torn down when the last
+// person walks out, so the next arrival gets a fresh seed and nothing ever
+// regenerates under anybody's feet.
+//
+// It was one arena per run, which is the half of ADR-048 this iteration reverses
+// — deliberately, and onto the shape the sibling office arrived at in ADR-056. A
+// заброшка nobody else can walk into is a single-player game carrying
+// multiplayer netcode it never uses.
 //
 // # It shares nothing with any other game
 //
@@ -36,11 +48,12 @@
 // That does not reopen ADR-038, because ADR-038 is about DURABLE state. This
 // loop touches memory only:
 //
-//   - An arena lives in a map in this package and nowhere else.
-//   - Postgres is read and written exactly twice per run — once when it starts,
-//     once when it ends — and never on a tick.
-//   - An arena is deliberately ephemeral. A restart loses runs in flight, in the
-//     same way and for the same reason the hub loses presence.
+//   - The world lives behind one pointer in this package and nowhere else.
+//   - Postgres is written exactly ONCE PER VISIT — one summary row when somebody
+//     stops coming back — and never on a tick.
+//   - The world is deliberately ephemeral. A restart loses the building and
+//     everybody in it, in the same way and for the same reason the hub loses
+//     presence.
 //   - The ticker is injected (ADR-034), so every test drives it by hand and no
 //     test sleeps.
 //
@@ -52,11 +65,10 @@
 // snapshots, so a dropped frame costs nothing and the next one is the truth
 // again.
 //
-// Step is a pure function of (arena state, command) with all randomness drawn
-// from a seeded PRNG held on the arena. That is what makes the simulation
-// table-testable, and it is what a client-side prediction port would have to
-// reproduce exactly if the netcode ever climbs to that rung — see the design
-// doc's netcode ladder before making Step depend on anything ambient.
+// Step is a pure function of (level, player, command) and draws no randomness at
+// all. That is what makes the simulation table-testable, and it is what the
+// client-side prediction port reproduces exactly — see the golden vectors before
+// making Step depend on anything ambient.
 package gamevanyadum
 
 import "time"
@@ -68,9 +80,10 @@ import "time"
 // rooms and learns this string from the composition root, so nothing in the
 // unprefixed packages ever spells out the name of a game.
 //
-// ONE ROOM FOR THE WHOLE GAME, even though every player has his own arena. A
-// room per run would make the platform learn what a run is, and gains nothing:
-// snapshots go out through PublishTo, addressed to a connection.
+// ONE ROOM FOR THE WHOLE GAME, and now one world behind it — so membership of
+// the room IS being in the building, and the hello that announces a connection
+// is the only join there is. Snapshots still go out through PublishTo rather
+// than as a broadcast, because a frame names everybody except its own reader.
 const Room = "vanyadum"
 
 // SimHz is the simulation rate: twenty fixed steps a second. Everything about
@@ -160,7 +173,7 @@ const InterpolationDelay = SnapshotInterval * (InterpolationDelayPeriods * 1000)
 //
 // IT CANNOT BE MUCH SMALLER, because it also has to clear the HONEST case or it
 // clips the players it was never aimed at — AND THE HONEST CASE IS NOT A NETWORK
-// ROUND TRIP. What RewindTo composes and clamps is Arena.Enqueue's sample plus
+// ROUND TRIP. What RewindTo composes and clamps is World.Enqueue's sample plus
 // InterpolationDelay, and that sample is derived from the last snapshot tick the
 // client had received, so it carries three things and only one of them is the
 // network:

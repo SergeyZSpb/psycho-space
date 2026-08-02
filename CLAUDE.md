@@ -41,14 +41,16 @@ internal/
   gamekhimki/  «Смолтолк в Химках» — LLM-judged dialogue: content/persona, judge, runs, art blobs
   gamevanyadum/  «ВАНЯДУМ» — the first 3D game, and the first thing here that
                     SIMULATES: collision destroys closed-form motion, so a 20 Hz
-                    fixed-step loop advances in-memory arenas (one per run) and
-                    Postgres is touched exactly twice per run — never on a tick.
+                    fixed-step loop advances ONE process-wide заброшка everybody
+                    is standing in — nothing ends, so there is no run and no
+                    objective — and Postgres is touched once per visit, when
+                    somebody has left, never on a tick.
                     content.go  the catalogue — movement, pickups, surfaces
                     level.go    the seeded Doom-style sector graph + derived walls
                     sim.go      Step: pure (level, player, command) → player
-                    arena.go    one run's world + the real-time budget
+                    world.go    the one заброшка, the budget, the abandon grace
                     history.go  the rewind ring lag compensation reads
-                    service.go  the arena map, the tick, the one writer
+                    service.go  the world pointer, the tick, the one writer
   gamevanyagotchi/  «Ванягоччи» — the shared plane (in memory) + the pet (Postgres):
                     content.go  the catalogue — stats, actions, skins, NPCs, every constant
                     decay.go    time arithmetic for stats · motion.go the same for space
@@ -57,7 +59,7 @@ internal/
                     message.go  the wire types · service.go the verbs and the tick
   gamefintech/  «СИМУЛЯТОР ФИНТЕХА» — the second thing that SIMULATES and the first
                     to do it in DOM: pursuit is not closed form, so a 20 Hz loop
-                    advances ONE process-wide office (not one arena per run) and
+                    advances ONE process-wide office (not one per shift) and
                     Postgres is touched once per shift — never on a tick.
                     content.go  the catalogue — the STATIC office, every constant
                     sim.go      Step: pure (desks, player, command) → player
@@ -110,7 +112,7 @@ Each game is its own module: its own package, tables, routes and views. **No gam
 |---|---|---|---|---|
 | «Смолтолк в Химках» | `internal/gamekhimki/` | `game_khimki_runs` | `/api/game-khimki/*` | `GameKhimkiView.vue` at `/app/game-khimki` |
 | «Ванягоччи» | `internal/gamevanyagotchi/` | `game_vanyagotchi_*` | `/api/game-vanyagotchi/*` | `GameVanyagotchiView.vue` at `/app/game-vanyagotchi` |
-| «ВАНЯДУМ» | `internal/gamevanyadum/` | `game_vanyadum_runs` | `/api/game-vanyadum/*` | `GameVanyadumView.vue` at `/app/game-vanyadum` |
+| «ВАНЯДУМ» | `internal/gamevanyadum/` | `game_vanyadum_visits` | `/api/game-vanyadum/*` | `GameVanyadumView.vue` at `/app/game-vanyadum` |
 | «СИМУЛЯТОР ФИНТЕХА» | `internal/gamefintech/` | `game_fintech_shifts` | `/api/game-fintech/*` | `GameFintechView.vue` at `/app/game-fintech` |
 
 - **Shared infrastructure is never prefixed** — `realtime`, `gameassets`, `session`, `account`, `crypto`, `db`, `logging`, `observability`, `httpapi`. A game may depend on these; none of them may know a game exists.
@@ -122,7 +124,7 @@ Each game is its own module: its own package, tables, routes and views. **No gam
 - **A game makes two decisions, not one: how it renders, and whether it owns a tick.** They are independent axes, and each game answers both for itself — which is what ADR-028 is for. The yard is DOM and CSS with no simulation at all (ADR-046, ADR-042); the shooter is WebGL over a 20 Hz server tick, because collision destroys closed form (ADR-047, ADR-048); «СИМУЛЯТОР ФИНТЕХА» is **DOM over a 20 Hz server tick** — it simulates because pursuit is not closed form, and it stays in the DOM because none of ADR-046's flip triggers fire (ADR-057). None of that is a contradiction. What does NOT vary is where the line falls when a canvas *is* used: **the canvas holds the world and nothing else.** Every readout, control and word of text stays real DOM, because nothing inside a canvas can be asserted on without pixel comparison and a test-only introspection API may not ship. A change that moves the HUD onto the canvas because it would look nicer is deleting a test surface, not tidying a view.
 - **A realtime game's room name lives in the game's own package**, and `httpapi` holds only a map from room name to handler. Adding a game is a line in `main.go` and no change to any unprefixed package.
 
-**Reasoning for all of the above lives in the records — [ADR-028](docs/adrs/) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared), ADR-046/047/057 (each game's rendering decision, where the canvas line falls, and why owning a tick does not oblige a game to leave the DOM), ADR-056 (one shared office against one arena per run), summarised in `docs/ARCHITECTURE.md` §8.** Read those before arguing with this rule. They are settled: rewriting one to mean something else is how a decision changes, so do it deliberately and in a commit that says why — not as a side effect of disagreeing with it.
+**Reasoning for all of the above lives in the records — [ADR-028](docs/adrs/) (self-contained modules), ADR-030 (the naming convention), ADR-031 (why the asset store is shared), ADR-046/047/057 (each game's rendering decision, where the canvas line falls, and why owning a tick does not oblige a game to leave the DOM), ADR-056 and ADR-060 (one shared world per game — the office and the заброшка — rather than one per player), summarised in `docs/ARCHITECTURE.md` §8.** Read those before arguing with this rule. They are settled: rewriting one to mean something else is how a decision changes, so do it deliberately and in a commit that says why — not as a side effect of disagreeing with it.
 
 ### Everything a player does is visible to everyone, and derived rather than sent
 

@@ -20,7 +20,7 @@ import (
 // graph below is the seam that would let something richer replace them.
 //
 // THE LEVEL IS GENERATED HERE AND NOWHERE ELSE. The client is sent the finished
-// graph once, at the start of a run, and builds meshes from it. The alternative
+// graph once, over HTTP, and builds meshes from it. The alternative
 // — shipping the seed and generating it a second time in TypeScript — was
 // refused: two implementations of one generator diverge on a floating-point edge
 // and the first symptom is one player walking through a wall another can see.
@@ -145,7 +145,7 @@ func (l *Level) FloorAt(p Vec2) (float64, bool) {
 }
 
 // Generate builds a level from a seed. The same seed always produces the same
-// level, which is what lets a run be reproduced from two numbers and never
+// level, which is what lets a building be reproduced from one number and never
 // stored, and what makes the invariant tests able to sweep hundreds of seeds.
 //
 // The shape is a random walk over a grid of rooms: start with one, then

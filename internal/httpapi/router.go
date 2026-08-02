@@ -45,15 +45,16 @@ type Deps struct {
 	// RealtimeHandler below — one game, two surfaces: an HTTP one for the pet
 	// that outlives the process and a socket one for the plane that does not.
 	GameVanyagotchi *gamevanyagotchi.Service
-	// GameVanyadum is the third game — «ВАНЯДУМ», the shooter. Like the game
-	// above it has two surfaces: HTTP for starting and ending a run, and the
-	// socket for the twenty-hertz simulation, which is where every input and
-	// every snapshot travels.
+	// GameVanyadum is the third game — «ВАНЯДУМ», the shooter. Two surfaces
+	// again, but they divide differently: HTTP serves the catalogue, the one
+	// заброшка everybody is in, and the visits already recorded, while the
+	// socket carries the twenty-hertz simulation AND the join, because being in
+	// the room is being in the building.
 	GameVanyadum *gamevanyadum.Service
 	// GameFintech is the fourth game — «СИМУЛЯТОР ФИНТЕХА». Two surfaces again:
 	// HTTP for the edges of a shift, and the socket for the twenty-hertz office
-	// every occupant shares. Unlike the shooter there is one office rather than
-	// one world per shift, which is why nothing here is keyed by a run id.
+	// every occupant shares. Like the shooter it holds one shared world for the
+	// whole process, which is why nothing here is keyed by a run id.
 	GameFintech *gamefintech.Service
 	// GameAssets is the shared art blob store — infrastructure, not a game, so
 	// every game's art is served through this one dependency. nil disables the
@@ -198,12 +199,12 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/avatar/{peer}", s.handleGameVanyagotchiAvatar)
 		})
 
-		// Game «ВАНЯДУМ» — approved users only, and only the EDGES of a run.
-		// Starting one, resuming it after a reload, giving up, and reading what
-		// you have already done. Playing happens entirely on the socket: input
-		// arrives as a frame and the world goes back as a snapshot twenty times
-		// a second, so there is deliberately no endpoint here that a player
-		// touches while playing.
+		// Game «ВАНЯДУМ» — approved users only, and THREE READS. There is one
+		// заброшка, always running, and joining it is opening the socket: the
+		// room already carries an authenticated account, so a start endpoint
+		// would be a second way in for the two to disagree about. Playing
+		// happens entirely on the socket — input arrives as a frame and the
+		// world goes back as a snapshot twenty times a second.
 		//
 		// No LLM on any path here either — that rule is written into the game's
 		// package doc, and it matters more here than it did in the yard because
@@ -211,10 +212,8 @@ func (s *Server) Handler() http.Handler {
 		r.Route("/game-vanyadum", func(r chi.Router) {
 			r.Use(s.requireAuth)
 			r.Get("/config", s.handleGameVanyadumConfig)
-			r.Post("/runs", s.handleGameVanyadumStart)
-			r.Get("/runs/current", s.handleGameVanyadumCurrent)
-			r.Delete("/runs/current", s.handleGameVanyadumAbandon)
-			r.Get("/runs/me", s.handleGameVanyadumMyRuns)
+			r.Get("/world", s.handleGameVanyadumWorld)
+			r.Get("/visits/me", s.handleGameVanyadumMyVisits)
 		})
 
 		// Game «СИМУЛЯТОР ФИНТЕХА» — approved users only, and again only the

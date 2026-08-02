@@ -109,46 +109,46 @@ func TestHistoryDoesNotResurrectTheDead(t *testing.T) {
 	}
 }
 
-func TestArenaRecordsEveryTick(t *testing.T) {
-	a := newTestArena(t, 5)
+func TestTheWorldRecordsEveryTick(t *testing.T) {
+	w, acc := newTestWorld(t, 5)
 	base := time.Unix(0, 0)
 	for i := 0; i < 10; i++ {
-		a.Advance(SimStep.Seconds(), base.Add(time.Duration(i)*SimStep))
+		w.Advance(SimStep.Seconds(), base.Add(time.Duration(i)*SimStep))
 	}
-	if a.history.count != 10 {
-		t.Fatalf("ten ticks recorded %d frames", a.history.count)
+	if w.history.count != 10 {
+		t.Fatalf("ten ticks recorded %d frames", w.history.count)
 	}
 	// Keyed by PSEUDONYM, so a rewound world and a published one name the same
 	// things — which is what lets a future hit test take the id it was shot at
 	// straight from the client's aim.
-	got := a.history.at(base.Add(5 * SimStep))
-	if _, ok := got[a.Owner().Pseudonym]; !ok {
+	got := w.history.at(base.Add(5 * SimStep))
+	if _, ok := got[w.Occupant(acc).Pseudonym]; !ok {
 		t.Fatalf("history is keyed by something other than the pseudonym: %+v", got)
 	}
 }
 
-// tickedHistory fills an arena's buffer with `frames` recorded instants, one per
-// simulation step, in which "pseudo" stands at X == the frame's own index. A
+// tickedHistory fills the world's buffer with `frames` recorded instants, one
+// per simulation step, in which "pseudo" stands at X == the frame's own index. A
 // rewound X therefore reads back directly as a tick number, which is what lets
 // the assertions below be hand-computed arithmetic rather than a tolerance.
 //
 // It returns the instant of the newest frame, which is the `now` a rewind is
 // measured back from.
-func tickedHistory(t *testing.T, a *Arena, frames int) time.Time {
+func tickedHistory(t *testing.T, w *World, frames int) time.Time {
 	t.Helper()
 	base := time.Unix(0, 0)
 	for i := 0; i < frames; i++ {
 		at := base.Add(time.Duration(i) * SimStep)
-		a.history.record(int64(i), at, map[string]Spot{"pseudo": spot(float64(i), 0)})
+		w.history.record(int64(i), at, map[string]Spot{"pseudo": spot(float64(i), 0)})
 	}
 	return base.Add(time.Duration(frames-1) * SimStep)
 }
 
 // rewoundTick is where "pseudo" was, in frame indices, for a player this far
 // behind.
-func rewoundTick(t *testing.T, a *Arena, now time.Time, rtt time.Duration) float64 {
+func rewoundTick(t *testing.T, w *World, now time.Time, rtt time.Duration) float64 {
 	t.Helper()
-	got := a.RewindTo(now, rtt)
+	got := w.RewindTo(now, rtt)
 	s, ok := got["pseudo"]
 	if !ok {
 		t.Fatalf("rewind returned no spot for the only entity there is: %+v", got)
@@ -167,15 +167,15 @@ func TestRewindLandsOnTheInstantTheShooterSaw(t *testing.T) {
 	// that is 6.4 frames. From frame 9 the answer is therefore 2.6, exactly.
 	// Halving the loop would answer 4.6 — a whole 100 ms, or half a metre at
 	// WalkSpeed, in the wrong place.
-	a := NewArena(uuid.New(), "acct", "pseudo", 5, time.Unix(0, 0))
-	now := tickedHistory(t, a, 10)
+	w := NewWorld(uuid.New(), 5)
+	now := tickedHistory(t, w, 10)
 
 	const rtt = 200 * time.Millisecond
 	wantX := 9 - (rtt+InterpolationDelay).Seconds()/SimStep.Seconds()
 	if math.Abs(wantX-2.6) > 1e-9 {
 		t.Fatalf("the tuning moved: this test's hand-computed 2.6 is now %v", wantX)
 	}
-	if got := rewoundTick(t, a, now, rtt); math.Abs(got-wantX) > 1e-9 {
+	if got := rewoundTick(t, w, now, rtt); math.Abs(got-wantX) > 1e-9 {
 		t.Fatalf("rewound to frame %v, expected %v", got, wantX)
 	}
 }
@@ -185,14 +185,14 @@ func TestTheRewindIsTheWholeRoundTripAndNotHalfOfIt(t *testing.T) {
 	// it: adding R to a player's round trip must move his rewind back by R, not
 	// by R/2. Measured as a difference, so the interpolation term cancels and the
 	// only thing under test is what the loop is worth.
-	a := NewArena(uuid.New(), "acct", "pseudo", 5, time.Unix(0, 0))
-	now := tickedHistory(t, a, 10)
+	w := NewWorld(uuid.New(), 5)
+	now := tickedHistory(t, w, 10)
 
 	// Small enough that neither end of the comparison is anywhere near the
 	// ceiling, which would flatten the difference and pass for the wrong reason.
 	const r = 100 * time.Millisecond
-	at0 := rewoundTick(t, a, now, 0)
-	atR := rewoundTick(t, a, now, r)
+	at0 := rewoundTick(t, w, now, 0)
+	atR := rewoundTick(t, w, now, r)
 
 	want := r.Seconds() / SimStep.Seconds()
 	if got := at0 - atR; math.Abs(got-want) > 1e-9 {
@@ -251,21 +251,21 @@ func TestRewindIsBoundedByRewindMax(t *testing.T) {
 	// three and a half body-widths ago. Under the old bound of 1.2 s it was 6 m,
 	// which is enough to be shot around a corner by somebody who was nowhere near
 	// you.
-	a := NewArena(uuid.New(), "acct", "pseudo", 5, time.Unix(0, 0))
+	w := NewWorld(uuid.New(), 5)
 	// Deep enough that the ceiling and not the ring's end is what answers.
 	frames := historyCapacity() + 2
-	now := tickedHistory(t, a, frames)
+	now := tickedHistory(t, w, frames)
 
 	newest := float64(frames - 1)
 	wantX := newest - RewindMax.Seconds()/SimStep.Seconds()
-	if got := rewoundTick(t, a, now, time.Hour); math.Abs(got-wantX) > 1e-9 {
+	if got := rewoundTick(t, w, now, time.Hour); math.Abs(got-wantX) > 1e-9 {
 		t.Fatalf("an hour of claimed latency rewound to frame %v; the ceiling is frame %v", got, wantX)
 	}
 
 	// And the floor: no latency at all still draws the render delay, because
 	// every client draws at least that far behind.
 	wantX = newest - InterpolationDelay.Seconds()/SimStep.Seconds()
-	if got := rewoundTick(t, a, now, -time.Hour); math.Abs(got-wantX) > 1e-9 {
+	if got := rewoundTick(t, w, now, -time.Hour); math.Abs(got-wantX) > 1e-9 {
 		t.Fatalf("a negative latency rewound to frame %v, expected the render delay alone at %v", got, wantX)
 	}
 }
@@ -276,21 +276,21 @@ func TestAClientCannotEchoItsWayPastTheCeiling(t *testing.T) {
 	// that simply echoed tick 1 forever would drive the smoothed round trip up to
 	// the ring's whole capacity, and the composition's clamp would then be doing
 	// all the work with no margin left for the render delay.
-	a := newTestArena(t, 5)
+	w, acc := newTestWorld(t, 5)
 	for i := 0; i < 200; i++ {
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		w.Advance(SimStep.Seconds(), time.Unix(0, 0))
 	}
 	// Claims, repeatedly, to have last drawn the very first tick — ten seconds of
 	// staleness against a simulation that is 200 ticks in.
 	for i := 0; i < 50; i++ {
-		a.Enqueue(a.AccountID, &ParsedInput{Seen: 1})
+		w.Enqueue(acc, &ParsedInput{Seen: 1})
 	}
-	if got := a.RTT(a.AccountID); got > RewindMax {
+	if got := w.RTT(acc); got > RewindMax {
 		t.Fatalf("smoothed round trip settled at %v, the ceiling is %v", got, RewindMax)
 	}
 	// And it did converge on the ceiling rather than staying near zero, or the
 	// assertion above would pass over a clamp that never fired.
-	if got := a.RTT(a.AccountID); got < RewindMax/2 {
+	if got := w.RTT(acc); got < RewindMax/2 {
 		t.Fatalf("smoothed round trip is only %v, so this test never exercised the clamp", got)
 	}
 }
@@ -299,14 +299,14 @@ func TestRoundTripIsDerivedFromTheEchoedTick(t *testing.T) {
 	// Derived rather than trusted: the tick rate is fixed, so the gap between
 	// the snapshot a client had drawn and where the simulation is now is the
 	// whole loop. A client cannot claim a latency it does not have.
-	a := newTestArena(t, 5)
+	w, acc := newTestWorld(t, 5)
 	for i := 0; i < 20; i++ {
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		w.Advance(SimStep.Seconds(), time.Unix(0, 0))
 	}
 	// Claims to have last drawn tick 10 while the simulation is at 20 — ten
 	// ticks, half a second at 20 Hz.
-	a.Enqueue(a.AccountID, &ParsedInput{Seen: 10, Cmds: []Command{{Seq: 1, Dt: 0.05, MY: 1}}})
-	if got := a.RTT(a.AccountID); got < 400*time.Millisecond || got > 600*time.Millisecond {
+	w.Enqueue(acc, &ParsedInput{Seen: 10, Cmds: []Command{{Seq: 1, Dt: 0.05, MY: 1}}})
+	if got := w.RTT(acc); got < 400*time.Millisecond || got > 600*time.Millisecond {
 		t.Fatalf("derived round trip %v, expected about 500ms", got)
 	}
 }
@@ -316,26 +316,26 @@ func TestRedundantCommandsAreAppliedOnlyOnce(t *testing.T) {
 	// packet costs no input. That is only free because a duplicate is dropped —
 	// otherwise a resend is movement applied twice on the server and once on
 	// the client, which the player feels as being dragged.
-	a := newTestArena(t, 5)
-	start := a.Owner().State.Pos
+	w, acc := newTestWorld(t, 5)
+	start := w.Occupant(acc).State.Pos
 	cmd := Command{Seq: 1, Dt: 0.05, MY: 1, Yaw: 0}
 
-	a.Enqueue(a.AccountID, &ParsedInput{Cmds: []Command{cmd}})
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-	once := a.Owner().State.Pos
+	w.Enqueue(acc, &ParsedInput{Cmds: []Command{cmd}})
+	w.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	once := w.Occupant(acc).State.Pos
 
 	// The same command again, three times over, exactly as a redundant frame
 	// would carry it.
 	for i := 0; i < 3; i++ {
-		a.Enqueue(a.AccountID, &ParsedInput{Cmds: []Command{cmd}})
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		w.Enqueue(acc, &ParsedInput{Cmds: []Command{cmd}})
+		w.Advance(SimStep.Seconds(), time.Unix(0, 0))
 	}
 
 	if once == start {
 		t.Fatal("the first command did nothing, so this test proves nothing")
 	}
-	if a.Owner().State.Pos != once {
-		t.Fatalf("a resent command moved him again: %+v then %+v", once, a.Owner().State.Pos)
+	if w.Occupant(acc).State.Pos != once {
+		t.Fatalf("a resent command moved him again: %+v then %+v", once, w.Occupant(acc).State.Pos)
 	}
 }
 
@@ -349,17 +349,17 @@ func TestAcknowledgementFollowsWhatWasActuallySimulated(t *testing.T) {
 	// `LastSeq > 1`, which the truncating drain satisfied — that drain
 	// acknowledged sequence 1 after simulating a quarter of it, so the test
 	// passed green over the exact defect its own comment named.
-	a := newTestArena(t, 5)
+	w, acc := newTestWorld(t, 5)
 	cmds := make([]Command, 0, 8)
 	for i := 1; i <= 8; i++ {
 		cmds = append(cmds, Command{Seq: int64(i), Dt: MaxStepSeconds, MY: 1})
 	}
-	a.Enqueue(a.AccountID, &ParsedInput{Cmds: cmds})
+	w.Enqueue(acc, &ParsedInput{Cmds: cmds})
 
 	// One tick buys 50 ms and every one of these asks for 200, so not one of
 	// them is affordable and the ack has to still be zero.
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-	if got := a.Owner().State.LastSeq; got != 0 {
+	w.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	if got := w.Occupant(acc).State.LastSeq; got != 0 {
 		t.Fatalf("acknowledged up to %d before a single command was affordable", got)
 	}
 
@@ -368,24 +368,24 @@ func TestAcknowledgementFollowsWhatWasActuallySimulated(t *testing.T) {
 	// MaxStepSeconds that accumulates one ULP short fails here over the tuning
 	// and not over the rule — the full caveat is at
 	// TestACommandLargerThanTheBudgetWaitsWholeRatherThanBeingTruncated in
-	// arena_test.go.
+	// world_test.go.
 	for i := 0; i < 3; i++ {
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		w.Advance(SimStep.Seconds(), time.Unix(0, 0))
 	}
-	if got := a.Owner().State.LastSeq; got != 1 {
+	if got := w.Occupant(acc).State.LastSeq; got != 1 {
 		t.Fatalf("acknowledged up to %d after a budget worth exactly one command", got)
 	}
 }
 
 func TestSnapshotCarriesPeersAndATimeline(t *testing.T) {
-	// Both are on the wire before anything fills them, because adding a field
-	// to a live protocol is a coordinated deploy and an empty array is two
-	// bytes. The timeline is what entity interpolation runs on.
-	a := newTestArena(t, 5)
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-	s, ok := a.SnapshotFor(a.AccountID)
+	// The peers array is omitted entirely while you are alone in the building,
+	// which is the common case and the one that should cost nothing. The timeline
+	// is what entity interpolation runs on.
+	w, acc := newTestWorld(t, 5)
+	w.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	s, ok := w.SnapshotFor(acc)
 	if !ok {
-		t.Fatal("no snapshot for the arena's own owner")
+		t.Fatal("no snapshot for the only person in the building")
 	}
 	if s.Tick == 0 {
 		t.Fatal("a snapshot with no tick on it cannot be interpolated between")
@@ -396,9 +396,11 @@ func TestSnapshotCarriesPeersAndATimeline(t *testing.T) {
 
 	// And a second occupant appears as a peer to the first, with a pseudonym
 	// rather than an account id.
-	a.Join("other-account", "other-pseudonym")
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-	s, _ = a.SnapshotFor(a.AccountID)
+	if _, joined := w.Join("other-account", "other-pseudonym", epoch); !joined {
+		t.Fatal("the second occupant was refused")
+	}
+	w.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	s, _ = w.SnapshotFor(acc)
 	if len(s.Peers) != 1 {
 		t.Fatalf("expected one peer, got %+v", s.Peers)
 	}

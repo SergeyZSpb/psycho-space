@@ -130,11 +130,12 @@ func main() {
 	defer vanyaTicker.Stop()
 	go gameVanyagotchiSvc.Run(hubCtx, vanyaTicker.C)
 
-	// «ВАНЯДУМ» — the third game, and the only thing in this process that runs a
+	// «ВАНЯДУМ» — the third game, and the first thing in this process to run a
 	// SIMULATION rather than a render tick. It advances positions and collisions
 	// twenty times a second, which is why the package doc spends a screen
-	// explaining that it still does not tick durable state: every arena lives in
-	// memory and Postgres is touched twice per run, at its start and at its end.
+	// explaining that it still does not tick durable state: there is one
+	// заброшка, it lives in memory, and Postgres is touched once per visit — when
+	// somebody stops coming back.
 	//
 	// Its ticker is injected for the same reason the yard's is — the tests drive
 	// the loop from a channel and never sleep.
@@ -144,10 +145,10 @@ func main() {
 	go gameVanyadumSvc.Run(hubCtx, vanyadumTicker.C)
 
 	// «СИМУЛЯТОР ФИНТЕХА» — the fourth game, and the second simulation. It runs
-	// the same twenty-hertz shape as the shooter above with one difference that
-	// matters here: there is ONE office for the whole process rather than one
-	// world per run, so this ticker advances a single shared world however many
-	// people are clocked in, and Postgres sees one row per finished shift.
+	// the same twenty-hertz shape as the shooter above, and now the same
+	// process-wide-world shape too: this ticker advances a single shared office
+	// however many people are clocked in, and Postgres sees one row per finished
+	// shift.
 	//
 	// The ticker is injected for the same reason both games above inject theirs —
 	// the tests drive the loop from a channel and never sleep.
@@ -241,13 +242,13 @@ func main() {
 	}
 
 	// And the shooter, for the same reason in a different shape: its writer
-	// goroutine drains any finished run still queued before it returns, so a
-	// deploy landing on somebody's last beer still records the run instead of
-	// dropping it on the floor.
+	// goroutine drains any finished visit still queued before it returns, so a
+	// deploy landing just after somebody walked out still records their visit
+	// instead of dropping it on the floor.
 	select {
 	case <-gameVanyadumSvc.Done():
 	case <-time.After(5 * time.Second):
-		slog.Warn("gamevanyadum did not finish saving runs in time")
+		slog.Warn("gamevanyadum did not finish saving visits in time")
 	}
 
 	// And the office, which is the same trade a third time. Its writer drains

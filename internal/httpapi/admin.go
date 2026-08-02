@@ -8,7 +8,6 @@ import (
 
 	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 )
 
 // handleSettingsGet returns global settings (admins can read).
@@ -150,8 +149,8 @@ func (s *Server) adminSetStatus(w http.ResponseWriter, r *http.Request, status s
 // this one races with writes that would recreate what it is removing:
 //
 //  1. Kick the sockets FIRST. While one is open, a «Ванягоччи» frame can reach
-//     `EnsurePet` and insert a row, and a «ВАНЯДУМ» run can end and queue an
-//     insert. The kick is asynchronous, so it narrows the window rather than
+//     `EnsurePet` and insert a row, and a «ВАНЯДУМ» hello can put them back in
+//     the заброшка. The kick is asynchronous, so it narrows the window rather than
 //     closing it — which is survivable here only because this operation does
 //     not delete rows, so the worst case is a stray row belonging to an
 //     anonymous account.
@@ -225,11 +224,12 @@ func (s *Server) forgetInGames(id string) {
 		s.d.GameVanyagotchi.Forget(id)
 	}
 	if s.d.GameVanyadum != nil {
-		if uid, err := uuid.Parse(id); err == nil {
-			// Drops the arena without recording the run — a run belonging to
-			// somebody who is being erased is not a result.
-			s.d.GameVanyadum.AbandonRun(uid)
-		}
+		// Takes them out of the заброшка without recording the visit — a visit
+		// belonging to somebody who is being erased is not a result. Safe to call
+		// twice and safe for an account that has never played, because this
+		// function IS called twice: once before the anonymising statement and
+		// once after it.
+		s.d.GameVanyadum.PurgeAccount(id)
 	}
 	if s.d.GameFintech != nil {
 		// Drops the occupant out of the office without writing the shift, for

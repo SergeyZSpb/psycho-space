@@ -8,22 +8,29 @@ import (
 	"github.com/google/uuid"
 )
 
-// An arena is one run's world, it lives entirely in memory, and it holds
-// SEVERAL OCCUPANTS.
+// The world is ONE заброшка, shared by everybody, and it lives entirely in
+// memory.
 //
-// Today every arena has exactly one, because nothing yet puts two people in a
-// заброшка together. It is written this way anyway, and that is a decision
-// rather than speculation: multiplayer then means *filling a map that already
-// exists* rather than turning a field into a collection — which would change
-// every method's shape, the snapshot's shape and the tests' shape at exactly
-// the moment there is finally something at stake. See ADR-052 on what "ready
-// for multiplayer" is claimed to mean.
+// THERE IS ONE OF THESE FOR THE WHOLE PROCESS, not one per player. That is the
+// load-bearing reversal of what this game shipped first: an arena per run meant
+// two people were never in the same building, which is a single-player game with
+// multiplayer netcode bolted to the side of it. The заброшка is now generated
+// once, from one seed, and opening a socket is walking into it — the shape the
+// sibling game arrived at independently and recorded as ADR-056.
 //
-// Nothing here is ever written to Postgres except the summary, once, when the
-// run ends. That is what keeps the simulation tick clear of the rule that
-// nothing in this project ticks durable state (ADR-038, and the package doc).
-// An arena is lost on restart, exactly as the hub's presence is, and that is
-// accepted: a run is a few minutes long and a lost one costs a replay.
+// NOTHING ENDS, AND THERE IS NO OBJECTIVE. An occupant appears when their socket
+// says hello and is taken out when their last connection has been gone past
+// AbandonGrace; the pickups respawn; the match is infinite. The building itself
+// is torn down only when it EMPTIES, and the next arrival generates a fresh
+// seed — so nothing regenerates under anybody's feet and a level is never
+// re-sent mid-session.
+//
+// Postgres is touched ONCE PER VISIT — one summary row, written when somebody's
+// last connection has been gone past the grace — and never on a tick. That is
+// what keeps the simulation clear of the rule that nothing in this project ticks
+// durable state (ADR-038, and the package doc). The world is lost on restart,
+// exactly as the hub's presence is, and that is accepted: what a restart costs
+// is the building everybody was standing in, and the next hello builds another.
 
 // TimeBudgetCap is how much simulated time a player may bank.
 //
@@ -40,18 +47,44 @@ import (
 // advantage.
 const TimeBudgetCap = 0.5
 
-// Occupant is one player inside an arena, together with everything about their
+// AbandonGrace is how long an occupant stays in the building after their last
+// connection has gone.
+//
+// It is not a disconnect timeout: a page reload, a tunnel, a phone locking and
+// unlocking all take a few seconds, and emptying somebody's slot for any of them
+// would make the game unplayable on a bus. What it protects against is the
+// occupant nobody comes back to, who would otherwise stand in the заброшка for
+// ever holding one of MaxOccupants places.
+//
+// Expiring it is what WRITES THE VISIT, and it is the only thing that does.
+// There is no quit button and no ending, so leaving is exactly "my connections
+// went away and did not come back". The length recorded is measured to the
+// occupant's last seen connection rather than to this moment — the two minutes
+// spent waiting for somebody who never returned are not two minutes they were
+// here. See Occupant.Stayed.
+const AbandonGrace = 2 * time.Minute
+
+// Occupant is one player inside the world, together with everything about their
 // CONNECTION rather than about the world: what they have sent, how much
 // simulated time they have paid for, and how stale their view of us is.
 type Occupant struct {
 	// AccountID identifies them to the server; Pseudonym is what other players
 	// are told. The two are deliberately different — a snapshot is addressed to
 	// one player and names another, and an account id would be a durable handle
-	// on a person handed to everybody who shares an arena with them.
+	// on a person handed to everybody who shares the building with them.
 	AccountID string
 	Pseudonym string
 
 	State Player
+
+	// JoinedAt is when this occupant walked in, and LastSeen is the last tick on
+	// which the account still had a connection in the room.
+	//
+	// LastSeen is updated once a tick for everybody who is CONNECTED rather than
+	// by Enqueue alone, because a player standing perfectly still sends nothing
+	// at all and is still very much in the building.
+	JoinedAt time.Time
+	LastSeen time.Time
 
 	// budget is the unspent simulated time described on TimeBudgetCap.
 	budget float64
@@ -70,7 +103,7 @@ type Occupant struct {
 	// commands already simulated and accepts the repeats of commands still
 	// WAITING — and a frame carries four sub-steps of 25 ms where one 50 ms tick
 	// affords two, so a queue that has fallen behind at all holds a tail the
-	// client is entitled to resend and the arena would apply twice.
+	// client is entitled to resend and the world would apply twice.
 	//
 	// It also compounds, because the client's demand is exactly what the budget
 	// accrues: forty sub-steps of 25 ms a second against a budget that fills at
@@ -107,89 +140,140 @@ type Occupant struct {
 	events []Event
 }
 
-// Arena is one live run.
-type Arena struct {
-	RunID uuid.UUID
-	// AccountID is whose run this is — the owner, and the account the summary
-	// row is written against. With more than one occupant the others are
-	// guests; who a shared run is *recorded* for is a question for the
-	// iteration that introduces one.
-	AccountID string
-	Level     *Level
-	StartedAt time.Time
+// Stayed is how long this occupant actually had a connection, in whole seconds,
+// and it is the number a visit row records.
+//
+// Measured to LastSeen and never to the moment the grace expired: AbandonGrace
+// is a tolerance for a flaky connection rather than time spent in the building,
+// and counting it would add two minutes to every visit that ended the ordinary
+// way — by somebody closing the tab.
+func (o *Occupant) Stayed() int {
+	d := o.LastSeen.Sub(o.JoinedAt)
+	if d < 0 {
+		return 0
+	}
+	return int(d / time.Second)
+}
+
+// World is the one заброшка everybody is standing in.
+type World struct {
+	// ID changes every time the building is regenerated, and it is the whole
+	// mechanism that makes regenerating one safe: a client caches the level it
+	// fetched over HTTP, the ready frame names the world it has been let into,
+	// and a mismatch tells the client its geometry is of a building that no
+	// longer exists. Nothing else has to be invalidated, because nothing else
+	// about the world is cached.
+	ID    uuid.UUID
+	Level *Level
 
 	occupants map[string]*Occupant
 
-	// Taken is which pickups are gone. Held beside the level rather than in it,
-	// because the level is a pure function of the seed and stays that way. It
-	// is arena-wide: the world is shared even when the players are not.
-	Taken map[int]bool
+	// ready[i] is the TICK at which the pickup at index i is back on the floor,
+	// and the whole of what "taken" means here. Zero is the resting state — the
+	// world starts at tick zero, so `Tick >= ready[i]` is "it is lying there"
+	// without a sentinel and without a countdown to drift.
+	//
+	// A DEADLINE RATHER THAN A COUNTDOWN, deliberately. Subtracting dt from a
+	// float every tick accumulates the error of SimStep's binary expansion, so a
+	// thing due back in exactly PickupRespawn would return a tick early or late
+	// depending on how the rounding fell, and no test could say which. An
+	// integer tick is exact, is the same number on every process replaying the
+	// same world, and is one comparison instead of a loop.
+	//
+	// Indexed by POSITION in Level.Pickups, which is the same key the wire's
+	// remaining-mask uses (Snapshot.Left). One keying, so the two cannot
+	// disagree.
+	ready []int64
 
 	// history is the rewind buffer lag compensation resolves against. Recorded
 	// every tick, consumed by the first thing that shoots — see history.go for
 	// why the recorder cannot wait for the consumer.
 	history *history
 
-	Tick    int64
-	Ended   bool
-	Success bool
+	Tick int64
 }
 
-// NewArena starts a run with one occupant at the level's spawn.
-func NewArena(runID uuid.UUID, accountID, pseudonym string, seed int64, now time.Time) *Arena {
+// NewWorld generates a заброшка with nobody in it.
+func NewWorld(id uuid.UUID, seed int64) *World {
 	l := Generate(seed)
-	a := &Arena{
-		RunID:     runID,
-		AccountID: accountID,
+	return &World{
+		ID:        id,
 		Level:     l,
-		StartedAt: now,
-		occupants: make(map[string]*Occupant, 1),
-		Taken:     map[int]bool{},
+		occupants: make(map[string]*Occupant, MaxOccupants),
+		ready:     make([]int64, len(l.Pickups)),
 		history:   newHistory(),
 	}
-	a.Join(accountID, pseudonym)
-	return a
 }
 
-// Join adds an occupant at the spawn, or returns the one already here.
-func (a *Arena) Join(accountID, pseudonym string) *Occupant {
-	if o, ok := a.occupants[accountID]; ok {
-		return o
+// Join puts somebody in the building, or hands back the occupant already here.
+// It reports false when the заброшка is full, which is a refusal the player is
+// told about rather than a silent no-op — see the hello.
+//
+// A SECOND HELLO IS A RECONNECT AND NOT A SECOND VISIT. A page reload, a tunnel
+// or a phone waking up all produce one, and the occupant is still standing where
+// he was: the only thing that changes is LastSeen, which is what stops the grace
+// from expiring under a socket that has just come back.
+func (w *World) Join(accountID, pseudonym string, now time.Time) (*Occupant, bool) {
+	if o, ok := w.occupants[accountID]; ok {
+		o.LastSeen = now
+		return o, true
 	}
-	o := &Occupant{AccountID: accountID, Pseudonym: pseudonym, State: NewPlayer(a.Level)}
-	a.occupants[accountID] = o
-	return o
+	if len(w.occupants) >= MaxOccupants {
+		return nil, false
+	}
+	o := &Occupant{
+		AccountID: accountID,
+		Pseudonym: pseudonym,
+		State:     NewPlayer(w.Level),
+		JoinedAt:  now,
+		LastSeen:  now,
+	}
+	w.occupants[accountID] = o
+	return o, true
 }
 
 // Occupant returns one player, or nil.
-func (a *Arena) Occupant(accountID string) *Occupant { return a.occupants[accountID] }
+func (w *World) Occupant(accountID string) *Occupant { return w.occupants[accountID] }
 
-// Occupants is how many people are in this arena.
-func (a *Arena) Occupants() int { return len(a.occupants) }
+// Occupants is how many people are in the building.
+func (w *World) Occupants() int { return len(w.occupants) }
 
-// Owner is the arena's own occupant — the account the run belongs to, and the
-// convenient handle for the single-occupant case the game has today.
-func (a *Arena) Owner() *Occupant { return a.occupants[a.AccountID] }
+// Seen records that an account still has a connection. It is what AbandonGrace
+// is measured against, and the service calls it once a tick for everybody who is
+// connected — including the player standing perfectly still, who sends nothing
+// at all.
+func (w *World) Seen(accountID string, now time.Time) {
+	if o, ok := w.occupants[accountID]; ok {
+		o.LastSeen = now
+	}
+}
+
+// Remove takes somebody out of the building WITHOUT producing a visit, and
+// reports whether they were in it. It is the admin «забыть» path: a visit
+// belonging to somebody who is being erased is not a result.
+func (w *World) Remove(accountID string) bool {
+	if _, ok := w.occupants[accountID]; !ok {
+		return false
+	}
+	delete(w.occupants, accountID)
+	return true
+}
 
 // keys is every occupant, sorted by account id. It is the STABLE order — the one
 // the wire and the rewind buffer are filled from — and deliberately NOT the
 // order they are simulated in; see turnOrder.
 //
-// NOTHING IN THIS ARENA LETS MAP ORDER DECIDE ANYTHING. Go randomises map order
+// NOTHING IN THIS WORLD LETS MAP ORDER DECIDE ANYTHING. Go randomises map order
 // on every range, so an array built by ranging the occupants would come out
-// reshuffled between two renders of an unchanged arena: a golden test over the
+// reshuffled between two renders of an unchanged world: a golden test over the
 // wire shape that flaps for no reason, and a client asked to re-key its
 // bookkeeping every frame. The same coin flip inside the simulation would be
 // worse still, because the same seed and the same input transcript would stop
 // producing the same world — and that determinism is the property the whole
 // simulation is tested against, Step being pure precisely so it can be.
-//
-// Invisible today, because every arena holds exactly one occupant. Wrong from
-// the first frame of the first shared one, which is why it is here before there
-// is a second player rather than after.
-func (a *Arena) keys() []string {
-	out := make([]string, 0, len(a.occupants))
-	for k := range a.occupants {
+func (w *World) keys() []string {
+	out := make([]string, 0, len(w.occupants))
+	for k := range w.occupants {
 		out = append(out, k)
 	}
 	sort.Strings(out)
@@ -203,7 +287,7 @@ func (a *Arena) keys() []string {
 // TWO ORDERS, BECAUSE THEY ANSWER DIFFERENT QUESTIONS, and collapsing them back
 // into one is the mistake this comment exists to prevent. The wire wants an
 // order that does not MOVE, for the reasons on keys. The simulation wants an
-// order that is not a PRIORITY: collect mutates arena-wide state, so whoever
+// order that is not a PRIORITY: collect mutates world-wide state, so whoever
 // steps first takes a contested bottle, and any one fixed order hands that to
 // the same account for the life of both accounts. Sorted, it is whoever drew the
 // lexicographically smaller UUID — every beer, and every hit test once something
@@ -211,19 +295,19 @@ func (a *Arena) keys() []string {
 // tossed.
 //
 // DETERMINISM DOES NOT REQUIRE A FIXED ORDER, only a derived one. The tick is
-// part of the arena's state, so rotating by it keeps the replay property intact
+// part of the world's state, so rotating by it keeps the replay property intact
 // — the same seed and the same transcript still produce the same world, frame
 // for frame — while the advantage moves on by one occupant every 50 ms. Nothing
 // fairer is available without inventing a notion of who deserves the bottle,
 // which is a rule this game does not have.
 //
-// The single-occupant case, which is every arena today, returns the caller's own
-// slice: there is nothing to rotate and no reason to allocate for it.
-func (a *Arena) turnOrder(ids []string) []string {
+// A building with one person in it returns the caller's own slice: there is
+// nothing to rotate and no reason to allocate for it.
+func (w *World) turnOrder(ids []string) []string {
 	if len(ids) < 2 {
 		return ids
 	}
-	off := int(a.Tick % int64(len(ids)))
+	off := int(w.Tick % int64(len(ids)))
 	out := make([]string, len(ids))
 	for i := range ids {
 		out[i] = ids[(i+off)%len(ids)]
@@ -251,11 +335,11 @@ func (a *Arena) turnOrder(ids []string) []string {
 // equivalent deliberately has none: without prediction a duplicate is merely
 // more input, but with it a replayed command is movement that happens twice on
 // the server and once on the client, and the player feels it as being dragged.
-func (a *Arena) Enqueue(accountID string, in *ParsedInput) {
-	if a.Ended || in == nil {
+func (w *World) Enqueue(accountID string, in *ParsedInput) {
+	if in == nil {
 		return
 	}
-	o := a.occupants[accountID]
+	o := w.occupants[accountID]
 	if o == nil {
 		return
 	}
@@ -273,8 +357,8 @@ func (a *Arena) Enqueue(accountID string, in *ParsedInput) {
 	// past exists, where RewindMax is how much of it a shot may reach, and the
 	// smoothed value here is one of the two terms that composition is built from
 	// (history.go, RewindTo).
-	if in.Seen > 0 && in.Seen <= a.Tick {
-		sample := time.Duration(a.Tick-in.Seen) * SimStep
+	if in.Seen > 0 && in.Seen <= w.Tick {
+		sample := time.Duration(w.Tick-in.Seen) * SimStep
 		if sample > RewindMax {
 			sample = RewindMax
 		}
@@ -287,7 +371,7 @@ func (a *Arena) Enqueue(accountID string, in *ParsedInput) {
 
 	// Four frames' worth of the largest frame the parser will pass through:
 	// enough that a burst after a hiccup is not thrown away, small enough that a
-	// client which floods cannot make the arena hold an unbounded slice. It is a
+	// client which floods cannot make the world hold an unbounded slice. It is a
 	// bound on MEMORY and not on simulation — what bounds how much of the queue
 	// is actually stepped is the time budget. The oldest go first, because stale
 	// input is the input least worth simulating.
@@ -304,25 +388,25 @@ func (a *Arena) Enqueue(accountID string, in *ParsedInput) {
 		// loop tests affordability on Dt directly, and NaN <= x is false for
 		// every x, so one NaN — or a +Inf, or a dt of a thousand seconds — at the
 		// head would wait for a budget that can never arrive and take every
-		// command behind it with it, silently and for the rest of the run. An
-		// unsanitised Dt here is a LIVENESS bug and not merely a wrong distance,
-		// which is why the clamp belongs at the queue's own edge rather than
-		// being left to whatever happens to call Enqueue. «СИМУЛЯТОР ФИНТЕХА»
-		// sanitises at exactly this boundary for the same reason
+		// command behind it with it, silently and for ever. An unsanitised Dt
+		// here is a LIVENESS bug and not merely a wrong distance, which is why
+		// the clamp belongs at the queue's own edge rather than being left to
+		// whatever happens to call Enqueue. «СИМУЛЯТОР ФИНТЕХА» sanitises at
+		// exactly this boundary for the same reason
 		// (internal/gamefintech/office.go).
 		//
 		// SEQ IS THE ONE ATTACKER-CONTROLLED FIELD NOTHING CLAMPS — not Sanitise,
 		// not this loop, not anywhere — and that is conceded rather than
 		// overlooked. A frame carrying q = MaxInt64 puts highSeq at MaxInt64,
-		// after which every command that client sends is dropped as stale for the
-		// rest of the run.
+		// after which every command that client sends is dropped as stale for as
+		// long as they stay in the building.
 		//
 		// No bound is added because none would be honest. The counter advances
-		// forty times a second and the arena is not obliged to have seen every
+		// forty times a second and the world is not obliged to have seen every
 		// step of it: a lost frame, a socket that dropped and came back, and the
 		// surplus parseInput trims off an over-long frame all leave gaps, so a
 		// legitimate distance of hundreds between the client's counter and the
-		// arena's mark is ordinary. A window tight enough to catch the attack is
+		// world's mark is ordinary. A window tight enough to catch the attack is
 		// therefore a number picked out of the air, and this project does not buy
 		// those (CLAUDE.md, on complexity without a current requirement).
 		//
@@ -330,9 +414,9 @@ func (a *Arena) Enqueue(accountID string, in *ParsedInput) {
 		// goes no further: highSeq lives on the Occupant, so the only input that
 		// stops flowing is the sender's own — and he can already stop it by
 		// sending nothing at all. An HONEST client that ends up behind a
-		// high-water mark (a reload, a rebuilt socket, a run resumed in progress)
-		// is recovered by the client's own resume path: reconcile takes the
-		// server's ack as a floor on its counter and counts on from there
+		// high-water mark (a reload, a rebuilt socket) is recovered by the
+		// client's own resume path: reconcile takes the server's ack as a floor
+		// on its counter and counts on from there
 		// (web/src/lib/vanyadumPredict.ts).
 		//
 		// THREE PLACES SANITISE AND NONE OF THEM IS REDUNDANT, because each owes
@@ -354,35 +438,37 @@ func (a *Arena) Enqueue(accountID string, in *ParsedInput) {
 }
 
 // RTT is one occupant's smoothed round trip.
-func (a *Arena) RTT(accountID string) time.Duration {
-	if o := a.occupants[accountID]; o != nil {
+func (w *World) RTT(accountID string) time.Duration {
+	if o := w.occupants[accountID]; o != nil {
 		return o.rtt
 	}
 	return 0
 }
 
-// Advance runs one simulation step for every occupant. dt is the tick's own
-// length, which is what the time budget accrues at — never a client's claim.
-func (a *Arena) Advance(dt float64, now time.Time) {
-	if a.Ended {
-		return
-	}
-	a.Tick++
+// Advance runs one simulation step for every occupant and returns whoever has
+// been gone long enough to have left. Those are taken out of the world before it
+// returns, so the caller only has to decide what to do with them — which is
+// write the visit down, or, on the admin path, nothing at all.
+//
+// dt is the tick's own length, which is what the time budget accrues at — never
+// a client's claim.
+func (w *World) Advance(dt float64, now time.Time) []*Occupant {
+	w.Tick++
 
 	// The stable order, for the rewind buffer below, and the rotated one for the
-	// step loop — never map order for either. collect mutates arena-wide state,
+	// step loop — never map order for either. collect mutates world-wide state,
 	// so which occupant steps first decides who takes a contested pickup, and
 	// that is exactly the decision that must not settle on one account for ever.
 	// See keys and turnOrder.
-	ids := a.keys()
+	ids := w.keys()
 
-	for _, id := range a.turnOrder(ids) {
-		o := a.occupants[id]
+	for _, id := range w.turnOrder(ids) {
+		o := w.occupants[id]
 		o.budget = math.Min(o.budget+dt, TimeBudgetCap)
 		// A COMMAND IS SIMULATED WHOLE OR IT WAITS. It is never simulated in
 		// part, because there is no way to acknowledge a part: the ack is one
 		// sequence number, the client drops everything at or below it, and a
-		// client that dropped a command the arena had only half-run would keep
+		// client that dropped a command the world had only half-run would keep
 		// the whole of it in its own prediction for ever. That is a permanent
 		// divergence, and in a shooter it is the expensive kind — the player is
 		// drawn further down the corridor than the simulation has him, so he
@@ -409,40 +495,53 @@ func (a *Arena) Advance(dt float64, now time.Time) {
 			c := o.pending[0]
 			o.pending = o.pending[1:]
 			o.budget -= c.Dt
-			o.State = Step(a.Level, o.State, c)
+			o.State = Step(w.Level, o.State, c)
 			// The queue is strictly ascending in Seq — Enqueue drops everything
 			// at or below highSeq and the overflow trim takes from the front —
 			// so this is the last command actually folded in, which is exactly
 			// what the snapshot's Ack promises.
 			o.State.LastSeq = c.Seq
 		}
-		a.collect(o)
+		w.collect(o)
 	}
 
 	// Recorded AFTER the step, so a frame describes the world as the snapshot
 	// about to go out describes it. Recording before would leave the rewind
 	// buffer a tick behind everything that reads it.
-	a.history.record(a.Tick, now, a.spots(ids))
+	w.history.record(w.Tick, now, w.spots(ids))
 
-	// The objective of this iteration, and deliberately the smallest one that
-	// closes the loop: collect every beer in the заброшка. It exists so a run
-	// can END — which is what exercises the only two database writes this game
-	// makes — and it is replaced by the locked door and the exit as soon as
-	// there are keys to find.
-	if !a.Ended && a.remaining() == 0 && len(a.Level.Pickups) > 0 {
-		a.Ended, a.Success = true, true
+	// And whoever has stopped being here. In keys' order rather than the rotated
+	// one: which occupants leave on a tick is not a contest, so the stable order
+	// is the one that makes the visits queue in a defined sequence.
+	var left []*Occupant
+	for _, id := range ids {
+		o := w.occupants[id]
+		if now.Sub(o.LastSeen) <= AbandonGrace {
+			continue
+		}
+		delete(w.occupants, id)
+		left = append(left, o)
 	}
+	return left
 }
+
+// available reports whether the pickup at index i is lying on the floor right
+// now, which is the one place the respawn deadline is interpreted.
+func (w *World) available(i int) bool { return w.Tick >= w.ready[i] }
 
 // collect picks up everything one occupant is standing on. There is no use
 // button by design (content.go), so this is the whole of the interaction.
-func (a *Arena) collect(o *Occupant) {
-	pf, ok := a.Level.FloorAt(o.State.Pos)
+//
+// Taking something does not remove it — it sets the tick it comes back on. In an
+// infinite match with no objective, a заброшка that empties permanently is a
+// building with nothing left to walk to.
+func (w *World) collect(o *Occupant) {
+	pf, ok := w.Level.FloorAt(o.State.Pos)
 	if !ok {
 		return
 	}
-	for _, p := range a.Level.Pickups {
-		if a.Taken[p.ID] {
+	for i, p := range w.Level.Pickups {
+		if !w.available(i) {
 			continue
 		}
 		if math.Hypot(p.Pos.X-o.State.Pos.X, p.Pos.Y-o.State.Pos.Y) > PickupReach {
@@ -450,14 +549,14 @@ func (a *Arena) collect(o *Occupant) {
 		}
 		// Reach is measured on the floor plane, so without this a player could
 		// collect something through a floor from the room below it.
-		if math.Abs(a.Level.Sectors[p.Sector].FloorZ-pf) > MaxStep+1e-9 {
+		if math.Abs(w.Level.Sectors[p.Sector].FloorZ-pf) > MaxStep+1e-9 {
 			continue
 		}
 		kind, known := PickupByKey(p.Kind)
 		if !known {
 			continue
 		}
-		a.Taken[p.ID] = true
+		w.ready[i] = w.Tick + pickupRespawnTicks
 		if o.State.Counters == nil {
 			o.State.Counters = map[string]int{}
 		}
@@ -470,17 +569,6 @@ func (a *Arena) collect(o *Occupant) {
 	}
 }
 
-// remaining counts the pickups still lying about.
-func (a *Arena) remaining() int {
-	n := 0
-	for _, p := range a.Level.Pickups {
-		if !a.Taken[p.ID] {
-			n++
-		}
-	}
-	return n
-}
-
 // spots is every entity's position this instant, in the shape the rewind buffer
 // stores. Keyed by PSEUDONYM rather than by account, so a rewound world and a
 // published one name the same things — which is what lets a future hit test
@@ -491,53 +579,56 @@ func (a *Arena) remaining() int {
 // ANSWER, because a map does not remember what order it was filled in. It takes
 // the caller's list so that the frame recorded for a tick is of exactly the
 // occupants that tick stepped, rather than of a second reading of the roster.
-// It saves a sort as well, and that was never the argument: SnapshotFor derives
-// the order again, once per occupant, so a tick still sorts a handful of strings
-// N+1 times.
-func (a *Arena) spots(ids []string) map[string]Spot {
+func (w *World) spots(ids []string) map[string]Spot {
 	out := make(map[string]Spot, len(ids))
 	for _, id := range ids {
-		o := a.occupants[id]
+		o := w.occupants[id]
 		out[o.Pseudonym] = Spot{Pos: o.State.Pos, Sector: o.State.Sector, Alive: o.State.Health > 0}
 	}
 	return out
 }
 
-// SnapshotFor renders the arena from one occupant's point of view and clears
+// SnapshotFor renders the world from one occupant's point of view and clears
 // the events they have been waiting for.
 //
 // Not a pure read, and deliberately: an event is delivered ONCE, on the next
 // frame. A frame that re-sent it would replay the same sound forever, which is
 // the failure that makes people mute a game.
 //
-// Everybody else in the arena arrives as a PEER, to be drawn interpolated in
+// Everybody else in the building arrives as a PEER, to be drawn interpolated in
 // the recent past — their intent cannot be predicted the way the reader's own
-// can. The array is empty in every arena today and is on the wire anyway; see
-// its comment on Snapshot.
-func (a *Arena) SnapshotFor(accountID string) (Snapshot, bool) {
-	me := a.occupants[accountID]
+// can.
+func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
+	me := w.occupants[accountID]
 	if me == nil {
 		return Snapshot{}, false
 	}
 
-	// Bit i is set when the pickup at INDEX i is still lying about. The index and
-	// not the id, because the mask's width is the level's length and an index is
-	// dense by construction where an id need not be — see Snapshot.Left for why
-	// the field is one 32-bit word rather than a list.
+	// Bit i is set when the pickup at INDEX i is lying on the floor. The index
+	// and not the id, because the mask's width is the level's length and an index
+	// is dense by construction where an id need not be — see Snapshot.Left for
+	// why the field is one 32-bit word rather than a list.
+	//
+	// A RESPAWN RIDES THIS AND NOTHING ELSE. The mask is idempotent full state,
+	// so a bit coming back IS the announcement that a thing has returned, and a
+	// client that wants to mark the moment compares it against the previous
+	// frame. An event saying "something respawned" would be bytes on a payload
+	// that repeats twenty times a second, per viewer, to say nothing at all
+	// almost every time it was sent.
 	var left uint32
-	for i, p := range a.Level.Pickups {
-		if !a.Taken[p.ID] {
+	for i := range w.Level.Pickups {
+		if w.available(i) {
 			left |= 1 << uint(i)
 		}
 	}
 
 	s := Snapshot{
 		T:      TypeSnapshot,
-		Tick:   a.Tick,
+		Tick:   w.Tick,
 		Ack:    me.State.LastSeq,
 		X:      cm(me.State.Pos.X),
 		Y:      cm(me.State.Pos.Y),
-		Z:      cm(EyeZ(a.Level, me.State)),
+		Z:      cm(EyeZ(w.Level, me.State)),
 		Yaw:    mrad(me.State.Yaw),
 		Sector: me.State.Sector,
 		Health: me.State.Health,
@@ -550,15 +641,15 @@ func (a *Arena) SnapshotFor(accountID string) (Snapshot, bool) {
 			s.Bag[k] = v
 		}
 	}
-	// In account order, so two renders of an unchanged arena produce the same
+	// In account order, so two renders of an unchanged world produce the same
 	// array. Map order here would make the peers array shuffle between frames,
 	// which is a golden test that flaps and a client asked to re-key its
 	// bookkeeping for no reason. See keys.
-	for _, id := range a.keys() {
+	for _, id := range w.keys() {
 		if id == accountID {
 			continue
 		}
-		o := a.occupants[id]
+		o := w.occupants[id]
 		state := 0
 		if o.State.Health <= 0 {
 			state = 2
@@ -567,20 +658,11 @@ func (a *Arena) SnapshotFor(accountID string) (Snapshot, bool) {
 			ID:    o.Pseudonym,
 			X:     cm(o.State.Pos.X),
 			Y:     cm(o.State.Pos.Y),
-			Z:     cm(EyeZ(a.Level, o.State)),
+			Z:     cm(EyeZ(w.Level, o.State)),
 			Yaw:   mrad(o.State.Yaw),
 			State: state,
 		})
 	}
 	me.events = nil
 	return s, true
-}
-
-// Elapsed is how long the run has been going, in whole seconds.
-func (a *Arena) Elapsed(now time.Time) int {
-	d := now.Sub(a.StartedAt)
-	if d < 0 {
-		return 0
-	}
-	return int(d / time.Second)
 }

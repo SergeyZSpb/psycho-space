@@ -29,22 +29,23 @@ import (
 //     that is worth doing, because it is the only payload that repeats.
 //   - Anything empty is omitted rather than sent as a zero or an empty array.
 //
-// The level itself is deliberately NOT here: it is sent once over HTTP when a
-// run starts, and referenced by index thereafter.
+// The level itself is deliberately NOT here: it is fetched once over HTTP and
+// referenced by index thereafter.
 const (
-	// TypeHello attaches a connection to whatever run the account already
-	// started over HTTP. It carries no fields at all — identity is the
-	// connection, so there is nothing to forge and nothing to validate.
+	// TypeHello walks this connection's account into the заброшка. It carries no
+	// fields at all — identity is the connection, so there is nothing to forge
+	// and nothing to validate — and it is the ONLY way in: there is no start
+	// endpoint and no lobby.
 	TypeHello = "vanyadum_hello"
 	// TypeInput is the batch of sub-steps described on Command.
 	TypeInput = "vanyadum_input"
 
-	// TypeReady confirms which run this socket is now attached to.
+	// TypeReady confirms which building this socket has been let into.
 	TypeReady = "vanyadum_ready"
 	// TypeSnapshot is the idempotent full-state frame.
 	TypeSnapshot = "vanyadum_snap"
-	// TypeOver ends a run.
-	TypeOver = "vanyadum_over"
+	// TypeFull refuses a hello because the заброшка already holds MaxOccupants.
+	TypeFull = "vanyadum_full"
 )
 
 // envelope reads only the discriminator, so an unknown message costs one small
@@ -86,7 +87,7 @@ type InputFrame struct {
 // nothing at all.
 //
 // Sequence numbers are 1-BASED. Zero means "unset", and an unset command is
-// dropped rather than applied — the arena deduplicates against the highest
+// dropped rather than applied — the world deduplicates against the highest
 // sequence it has ACCEPTED, which starts at zero, so accepting a zero would
 // make the very first command indistinguishable from one already seen.
 type wireCommand struct {
@@ -141,7 +142,7 @@ func parseInput(f InputFrame) *ParsedInput {
 	// Redundant commands ride along with the fresh ones, so a frame may legally
 	// be larger than the sampling ratio. The bound is on how much SIMULATION a
 	// frame can ask for, and a re-sent command asks for none because
-	// Arena.Enqueue drops every sequence it has already ACCEPTED — the ones
+	// World.Enqueue drops every sequence it has already ACCEPTED — the ones
 	// still sitting in the queue as well as the ones already stepped. That
 	// dedupe is the whole of what this cap rests on, which is why it is the
 	// ratio plus the redundancy window rather than the ratio alone: deduplicate
@@ -161,18 +162,36 @@ func parseInput(f InputFrame) *ParsedInput {
 		// something.
 		//
 		// This clamp is the WIRE boundary's own, and it is one of three —
-		// Arena.Enqueue and Step each clamp again, and each carries a guarantee
+		// World.Enqueue and Step each clamp again, and each carries a guarantee
 		// the other two do not. The duplication is deliberate; the arrangement is
-		// written out in full at the Enqueue site (arena.go).
+		// written out in full at the Enqueue site (world.go).
 		out.Cmds = append(out.Cmds, Command(f.Cmds[i]).Sanitise())
 	}
 	return out
 }
 
-// Ready tells a freshly-attached socket which run it is now watching.
+// Ready tells a freshly-attached socket which building it is now standing in.
+//
+// WorldID IS THE CACHE KEY FOR THE GEOMETRY, and that is the whole reason it is
+// on this frame. The заброшка is regenerated whenever it empties, so a client
+// holding a level it fetched earlier has no other way to know whether that level
+// is still the one everybody is walking around in. It compares, and re-fetches
+// GET /api/game-vanyadum/world when the two disagree. Sent once per attach, so
+// a UUID's thirty-six characters cost nothing that repeats.
 type Ready struct {
-	T     string `json:"t"`
-	RunID string `json:"run_id"`
+	T       string `json:"t"`
+	WorldID string `json:"world_id"`
+}
+
+// Full is the answer to a hello the заброшка cannot honour, because it already
+// holds MaxOccupants.
+//
+// It carries no fields: the capacity is in the catalogue the client fetched
+// once, and there is nothing else honest to say — nothing in this game ends, so
+// there is no time at which a place is known to come free. The client's move is
+// to say so in Russian and offer to try again.
+type Full struct {
+	T string `json:"t"`
 }
 
 // Event is something that HAPPENED, as opposed to something that is true.
@@ -193,10 +212,9 @@ const EventPickup = "pk"
 
 // Snapshot is the idempotent full-state frame.
 //
-// Self is flattened into the top level rather than nested, because in this
-// iteration there is exactly one player in an arena and a nested object is eight
-// bytes of punctuation twenty times a second for nothing. Peers arrive with
-// multiplayer as their own array beside these fields.
+// Self is flattened into the top level rather than nested; everybody else in the
+// building is in Peers. A nested "me" object would be eight bytes of punctuation
+// twenty times a second to say something the frame's own address already says.
 type Snapshot struct {
 	T string `json:"t"`
 	// Tick is the simulation step this frame describes. With a fixed rate it is
@@ -219,16 +237,22 @@ type Snapshot struct {
 	// working out where it is standing.
 	Sector int `json:"s"`
 	Health int `json:"hp"`
-	// Left is what is still lying about, as a BITMASK: bit i is set when the
-	// pickup at INDEX i of the level's Pickups has not been collected. The index
-	// and not the id — an index is dense by construction, an id need not be, and
-	// a mask can only be as wide as the thing it indexes.
+	// Left is what is lying on the floor right now, as a BITMASK: bit i is set
+	// when the pickup at INDEX i of the level's Pickups is there to be walked
+	// over. The index and not the id — an index is dense by construction, an id
+	// need not be, and a mask can only be as wide as the thing it indexes.
 	//
 	// It was the list of remaining ids, recomputed and re-sent twenty times a
 	// second in order to say "nothing was taken". That was the one field on an
-	// otherwise disciplined frame whose size grew with the level's contents, and
-	// it would have grown again with keys and with anything that respawns. A word
-	// costs the same whatever it holds.
+	// otherwise disciplined frame whose size grew with the level's contents. A
+	// word costs the same whatever it holds.
+	//
+	// A RESPAWN TRAVELS ON THIS AND NOTHING ELSE. Things come back (content.go,
+	// PickupRespawn), and a bit going from clear to set IS that having happened —
+	// so a client that wants to mark the moment compares this word against the
+	// previous frame's, per bit. An "it respawned" event would be bytes on a
+	// payload that repeats twenty times a second, per viewer, to say nothing at
+	// all almost every time it was sent.
 	//
 	// UINT32 AND NOT UINT64, DELIBERATELY. A JSON number is an IEEE754 double in
 	// a browser, so a 64-bit mask would lose its high bits in the PARSE rather
@@ -243,10 +267,22 @@ type Snapshot struct {
 	Left   uint32         `json:"pk"`
 	Bag    map[string]int `json:"c,omitempty"`
 	Events []Event        `json:"ev,omitempty"`
-	// Peers is everything in the arena that is not you — other players today,
-	// enemies when they arrive. It is on the wire from the day the netcode was
-	// built rather than the day something fills it, because adding an array to
-	// a live protocol is a coordinated deploy and an empty one is two bytes.
+	// Peers is everything in the building that is not you — the other people in
+	// the заброшка today, the нейрослопы when they arrive. Omitted entirely when
+	// you are alone in there, which is the common case and the one that should
+	// cost nothing.
+	//
+	// THIS IS WHAT BOUNDS MaxOccupants. The array is per viewer and holds
+	// everybody else, so its cost is (occupants − 1) × a peer × the snapshot
+	// rate, per viewer — and a peer is a MEASURED 72 bytes at the widest
+	// quantisation the wire can carry, about 60 at the magnitudes a generated
+	// level produces. See that constant for the arithmetic, for the 8 kB/s
+	// ceiling it is derived from, and for why the answer today is four.
+	//
+	// ID IS THE PART OF A PEER WORTH SHRINKING FIRST, and it is called out here
+	// because this struct is where it would be done: the pseudonym is 19 bytes
+	// of an entry's 71 and it does not change for the life of an occupant, which
+	// is exactly what a repeating frame is not supposed to carry.
 	//
 	// A peer is drawn INTERPOLATED, about a hundred milliseconds in the past,
 	// because its intent cannot be predicted the way your own is.
@@ -256,11 +292,12 @@ type Snapshot struct {
 // MaxWirePickups is how many pickups a level may contain, because it is the
 // width of Snapshot.Left.
 //
-// A generator that produced more would publish the surplus as ALREADY TAKEN —
+// A generator that produced more would publish the surplus as PERMANENTLY GONE —
 // Go evaluates a shift at or past a word's width as zero — so the client would
-// never draw them, nobody would ever walk to them, and the objective could never
-// be met. A silently unwinnable game rather than an error, which is exactly the
-// kind of thing that has to be caught by a test rather than by a player.
+// never draw them and nobody would ever walk to them, however long they waited
+// for a respawn that had already happened. A part of the building quietly
+// missing rather than an error, which is exactly the kind of thing that has to
+// be caught by a test rather than by a player.
 //
 // Pinned over the GENERATOR and not checked on a frame: it is a property of what
 // levels are allowed to be, and a frame is far too late to discover it.
@@ -271,8 +308,8 @@ const MaxWirePickups = 32
 // Quantised exactly as self is — centimetres and thousandths of a radian — and
 // identified by a PER-PROCESS PSEUDONYM rather than by an account id. A frame
 // is addressed to one player, but it names another, and an account id would be
-// a durable handle on a person handed to everybody who shares an arena with
-// them. The same rule «Ванягоччи» settled on for its roster.
+// a durable handle on a person handed to everybody who shares the building with
+// them. The same rule «Ванягоччи» settled on for its roster (ADR-037).
 type Peer struct {
 	ID  string `json:"i"`
 	X   int    `json:"x"`
@@ -282,14 +319,6 @@ type Peer struct {
 	// State is a small enum for the pose: 0 idle, 1 moving, 2 dead. Everything
 	// a peer's appearance needs that is not its position.
 	State int `json:"s,omitempty"`
-}
-
-// Over ends a run. It is sent once, and the client stops sending input.
-type Over struct {
-	T       string         `json:"t"`
-	Success bool           `json:"success"`
-	Seconds int            `json:"secs"`
-	Bag     map[string]int `json:"c,omitempty"`
 }
 
 // cm quantises metres to centimetres for the wire.

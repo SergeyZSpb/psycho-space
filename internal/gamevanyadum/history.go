@@ -17,8 +17,8 @@ import "time"
 // retrofitted, because on the day you want it the past has already happened.
 // See ADR-052.
 //
-// It is memory-only and per-arena, like everything else the simulation owns, so
-// it neither persists nor ticks anything durable.
+// It is memory-only and belongs to the one world, like everything else the
+// simulation owns, so it neither persists nor ticks anything durable.
 
 // historyFrame is one recorded instant.
 //
@@ -46,9 +46,9 @@ type Spot struct {
 //
 // A ring rather than a slice that grows: the capacity is bounded by wall-clock
 // (HistoryWindow) and the tick rate is fixed, so it is known exactly and the
-// whole structure allocates once, at arena creation, and never again. A
-// simulation loop that allocates twenty times a second per arena is a
-// self-inflicted garbage problem.
+// whole structure allocates once, when the world is generated, and never again.
+// A simulation loop that allocates twenty times a second is a self-inflicted
+// garbage problem.
 //
 // The past it can actually answer for is one step shorter than HistoryWindow,
 // because the frames are fenceposts; see that constant for why the margin over
@@ -176,7 +176,7 @@ func (h *history) at(instant time.Time) map[string]Spot {
 // have the instant that was on their screen when they aimed.
 //
 // NEITHER IS HALVED, and the halving that used to be here was a real error
-// rather than a conservative choice. Arena.Enqueue derives `rtt` from the
+// rather than a conservative choice. World.Enqueue derives `rtt` from the
 // snapshot tick the client echoes back, so it already counts the frame's journey
 // out, the client's own think time and the answer's journey back — it is not a
 // ping. Halving it rewound an honest shooter to a moment between what he saw and
@@ -189,7 +189,7 @@ func (h *history) at(instant time.Time) map[string]Spot {
 // against a world seconds old. The clamp is on the composition and not only on
 // the sample: the two terms are added here, so this is the only place their sum
 // exists.
-func (a *Arena) RewindTo(now time.Time, rtt time.Duration) map[string]Spot {
+func (w *World) RewindTo(now time.Time, rtt time.Duration) map[string]Spot {
 	if rtt < 0 {
 		rtt = 0
 	}
@@ -197,5 +197,5 @@ func (a *Arena) RewindTo(now time.Time, rtt time.Duration) map[string]Spot {
 	if rewind > RewindMax {
 		rewind = RewindMax
 	}
-	return a.history.at(now.Add(-rewind))
+	return w.history.at(now.Add(-rewind))
 }

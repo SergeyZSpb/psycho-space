@@ -269,10 +269,19 @@ export async function createScene(opts: SceneOptions) {
     }
   }
 
-  /** Hides everything already collected. The server decides what is left. */
-  function setRemaining(ids: number[]): void {
-    const left = new Set(ids);
-    for (const [id, group] of pickupMeshes) group.visible = left.has(id);
+  /**
+   * Shows exactly what is lying on the floor, and hides the rest.
+   *
+   * SYMMETRIC ON PURPOSE, and that symmetry is now load-bearing: things come
+   * back (the server respawns a pickup where it was taken from), so this is
+   * called with a set that GROWS as often as it shrinks. Written as "hide what
+   * was collected" it would work for the whole of a bottle's first life and then
+   * never put it back — a bug nobody would see until they waited on an empty
+   * floor for half a minute. The server decides; this draws the answer.
+   */
+  function setOnFloor(ids: number[]): void {
+    const there = new Set(ids);
+    for (const [id, group] of pickupMeshes) group.visible = there.has(id);
   }
 
   function dispose(): void {
@@ -287,7 +296,7 @@ export async function createScene(opts: SceneOptions) {
     renderer.dispose();
   }
 
-  return { render, resize, setRemaining, setPeers, dispose };
+  return { render, resize, setOnFloor, setPeers, dispose };
 }
 
 /**

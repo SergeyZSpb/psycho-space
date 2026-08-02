@@ -154,13 +154,19 @@ export function createPredictor(opts: PredictorOptions) {
      * rubber-band.
      */
     reconcile(a: Authoritative): void {
-      // A PREDICTOR REBUILT MID-RUN ADOPTS THE SERVER'S COUNT, or it is frozen
-      // for the rest of the run. `createPredictor` starts at zero, so its first
-      // command is sequence 1 — and an arena that has already accepted hundreds
-      // drops 1 as stale, then 2, then every command after it, silently and for
-      // ever. This is not a corner case: a reload does it, a backgrounded tab
-      // that lost its socket and rebuilt on the way back does it, and so does
-      // the ordinary resume path that picks up a run already in progress.
+      // A PREDICTOR REBUILT UNDER A LIVING OCCUPANT ADOPTS THE SERVER'S COUNT,
+      // or it never moves again. `createPredictor` starts at zero, so its first
+      // command is sequence 1 — and the server drops everything at or below the
+      // highest sequence THAT OCCUPANT has already sent, which after a few
+      // seconds of walking is in the hundreds. So it drops 1 as stale, then 2,
+      // then every command after it, silently and for ever.
+      //
+      // This is not a corner case, because the occupant outlives the client's
+      // predictor by design. A reload inside the abandon grace comes back to the
+      // player it left standing there; so does a backgrounded tab whose socket
+      // dropped; and so does the заброшка being regenerated, which rebuilds the
+      // predictor against new geometry WITHOUT the socket or the occupant ever
+      // going away — the one that needs no interruption at all.
       //
       // The ack is the right floor because THE SERVER IS THE ONE THAT SAID IT.
       // It is the last sequence the server folded in, so counting on from it is
@@ -171,12 +177,14 @@ export function createPredictor(opts: PredictorOptions) {
       // rewinding onto sequences that are still pending would put two different
       // commands under one number.
       //
-      // It is a floor, not an exact resync. The arena deduplicates against the
-      // highest sequence it has ACCEPTED into its queue, which sits at or above
-      // the last one it has STEPPED — the ack — by however much is still waiting
-      // there. So a handful of the first resumed commands can still land below
-      // that mark and be dropped before the ack catches up. That is a fraction
-      // of a second of unresponsiveness, against a freeze that lasted the run.
+      // It is a floor, not an exact resync. The server deduplicates against the
+      // highest sequence it has ACCEPTED into that occupant's queue, which sits
+      // at or above the last one it has STEPPED — the ack — by however much is
+      // still waiting there. So a handful of the first resumed commands can land
+      // below that mark and be dropped before the ack catches up. That is a
+      // fraction of a second of unresponsiveness, against a freeze a reload
+      // could not clear — the occupant, and the count it is stuck behind,
+      // survive one.
       if (a.ack > seq) seq = a.ack;
 
       pending = pending.filter((c) => (c.seq ?? 0) > a.ack);
@@ -315,7 +323,7 @@ export function createPredictor(opts: PredictorOptions) {
       return max <= 0 ? [] : pending.slice(-max);
     },
 
-    /** For tests and for the run ending. */
+    /** How much is still unacknowledged. For tests. */
     pendingCount(): number {
       return pending.length;
     },

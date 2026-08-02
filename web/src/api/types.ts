@@ -830,28 +830,56 @@ export interface VanyadumSimConfig {
   collision_passes: number;
 }
 
+/**
+ * The rules of the building itself, as opposed to the rules of the player.
+ *
+ * Both numbers are things a player has to be told — how many people fit, and how
+ * long a bottle takes to come back — so both are derived onto the splash screen
+ * rather than typed out beside the server's constants.
+ */
+export interface VanyadumWorldConfig {
+  max_occupants: number;
+  respawn_seconds: number;
+}
+
 export interface VanyadumConfig {
   player: VanyadumPlayerConfig;
   pickups: VanyadumPickupKind[];
   surfaces: VanyadumSurfaceKind[];
   sim: VanyadumSimConfig;
+  world: VanyadumWorldConfig;
 }
 
-/** A started or resumed run: which one it is, and the level to build. */
-export interface VanyadumRun {
-  run_id: string;
-  /** The whole sector graph. Sent once per run and never on a snapshot. */
+/**
+ * The заброшка everybody is standing in — there is exactly one, and this is it.
+ *
+ * `world_id` IS THE CACHE KEY for the geometry below, and the only reason it is
+ * here. The building is regenerated whenever it empties, so a client holding a
+ * level it fetched earlier has no other way to know whether that level is still
+ * the one everybody else is walking around in: the `vanyadum_ready` frame names
+ * the building this socket was let into, and a disagreement means re-fetch.
+ */
+export interface VanyadumWorld {
+  world_id: string;
+  /** What the building was grown from. On the level too; the pair is the key. */
+  seed: number;
+  /** The whole sector graph. Sent once per building and never on a snapshot. */
   level: import('../lib/vanyadumLevel').VanyadumLevel;
   /** The realtime room to open the socket in. */
   room: string;
 }
 
-/** One finished run, as the splash screen lists it. */
-export interface VanyadumRunRow {
-  success: boolean;
+/**
+ * One recorded visit, as the splash screen lists it.
+ *
+ * There is no `success` field and never will be: nothing in this game is
+ * completed, so a visit is a length of time and what you carried out of it.
+ */
+export interface VanyadumVisitRow {
+  seed: number;
   seconds: number;
   beer: number;
-  created_at: string;
+  joined_at: string;
 }
 
 // ---------------------------------------------------------------------------

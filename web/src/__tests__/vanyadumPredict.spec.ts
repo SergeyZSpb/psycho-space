@@ -174,13 +174,16 @@ describe('reconciliation', () => {
   });
 });
 
-describe('a predictor rebuilt in the middle of a run', () => {
+describe('a predictor rebuilt under an occupant that is still standing there', () => {
   // The defect this pins was a permanent freeze, not a glitch. A rebuilt
-  // predictor counts from one, the arena has long since accepted far higher, so
-  // it drops command 1 as stale and then every command that follows it — with
-  // the socket up, the snapshots arriving and the HUD alive, so nothing on
-  // screen says why the player has stopped moving. A reload is enough to cause
-  // it, and it lasts the rest of the run.
+  // predictor counts from one, the server has long since accepted far higher
+  // sequences FROM THAT SAME OCCUPANT, so it drops command 1 as stale and then
+  // every command that follows it — with the socket up, the snapshots arriving
+  // and the HUD alive, so nothing on screen says why the player has stopped
+  // moving. And the occupant outlives the predictor by design: a reload inside
+  // the abandon grace comes back to it, and so does the заброшка being
+  // regenerated, which rebuilds the predictor against new geometry without the
+  // socket ever dropping.
 
   it('counts on from the ack, so its first command is not dropped as stale', () => {
     const p = predictor();

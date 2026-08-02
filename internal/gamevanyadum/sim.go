@@ -50,7 +50,7 @@ type Command struct {
 	Pitch float64
 }
 
-// Player is one occupant of an arena.
+// Player is one occupant of the заброшка.
 //
 // Counters is the generic bag every pickup grants into, keyed by the catalogue's
 // Grants field, so the HUD and the snapshot both iterate rather than naming

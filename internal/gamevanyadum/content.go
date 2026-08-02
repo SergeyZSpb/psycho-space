@@ -81,6 +81,85 @@ type PickupKind struct {
 	Blurb string `json:"blurb"`
 }
 
+// PickupRespawn is how long a collected thing takes to come back, on the spot it
+// was taken from.
+//
+// A TUNING CONSTANT, and the first one to reach for once anybody has actually
+// played this. The match is infinite and the generator scatters two or three
+// bottles through nine-odd rooms, so the two failure modes are close together:
+// much faster and the заброшка is a vending machine — stand on the spot, wait,
+// drink, repeat, and there is no reason to walk anywhere; much slower and an
+// infinite match runs dry, leaving a building with nothing in it to find. Thirty
+// seconds is roughly the time it takes to cross the place and come back, which
+// makes the loop "tour the building" rather than "camp the bottle".
+//
+// IT COMES BACK WHERE IT WAS, which is what makes it free on the wire: the
+// client was sent the level once and the remaining-pickup mask is indexed into
+// it, so a return is one bit changing rather than a position being re-sent.
+// Camping is not worth defending against here — the counter caps at
+// PickupKind.Max and nothing yet spends it — and the day beer buys something,
+// this is the constant that decides whether standing still can farm it.
+const PickupRespawn = 30 * time.Second
+
+// pickupRespawnTicks is that interval as a whole number of simulation steps,
+// which is the unit World.ready is expressed in. Derived rather than typed out,
+// so the two can never disagree.
+const pickupRespawnTicks = int64(PickupRespawn / SimStep)
+
+// MaxOccupants is how many people may be in the заброшка at once.
+//
+// FOUR IS A STEP, NOT A CEILING, and the arithmetic is what makes it one rather
+// than a guess. A snapshot is built PER OCCUPANT and carries everybody else, so
+// what a viewer pays grows with the building's population and the capacity is
+// simply whatever that product can afford.
+//
+// THE CEILING IS 8 kB/s PER VIEWER — the number this game's design named as the
+// point at which interest management stops being optional — and at SnapshotHz
+// that affords 400 bytes a frame.
+//
+// THE MEASUREMENT, at the widest quantisation the wire can carry (yaw is
+// wrapped rather than normalised, so it reaches five characters; positions are
+// far beyond anything a generated level produces):
+//
+//	solo frame                137 bytes
+//	the first peer            +78  (the entry, plus the `p` array around it)
+//	each further peer         +72
+//
+// So 137 + 78 + (N−2)×72 ≤ 400 gives N = 4: a full house is 359 bytes, 7.2 kB/s
+// per viewer, where five would be 431 bytes and 8.6 kB/s. A realistic peer — the
+// magnitudes a заброшка of a few tens of metres actually produces — is about 60
+// bytes rather than 72, but the budget is deliberately taken on the WORST case,
+// because a phone on bad mobile data is exactly the situation in which the worst
+// case is the case. Pinned by TestAFullBuildingsFrameStaysInsideItsBudget.
+//
+// SIX WAS DERIVED FROM A PEER SIZE THAT DID NOT SURVIVE MEASUREMENT. The design
+// doc budgeted about 25 bytes for one; the real entry is 72 worst case and about
+// 60 realistic, 2.4–2.9× the estimate, which put a full six-person house at 503
+// bytes — 10.1 kB/s, a quarter over the ceiling the same document set. The
+// measurement is the improvement; six was simply never re-derived after it.
+//
+// TWO THINGS BUY THE WAY BACK UP, and both belong in the next slice rather than
+// here:
+//
+//   - INTEREST MANAGEMENT — sending only what a player could plausibly see. The
+//     sector graph already publishes a neighbour set, so filtering to the
+//     viewer's sector and its neighbours is nearly free. It makes the frame a
+//     function of what is VISIBLE rather than of the population, which is what
+//     decouples capacity from bandwidth — though only if the visible set is
+//     itself bounded, since a room everybody crowds into is the worst case
+//     again.
+//   - A SMALLER PEER. The 12-character pseudonym is 19 bytes of a peer entry's
+//     71 and it is CONSTANT for the life of an occupant, which is precisely what
+//     this project's bytes-on-the-wire rule forbids on a repeating frame
+//     (CLAUDE.md, and ADR-037 for the same rule applied to a face). A small slot
+//     index, with the mapping published once, takes the entry to about 58 bytes,
+//     which is one more place on its own under the same ceiling.
+//
+// A refusal is a refusal and never a queue: somebody who arrives at a full
+// заброшка is told so (the `vanyadum_full` frame) rather than being put on hold,
+// because there is nothing to hold them for — nothing here ends.
+const MaxOccupants = 4
+
 // Pickups is every kind that can be generated into a level.
 //
 // Iteration 1 has exactly one. The syringe and the keys are designed (see the
@@ -140,8 +219,8 @@ var Surfaces = []Surface{
 	{Key: "ceiling", Base: "#3a3d3c", Accent: "#242626", Noise: 0.35, Roughness: 0.6, Pattern: "concrete"},
 }
 
-// Level generation. A run's whole geometry is a function of these numbers and a
-// seed, so a level is reproducible from the two and is never stored.
+// Level generation. A building's whole geometry is a function of these numbers
+// and a seed, so a level is reproducible from the two and is never stored.
 const (
 	// RoomsMin and RoomsMax bound how many rooms a floor has.
 	RoomsMin = 7
@@ -181,6 +260,16 @@ type Config struct {
 	Pickups  []PickupKind `json:"pickups"`
 	Surfaces []Surface    `json:"surfaces"`
 	Sim      SimConfig    `json:"sim"`
+	World    WorldConfig  `json:"world"`
+}
+
+// WorldConfig is what the client needs to describe the building itself: how many
+// people fit in it, and how long a thing takes to come back once somebody has
+// taken it. Both are rules a player has to be told, so both are derived from the
+// constants above rather than typed out on the splash screen.
+type WorldConfig struct {
+	MaxOccupants   int     `json:"max_occupants"`
+	RespawnSeconds float64 `json:"respawn_seconds"`
 }
 
 // PlayerConfig is what the client needs to draw and describe the player.
@@ -246,6 +335,10 @@ func BuildConfig() Config {
 			Redundant:       RedundantCommands,
 			InterpDelayMs:   int(InterpolationDelay / time.Millisecond),
 			CollisionPasses: collisionPasses,
+		},
+		World: WorldConfig{
+			MaxOccupants:   MaxOccupants,
+			RespawnSeconds: PickupRespawn.Seconds(),
 		},
 	}
 }

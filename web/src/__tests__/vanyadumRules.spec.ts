@@ -45,6 +45,7 @@ const config: VanyadumConfig = {
     interp_delay_ms: 120,
     collision_passes: 3,
   },
+  world: { max_occupants: 6, respawn_seconds: 30 },
 };
 
 describe('buildRules', () => {
@@ -64,6 +65,60 @@ describe('buildRules', () => {
     expect(text).toContain('9,5 м/с');
     expect(text).toContain('120 см');
     expect(text).toContain('40 из 100');
+  });
+
+  it("takes the building's own rules from the catalogue too", () => {
+    // Capacity and the respawn interval are the two rules a player would
+    // otherwise discover by being refused at the door, or by standing over an
+    // empty floor wondering whether waiting is worth it. Both are served, so
+    // both are derived — retune either on the server and this screen follows.
+    const retuned = {
+      ...config,
+      world: { max_occupants: 12, respawn_seconds: 45 },
+    };
+    const block = buildRules(retuned).find((b) => b.title === 'Заброшка');
+    const text = block?.lines.map((l) => l.text).join(' ') ?? '';
+    expect(text).toContain('12');
+    expect(text).toContain('45 с');
+    // And it is not marked as prose, because none of it was typed out.
+    expect(block?.prose).toBeFalsy();
+  });
+
+  it('says the building is shared and that nothing in it ends', () => {
+    // The two facts that changed everything about this game, and the two a
+    // player will otherwise assume the opposite of: a lone arena with a win
+    // condition is what every other shooter has trained them to expect.
+    const text = buildRules(config)
+      .flatMap((b) => b.lines)
+      .map((l) => `${l.label} ${l.text}`)
+      .join(' ');
+    expect(text).toContain('одна');
+    expect(text).toContain('цели нет');
+    expect(text).toMatch(/не кончается/);
+  });
+
+  it('says the building is torn down and generated again once it empties', () => {
+    // «Заброшка одна» on its own reads as one PERMANENT building, and a player
+    // who believes that will remember the layout, come back to somewhere else
+    // entirely and decide the game is broken. It is a rule of the game, so it is
+    // on the screen — and it is in the hand-written block because the catalogue
+    // has no field for it: the config endpoint publishes what a заброшка is made
+    // of, not what happens to this one when the last person walks out.
+    const prose = buildRules(config).find((b) => b.prose);
+    const text = prose?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
+    expect(text).toContain('сносят');
+    expect(text).toContain('в новую');
+  });
+
+  it('no longer tells anybody to collect all the beer', () => {
+    // The objective the game had until W1a. A cheatsheet that describes the
+    // previous version of a game is worse than none, because it is believed.
+    const text = buildRules(config)
+      .flatMap((b) => b.lines)
+      .map((l) => l.text)
+      .join(' ');
+    expect(text).not.toContain('Собрать всё пиво');
+    expect(text).not.toContain('забег');
   });
 
   it('describes every pickup the catalogue carries, and only those', () => {

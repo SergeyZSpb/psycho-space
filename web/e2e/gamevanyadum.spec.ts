@@ -8,15 +8,24 @@ import { seedClient } from './fixtures';
  * WHAT THIS SUITE CAN AND CANNOT SEE. The world is a `<canvas>`, and nothing
  * inside one can be asserted on without pixel comparison — so this file asserts
  * on everything that is deliberately NOT in it: the splash, the rules cheatsheet
- * generated from the catalogue, the HUD, the touch targets, the result screen,
- * and the fact that the page never scrolls while somebody is turning round.
+ * generated from the catalogue, the HUD, the touch targets, the refusal a full
+ * заброшка sends back, and the fact that the page never scrolls while somebody
+ * is turning round.
  *
  * That division is the whole reason the view keeps its readouts and controls in
  * real DOM (ADR-046). If a future change moves the HUD onto the canvas because
  * it would look nicer, it deletes this file's ability to check any of it.
  *
  * The socket is intercepted with `page.routeWebSocket`, so the test IS the
- * server: it decides what a snapshot says and when the run ends.
+ * server: it decides what a snapshot says, which building a ready frame names,
+ * and whether the building has room.
+ *
+ * WHAT IS NOT ASSERTED HERE, AND WHY. Anything needing the render loop. Input is
+ * emitted from `requestAnimationFrame`, a browser pauses rAF outright for a
+ * backgrounded page, and with several parallel workers only one page is ever
+ * visible — so such an assertion fails about one run in three for reasons that
+ * have nothing to do with its claim. Those claims live in unit tests over the
+ * pure functions instead.
  */
 
 const CONFIG = {
@@ -66,6 +75,9 @@ const CONFIG = {
     interp_delay_ms: 120,
     collision_passes: 3,
   },
+  // Also deliberately not production's six and thirty: the splash states the
+  // building's own rules, and it must state THESE.
+  world: { max_occupants: 4, respawn_seconds: 45 },
 };
 
 /** Two rooms and a doorway — enough geometry to be a level, small enough to read. */
@@ -93,20 +105,25 @@ const LEVEL = {
   spawn_yaw: 0,
 };
 
-const RUN = { run_id: 'run-e2e', level: LEVEL, room: 'vanyadum' };
+const WORLD_ID = 'world-e2e';
+const WORLD = { world_id: WORLD_ID, seed: LEVEL.seed, level: LEVEL, room: 'vanyadum' };
 
 interface StubOptions {
-  /** Answer `runs/current` with a run, as if the player had reloaded mid-game. */
-  resume?: boolean;
-  /** Previously finished runs, for the splash's list. */
-  runs?: { success: boolean; seconds: number; beer: number; created_at: string }[];
+  /** Visits already recorded, for the splash's list. */
+  visits?: { seed: number; seconds: number; beer: number; joined_at: string }[];
 }
 
-async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
+/**
+ * Stubs the three reads this game has. Returns a counter for `/world`, which is
+ * how the "the building was regenerated" path is observed: re-fetching is the
+ * whole of the client's response to a ready frame naming a building it is not
+ * standing in, and it needs no render loop to see.
+ */
+async function stubBackend(page: Page, opts: StubOptions = {}): Promise<() => number> {
+  let worldFetches = 0;
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
-    const method = route.request().method();
     const json = (status: number, body: unknown) =>
       route.fulfill({
         status,
@@ -127,18 +144,14 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
       });
     }
     if (path === '/api/game-vanyadum/config') return json(200, CONFIG);
-    if (path === '/api/game-vanyadum/runs/me') return json(200, { runs: opts.runs ?? [] });
-    if (path === '/api/game-vanyadum/runs/current' && method === 'GET') {
-      return opts.resume
-        ? json(200, RUN)
-        : json(404, { error: 'no_run', trace_id: 'e2e-trace-id' });
+    if (path === '/api/game-vanyadum/visits/me') return json(200, { visits: opts.visits ?? [] });
+    if (path === '/api/game-vanyadum/world') {
+      worldFetches += 1;
+      return json(200, WORLD);
     }
-    if (path === '/api/game-vanyadum/runs/current' && method === 'DELETE') {
-      return route.fulfill({ status: 204, body: '' });
-    }
-    if (path === '/api/game-vanyadum/runs' && method === 'POST') return json(201, RUN);
     return json(404, { error: 'not_found', trace_id: 'e2e-trace-id' });
   });
+  return () => worldFetches;
 }
 
 /**
@@ -146,8 +159,9 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
  * so every assertion about the HUD is driven rather than waited for.
  */
 async function stubSocket(page: Page): Promise<{
+  ready: (worldID?: string) => Promise<void>;
   snapshot: (fields: Record<string, unknown>) => Promise<void>;
-  over: (fields: Record<string, unknown>) => Promise<void>;
+  full: () => Promise<void>;
   sent: () => Promise<string[]>;
 }> {
   const sent: string[] = [];
@@ -166,15 +180,21 @@ async function stubSocket(page: Page): Promise<{
   };
 
   return {
+    // Which building this socket was let into. A id other than the one the
+    // client fetched means the заброшка emptied and was regenerated while it
+    // was away — the only invalidation signal this game has.
+    ready: (worldID = WORLD_ID) => send({ t: 'vanyadum_ready', world_id: worldID }),
     // `pk` is a BITMASK over the index into the level's pickup list — bit i set
-    // means the i-th is still on the floor — so the resting frame is 0b11: both
-    // of LEVEL's two pickups uncollected. Sending the old list of ids here would
-    // still be valid JSON and would decode as the number zero, which reads as
-    // every pickup taken and is exactly the kind of quiet wrongness this stub
-    // exists to avoid.
+    // means the i-th is lying on the floor — so the resting frame is 0b11: both
+    // of LEVEL's two bottles are there. Sending a list of ids here would still
+    // be valid JSON and would decode as the number zero, which reads as an empty
+    // floor and is exactly the kind of quiet wrongness this stub exists to
+    // avoid. The mask moves in BOTH directions: things come back.
     snapshot: (fields) =>
       send({ t: 'vanyadum_snap', k: 1, ack: 1, x: 500, y: 500, z: 165, yaw: 0, s: 0, hp: 61, pk: 0b11, ...fields }),
-    over: (fields) => send({ t: 'vanyadum_over', success: true, secs: 42, c: { beer: 2 }, ...fields }),
+    // The building is at capacity. It carries no fields — the number is in the
+    // catalogue, and nothing here ends, so there is no honest "try again at T".
+    full: () => send({ t: 'vanyadum_full' }),
     sent: async () => sent,
   };
 }
@@ -185,22 +205,29 @@ function isMobile(page: Page): boolean {
   return !!vp && vp.width <= 600;
 }
 
-async function openSplash(page: Page, opts: StubOptions = {}): Promise<void> {
-  await stubBackend(page, opts);
+async function openSplash(page: Page, opts: StubOptions = {}): Promise<() => number> {
+  const worldFetches = await stubBackend(page, opts);
   await seedClient(page, 'dark');
   await page.goto('/app/game-vanyadum');
   await expect(page.getByTestId('vanyadum-root')).toBeVisible();
+  return worldFetches;
+}
+
+/** Walks in. Every play test starts here, and none of them starts a run. */
+async function walkIn(page: Page): Promise<void> {
+  await page.getByTestId('vanyadum-enter').click();
+  await expect(page.getByTestId('vanyadum-play')).toBeVisible();
 }
 
 test.describe('«ВАНЯДУМ» — the browser running this suite', () => {
   // THIS TEST IS ABOUT THE HARNESS, NOT THE GAME, and it exists because the
   // failure it names is unrecognisable without it.
   //
-  // Every test below that reaches `vanyadum-start` needs a real WebGL context:
+  // Every test below that reaches `vanyadum-enter` needs a real WebGL context:
   // the view probes for one before it builds anything, and a browser without it
-  // is shown the «твой браузер не умеет 3D» screen instead of a start button —
+  // is shown the «твой браузер не умеет 3D» screen instead of the door —
   // correctly, that is a production path (ADR-047). So when the browser loses
-  // 3D, fifteen specs fail with `waiting for getByTestId('vanyadum-start')` and
+  // 3D, fifteen specs fail with `waiting for getByTestId('vanyadum-enter')` and
   // point at the game, which is innocent.
   //
   // It happens for one environmental reason: Chromium's ANGLE picks its EGL
@@ -211,7 +238,7 @@ test.describe('«ВАНЯДУМ» — the browser running this suite', () => {
   //
   // Asserting the EFFECT rather than the presence of the fix, which is the
   // lesson of the three CSS rules that were written and never landed.
-  test('can actually do 3D, or every test that starts a run below is a lie', async ({ page }) => {
+  test('can actually do 3D, or every test that walks in below is a lie', async ({ page }) => {
     await openSplash(page);
     const gl = await page.evaluate(() => {
       const probe = document.createElement('canvas');
@@ -225,7 +252,7 @@ test.describe('«ВАНЯДУМ» — the browser running this suite', () => {
     ).toBe(true);
     // And the view agrees, so this is the same judgement the game makes.
     await expect(page.getByTestId('vanyadum-nogl')).toHaveCount(0);
-    await expect(page.getByTestId('vanyadum-start')).toBeVisible();
+    await expect(page.getByTestId('vanyadum-enter')).toBeVisible();
   });
 });
 
@@ -244,6 +271,24 @@ test.describe('«ВАНЯДУМ» splash', () => {
     await expect(rules).toContainText('максимум 9');
   });
 
+  test('and it states what the game now IS: one shared building that never ends', async ({
+    page,
+  }) => {
+    // The rules changed completely in W1a, and a cheatsheet describing the
+    // previous version of a game is worse than none, because it is believed.
+    // Capacity and the respawn interval are the stub's numbers, so these two
+    // assertions also prove that half is derived rather than typed.
+    await openSplash(page);
+    const rules = page.getByTestId('vanyadum-rules');
+    await expect(rules).toContainText('Больше 4 человек');
+    await expect(rules).toContainText('45 с');
+    await expect(rules).toContainText('Заброшка одна');
+    await expect(rules).toContainText('цели нет');
+    await expect(rules).toContainText('закрой вкладку');
+    // And the objective it used to have is gone from the screen entirely.
+    await expect(rules).not.toContainText('Собрать всё пиво');
+  });
+
   test('the controls are explained, because nothing else says how to move', async ({ page }) => {
     await openSplash(page);
     const rules = page.getByTestId('vanyadum-rules');
@@ -252,46 +297,62 @@ test.describe('«ВАНЯДУМ» splash', () => {
     await expect(rules).toContainText('WASD');
   });
 
-  test('previous runs are listed, so persistence is visible without a database', async ({ page }) => {
+  test('previous visits are listed, so persistence is visible without a database', async ({
+    page,
+  }) => {
     await openSplash(page, {
-      runs: [{ success: true, seconds: 91, beer: 3, created_at: '2026-07-28T10:00:00Z' }],
+      visits: [{ seed: 4242, seconds: 91, beer: 3, joined_at: '2026-07-28T10:00:00Z' }],
     });
-    const runs = page.getByTestId('vanyadum-runs');
-    await expect(runs).toBeVisible();
-    await expect(runs).toContainText('91 с');
-    await expect(runs).toContainText('3');
+    const list = page.getByTestId('vanyadum-visits');
+    await expect(list).toBeVisible();
+    await expect(list).toContainText('91 с');
+    await expect(list).toContainText('3');
+    // No verdict on a visit: nothing was won or lost, so there is no ✅ or 💀.
+    await expect(list).not.toContainText('✅');
+    await expect(list).not.toContainText('💀');
   });
 
   test('the list is absent rather than empty when there is nothing in it', async ({ page }) => {
     await openSplash(page);
-    await expect(page.getByTestId('vanyadum-runs')).toHaveCount(0);
+    await expect(page.getByTestId('vanyadum-visits')).toHaveCount(0);
   });
 
-  test('the start button is a real tap target', async ({ page }) => {
+  test('the door is a real tap target', async ({ page }) => {
     await openSplash(page);
-    const box = await page.getByTestId('vanyadum-start').boundingBox();
+    const box = await page.getByTestId('vanyadum-enter').boundingBox();
     expect(box).not.toBeNull();
     expect(box!.height).toBeGreaterThanOrEqual(44);
   });
 
   test('nothing overflows a 360 px phone', async ({ page }) => {
     await openSplash(page, {
-      runs: [{ success: false, seconds: 12, beer: 0, created_at: '2026-07-28T10:00:00Z' }],
+      visits: [{ seed: 4242, seconds: 12, beer: 0, joined_at: '2026-07-28T10:00:00Z' }],
     });
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
     );
     expect(overflow).toBeLessThanOrEqual(0);
   });
+
+  test('nothing is entered just by opening the page', async ({ page }) => {
+    // A hello creates an occupant and therefore, eventually, a recorded visit —
+    // so it may only be sent once somebody has said he wants to be inside.
+    // Walking a player in because he opened the page would write a visit for
+    // reading the rules.
+    const socket = await stubSocket(page);
+    const worldFetches = await openSplash(page);
+    await expect(page.getByTestId('vanyadum-rules')).toBeVisible();
+    expect(await socket.sent()).toHaveLength(0);
+    expect(worldFetches()).toBe(0);
+  });
 });
 
 test.describe('«ВАНЯДУМ» play', () => {
-  test('starting a run replaces the splash with the world and a real HUD', async ({ page }) => {
+  test('walking in replaces the splash with the world and a real HUD', async ({ page }) => {
     await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
+    await walkIn(page);
 
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
     await expect(page.getByTestId('vanyadum-canvas')).toBeVisible();
     // The HUD is DOM and its numbers are readable as text — which is the whole
     // reason it is not painted into the canvas.
@@ -300,15 +361,14 @@ test.describe('«ВАНЯДУМ» play', () => {
   });
 
   test('movement is predicted, so the camera does not wait for a snapshot', async ({ page }) => {
-    // The complaint this whole netcode change exists to fix: iteration 1 only
-    // moved the camera when a snapshot landed, so walking looked like twenty
-    // frames a second. Asserted through the DOM rather than the canvas — the
-    // client sends input the instant a key is held, and it does so without ever
-    // having been told where it is.
+    // The complaint the netcode change exists to fix: iteration 1 only moved the
+    // camera when a snapshot landed, so walking looked like twenty frames a
+    // second. Asserted through the DOM rather than the canvas — the client sends
+    // input the instant a key is held, and it does so without ever having been
+    // told where it is.
     const socket = await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+    await walkIn(page);
 
     // Deliberately never send a snapshot. A client that could not predict would
     // have nothing to say.
@@ -328,33 +388,67 @@ test.describe('«ВАНЯДУМ» play', () => {
   test('the HUD follows the snapshot, not the client', async ({ page }) => {
     const socket = await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+    await walkIn(page);
 
-    // One bit set: the pickup at index 0 is still there, the other was taken.
+    // One bit set: the bottle at index 0 is lying there, the other was taken.
     await socket.snapshot({ hp: 37, c: { beer: 2 }, pk: 0b01 });
 
     await expect(page.getByTestId('vanyadum-hud')).toContainText('37');
     await expect(page.getByTestId('vanyadum-count-beer')).toContainText('2');
-    await expect(page.getByTestId('vanyadum-hud')).toContainText('осталось 1');
+    await expect(page.getByTestId('vanyadum-floor')).toContainText('на полу 1');
+  });
+
+  test('a bottle that comes back is shown as back, not only as taken', async ({ page }) => {
+    // The mask now moves in BOTH directions, and this is the DOM-visible half of
+    // that: the mesh going back into the scene cannot be asserted on, but the
+    // readout driven by the same number can. A client that only ever removed
+    // things would sit at «на полу 1» for the rest of the session.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.snapshot({ pk: 0b11 });
+    await expect(page.getByTestId('vanyadum-floor')).toContainText('на полу 2');
+    await socket.snapshot({ pk: 0b01 });
+    await expect(page.getByTestId('vanyadum-floor')).toContainText('на полу 1');
+    // Thirty seconds later, on the server's clock.
+    await socket.snapshot({ pk: 0b11 });
+    await expect(page.getByTestId('vanyadum-floor')).toContainText('на полу 2');
+  });
+
+  test('the building says how many people are in it, counting you', async ({ page }) => {
+    // Derived from the peer array rather than sent as its own field — it is the
+    // one thing on screen that makes "everybody is in the same заброшка" visible
+    // at all, and it costs nothing on a payload that repeats twenty times a
+    // second.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.snapshot({});
+    await expect(page.getByTestId('vanyadum-occupants')).toContainText('1');
+
+    await socket.snapshot({
+      p: [
+        { i: 'abcdef012345', x: 700, y: 500, z: 165, yaw: 0, s: 0 },
+        { i: '012345abcdef', x: 800, y: 500, z: 165, yaw: 0, s: 2 },
+      ],
+    });
+    await expect(page.getByTestId('vanyadum-occupants')).toContainText('3');
   });
 
   test('the client says hello the moment the socket opens', async ({ page }) => {
-    // What this suite can honestly prove. The INPUT frame's shape is asserted in
-    // a unit test over buildInputFrame instead: input is emitted from the render
-    // loop, a browser pauses requestAnimationFrame outright for a backgrounded
-    // page, and with several parallel workers only one page is ever visible — so
-    // a Playwright assertion about input frames failed about one run in three
-    // for reasons that had nothing to do with the payload.
+    // The hello IS the join: there is no start endpoint, so this frame is the
+    // only door. It needs no render loop, which is why it can be asserted here
+    // when the input frame's shape cannot — that claim lives in a unit test over
+    // buildInputFrame instead.
     //
-    // The hello needs no render loop, and it is the part that matters here: it
-    // goes out on every OPEN, including reconnects, because an arena outlives a
-    // dropped socket and a returning client has to be re-attached to the run it
-    // is already in.
+    // It goes out on every OPEN, including reconnects: an occupant outlives a
+    // dropped socket for the length of the grace period, so a returning client
+    // has to say hello again to keep the place it already had.
     const socket = await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+    await walkIn(page);
 
     await expect
       .poll(async () => (await socket.sent()).filter((m) => m.includes('vanyadum_hello')).length)
@@ -368,18 +462,19 @@ test.describe('«ВАНЯДУМ» play', () => {
   test('standing still sends nothing at all', async ({ page }) => {
     const socket = await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+    await walkIn(page);
 
     await page.waitForTimeout(700);
     const inputs = (await socket.sent()).filter((m) => m.includes('vanyadum_input'));
     expect(inputs).toHaveLength(0);
   });
 
-  test('the stick appears where the thumb lands, not where a circle is painted', async ({ page }) => {
+  test('the stick appears where the thumb lands, not where a circle is painted', async ({
+    page,
+  }) => {
     await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
+    await walkIn(page);
     const pad = page.getByTestId('vanyadum-pad');
     await expect(pad).toBeVisible();
 
@@ -393,50 +488,106 @@ test.describe('«ВАНЯДУМ» play', () => {
     expect(Math.abs(box!.x + box!.width / 2 - 70)).toBeLessThan(4);
   });
 
-  test('the fire and quit controls clear 44 px and sit inside the screen', async ({ page }) => {
+  test('the fire control clears 44 px and sits inside the screen', async ({ page }) => {
+    // The only button on the play surface now. «сдаться» went with the runs it
+    // used to end: leaving is leaving the page.
     await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
+    await walkIn(page);
 
     const viewport = page.viewportSize()!;
-    for (const id of ['vanyadum-fire', 'vanyadum-quit']) {
-      const box = await page.getByTestId(id).boundingBox();
-      expect(box, id).not.toBeNull();
-      expect(box!.width, id).toBeGreaterThanOrEqual(44);
-      expect(box!.height, id).toBeGreaterThanOrEqual(44);
-      expect(box!.x + box!.width, id).toBeLessThanOrEqual(viewport.width);
-    }
+    const box = await page.getByTestId('vanyadum-fire').boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
   });
 
   test('the play surface swallows gestures, so a firefight cannot scroll the page', async ({
     page,
   }) => {
     // `touch-action: none` is the difference between turning round and
-    // pull-to-refresh reloading the game mid-run.
+    // pull-to-refresh reloading the game mid-visit.
     await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
+    await walkIn(page);
     const touchAction = await page
       .getByTestId('vanyadum-pad')
       .evaluate((el) => getComputedStyle(el).touchAction);
     expect(touchAction).toBe('none');
   });
+});
 
-  test('giving up goes back to the splash', async ({ page }) => {
-    await stubSocket(page);
+test.describe('«ВАНЯДУМ» when the заброшка will not have you', () => {
+  test('a full building says so in Russian rather than doing nothing', async ({ page }) => {
+    // A hello the server parsed perfectly and cannot honour gets an answer, and
+    // the player has to be able to read it. Silence would be indistinguishable
+    // from the game being broken.
+    const socket = await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+    await walkIn(page);
 
-    await page.getByTestId('vanyadum-quit').click();
+    await socket.full();
+
+    const notice = page.getByTestId('vanyadum-full');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('ЗАБРОШКА ПОЛНА');
+    // The capacity comes from the catalogue, like every other number here.
+    await expect(notice).toContainText('4');
+    // Back on the splash, where the door is also the retry — a second button
+    // saying "try again" would be a second path to one outcome.
     await expect(page.getByTestId('vanyadum-splash')).toBeVisible();
+    await expect(page.getByTestId('vanyadum-enter')).toBeVisible();
   });
 
-  test('a run already in progress is resumed rather than restarted', async ({ page }) => {
-    // The arena outlives a disconnect by design, so a reload must pick the run
-    // back up instead of stranding the player behind a button that answers 409.
-    await stubSocket(page);
-    await openSplash(page, { resume: true });
+  test('and the refusal fits a phone without pushing anything off the side', async ({ page }) => {
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+    await socket.full();
+    await expect(page.getByTestId('vanyadum-full')).toBeVisible();
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  test('pressing the door again is the retry, and it clears the notice', async ({ page }) => {
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+    await socket.full();
+    await expect(page.getByTestId('vanyadum-full')).toBeVisible();
+
+    await walkIn(page);
+    await expect(page.getByTestId('vanyadum-full')).toHaveCount(0);
+  });
+});
+
+test.describe('«ВАНЯДУМ» when the building has been regenerated', () => {
+  test('a ready frame naming another building makes the client re-fetch it', async ({ page }) => {
+    // The заброшка is torn down when the last person leaves, so a client that
+    // was away long enough can come back holding geometry nobody is standing in.
+    // The world id on the ready frame is the ONLY signal that says so, and
+    // re-fetching is the whole of the response. Counted rather than looked at:
+    // the meshes are inside the canvas, but the HTTP call is not.
+    const socket = await stubSocket(page);
+    const worldFetches = await openSplash(page);
+    await walkIn(page);
+    await expect.poll(worldFetches).toBe(1);
+
+    // Same building — nothing to do.
+    await socket.ready();
+    await socket.snapshot({});
+    await expect(page.getByTestId('vanyadum-occupants')).toContainText('1');
+    expect(worldFetches()).toBe(1);
+
+    // A different one. The level, the walls the predictor collides against and
+    // the interpolation buffer all describe a building that no longer exists.
+    await socket.ready('world-regenerated');
+    await expect.poll(worldFetches).toBe(2);
+    // And the player is still inside, not thrown back to the splash.
     await expect(page.getByTestId('vanyadum-play')).toBeVisible();
   });
 });
@@ -468,8 +619,7 @@ test.describe('«ВАНЯДУМ» with a mouse', () => {
     // the half of the pad that walks.
     await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+    await walkIn(page);
 
     await expect(page.getByTestId('vanyadum-lock')).toHaveCount(0);
   });
@@ -480,7 +630,7 @@ test.describe('«ВАНЯДУМ» with a mouse', () => {
     // with a touchscreen would lose its touch controls entirely.
     await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
+    await walkIn(page);
     const pad = page.getByTestId('vanyadum-pad');
     await pad.dispatchEvent('pointerdown', {
       pointerId: 1,
@@ -501,8 +651,7 @@ test.describe('«ВАНЯДУМ» with a mouse', () => {
     const locks = await spyOnPointerLock(page);
     await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+    await walkIn(page);
 
     const prompt = page.getByTestId('vanyadum-lock');
     await expect(prompt).toBeVisible();
@@ -525,41 +674,10 @@ test.describe('«ВАНЯДУМ» with a mouse', () => {
     const locks = await spyOnPointerLock(page);
     await stubSocket(page);
     await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+    await walkIn(page);
 
     await page.getByTestId('vanyadum-pad').click({ position: { x: 300, y: 300 } });
     expect(await locks()).toBe(1);
-  });
-});
-
-test.describe('«ВАНЯДУМ» ending', () => {
-  test('the run-over frame shows the result and the way back in', async ({ page }) => {
-    const socket = await stubSocket(page);
-    await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
-
-    await socket.over({ success: true, secs: 42, c: { beer: 2 } });
-
-    const over = page.getByTestId('vanyadum-over');
-    await expect(over).toBeVisible();
-    await expect(over).toContainText('42');
-    await expect(over).toContainText('2');
-    await expect(page.getByTestId('vanyadum-again')).toBeVisible();
-  });
-
-  test('and the ending screen fits a phone', async ({ page }) => {
-    const socket = await stubSocket(page);
-    await openSplash(page);
-    await page.getByTestId('vanyadum-start').click();
-    await expect(page.getByTestId('vanyadum-play')).toBeVisible();
-    await socket.over({ success: false, secs: 8, c: {} });
-
-    const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-    );
-    expect(overflow).toBeLessThanOrEqual(0);
   });
 });
 
@@ -579,6 +697,6 @@ test.describe('«ВАНЯДУМ» without 3D', () => {
     await openSplash(page);
 
     await expect(page.getByTestId('vanyadum-nogl')).toBeVisible();
-    await expect(page.getByTestId('vanyadum-start')).toHaveCount(0);
+    await expect(page.getByTestId('vanyadum-enter')).toHaveCount(0);
   });
 });

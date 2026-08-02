@@ -4,16 +4,28 @@ import (
 	"encoding/json"
 	"math"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-func newTestArena(t *testing.T, seed int64) *Arena {
+// epoch is the clock every test in this file starts from. The world takes its
+// time from the tick, so a fixed instant is enough for everything except the
+// abandon grace, which advances it deliberately.
+var epoch = time.Unix(0, 0)
+
+// newTestWorld generates a заброшка with one occupant in it and returns both,
+// which is what almost every test here needs.
+func newTestWorld(t *testing.T, seed int64) (*World, string) {
 	t.Helper()
+	w := NewWorld(uuid.New(), seed)
 	acc := uuid.New().String()
-	return NewArena(uuid.New(), acc, "pseudo-"+acc[:8], seed, time.Unix(0, 0))
+	if _, ok := w.Join(acc, "pseudo-"+acc[:8], epoch); !ok {
+		t.Fatal("a fresh заброшка refused its first occupant")
+	}
+	return w, acc
 }
 
 // subStep is the dt a real command carries. The client emits
@@ -39,7 +51,7 @@ const eastward = math.Pi / 2
 // contrived one: the client's demand equals the budget's accrual exactly, so a
 // single late tick or early frame leaves the queue behind and nothing but the
 // player standing still ever brings it back.
-func walkOnTheWire(t *testing.T, a *Arena, frames, perFrame int, proto Command) {
+func walkOnTheWire(t *testing.T, w *World, acc string, frames, perFrame int, proto Command) {
 	t.Helper()
 	var unacked []Command
 	seq := int64(0)
@@ -55,12 +67,12 @@ func walkOnTheWire(t *testing.T, a *Arena, frames, perFrame int, proto Command) 
 		if len(tail) > RedundantCommands {
 			tail = tail[len(tail)-RedundantCommands:]
 		}
-		a.Enqueue(a.AccountID, &ParsedInput{Cmds: append(append([]Command{}, tail...), fresh...)})
+		w.Enqueue(acc, &ParsedInput{Cmds: append(append([]Command{}, tail...), fresh...)})
 		unacked = append(unacked, fresh...)
 
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		w.Advance(SimStep.Seconds(), epoch)
 
-		ack := a.Owner().State.LastSeq
+		ack := w.Occupant(acc).State.LastSeq
 		kept := unacked[:0]
 		for _, c := range unacked {
 			if c.Seq > ack {
@@ -74,32 +86,32 @@ func walkOnTheWire(t *testing.T, a *Arena, frames, perFrame int, proto Command) 
 	// (MaxStepSeconds is below TimeBudgetCap, pinned below), so this bound is
 	// arithmetic on a finite queue rather than a wait on anything that could be
 	// slow — a stuck queue fails the assertion instead of hanging the suite.
-	for i := 0; i < frames*perFrame*2 && len(a.Owner().pending) > 0; i++ {
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	for i := 0; i < frames*perFrame*2 && len(w.Occupant(acc).pending) > 0; i++ {
+		w.Advance(SimStep.Seconds(), epoch)
 	}
-	if n := len(a.Owner().pending); n != 0 {
+	if n := len(w.Occupant(acc).pending); n != 0 {
 		t.Fatalf("%d commands never drained", n)
 	}
 }
 
 func TestEightSubStepsWalkExactlyEightSubSteps(t *testing.T) {
 	// Eight sub-steps of walking asked for, eight walked. The overshoot this
-	// rules out is not rounding: a command the arena had queued but not yet
+	// rules out is not rounding: a command the world had queued but not yet
 	// simulated used to be accepted a second time when the client repeated it,
 	// so the redundancy window bought movement rather than insurance, and the
 	// player was dragged forward while walking.
-	a := newTestArena(t, 11)
-	start := a.Owner().State.Pos
+	w, acc := newTestWorld(t, 11)
+	start := w.Occupant(acc).State.Pos
 
 	// Straight along +X from the middle of the spawn room. Every room is at
-	// least RoomMin across, so a metre of walking cannot reach a wall to be
-	// slid along, and the generator never puts a pickup in the spawn room, so
-	// nothing here can end the run underneath the assertion.
+	// least RoomMin across, so a metre of walking cannot reach a wall to be slid
+	// along, and the generator never puts a pickup in the spawn room, so nothing
+	// here can pick anything up underneath the assertion.
 	const frames = 2
-	walkOnTheWire(t, a, frames, MaxCommandsPerFrame, Command{Dt: subStep, MY: 1, Yaw: eastward})
+	walkOnTheWire(t, w, acc, frames, MaxCommandsPerFrame, Command{Dt: subStep, MY: 1, Yaw: eastward})
 
 	want := frames * MaxCommandsPerFrame * subStep * WalkSpeed
-	got := math.Hypot(a.Owner().State.Pos.X-start.X, a.Owner().State.Pos.Y-start.Y)
+	got := math.Hypot(w.Occupant(acc).State.Pos.X-start.X, w.Occupant(acc).State.Pos.Y-start.Y)
 	if math.Abs(got-want) > 1e-9 {
 		t.Fatalf("walked %.6f m where %.6f m was asked for", got, want)
 	}
@@ -107,30 +119,30 @@ func TestEightSubStepsWalkExactlyEightSubSteps(t *testing.T) {
 
 func TestARedundantCopyOfAQueuedCommandIsDroppedToo(t *testing.T) {
 	// The half of the redundancy rule that used to be missing. A command the
-	// arena has ACCEPTED but not yet simulated is still unacknowledged, so the
-	// client is right to repeat it — and the arena must still drop the copy,
+	// world has ACCEPTED but not yet simulated is still unacknowledged, so the
+	// client is right to repeat it — and the world must still drop the copy,
 	// because deduplicating against what has been APPLIED lets precisely those
 	// through, and a frame carries twice what a tick can afford.
-	a := newTestArena(t, 3)
+	w, acc := newTestWorld(t, 3)
 	fresh := []Command{
 		{Seq: 1, Dt: subStep, MY: 1}, {Seq: 2, Dt: subStep, MY: 1},
 		{Seq: 3, Dt: subStep, MY: 1}, {Seq: 4, Dt: subStep, MY: 1},
 	}
-	a.Enqueue(a.AccountID, &ParsedInput{Cmds: fresh})
+	w.Enqueue(acc, &ParsedInput{Cmds: fresh})
 
 	// One tick buys 50 ms, which is two of these four.
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-	if got := a.Owner().State.LastSeq; got != 2 {
+	w.Advance(SimStep.Seconds(), epoch)
+	if got := w.Occupant(acc).State.LastSeq; got != 2 {
 		t.Fatalf("a tick acknowledged up to %d of four 25 ms sub-steps, expected 2", got)
 	}
 
 	// The next frame repeats the two still waiting and adds two fresh ones.
-	a.Enqueue(a.AccountID, &ParsedInput{Cmds: []Command{
+	w.Enqueue(acc, &ParsedInput{Cmds: []Command{
 		fresh[2], fresh[3],
 		{Seq: 5, Dt: subStep, MY: 1}, {Seq: 6, Dt: subStep, MY: 1},
 	}})
 
-	if got := len(a.Owner().pending); got != 4 {
+	if got := len(w.Occupant(acc).pending); got != 4 {
 		t.Fatalf("queue holds %d commands; the two repeats were accepted a second time", got)
 	}
 }
@@ -140,22 +152,22 @@ func TestACommandLargerThanTheBudgetWaitsWholeRatherThanBeingTruncated(t *testin
 	// it, so there is no way to acknowledge a fraction of a command. Simulating
 	// one in part and acknowledging it in full is therefore permanent
 	// divergence, and waiting a tick is the only honest answer.
-	a := newTestArena(t, 11)
-	start := a.Owner().State.Pos
-	a.Enqueue(a.AccountID, &ParsedInput{Cmds: []Command{
+	w, acc := newTestWorld(t, 11)
+	start := w.Occupant(acc).State.Pos
+	w.Enqueue(acc, &ParsedInput{Cmds: []Command{
 		{Seq: 1, Dt: MaxStepSeconds, MY: 1, Yaw: eastward},
 	}})
 
 	// One tick is 50 ms against a command asking for 200, so nothing about it
 	// may happen yet: no movement, no acknowledgement, and it stays in the queue.
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-	if a.Owner().State.Pos != start {
-		t.Fatalf("an unaffordable command moved him to %+v", a.Owner().State.Pos)
+	w.Advance(SimStep.Seconds(), epoch)
+	if w.Occupant(acc).State.Pos != start {
+		t.Fatalf("an unaffordable command moved him to %+v", w.Occupant(acc).State.Pos)
 	}
-	if got := a.Owner().State.LastSeq; got != 0 {
+	if got := w.Occupant(acc).State.LastSeq; got != 0 {
 		t.Fatalf("acknowledged sequence %d without having simulated it", got)
 	}
-	if got := len(a.Owner().pending); got != 1 {
+	if got := len(w.Occupant(acc).pending); got != 1 {
 		t.Fatalf("the command left the queue unsimulated, %d left", got)
 	}
 
@@ -170,16 +182,16 @@ func TestACommandLargerThanTheBudgetWaitsWholeRatherThanBeingTruncated(t *testin
 	// not over the rule the test is named for. Read a failure here that way
 	// before assuming the drain loop broke.
 	for i := 0; i < 3; i++ {
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		w.Advance(SimStep.Seconds(), epoch)
 	}
-	moved := math.Hypot(a.Owner().State.Pos.X-start.X, a.Owner().State.Pos.Y-start.Y)
+	moved := math.Hypot(w.Occupant(acc).State.Pos.X-start.X, w.Occupant(acc).State.Pos.Y-start.Y)
 	if want := MaxStepSeconds * WalkSpeed; math.Abs(moved-want) > 1e-9 {
 		t.Fatalf("moved %.6f m once affordable, the command asked for %.6f m", moved, want)
 	}
-	if got := a.Owner().State.LastSeq; got != 1 {
+	if got := w.Occupant(acc).State.LastSeq; got != 1 {
 		t.Fatalf("ack is %d after the command was fully simulated", got)
 	}
-	if got := len(a.Owner().pending); got != 0 {
+	if got := len(w.Occupant(acc).pending); got != 0 {
 		t.Fatalf("%d commands left in the queue after it was applied", got)
 	}
 }
@@ -192,13 +204,6 @@ func TestTheLargestCommandIsAlwaysEventuallyAffordable(t *testing.T) {
 	// else in the package notices, and the player sees a game that has stopped
 	// responding rather than an error. So the relationship is pinned here rather
 	// than left to be rediscovered.
-	//
-	// THIS IS A GUARD AGAINST A FUTURE RETUNE, NOT A REGRESSION TEST. It compares
-	// two untyped constants and nothing else, so it passes identically on the
-	// code this iteration replaced — which had no starvation to guard against,
-	// because it truncated the boundary command instead of waiting for it. What
-	// the new drain loop added is a dependency on this inequality, and this is
-	// where that dependency is written down.
 	if MaxStepSeconds > TimeBudgetCap {
 		t.Fatalf("a maximal command asks for %.3fs and the budget caps at %.3fs, so it could never be afforded",
 			MaxStepSeconds, TimeBudgetCap)
@@ -209,10 +214,10 @@ func TestAnUnsanitisedDtCannotBlockTheQueue(t *testing.T) {
 	// Enqueue is the boundary at which a command becomes trustworthy, and this
 	// is why it has to be. The drain loop tests affordability on Dt directly and
 	// NaN <= x is false for every x, so a NaN reaching the queue would wait for a
-	// budget that can never arrive and hold everything behind it there for the
-	// rest of the run — no log, no error, just an occupant who has stopped
-	// responding. +Inf does the same, and a dt of a thousand seconds does it too
-	// once TimeBudgetCap is what it is.
+	// budget that can never arrive and hold everything behind it there for ever
+	// — no log, no error, just an occupant who has stopped responding. +Inf does
+	// the same, and a dt of a thousand seconds does it too once TimeBudgetCap is
+	// what it is.
 	//
 	// The API is what is under test rather than the production path. parseInput
 	// happens to sanitise on the way in, so production is safe today by
@@ -230,9 +235,9 @@ func TestAnUnsanitisedDtCannotBlockTheQueue(t *testing.T) {
 		{"longer than the largest step", 1000, MaxStepSeconds},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a := newTestArena(t, 11)
-			start := a.Owner().State.Pos
-			a.Enqueue(a.AccountID, &ParsedInput{Cmds: []Command{
+			w, acc := newTestWorld(t, 11)
+			start := w.Occupant(acc).State.Pos
+			w.Enqueue(acc, &ParsedInput{Cmds: []Command{
 				{Seq: 1, Dt: tc.dt, MY: 1, Yaw: eastward},
 			}})
 
@@ -241,16 +246,16 @@ func TestAnUnsanitisedDtCannotBlockTheQueue(t *testing.T) {
 			// all, so the count is a bound on a finite queue rather than a wait
 			// on anything slow — the assertion below fails instead of hanging.
 			for i := 0; i < 10; i++ {
-				a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+				w.Advance(SimStep.Seconds(), epoch)
 			}
 
-			if n := len(a.Owner().pending); n != 0 {
+			if n := len(w.Occupant(acc).pending); n != 0 {
 				t.Fatalf("%d commands never drained — the queue is blocked for ever", n)
 			}
-			if got := a.Owner().State.LastSeq; got != 1 {
+			if got := w.Occupant(acc).State.LastSeq; got != 1 {
 				t.Fatalf("ack is %d, so the command was never folded in", got)
 			}
-			moved := math.Hypot(a.Owner().State.Pos.X-start.X, a.Owner().State.Pos.Y-start.Y)
+			moved := math.Hypot(w.Occupant(acc).State.Pos.X-start.X, w.Occupant(acc).State.Pos.Y-start.Y)
 			if want := tc.walks * WalkSpeed; math.Abs(moved-want) > 1e-9 {
 				t.Fatalf("walked %.6f m; clamped, this command is worth %.6f m", moved, want)
 			}
@@ -271,7 +276,7 @@ func TestTrimmedInputIsNotRestoredByAResend(t *testing.T) {
 	// snapshot reconciles the client to wherever the server actually left him.
 	const maxPending = 4 * (MaxCommandsPerFrame + RedundantCommands)
 
-	a := newTestArena(t, 7)
+	w, acc := newTestWorld(t, 7)
 	sent := make([]Command, 0, maxPending+MaxCommandsPerFrame)
 	for i := 1; i <= maxPending+MaxCommandsPerFrame; i++ {
 		sent = append(sent, Command{Seq: int64(i), Dt: subStep, MY: 1})
@@ -279,12 +284,12 @@ func TestTrimmedInputIsNotRestoredByAResend(t *testing.T) {
 	// No tick between the frames — the queue drains on Advance and nothing else,
 	// so this is the burst that overflows it.
 	for i := 0; i < len(sent); i += MaxCommandsPerFrame {
-		a.Enqueue(a.AccountID, &ParsedInput{Cmds: sent[i : i+MaxCommandsPerFrame]})
+		w.Enqueue(acc, &ParsedInput{Cmds: sent[i : i+MaxCommandsPerFrame]})
 	}
-	if got := len(a.Owner().pending); got != maxPending {
+	if got := len(w.Occupant(acc).pending); got != maxPending {
 		t.Fatalf("queue holds %d commands, the trim caps it at %d", got, maxPending)
 	}
-	if got := a.Owner().pending[0].Seq; got != MaxCommandsPerFrame+1 {
+	if got := w.Occupant(acc).pending[0].Seq; got != MaxCommandsPerFrame+1 {
 		t.Fatalf("queue starts at %d, so the trim took from the back", got)
 	}
 
@@ -295,11 +300,11 @@ func TestTrimmedInputIsNotRestoredByAResend(t *testing.T) {
 	// re-accepted command is appended and then trimmed away again, so the queue
 	// is the same size either way and only what it STARTS at reveals that four
 	// live commands were pushed off the front to make room for four stale ones.
-	a.Enqueue(a.AccountID, &ParsedInput{Cmds: sent[:MaxCommandsPerFrame]})
-	if got := len(a.Owner().pending); got != maxPending {
+	w.Enqueue(acc, &ParsedInput{Cmds: sent[:MaxCommandsPerFrame]})
+	if got := len(w.Occupant(acc).pending); got != maxPending {
 		t.Fatalf("queue grew to %d: a trimmed command was re-accepted", got)
 	}
-	if got := a.Owner().pending[0].Seq; got != MaxCommandsPerFrame+1 {
+	if got := w.Occupant(acc).pending[0].Seq; got != MaxCommandsPerFrame+1 {
 		t.Fatalf("queue now starts at %d: a trimmed command was re-accepted", got)
 	}
 }
@@ -311,18 +316,9 @@ func TestTimeBudgetStopsASpeedHack(t *testing.T) {
 	// of simulation per real second. Every individual value is legal; the total
 	// is eight times everybody else's speed.
 	//
-	// So the arena spends REAL time, not claimed time.
-	//
-	// WHOLE-OR-WAIT CHANGED HOW THAT DEFENCE SHOWS UP, and this test follows it.
-	// The truncating drain simulated a fragment of the head command on the very
-	// first tick, so one Advance was enough to see the budget bite and an upper
-	// bound on a single tick's distance was the whole assertion. Now a command is
-	// afforded whole or left where it is, and one tick affords none of these — so
-	// that same upper bound would pass over a queue nothing had touched. The rate
-	// limit is therefore probed across enough ticks for commands to genuinely
-	// drain, and asserted as an EQUALITY against the elapsed budget.
-	a := newTestArena(t, 3)
-	start := a.Owner().State.Pos
+	// So the world spends REAL time, not claimed time.
+	w, acc := newTestWorld(t, 3)
+	start := w.Occupant(acc).State.Pos
 
 	seq := int64(0)
 	for i := 0; i < 10; i++ {
@@ -331,7 +327,7 @@ func TestTimeBudgetStopsASpeedHack(t *testing.T) {
 			seq++
 			cmds = append(cmds, Command{Seq: seq, Dt: MaxStepSeconds, MY: 1, Yaw: 0})
 		}
-		a.Enqueue(a.AccountID, &ParsedInput{Cmds: cmds})
+		w.Enqueue(acc, &ParsedInput{Cmds: cmds})
 	}
 
 	// A multiple of the four ticks one maximal command costs, so the budget lands
@@ -341,14 +337,13 @@ func TestTimeBudgetStopsASpeedHack(t *testing.T) {
 	// before reading a failure here as a broken drain loop.
 	const ticks = 8
 	for i := 0; i < ticks; i++ {
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		w.Advance(SimStep.Seconds(), epoch)
 	}
 
 	// Straight along +Y from the middle of the spawn room, and two commands'
 	// worth of it: every room is at least RoomMin across, so two metres cannot
-	// reach a wall to be slid along, and the generator puts no pickup in the
-	// spawn room, so nothing here can end the run underneath the assertion.
-	moved := math.Hypot(a.Owner().State.Pos.X-start.X, a.Owner().State.Pos.Y-start.Y)
+	// reach a wall to be slid along.
+	moved := math.Hypot(w.Occupant(acc).State.Pos.X-start.X, w.Occupant(acc).State.Pos.Y-start.Y)
 	want := ticks * SimStep.Seconds() * WalkSpeed
 	if math.Abs(moved-want) > 1e-9 {
 		asked := float64(seq) * MaxStepSeconds * WalkSpeed
@@ -361,20 +356,20 @@ func TestTimeBudgetLetsAStutteringClientCatchUp(t *testing.T) {
 	// The other half of the same rule, and the reason the cap is not zero: a
 	// phone that was backgrounded, or a wifi hiccup, delivers a burst that is
 	// completely honest. Refusing it would make the game unplayable on a bus.
-	a := newTestArena(t, 3)
-	start := a.Owner().State.Pos
+	w, acc := newTestWorld(t, 3)
+	start := w.Occupant(acc).State.Pos
 
 	// Nothing arrives for half a second of real time, so the budget fills.
 	for i := 0; i < SimHz/2; i++ {
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		w.Advance(SimStep.Seconds(), epoch)
 	}
-	a.Enqueue(a.AccountID, &ParsedInput{Cmds: []Command{
+	w.Enqueue(acc, &ParsedInput{Cmds: []Command{
 		{Seq: 1, Dt: 0.1, MY: 1, Yaw: 0}, {Seq: 2, Dt: 0.1, MY: 1, Yaw: 0},
 		{Seq: 3, Dt: 0.1, MY: 1, Yaw: 0}, {Seq: 4, Dt: 0.1, MY: 1, Yaw: 0},
 	}})
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	w.Advance(SimStep.Seconds(), epoch)
 
-	moved := math.Hypot(a.Owner().State.Pos.X-start.X, a.Owner().State.Pos.Y-start.Y)
+	moved := math.Hypot(w.Occupant(acc).State.Pos.X-start.X, w.Occupant(acc).State.Pos.Y-start.Y)
 	if moved < 3*SimStep.Seconds()*WalkSpeed {
 		t.Fatalf("a banked burst only moved %.3f m; the catch-up budget was not spent", moved)
 	}
@@ -384,72 +379,254 @@ func TestPendingInputIsBounded(t *testing.T) {
 	// A client that keeps sending while the tick is stalled must not be able to
 	// grow this slice without bound. Oldest goes first, because stale input is
 	// the input least worth simulating.
-	a := newTestArena(t, 3)
+	w, acc := newTestWorld(t, 3)
 	for i := 0; i < 100; i++ {
-		a.Enqueue(a.AccountID, &ParsedInput{Cmds: []Command{{Seq: int64(i + 1), Dt: dt, MY: 1}}})
+		w.Enqueue(acc, &ParsedInput{Cmds: []Command{{Seq: int64(i + 1), Dt: dt, MY: 1}}})
 	}
 	// The bound is the frame cap plus the redundancy window, four frames deep —
 	// redundant copies are dropped by sequence before they reach the queue, so
 	// what this guards is a client sending genuinely new input faster than the
 	// tick drains it.
-	if want := 4 * (MaxCommandsPerFrame + RedundantCommands); len(a.Owner().pending) > want {
-		t.Fatalf("queue grew to %d commands, bound is %d", len(a.Owner().pending), want)
+	if want := 4 * (MaxCommandsPerFrame + RedundantCommands); len(w.Occupant(acc).pending) > want {
+		t.Fatalf("queue grew to %d commands, bound is %d", len(w.Occupant(acc).pending), want)
 	}
+}
+
+// standOn puts an occupant on top of a pickup, which is the whole interaction —
+// there is no use button by design.
+func standOn(w *World, acc string, i int) {
+	p := w.Level.Pickups[i]
+	o := w.Occupant(acc)
+	o.State.Pos, o.State.Sector = p.Pos, p.Sector
+}
+
+// standAtSpawn walks somebody back to the middle of the first room, which is the
+// one place the generator never puts anything — so a test can let the clock run
+// without collecting something under its own assertion.
+func standAtSpawn(w *World, acc string) {
+	o := w.Occupant(acc)
+	o.State.Pos, o.State.Sector = w.Level.Spawn, w.Level.SpawnSector
 }
 
 func TestWalkingOverSomethingPicksItUp(t *testing.T) {
-	// There is no use button by design, so this IS the interaction.
-	a := newTestArena(t, 11)
-	p := a.Level.Pickups[0]
-	a.Owner().State.Pos = p.Pos
-	a.Owner().State.Sector = p.Sector
+	w, acc := newTestWorld(t, 11)
+	standOn(w, acc, 0)
 
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	w.Advance(SimStep.Seconds(), epoch)
 
-	if !a.Taken[p.ID] {
-		t.Fatal("stood on the beer and did not pick it up")
+	if w.available(0) {
+		t.Fatal("stood on the beer and it is still lying there")
 	}
-	if a.Owner().State.Counters["beer"] != 1 {
-		t.Fatalf("counter is %d, expected 1", a.Owner().State.Counters["beer"])
+	if w.Occupant(acc).State.Counters["beer"] != 1 {
+		t.Fatalf("counter is %d, expected 1", w.Occupant(acc).State.Counters["beer"])
 	}
 }
 
-func TestAPickupIsCollectedExactlyOnce(t *testing.T) {
-	a := newTestArena(t, 11)
-	p := a.Level.Pickups[0]
-	a.Owner().State.Pos, a.Owner().State.Sector = p.Pos, p.Sector
+func TestAPickupIsCollectedOnceUntilItComesBack(t *testing.T) {
+	w, acc := newTestWorld(t, 11)
+	standOn(w, acc, 0)
 	for i := 0; i < 5; i++ {
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		w.Advance(SimStep.Seconds(), epoch)
 	}
-	if got := a.Owner().State.Counters["beer"]; got != 1 {
+	if got := w.Occupant(acc).State.Counters["beer"]; got != 1 {
 		t.Fatalf("standing on it for five ticks gave %d beers", got)
 	}
 }
 
-func TestCollectingEverythingEndsTheRun(t *testing.T) {
-	// The objective of this iteration, and the only thing that causes the game's
-	// one database write.
-	a := newTestArena(t, 11)
-	for _, p := range a.Level.Pickups {
-		a.Owner().State.Pos, a.Owner().State.Sector = p.Pos, p.Sector
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+func TestAPickupComesBackOnExactlyTheRightTickAndNotBefore(t *testing.T) {
+	// THE RESPAWN IS A DEADLINE IN TICKS, not a float counted down, and this is
+	// the test that would catch it drifting: a countdown subtracting SimStep from
+	// a float accumulates the error of 0.05's binary expansion, so "back after
+	// PickupRespawn" would be a tick early or late depending on which way the
+	// last subtraction rounded, and no assertion could be exact.
+	//
+	// It matters beyond tidiness because the client marks a return by comparing
+	// consecutive remaining-masks: an interval that wobbles by a tick is a mark
+	// that fires on a frame the server did not intend.
+	w, acc := newTestWorld(t, 11)
+	standOn(w, acc, 0)
+
+	// The tick that takes it. Everything below is counted from this one.
+	w.Advance(SimStep.Seconds(), epoch)
+	took := w.Tick
+	if w.available(0) {
+		t.Fatal("the beer was not taken at all, so this test proves nothing")
 	}
-	if !a.Ended || !a.Success {
-		t.Fatalf("collected everything, run is ended=%v success=%v", a.Ended, a.Success)
+
+	// Walk away, so nothing collects it again the instant it returns.
+	standAtSpawn(w, acc)
+
+	// One tick short of the interval it is still gone.
+	for w.Tick < took+pickupRespawnTicks-1 {
+		w.Advance(SimStep.Seconds(), epoch)
+		if w.available(0) {
+			t.Fatalf("it came back on tick %d, %d ticks early", w.Tick, took+pickupRespawnTicks-w.Tick)
+		}
+	}
+
+	// And on the tick itself it is lying there again.
+	w.Advance(SimStep.Seconds(), epoch)
+	if !w.available(0) {
+		t.Fatalf("tick %d is exactly %d ticks after it was taken and it is still gone", w.Tick, pickupRespawnTicks)
+	}
+	if got := mustSnapshot(t, w, acc).Left & 1; got != 1 {
+		t.Fatal("the wire still says it is gone, so the return never reached the client")
 	}
 }
 
-func TestAnEndedRunIgnoresFurtherInput(t *testing.T) {
-	a := newTestArena(t, 11)
-	for _, p := range a.Level.Pickups {
-		a.Owner().State.Pos, a.Owner().State.Sector = p.Pos, p.Sector
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+func TestTheMaskIsTheOnlyThingThatSaysAPickupCameBack(t *testing.T) {
+	// A return travels as idempotent full state and never as an event: the mask
+	// is re-sent twenty times a second anyway, so a bit coming back IS the
+	// announcement, and an "it respawned" field would be bytes spent saying
+	// nothing on almost every frame that carried it.
+	w, acc := newTestWorld(t, 11)
+	standOn(w, acc, 0)
+	w.Advance(SimStep.Seconds(), epoch)
+
+	// The one event this game does emit — the collection itself, which is
+	// addressed to the person who did it and cannot be derived from anything.
+	if got := mustSnapshot(t, w, acc); len(got.Events) != 1 || got.Events[0].E != EventPickup {
+		t.Fatalf("collecting published %+v", got.Events)
 	}
-	before := a.Owner().State.Pos
-	a.Enqueue(a.AccountID, &ParsedInput{Cmds: []Command{{Seq: 99, Dt: dt, MY: 1}}})
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-	if a.Owner().State.Pos != before {
-		t.Fatal("a finished run kept simulating")
+
+	standAtSpawn(w, acc)
+	for w.Tick < pickupRespawnTicks+2 {
+		w.Advance(SimStep.Seconds(), epoch)
+	}
+	if !w.available(0) {
+		t.Fatal("it never came back, so this test proves nothing")
+	}
+	if got := mustSnapshot(t, w, acc).Events; len(got) != 0 {
+		t.Fatalf("the respawn produced %+v; it belongs on the mask and nowhere else", got)
+	}
+}
+
+func TestTheBuildingHoldsSeveralPeopleAndRefusesTheNextOne(t *testing.T) {
+	// The capacity, and the fact that a refusal is a REFUSAL — the service turns
+	// this false into a frame the player can read, because silence is this game's
+	// answer to a frame it cannot parse, and a full заброшка is a frame it parsed
+	// perfectly well and cannot honour.
+	w := NewWorld(uuid.New(), 11)
+	for i := 0; i < MaxOccupants; i++ {
+		id := "account-" + strconv.Itoa(i)
+		if _, ok := w.Join(id, "pseudo-"+id, epoch); !ok {
+			t.Fatalf("occupant %d of %d was refused", i+1, MaxOccupants)
+		}
+	}
+	if got := w.Occupants(); got != MaxOccupants {
+		t.Fatalf("the building holds %d people, expected %d", got, MaxOccupants)
+	}
+	if _, ok := w.Join("account-too-many", "pseudo-late", epoch); ok {
+		t.Fatalf("occupant %d walked into a building that holds %d", MaxOccupants+1, MaxOccupants)
+	}
+
+	// And somebody already inside is not refused by his own building being full.
+	// A second hello is a reconnect — a page reload, a tunnel, a phone waking up
+	// — and turning one into «заброшка полна» would lock a player out of the
+	// building he is standing in.
+	if _, ok := w.Join("account-0", "pseudo-account-0", epoch.Add(time.Minute)); !ok {
+		t.Fatal("a reconnect from somebody already inside was refused as an overflow")
+	}
+	if got := w.Occupants(); got != MaxOccupants {
+		t.Fatalf("a reconnect changed the population to %d", got)
+	}
+	if got := w.Occupant("account-0").LastSeen; !got.Equal(epoch.Add(time.Minute)) {
+		t.Fatalf("a reconnect left LastSeen at %v, so the grace would expire under a socket that came back", got)
+	}
+}
+
+func TestSomebodyWhoseConnectionStopsComingBackLeavesAfterTheGrace(t *testing.T) {
+	// The only way out of the building, and therefore the only thing that
+	// produces a visit. Everything shorter than the grace is a reload, a tunnel
+	// or a phone locking, and losing somebody's place for one of those would make
+	// the game unplayable on a bus.
+	w, acc := newTestWorld(t, 11)
+
+	// Still connected: the service marks everybody with a connection on every
+	// tick, and a player standing perfectly still sends nothing at all.
+	for i := 0; i < 3; i++ {
+		at := epoch.Add(time.Duration(i) * time.Second)
+		w.Seen(acc, at)
+		if left := w.Advance(SimStep.Seconds(), at); len(left) != 0 {
+			t.Fatalf("somebody with a connection was taken out of the building: %+v", left)
+		}
+	}
+
+	// The connection goes, and an absence of exactly the grace is inside it.
+	if left := w.Advance(SimStep.Seconds(), epoch.Add(2*time.Second+AbandonGrace)); len(left) != 0 {
+		t.Fatal("an absence of exactly the grace ended the visit; it is a floor, not a ceiling")
+	}
+	if got := w.Occupants(); got != 1 {
+		t.Fatalf("the building holds %d people", got)
+	}
+
+	// And then it is past it.
+	left := w.Advance(SimStep.Seconds(), epoch.Add(2*time.Second+AbandonGrace+time.Second))
+	if len(left) != 1 || left[0].AccountID != acc {
+		t.Fatalf("the grace expired and produced %+v", left)
+	}
+	if got := w.Occupants(); got != 0 {
+		t.Fatalf("the building still holds %d people", got)
+	}
+	if w.Occupant(acc) != nil {
+		t.Fatal("the occupant is still in the map after leaving")
+	}
+}
+
+func TestAVisitIsMeasuredToTheLastConnectionAndNotToTheGrace(t *testing.T) {
+	// Somebody who joined and left forty seconds later stayed forty seconds — not
+	// forty plus the two minutes spent waiting to see whether they were coming
+	// back. AbandonGrace is a tolerance for a flaky connection, and counting it
+	// would put two extra minutes on every visit in the table.
+	w := NewWorld(uuid.New(), 11)
+	joined := epoch.Add(10 * time.Minute)
+	o, ok := w.Join("account-late", "pseudo-late", joined)
+	if !ok {
+		t.Fatal("a fresh заброшка refused its first occupant")
+	}
+	w.Seen("account-late", joined.Add(40*time.Second))
+
+	if got := o.Stayed(); got != 40 {
+		t.Fatalf("stayed %d seconds, expected 40", got)
+	}
+
+	left := w.Advance(SimStep.Seconds(), joined.Add(40*time.Second+AbandonGrace+time.Second))
+	if len(left) != 1 {
+		t.Fatalf("the grace produced %+v", left)
+	}
+	if got := left[0].Stayed(); got != 40 {
+		t.Fatalf("the visit records %d seconds; the grace was counted as time in the building", got)
+	}
+}
+
+func TestAClockThatWentBackwardsIsNotANegativeVisit(t *testing.T) {
+	// Cheap to rule out, and the only column in the table that could go negative.
+	w := NewWorld(uuid.New(), 1)
+	o, _ := w.Join("acct", "pseudo", time.Unix(1000, 0))
+	o.LastSeen = time.Unix(900, 0)
+	if got := o.Stayed(); got != 0 {
+		t.Fatalf("a clock that went backwards gave %d seconds", got)
+	}
+}
+
+func TestForgettingSomebodyTakesThemOutWithoutAVisit(t *testing.T) {
+	// The admin «забыть» path. It runs twice around the anonymising statement, so
+	// it has to be idempotent, and it is called for accounts that have never
+	// played, so an unknown one is a no-op rather than an error. Nothing is
+	// returned, which is exactly how it differs from the grace expiring: there is
+	// no occupant handed back for anybody to write a row from.
+	w, acc := newTestWorld(t, 11)
+	if !w.Remove(acc) {
+		t.Fatal("removing somebody who was here reported that they were not")
+	}
+	if w.Remove(acc) {
+		t.Fatal("removing the same person twice reported a second removal")
+	}
+	if w.Remove("account-never-here") {
+		t.Fatal("removing somebody who was never here reported a removal")
+	}
+	if got := w.Occupants(); got != 0 {
+		t.Fatalf("the building holds %d people", got)
 	}
 }
 
@@ -457,141 +634,97 @@ func TestSnapshotQuantisesAndClearsItsEvents(t *testing.T) {
 	// An event is delivered ONCE, on the next frame. A snapshot that re-sent it
 	// would replay the same sound forever, which is the failure mode that makes
 	// people mute a game.
-	a := newTestArena(t, 11)
-	p := a.Level.Pickups[0]
-	a.Owner().State.Pos, a.Owner().State.Sector = p.Pos, p.Sector
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	w, acc := newTestWorld(t, 11)
+	standOn(w, acc, 0)
+	w.Advance(SimStep.Seconds(), epoch)
 
-	first := mustSnapshot(t, a)
+	first := mustSnapshot(t, w, acc)
 	if len(first.Events) != 1 || first.Events[0].E != EventPickup {
 		t.Fatalf("expected one pickup event, got %+v", first.Events)
 	}
-	if second := mustSnapshot(t, a); len(second.Events) != 0 {
+	if second := mustSnapshot(t, w, acc); len(second.Events) != 0 {
 		t.Fatalf("events repeated on the next frame: %+v", second.Events)
 	}
 
 	// Positions are centimetres, never floats: at twenty frames a second a
 	// float64 metre is seventeen characters of noise nobody can see.
-	if want := cm(a.Owner().State.Pos.X); first.X != want {
+	if want := cm(w.Occupant(acc).State.Pos.X); first.X != want {
 		t.Fatalf("x quantised to %d, expected %d", first.X, want)
 	}
 }
 
-func TestSnapshotSaysWhatIsLeftAsABitmask(t *testing.T) {
+func TestSnapshotSaysWhatIsOnTheFloorAsABitmask(t *testing.T) {
 	// One word instead of the list of remaining ids. Bit i is the pickup at INDEX
 	// i, which is the whole contract the client draws from — an index is dense by
 	// construction where an id need not be.
-	a := newTestArena(t, 11)
-	full := uint32(1)<<len(a.Level.Pickups) - 1
-	if got := mustSnapshot(t, a).Left; got != full {
+	w, acc := newTestWorld(t, 11)
+	full := uint32(1)<<len(w.Level.Pickups) - 1
+	if got := mustSnapshot(t, w, acc).Left; got != full {
 		t.Fatalf("a fresh level published %b, expected %b", got, full)
 	}
 
 	// Collecting one clears exactly its own bit and nothing else.
 	const idx = 0
-	p := a.Level.Pickups[idx]
-	a.Owner().State.Pos, a.Owner().State.Sector = p.Pos, p.Sector
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	standOn(w, acc, idx)
+	w.Advance(SimStep.Seconds(), epoch)
 
 	want := full &^ (1 << idx)
-	if got := mustSnapshot(t, a).Left; got != want {
+	if got := mustSnapshot(t, w, acc).Left; got != want {
 		t.Fatalf("after collecting index %d the mask is %b, expected %b", idx, got, want)
 	}
 	// Idempotent full state, exactly as the list was: the next frame restates the
 	// same world rather than reporting a change, so a dropped frame costs
 	// nothing.
-	if got := mustSnapshot(t, a).Left; got != want {
+	if got := mustSnapshot(t, w, acc).Left; got != want {
 		t.Fatalf("the following frame said %b, so the mask is not full state", got)
-	}
-}
-
-func TestTheRemainingMaskIsIndexedByPositionAndNeverByID(t *testing.T) {
-	// THE ONE THING THE TEST ABOVE CANNOT SEE. The generator numbers its pickups
-	// with their own index, so every assertion about the mask holds equally well
-	// for a mask built from `p.ID` — and building it from the id is exactly the
-	// mistake that looks right, because the id is the field the level, the Taken
-	// map and the pickup event all talk in.
-	//
-	// It is wrong because the mask's WIDTH is the level's length. An index is
-	// dense by construction and an id need not be, so the day something numbers a
-	// pickup 100 the client is quietly told that everything past bit 31 has
-	// already been collected (Go evaluates a shift at or past the word's width as
-	// zero) — an unwinnable run rather than an error.
-	//
-	// So the ids are renumbered out from under the mask. Nothing else in the
-	// arena reads them positionally: Taken is keyed by id and collect looks them
-	// up by id, so a level renumbered this way plays exactly as it did.
-	a := newTestArena(t, 11)
-	if len(a.Level.Pickups) < 2 {
-		t.Fatalf("seed 11 generated %d pickups; this test needs two to tell an index from an id", len(a.Level.Pickups))
-	}
-	for i := range a.Level.Pickups {
-		// Distinct, still narrow enough to fit the word — so a mask built from
-		// ids comes out WRONG rather than empty, and the failure is a real
-		// mismatch rather than an overflow that happens to be caught.
-		a.Level.Pickups[i].ID = 3 + i
-	}
-
-	full := uint32(1)<<len(a.Level.Pickups) - 1
-	if got := mustSnapshot(t, a).Left; got != full {
-		t.Fatalf("a fresh renumbered level published %b, expected %b", got, full)
-	}
-
-	// Take the SECOND one, whose id is now 4: an index-keyed mask clears bit 1,
-	// an id-keyed one clears bit 4.
-	const idx = 1
-	a.Taken[a.Level.Pickups[idx].ID] = true
-
-	want := full &^ (1 << idx)
-	if got := mustSnapshot(t, a).Left; got != want {
-		t.Fatalf("collecting index %d (id %d) published %b, expected %b — the mask is keyed by id",
-			idx, a.Level.Pickups[idx].ID, got, want)
 	}
 }
 
 func TestTwoPlayersReachingTheSameBeerAreResolvedDeterministically(t *testing.T) {
 	// The property this whole simulation is built to have: the same seed and the
 	// same input transcript produce the same world, byte for byte. Step is pure
-	// so that it can be, and the arena has to hold up its end.
+	// so that it can be, and the world has to hold up its end.
 	//
-	// Go randomises map order on every range, so an arena that walked its
+	// Go randomises map order on every range, so a world that walked its
 	// occupants in map order would award a contested pickup by coin flip — and
 	// collect mutates world-wide state, so the flip is visible in everybody's
-	// counters and in the mask on everybody's frame. Invisible today, because
-	// every arena holds one occupant. Wrong from the first frame of the first
-	// shared one.
+	// counters and in the mask on everybody's frame.
 	//
 	// Repeated inside one process rather than across several: the randomisation
 	// is per range, so a hundred iterations here see a hundred different orders.
-	ids := []string{"account-a", "account-b"}
-	build := func() *Arena {
-		a := NewArena(uuid.Nil, ids[0], "pseudo-a", 11, time.Unix(0, 0))
-		a.Join(ids[1], "pseudo-b")
-		p := a.Level.Pickups[0]
+	ids := []string{"account-a", "account-b", "account-c"}
+	build := func() *World {
+		w := NewWorld(uuid.Nil, 11)
 		for _, id := range ids {
-			o := a.Occupant(id)
-			o.State.Pos, o.State.Sector = p.Pos, p.Sector
-			// The same transcript for both, so nothing except the arena's own
-			// ordering can separate them.
-			a.Enqueue(id, &ParsedInput{Cmds: []Command{{Seq: 1, Dt: subStep, MY: 1, Yaw: eastward}}})
+			if _, ok := w.Join(id, "pseudo-"+id, epoch); !ok {
+				t.Fatalf("%s was refused", id)
+			}
+			standOn(w, id, 0)
+			// The same transcript for everybody, so nothing except the world's
+			// own ordering can separate them.
+			w.Enqueue(id, &ParsedInput{Cmds: []Command{{Seq: 1, Dt: subStep, MY: 1, Yaw: eastward}}})
 		}
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-		return a
+		w.Advance(SimStep.Seconds(), epoch)
+		return w
 	}
 
 	first := build()
 	// The contention has to actually happen, or every iteration below agrees
 	// about nothing in particular.
-	if !first.Taken[first.Level.Pickups[0].ID] {
-		t.Fatal("neither of them picked it up, so this test proves nothing")
+	if first.available(0) {
+		t.Fatal("none of them picked it up, so this test proves nothing")
 	}
-	if got := first.Occupant(ids[0]).State.Counters["beer"] + first.Occupant(ids[1]).State.Counters["beer"]; got != 1 {
-		t.Fatalf("%d beers awarded for one bottle; the contention this test needs did not happen", got)
+	awarded := 0
+	for _, id := range ids {
+		awarded += first.Occupant(id).State.Counters["beer"]
+	}
+	if awarded != 1 {
+		t.Fatalf("%d beers awarded for one bottle; the contention this test needs did not happen", awarded)
 	}
 
-	want := arenaDigest(t, first, ids...)
+	want := worldDigest(t, first, ids...)
 	for run := 1; run < 200; run++ {
-		if got := arenaDigest(t, build(), ids...); got != want {
+		if got := worldDigest(t, build(), ids...); got != want {
 			t.Fatalf("run %d produced a different world:\n want %s\n  got %s", run, want, got)
 		}
 	}
@@ -600,21 +733,23 @@ func TestTwoPlayersReachingTheSameBeerAreResolvedDeterministically(t *testing.T)
 func TestPeersArriveInAStableOrder(t *testing.T) {
 	// Same rule, cheaper consequence: the peers array is built by walking the
 	// occupants, so map order would reshuffle it between two renders of an
-	// unchanged arena. That makes any golden test over the wire shape flap, and
+	// unchanged world. That makes any golden test over the wire shape flap, and
 	// it asks a client to re-key its bookkeeping every frame for no reason at
 	// all.
-	a := NewArena(uuid.Nil, "account-a", "pseudo-a", 11, time.Unix(0, 0))
-	for _, id := range []string{"account-c", "account-b", "account-d"} {
-		a.Join(id, "pseudo-"+id)
+	w := NewWorld(uuid.Nil, 11)
+	for _, id := range []string{"account-a", "account-c", "account-b", "account-d"} {
+		if _, ok := w.Join(id, "pseudo-"+id, epoch); !ok {
+			t.Fatalf("%s was refused", id)
+		}
 	}
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	w.Advance(SimStep.Seconds(), epoch)
 
-	// Account order, which is the arena's own order and not the order they
+	// Account order, which is the world's own order and not the order they
 	// joined in.
 	want := []string{"pseudo-account-b", "pseudo-account-c", "pseudo-account-d"}
 	for i := 0; i < 100; i++ {
 		got := make([]string, 0, len(want))
-		for _, p := range mustSnapshot(t, a).Peers {
+		for _, p := range mustSnapshot(t, w, "account-a").Peers {
 			got = append(got, p.ID)
 		}
 		if !slices.Equal(got, want) {
@@ -633,9 +768,12 @@ func TestNobodyWinsEveryContestedPickup(t *testing.T) {
 	// So Advance rotates the sorted order by the tick, and this is what that
 	// buys: the same bottle contested over and over goes to each of them in turn.
 	ids := []string{"account-a", "account-b"}
-	a := NewArena(uuid.Nil, ids[0], "pseudo-a", 11, time.Unix(0, 0))
-	a.Join(ids[1], "pseudo-b")
-	p := a.Level.Pickups[0]
+	w := NewWorld(uuid.Nil, 11)
+	for _, id := range ids {
+		if _, ok := w.Join(id, "pseudo-"+id, epoch); !ok {
+			t.Fatalf("%s was refused", id)
+		}
+	}
 
 	wins := map[string]int{}
 	const contests = 40
@@ -644,20 +782,16 @@ func TestNobodyWinsEveryContestedPickup(t *testing.T) {
 		// standing on it with nothing else to separate them. The counters go with
 		// it, because beer caps at PickupKind.Max and a capped counter would stop
 		// recording who won.
-		a.Taken = map[int]bool{}
+		w.ready[0] = 0
 		for _, id := range ids {
-			o := a.Occupant(id)
-			o.State.Pos, o.State.Sector = p.Pos, p.Sector
-			o.State.Counters = nil
+			standOn(w, id, 0)
+			w.Occupant(id).State.Counters = nil
 		}
-		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-		if a.Ended {
-			t.Fatalf("the run ended after %d contests, so the rest of them never happened", i)
-		}
+		w.Advance(SimStep.Seconds(), epoch)
 
 		won := ""
 		for _, id := range ids {
-			if a.Occupant(id).State.Counters["beer"] > 0 {
+			if w.Occupant(id).State.Counters["beer"] > 0 {
 				if won != "" {
 					t.Fatalf("contest %d awarded the same bottle to both of them", i)
 				}
@@ -678,13 +812,13 @@ func TestNobodyWinsEveryContestedPickup(t *testing.T) {
 	}
 }
 
-// arenaDigest is the whole of an arena's mutable state as bytes, so that two
-// worlds can be compared for being identical rather than merely similar.
+// worldDigest is the whole of a world's mutable state as bytes, so that two
+// buildings can be compared for being identical rather than merely similar.
 //
-// The occupant ids come in from the caller rather than from the arena, because a
-// digest that asked the arena for its own ordering would be agreeing with the
+// The occupant ids come in from the caller rather than from the world, because a
+// digest that asked the world for its own ordering would be agreeing with the
 // thing it exists to check.
-func arenaDigest(t *testing.T, a *Arena, ids ...string) string {
+func worldDigest(t *testing.T, w *World, ids ...string) string {
 	t.Helper()
 	type occupantState struct {
 		ID       string
@@ -696,11 +830,11 @@ func arenaDigest(t *testing.T, a *Arena, ids ...string) string {
 	}
 	out := struct {
 		Tick  int64
-		Taken map[int]bool
+		Ready []int64
 		Occs  []occupantState
-	}{Tick: a.Tick, Taken: a.Taken}
+	}{Tick: w.Tick, Ready: w.ready}
 	for _, id := range ids {
-		o := a.Occupant(id)
+		o := w.Occupant(id)
 		if o == nil {
 			t.Fatalf("no occupant %q to digest", id)
 		}
@@ -709,8 +843,8 @@ func arenaDigest(t *testing.T, a *Arena, ids ...string) string {
 			Health: o.State.Health, LastSeq: o.State.LastSeq, Counters: o.State.Counters,
 		})
 	}
-	// encoding/json sorts map keys, so the two maps in here contribute the same
-	// bytes for the same contents whatever order they were filled in.
+	// encoding/json sorts map keys, so the maps in here contribute the same bytes
+	// for the same contents whatever order they were filled in.
 	raw, err := json.Marshal(out)
 	if err != nil {
 		t.Fatal(err)
@@ -718,26 +852,14 @@ func arenaDigest(t *testing.T, a *Arena, ids ...string) string {
 	return string(raw)
 }
 
-func TestElapsedNeverGoesBackwards(t *testing.T) {
-	// A clock that moved backwards would produce a negative run time in the only
-	// table this game has. Cheap to rule out.
-	a := NewArena(uuid.New(), "acct", "pseudo", 1, time.Unix(1000, 0))
-	if got := a.Elapsed(time.Unix(900, 0)); got != 0 {
-		t.Fatalf("a clock that went backwards gave %d seconds", got)
-	}
-	if got := a.Elapsed(time.Unix(1042, 0)); got != 42 {
-		t.Fatalf("expected 42 seconds, got %d", got)
-	}
-}
-
-// mustSnapshot renders the arena for its owner, failing the test rather than
-// returning a zero value — every caller here has just created the arena, so a
-// miss is a broken test rather than a case worth handling.
-func mustSnapshot(t *testing.T, a *Arena) Snapshot {
+// mustSnapshot renders the world for one occupant, failing the test rather than
+// returning a zero value — every caller here has just put that occupant in the
+// building, so a miss is a broken test rather than a case worth handling.
+func mustSnapshot(t *testing.T, w *World, accountID string) Snapshot {
 	t.Helper()
-	s, ok := a.SnapshotFor(a.AccountID)
+	s, ok := w.SnapshotFor(accountID)
 	if !ok {
-		t.Fatal("no snapshot for the arena's own owner")
+		t.Fatalf("no snapshot for occupant %q", accountID)
 	}
 	return s
 }

@@ -204,7 +204,7 @@ describe('the clock offset estimator', () => {
 
   it('is not pinned for ever by one unusually early frame', () => {
     // A minimum is a ratchet, and without the creep a single lucky packet would
-    // hold the estimate for the rest of the run — after which any drift between
+    // hold the estimate for the whole visit — after which any drift between
     // the two machines' clocks pushes the drawn instant past the newest frame
     // held, which shows as every peer pausing more and more often.
     const i = build();
@@ -321,9 +321,10 @@ describe('the clock offset estimator', () => {
   });
 
   it('starts a fresh timeline when the ticks restart under it', () => {
-    // A restarted process is a different arena whose clock begins again at
-    // nothing. Treated as late frames those would be dropped for ever and every
-    // peer would freeze for the rest of the run.
+    // A regenerated заброшка — or a restarted process — is a different building,
+    // and its clock begins again at nothing. Treated as late frames those would
+    // be dropped for ever, and every peer would freeze for as long as this
+    // client stayed connected.
     const i = build();
     i.push([peer('a', 0)], 900, 1000);
     i.push([peer('a', 10)], 902, 1100);
@@ -334,8 +335,10 @@ describe('the clock offset estimator', () => {
   });
 
   it('forgets the offset on reset, not merely the frames', () => {
-    // A new run is a new arena; an estimate made against the last one would put
-    // every frame minutes into the past.
+    // The timeline belongs to ONE BUILDING, and reset is what a regenerated
+    // заброшка does to this buffer. The building that replaces it counts its
+    // ticks from zero, so an estimate made against the previous one would put
+    // every frame of the new one minutes into the past.
     const i = build();
     i.push([peer('a', 5)], 900, 1000);
     i.reset();

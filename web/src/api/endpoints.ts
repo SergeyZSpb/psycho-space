@@ -19,8 +19,8 @@ import type {
   FintechTopBoards,
   LoginResult,
   VanyadumConfig,
-  VanyadumRun,
-  VanyadumRunRow,
+  VanyadumVisitRow,
+  VanyadumWorld,
   VanyagotchiConfig,
   VanyagotchiState,
   WishlistComment,
@@ -180,31 +180,27 @@ export const gameVanyagotchiApi = {
   // response body. See GameVanyagotchiView's act().
 };
 
-// «ВАНЯДУМ». Its own block, like every game — and deliberately only the EDGES
-// of a run: nothing a player touches while playing is here, because input and
-// the world both travel on the socket at twenty frames a second.
+// «ВАНЯДУМ». Its own block, like every game — and now three READS and nothing
+// else. There is no start endpoint and no abandon endpoint, because there is
+// nothing to start: the заброшка runs continuously, opening the socket and
+// saying hello is walking in, and closing it is walking out. A door that could
+// also be opened over HTTP would be a second door for the two to disagree about.
 export const gameVanyadumApi = {
   // The catalogue: the player's dimensions, the pickups, the surfaces the client
-  // generates textures from, and the rates it has to match. The splash screen's
-  // rules cheatsheet is built from this, so retuning a constant on the server
-  // changes what the player is told with no frontend deploy.
+  // generates textures from, the rates it has to match, and the building's own
+  // rules. The splash screen's cheatsheet is built from this, so retuning a
+  // constant on the server changes what the player is told with no deploy here.
   config: () => apiFetch<VanyadumConfig>('/api/game-vanyadum/config'),
 
-  // Starts a run and returns the whole level. 409 `run_in_progress` when one is
-  // already going — a refusal rather than a silent replacement, because
-  // dropping the old arena would throw away a run open on another tab.
-  start: () => apiFetch<VanyadumRun>('/api/game-vanyadum/runs', { method: 'POST' }),
+  // The building everybody is in, with the whole level in it. Never 404s —
+  // there is always one to walk into, and one is generated if nobody has been
+  // here yet. Fetched once per building: the level is a few kilobytes, and the
+  // `world_id` on the ready frame is what says the cached copy has gone stale.
+  world: () => apiFetch<VanyadumWorld>('/api/game-vanyadum/world'),
 
-  // The run already in progress, or 404 `no_run`. This is what a page reload
-  // needs: after a refresh the browser has a session, a socket and no geometry.
-  current: () => apiFetch<VanyadumRun>('/api/game-vanyadum/runs/current'),
-
-  // Gives up. Nothing is written — a run somebody walked out of is not a result.
-  abandon: () => apiFetch<void>('/api/game-vanyadum/runs/current', { method: 'DELETE' }),
-
-  // The caller's own recent runs. It exists so that "the run was written" is
+  // The caller's own recent visits. It exists so that "the visit was written" is
   // something a person can check without opening a database.
-  myRuns: () => apiFetch<{ runs: VanyadumRunRow[] }>('/api/game-vanyadum/runs/me'),
+  myVisits: () => apiFetch<{ visits: VanyadumVisitRow[] }>('/api/game-vanyadum/visits/me'),
 };
 
 // «СИМУЛЯТОР ФИНТЕХА». Its own block, like every game, and — like «ВАНЯДУМ»'s —

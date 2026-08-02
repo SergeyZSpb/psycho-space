@@ -5,6 +5,7 @@ import {
   buildLevelMeshes,
   hexToRgb,
   levelBounds,
+  pickupsOnFloor,
   sectorAt,
   triangleCount,
   type VanyadumLevel,
@@ -160,6 +161,48 @@ describe('sectorAt', () => {
     expect(sectorAt(level, 5, 5)?.id).toBe(0);
     expect(sectorAt(level, 15, 5)?.id).toBe(1);
     expect(sectorAt(level, 50, 5)).toBeUndefined();
+  });
+});
+
+describe('pickupsOnFloor', () => {
+  /** Ids deliberately not equal to their index, which is the whole hazard. */
+  const three = [
+    { id: 11, k: 'beer', s: 0, p: { x: 1, y: 1 } },
+    { id: 22, k: 'beer', s: 0, p: { x: 2, y: 2 } },
+    { id: 33, k: 'beer', s: 1, p: { x: 3, y: 3 } },
+  ];
+
+  it('reads the id out rather than assuming it is the index', () => {
+    // The wire names an INDEX and the renderer names an ID. Today's generator
+    // makes the two equal; nothing guarantees it will keep doing so, and a
+    // level whose ids started at one would put every bottle in the wrong room.
+    expect(pickupsOnFloor(three, 0b101)).toEqual([11, 33]);
+  });
+
+  it('says nothing is there for an empty mask, and everything for a full one', () => {
+    expect(pickupsOnFloor(three, 0)).toEqual([]);
+    expect(pickupsOnFloor(three, 0b111)).toEqual([11, 22, 33]);
+  });
+
+  it('PUTS A PICKUP BACK when its bit returns, not only takes one away', () => {
+    // The one claim this whole helper exists for. A bottle is taken, and thirty
+    // seconds later the server sets its bit again — with no event, because the
+    // mask IS the statement. A renderer fed by something that could only ever
+    // remove a mesh would leave that floor empty forever, and nobody would find
+    // out until they stood over the spot and waited.
+    const taken = pickupsOnFloor(three, 0b101);
+    expect(taken).not.toContain(22);
+    const back = pickupsOnFloor(three, 0b111);
+    expect(back).toContain(22);
+  });
+
+  it('ignores bits above the level and the sign bit alike', () => {
+    // The mask is 32 bits wide because a JSON number is an IEEE754 double, and
+    // bit 31 arrives as a NEGATIVE number after a signed shift. Reading it
+    // unsigned is what stops the top pickup vanishing on the levels big enough
+    // to have one.
+    expect(pickupsOnFloor(three, 0b1111_1000)).toEqual([]);
+    expect(pickupsOnFloor([three[0]], -1)).toEqual([11]);
   });
 });
 

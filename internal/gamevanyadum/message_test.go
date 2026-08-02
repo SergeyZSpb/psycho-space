@@ -125,7 +125,7 @@ func TestSnapshotOmitsWhatIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"c"`, `"ev"`} {
+	for _, key := range []string{`"c"`, `"ev"`, `"p"`} {
 		if strings.Contains(string(raw), key) {
 			t.Fatalf("empty field %s was serialised: %s", key, raw)
 		}
@@ -231,5 +231,59 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	const budget = 160
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
+	}
+}
+
+func TestAFullBuildingsFrameStaysInsideItsBudget(t *testing.T) {
+	// THE FRAME ABOVE IS THE FLOOR, NOT THE COST. A snapshot is built per
+	// occupant and carries everybody else, so what a viewer actually pays is that
+	// frame plus MaxOccupants−1 peers — and that product, not the solo frame, is
+	// what decides how many people fit in the заброшка.
+	//
+	// THE BUDGET IS THE CEILING, CONVERTED. 8 kB/s per viewer is the number this
+	// game's design named as the point at which interest management stops being
+	// optional, and at SnapshotHz it affords exactly 400 bytes a frame. That is
+	// where the 400 comes from — it is not slack chosen to fit a measurement.
+	//
+	// Measured at the widest quantisation the wire can carry: 137 bytes of self,
+	// then +78 for the first peer (the entry plus the `p` array around it) and
+	// +72 for each one after, so a full house of four is 359 bytes — 7.2 kB/s per
+	// viewer. Five would be 431 and 8.6 kB/s, which is over. That is the whole
+	// derivation of MaxOccupants, and this test is what turns it into a gate:
+	// raising the constant, or growing a peer, fails here rather than on
+	// somebody's mobile data.
+	//
+	// THE BUDGET WAS 512 AND COULD NOT FIRE. It was set against a design estimate
+	// of ~25 bytes a peer that measurement did not survive, so it sat 28 % past
+	// the ceiling it existed to protect: a six-person house measured 503 bytes,
+	// over the line and still comfortably inside the test.
+	//
+	// The values are deliberately larger than a generated level produces — ±1234 m
+	// where a заброшка is tens of metres across, and a yaw at the far end of the
+	// wrapped range, which is five characters where an ordinary one is four — so
+	// this is an upper bound rather than a typical case. It is one byte wider than
+	// the frame measured above for exactly that reason: that test asks what an
+	// ordinary frame costs, this one asks what the worst one costs, and the worst
+	// case is the right one to budget on because a phone on bad mobile data is
+	// precisely when it is the case. A realistic peer is about 59 bytes.
+	s := Snapshot{
+		T: TypeSnapshot, Tick: 999999, Ack: 999999,
+		X: 123456, Y: -123456, Z: 12345, Yaw: -6283, Sector: 12, Health: 100,
+		Left: math.MaxUint32,
+		Bag:  map[string]int{"beer": 9},
+	}
+	for i := 0; i < MaxOccupants-1; i++ {
+		s.Peers = append(s.Peers, Peer{
+			ID: "K3jf9sLm2QpZ", X: 123456, Y: -123456, Z: 12345, Yaw: -6283, State: 2,
+		})
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const budget = 400
+	if len(raw) > budget {
+		t.Fatalf("a full building's frame is %d bytes (%.1f kB/s at %d Hz), budget is %d: %s",
+			len(raw), float64(len(raw))*SimHz/1000, SimHz, budget, raw)
 	}
 }

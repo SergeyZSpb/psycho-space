@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -10,18 +9,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// «ВАНЯДУМ» over HTTP, which is deliberately only the edges of a run.
+// «ВАНЯДУМ» over HTTP, which is deliberately only what a socket cannot carry.
 //
-// Starting a run, resuming one after a page reload, giving up, and looking at
-// what you have already done. NOTHING ABOUT PLAYING IS HERE: input arrives as a
-// socket frame and the world goes back as a snapshot, twenty times a second,
-// because a request per step would be absurd and because the socket's own rate
-// limit is a bound this game wants rather than one it has to work around.
+// Three reads and nothing else: the content catalogue, the building, and what
+// you have already done. NOTHING ABOUT PLAYING IS HERE, and nothing about
+// JOINING either — the room already carries an authenticated account, so opening
+// the socket and saying hello is walking in, and there is no start endpoint to
+// disagree with it.
 //
-// The level is served exactly once, by whichever of the two run endpoints
-// produced the arena. It is a few kilobytes, it never changes for the life of a
-// run, and re-sending it on a snapshot would be the single most expensive
-// mistake available in this game.
+// The level is served exactly once, here. It is a few kilobytes, it never
+// changes for the life of a building, and re-sending it on a snapshot would be
+// the single most expensive mistake available in this game. A client that comes
+// back holding a stale one finds out from the world id on its ready frame.
 
 // gameVanyadumAvailable reports whether the game is wired, and answers 503 when
 // it is not. Deps documents that a field may be nil in a caller that does not
@@ -35,8 +34,9 @@ func (s *Server) gameVanyadumAvailable(w http.ResponseWriter, r *http.Request) b
 }
 
 // handleGameVanyadumConfig serves the content catalogue: the player's
-// dimensions, the pickups, the surfaces the client generates textures from, and
-// the rates it has to match.
+// dimensions, the pickups, the surfaces the client generates textures from, the
+// rates it has to match, and the building's own rules — how many people fit and
+// how long a thing takes to come back.
 //
 // The SPA hardcodes no number from this game. The splash screen's rules
 // cheatsheet is built from what this returns, so retuning a constant in the
@@ -48,123 +48,55 @@ func (s *Server) handleGameVanyadumConfig(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, s.d.GameVanyadum.Config())
 }
 
-// vanyadumRun is a started or resumed run as the browser receives it: which run
-// it is, and the whole level to build meshes from.
-type vanyadumRun struct {
-	RunID string              `json:"run_id"`
-	Level *gamevanyadum.Level `json:"level"`
-	Room  string              `json:"room"`
+// vanyadumWorld is the заброшка as the browser receives it: which building it
+// is, what it was grown from, the whole level to build meshes out of, and the
+// room to open a socket in.
+//
+// The seed is on the level too, and stating it twice in one response is
+// deliberate: this is a once-per-session read, and a client caching the pair
+// should not have to reach inside the geometry to find half of its own cache
+// key.
+type vanyadumWorld struct {
+	WorldID string              `json:"world_id"`
+	Seed    int64               `json:"seed"`
+	Level   *gamevanyadum.Level `json:"level"`
+	Room    string              `json:"room"`
 }
 
-// handleGameVanyadumStart begins a run and returns its level.
+// handleGameVanyadumWorld serves the building everybody is in, generating one if
+// nobody has been here yet.
 //
-// A second start while one is already going is a 409 rather than a silent
-// replacement. Dropping the existing arena would throw away a run somebody is in
-// the middle of on their other tab, and nothing here can tell which one they
-// meant — so the client is told, and offers «сдаться» (the DELETE below).
-func (s *Server) handleGameVanyadumStart(w http.ResponseWriter, r *http.Request) {
+// It never answers "there is no заброшка", because there is always one to walk
+// into — that is what an infinite match means. It also does not put the caller
+// in it: this is a read, the socket is the door, and a single door is what stops
+// the two disagreeing about who is inside.
+func (s *Server) handleGameVanyadumWorld(w http.ResponseWriter, r *http.Request) {
 	if !s.gameVanyadumAvailable(w, r) {
 		return
 	}
-	acc, ok := accountFromContext(r.Context())
-	if !ok {
-		writeError(w, r, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	id, err := uuid.Parse(acc.ID)
-	if err != nil {
-		writeError(w, r, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	a, err := s.d.GameVanyadum.StartRun(id, time.Now())
-	switch {
-	case errors.Is(err, gamevanyadum.ErrRunInProgress):
-		writeError(w, r, http.StatusConflict, "run_in_progress")
-		return
-	case errors.Is(err, gamevanyadum.ErrTooManyArenas):
-		writeError(w, r, http.StatusServiceUnavailable, "too_busy")
-		return
-	case err != nil:
-		slog.ErrorContext(r.Context(), "gamevanyadum: start run", "err", err)
-		writeError(w, r, http.StatusInternalServerError, "internal")
-		return
-	}
-	writeJSON(w, http.StatusCreated, vanyadumRun{
-		RunID: a.RunID.String(),
-		Level: a.Level,
-		Room:  gamevanyadum.Room,
+	id, level := s.d.GameVanyadum.World()
+	writeJSON(w, http.StatusOK, vanyadumWorld{
+		WorldID: id.String(),
+		Seed:    level.Seed,
+		Level:   level,
+		Room:    gamevanyadum.Room,
 	})
 }
 
-// handleGameVanyadumCurrent returns the run already in progress, or 404.
-//
-// This is what a page reload needs, and it is why the level is not sent over the
-// socket: after a refresh the browser has a session, a socket and no geometry at
-// all, and the arena it is about to reconnect to is still being simulated. An
-// arena survives a reload by design — see AbandonGrace.
-func (s *Server) handleGameVanyadumCurrent(w http.ResponseWriter, r *http.Request) {
-	if !s.gameVanyadumAvailable(w, r) {
-		return
-	}
-	acc, ok := accountFromContext(r.Context())
-	if !ok {
-		writeError(w, r, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	id, err := uuid.Parse(acc.ID)
-	if err != nil {
-		writeError(w, r, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	a, ok := s.d.GameVanyadum.CurrentRun(id)
-	if !ok {
-		writeError(w, r, http.StatusNotFound, "no_run")
-		return
-	}
-	writeJSON(w, http.StatusOK, vanyadumRun{
-		RunID: a.RunID.String(),
-		Level: a.Level,
-		Room:  gamevanyadum.Room,
-	})
+// vanyadumVisitRow is one recorded visit as the splash screen shows it.
+type vanyadumVisitRow struct {
+	Seed     int64     `json:"seed"`
+	Seconds  int       `json:"seconds"`
+	Beer     int       `json:"beer"`
+	JoinedAt time.Time `json:"joined_at"`
 }
 
-// handleGameVanyadumAbandon throws a run away without recording it.
+// handleGameVanyadumMyVisits lists the caller's own recent visits.
 //
-// A run somebody walked out of is not a result, so nothing is written — the only
-// rows in this game's one table are runs that actually ended.
-func (s *Server) handleGameVanyadumAbandon(w http.ResponseWriter, r *http.Request) {
-	if !s.gameVanyadumAvailable(w, r) {
-		return
-	}
-	acc, ok := accountFromContext(r.Context())
-	if !ok {
-		writeError(w, r, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	id, err := uuid.Parse(acc.ID)
-	if err != nil {
-		writeError(w, r, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	s.d.GameVanyadum.AbandonRun(id)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// vanyadumRunRow is one finished run as the splash screen shows it.
-type vanyadumRunRow struct {
-	Success   bool      `json:"success"`
-	Seconds   int       `json:"seconds"`
-	Beer      int       `json:"beer"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// handleGameVanyadumMyRuns lists the caller's own recent runs.
-//
-// It exists so that "the run was written" is something a person can check in
+// It exists so that "the visit was written" is something a person can check in
 // production without opening a database, which is what makes the persistence
 // half of this iteration verifiable from outside the code.
-func (s *Server) handleGameVanyadumMyRuns(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGameVanyadumMyVisits(w http.ResponseWriter, r *http.Request) {
 	if !s.gameVanyadumAvailable(w, r) {
 		return
 	}
@@ -178,20 +110,20 @@ func (s *Server) handleGameVanyadumMyRuns(w http.ResponseWriter, r *http.Request
 		writeError(w, r, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	runs, err := s.d.GameVanyadum.RecentRuns(r.Context(), id)
+	visits, err := s.d.GameVanyadum.RecentVisits(r.Context(), id)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "gamevanyadum: recent runs", "err", err)
+		slog.ErrorContext(r.Context(), "gamevanyadum: recent visits", "err", err)
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
-	out := make([]vanyadumRunRow, 0, len(runs))
-	for _, run := range runs {
-		out = append(out, vanyadumRunRow{
-			Success:   run.Success,
-			Seconds:   run.Seconds,
-			Beer:      run.Beer,
-			CreatedAt: run.CreatedAt,
+	out := make([]vanyadumVisitRow, 0, len(visits))
+	for _, v := range visits {
+		out = append(out, vanyadumVisitRow{
+			Seed:     v.Seed,
+			Seconds:  v.Seconds,
+			Beer:     v.Beer,
+			JoinedAt: v.JoinedAt,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"runs": out})
+	writeJSON(w, http.StatusOK, map[string]any{"visits": out})
 }

@@ -47,7 +47,7 @@ interface Frame {
  * history of a world nobody is looking at.
  *
  * It is also the window inside which a lower tick counts as a LATE frame rather
- * than as a different arena — see `push`.
+ * than as a different building — see `push`.
  */
 export const BUFFER_FRAMES = 32;
 
@@ -137,13 +137,13 @@ export function createInterpolator(delayMs: number, tickMs: number) {
      * that is a world where everything happened in the same five milliseconds.
      *
      * AND IN THIS GAME IT IS NOT ONLY A SMOOTHNESS PROBLEM. Lag compensation
-     * rewinds the arena by exactly `InterpolationDelay`, on the assumption that
-     * the client drew a peer at `serverTick − delay`. On an arrival timeline the
-     * instant actually drawn drifts with the one-way delay, so the server's
-     * rewind and this client's draw disagree by the jitter — and a player is
-     * shot for standing where he was never displayed. Keying on the tick makes
-     * that disagreement SMALLER RATHER THAN ZERO, and it is worth being exact
-     * about which half goes. What disappears is the drift: both ends then count
+     * rewinds the building by exactly `InterpolationDelay`, on the assumption
+     * that the client drew a peer at `serverTick − delay`. On an arrival
+     * timeline the instant actually drawn drifts with the one-way delay, so the
+     * server's rewind and this client's draw disagree by the jitter — and a
+     * player is shot for standing where he was never displayed. Keying on the
+     * tick makes that disagreement SMALLER RATHER THAN ZERO, and it is worth
+     * being exact about which half goes. What disappears is the drift: both ends then count
      * the same fixed-rate steps, which is the assumption the compensation was
      * written against. What remains is everything neither end can measure — the
      * server rewinds by a round trip derived from the tick a client echoes back,
@@ -167,11 +167,12 @@ export function createInterpolator(delayMs: number, tickMs: number) {
       // transport delivers in order, so this is belt and braces — and a repeat
       // would make a span of zero.
       //
-      // A tick a long way BACKWARDS is a different arena rather than a late
-      // frame: the process restarted, or the run was picked up in a rebuilt one,
-      // and its clock starts again from nothing. Dropping those would leave every
-      // peer frozen for the rest of the run, so the timeline is abandoned and
-      // started again from what just arrived.
+      // A tick a long way BACKWARDS is a different building rather than a late
+      // frame: the заброшка emptied and was regenerated, or the process
+      // restarted, and either way the building that replaced it counts from
+      // zero. Dropping those would leave every peer frozen for as long as this
+      // client stayed connected, so the timeline is abandoned and started again
+      // from what just arrived.
       const last = frames[frames.length - 1];
       if (last && tick <= last.tick) {
         if (last.tick - tick <= BUFFER_FRAMES) return;
@@ -266,12 +267,20 @@ export function createInterpolator(delayMs: number, tickMs: number) {
       return frames.length;
     },
 
-    /** Drops everything, for when a run ends. */
+    /**
+     * Drops everything.
+     *
+     * Two callers, and the second is the interesting one: leaving the building,
+     * and the building being REGENERATED under a client that is still standing
+     * in it. Nothing ends in this game, so a buffer is never thrown away because
+     * a match finished — it is thrown away because what it describes is gone.
+     */
     reset(): void {
       frames = [];
-      // The offset goes with it: a new run is a new arena, its ticks start again
-      // from nothing, and an estimate made against the last one would put every
-      // frame minutes into the past.
+      // The offset goes with it, because THE TIMELINE BELONGS TO ONE BUILDING:
+      // the заброшка that replaces this one counts its ticks from zero again, so
+      // an estimate made against the previous one would place every frame of the
+      // new one minutes into the past.
       offset = null;
     },
   };

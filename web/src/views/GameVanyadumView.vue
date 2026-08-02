@@ -19,6 +19,13 @@
       </div>
 
       <template v-else>
+        <!-- The заброшка would not let us in. A refusal is never a queue, so
+             this says so and the door below is the retry. -->
+        <p v-if="full" class="dum-full" data-testid="vanyadum-full">
+          ЗАБРОШКА ПОЛНА — внутри уже {{ config?.world.max_occupants ?? 0 }}. Подожди, пока кто-нибудь
+          выйдет, и попробуй ещё раз.
+        </p>
+
         <div class="dum-rules" data-testid="vanyadum-rules">
           <section v-for="block in rules" :key="block.title" class="dum-rule-block">
             <h2 class="dum-rule-title">{{ block.title }}</h2>
@@ -31,22 +38,20 @@
           </section>
         </div>
 
-        <div v-if="recentRuns.length" class="dum-runs" data-testid="vanyadum-runs">
-          <h2 class="dum-rule-title">Твои забеги</h2>
+        <div v-if="visits.length" class="dum-visits" data-testid="vanyadum-visits">
+          <h2 class="dum-rule-title">Ты уже заходил</h2>
           <ul>
-            <li v-for="(run, i) in recentRuns" :key="i">
-              {{ run.success ? '✅' : '💀' }} {{ run.seconds }} с · 🍺 {{ run.beer }}
-            </li>
+            <li v-for="(visit, i) in visits" :key="i">🕒 {{ visit.seconds }} с · 🍺 {{ visit.beer }}</li>
           </ul>
         </div>
 
         <v-btn
-          class="dum-start"
+          class="dum-enter"
           color="error"
           size="large"
-          data-testid="vanyadum-start"
-          :loading="starting"
-          @click="start"
+          data-testid="vanyadum-enter"
+          :loading="entering"
+          @click="enterPlay"
         >
           НА ЗАБРОШКУ
         </v-btn>
@@ -55,8 +60,10 @@
       <p v-if="error" class="dum-error" data-testid="vanyadum-error">{{ error }}</p>
     </section>
 
-    <!-- PLAYING — the world is the canvas; everything else is real DOM. -->
-    <section v-else-if="phase === 'playing'" class="dum-play" data-testid="vanyadum-play">
+    <!-- PLAYING — the world is the canvas; everything else is real DOM. There
+         are only two phases now: you are on the splash or you are in the
+         building. Nothing ends, so there is no third screen. -->
+    <section v-else class="dum-play" data-testid="vanyadum-play">
       <canvas ref="canvasEl" class="dum-canvas" data-testid="vanyadum-canvas" />
 
       <div class="dum-hud" data-testid="vanyadum-hud">
@@ -69,7 +76,15 @@
         >
           {{ p.icon }} {{ bag[p.grants] ?? 0 }}
         </span>
-        <span class="dum-hud-cell dum-hud-left">осталось {{ remaining.length }}</span>
+        <!-- Not «осталось»: nothing is being counted down any more. What is on
+             the floor goes up as well as down, and how many people are in here
+             is the whole point of there being one building. -->
+        <span class="dum-hud-cell dum-hud-right" data-testid="vanyadum-floor">
+          на полу {{ onFloor.length }}
+        </span>
+        <span class="dum-hud-cell dum-hud-who" data-testid="vanyadum-occupants">
+          👥 {{ occupants }}
+        </span>
       </div>
 
       <p v-if="link !== 'open'" class="dum-link" data-testid="vanyadum-link">
@@ -77,7 +92,7 @@
       </p>
 
       <p v-if="sceneFailed" class="dum-blind" data-testid="vanyadum-blind">
-        3D не запустилось — забег идёт, но смотреть не на что. Жми «сдаться».
+        3D не запустилось — ты на заброшке, но смотреть не на что. Уйди со страницы.
       </p>
 
       <!-- The whole play surface is one touch target: the left half moves, the
@@ -126,31 +141,6 @@
       >
         🔫
       </button>
-
-      <button
-        class="dum-quit"
-        type="button"
-        data-testid="vanyadum-quit"
-        @pointerdown.stop
-        @click.stop="quit"
-      >
-        сдаться
-      </button>
-    </section>
-
-    <!-- OVER — the result, and the way back in. -->
-    <section v-else class="dum-splash" data-testid="vanyadum-over">
-      <h1 class="dum-title">{{ over?.success ? 'ВСЁ СОБРАЛ' : 'ЗАБЕГ ОКОНЧЕН' }}</h1>
-      <p class="dum-lore">
-        {{ over?.success ? 'Заброшка обнесена. Пиво при тебе.' : 'Ну и ладно.' }}
-      </p>
-      <ul class="dum-result">
-        <li>время: {{ over?.seconds ?? 0 }} с</li>
-        <li>🍺 {{ over?.beer ?? 0 }}</li>
-      </ul>
-      <v-btn color="error" size="large" data-testid="vanyadum-again" @click="backToSplash">
-        ЕЩЁ РАЗ
-      </v-btn>
     </section>
   </div>
 </template>
@@ -159,11 +149,25 @@
 /**
  * «ВАНЯДУМ» — the third game, and the first in 3D.
  *
+ * ONE BUILDING, RUNNING CONTINUOUSLY. There is no run, no lobby and no
+ * matchmaking: the заброшка is always there, everybody who opens the game is in
+ * the same one, and pickups come back a while after somebody takes them. Walking
+ * in is opening the socket and saying hello; walking out is leaving the page.
+ * Nothing ends, so nothing announces an ending and there is no result screen —
+ * only the splash and the building.
+ *
+ * WHICH BUILDING, AND WHEN IT STOPS BEING THAT ONE. The level is fetched once
+ * over HTTP and referenced by index for the rest of the session. It is
+ * regenerated only when the last person leaves, so a client that was away long
+ * enough can come back holding geometry nobody is standing in: the `world_id` on
+ * the ready frame is the ONE signal that says so, and the answer is to re-fetch
+ * and rebuild.
+ *
  * WHAT IS ON THE CANVAS, AND WHAT IS NOT. The canvas holds the world. Every
- * readout, every control, the splash, the rules and the result screen are real
- * DOM — which is a testing decision before it is a design one, because nothing
- * inside a canvas can be asserted on without pixel comparison and a test-only
- * introspection API may not ship (see ADR-046, and `src/render/vanyadumScene`).
+ * readout, every control, the splash and the rules are real DOM — which is a
+ * testing decision before it is a design one, because nothing inside a canvas
+ * can be asserted on without pixel comparison and a test-only introspection API
+ * may not ship (see ADR-046, and `src/render/vanyadumScene`).
  *
  * WHERE THE TRUTH LIVES. The server simulates; this view draws. It sends the
  * axes the player is pushing and never a position — a prediction is something
@@ -195,7 +199,8 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { useTheme } from 'vuetify';
 import { gameVanyadumApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
-import type { VanyadumConfig, VanyadumRun, VanyadumRunRow } from '../api/types';
+import type { VanyadumConfig, VanyadumVisitRow, VanyadumWorld } from '../api/types';
+import { pickupsOnFloor } from '../lib/vanyadumLevel';
 import { buildRules } from '../lib/vanyadumRules';
 import {
   axesFromKeys,
@@ -212,24 +217,27 @@ import { createInterpolator, type Interpolator, type PeerState } from '../lib/va
 import type { VanyadumScene } from '../render/vanyadumScene';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
 
-type Phase = 'splash' | 'playing' | 'over';
+type Phase = 'splash' | 'playing';
 
 const phase = ref<Phase>('splash');
 const loading = ref(true);
-const starting = ref(false);
+const entering = ref(false);
 const error = ref('');
+/** The заброшка refused the hello because it is at MaxOccupants. */
+const full = ref(false);
 const webgl = ref(true);
 /** The probe passed but the context could not be created — see enterPlay. */
 const sceneFailed = ref(false);
 
 const config = ref<VanyadumConfig | null>(null);
-const recentRuns = ref<VanyadumRunRow[]>([]);
+const visits = ref<VanyadumVisitRow[]>([]);
 const rules = computed(() => buildRules(config.value));
 
 // --- what the server last told us -----------------------------------------
 const health = ref(0);
 const bag = ref<Record<string, number>>({});
-const remaining = ref<number[]>([]);
+/** The pickup ids lying on the floor right now. Goes UP as well as down. */
+const onFloor = ref<number[]>([]);
 /**
  * The last pickup bitmask a snapshot carried, or null before the first one.
  *
@@ -237,8 +245,9 @@ const remaining = ref<number[]>([]);
  * every pickup collected — so "we have not been told yet" cannot be spelled `0`
  * without the first empty floor being mistaken for it.
  */
-let remainingMask: number | null = null;
-const over = ref<{ success: boolean; seconds: number; beer: number } | null>(null);
+let floorMask: number | null = null;
+/** How many people are in the building, including you. Derived from the frame. */
+const occupants = ref(1);
 const link = ref<'connecting' | 'open' | 'lost'>('connecting');
 
 /**
@@ -272,7 +281,16 @@ const padEl = ref<HTMLElement | null>(null);
 const scene = shallowRef<VanyadumScene | null>(null);
 const theme = useTheme();
 
-let run: VanyadumRun | null = null;
+/** The building we fetched and built meshes for, or null on the splash. */
+let world: VanyadumWorld | null = null;
+/**
+ * Guards the re-fetch a stale `world_id` triggers.
+ *
+ * Two ready frames can arrive before the first re-fetch has landed — a reconnect
+ * delivers one per open — and two concurrent rebuilds would race each other for
+ * the same scene object.
+ */
+let adopting = false;
 let emitter: Emitter | null = null;
 let predictor: Predictor | null = null;
 let interp: Interpolator | null = null;
@@ -357,17 +375,13 @@ onMounted(async () => {
   } catch (e) {
     error.value = e instanceof ApiError ? `не открылось (${e.code})` : 'не открылось';
   }
-  await loadRuns();
+  await loadVisits();
 
-  // A run may already be going — a reload, or the game open on another tab. The
-  // arena outlives a disconnect by design, so pick it back up rather than
-  // stranding the player behind a start button that answers 409.
-  try {
-    run = await gameVanyadumApi.current();
-    if (webgl.value) await enterPlay();
-  } catch {
-    // 404 is the ordinary answer. Nothing to resume.
-  }
+  // NOTHING IS RESUMED AND NOTHING IS ENTERED HERE, which is a deliberate change
+  // of shape rather than a simplification. A hello creates an occupant and
+  // therefore, eventually, a recorded visit — so it may only be sent when the
+  // player has actually said he wants to be in the building. Walking somebody in
+  // because they opened the page would write a visit for reading the rules.
   loading.value = false;
 
   window.addEventListener('keydown', onKeyDown);
@@ -387,69 +401,97 @@ onBeforeUnmount(() => {
   document.removeEventListener('pointerlockchange', onPointerLockChange);
 });
 
-async function loadRuns(): Promise<void> {
+async function loadVisits(): Promise<void> {
   try {
-    recentRuns.value = (await gameVanyadumApi.myRuns()).runs;
+    visits.value = (await gameVanyadumApi.myVisits()).visits;
   } catch {
-    recentRuns.value = [];
+    visits.value = [];
   }
 }
 
-async function start(): Promise<void> {
-  if (starting.value || !webgl.value) return;
-  starting.value = true;
-  error.value = '';
-  try {
-    run = await gameVanyadumApi.start();
-    await enterPlay();
-  } catch (e) {
-    if (e instanceof ApiError && e.code === 'run_in_progress') {
-      // Somebody's other tab. Resuming is the right answer, not a second run.
-      try {
-        run = await gameVanyadumApi.current();
-        await enterPlay();
-      } catch {
-        error.value = 'забег уже идёт на другой вкладке';
-      }
-    } else {
-      error.value = e instanceof ApiError ? `не вышло (${e.code})` : 'не вышло';
-    }
-  } finally {
-    starting.value = false;
-  }
-}
+/**
+ * Re-reads the list every time the splash comes back, because a list read once
+ * on mount is stale every time after the first.
+ *
+ * The splash is not a screen you see once: a refusal returns to it, so does a
+ * failed rebuild, and so does an error walking in. Read on the TRANSITION rather
+ * than on a timer — this is a screen appearing, not something that needs
+ * watching — so it costs one request each time the player is standing in front
+ * of the list, and nothing at all while he is inside.
+ *
+ * WHAT IT STILL CANNOT SHOW, and it is worth being exact: the visit you have
+ * just finished. A row is written when the abandon grace expires, minutes after
+ * the socket went away, so at the moment the splash reappears that row does not
+ * exist for anybody to read. What this does pick up is every visit whose grace
+ * expired while you were inside — including the previous one, which is the case
+ * a player would otherwise only see by reloading the page.
+ */
+watch(phase, (now) => {
+  if (now === 'splash') void loadVisits();
+});
 
-async function quit(): Promise<void> {
-  try {
-    await gameVanyadumApi.abandon();
-  } catch {
-    // Giving up is best-effort: the arena is dropped after its grace period
-    // anyway, so a failed DELETE costs a couple of minutes of an empty
-    // simulation and nothing else.
-  }
-  teardownPlay();
-  over.value = null;
-  phase.value = 'splash';
-  await loadRuns();
-}
-
-function backToSplash(): void {
-  phase.value = 'splash';
-  void loadRuns();
-}
-
-/** Builds the scene, opens the socket, and starts both clocks. */
+/**
+ * Walks into the building: fetches it, builds it, opens the socket.
+ *
+ * This is also the retry after a refusal, which is why it clears `full` on the
+ * way in — there is nothing else to press, because a second button that also
+ * said "try again" would be a second path to one outcome.
+ */
 async function enterPlay(): Promise<void> {
-  if (!run || !config.value) return;
-  phase.value = 'playing';
+  if (entering.value || !webgl.value || !config.value) return;
+  entering.value = true;
+  error.value = '';
+  full.value = false;
+  try {
+    const fetched = await gameVanyadumApi.world();
+    world = fetched;
+    phase.value = 'playing';
+    await buildWorld();
+
+    // The hello goes out from the status callback rather than here: `send` drops
+    // anything written before the socket is OPEN, and subscribing only starts
+    // the handshake. Sending it there also covers every reconnect, which matters
+    // — the заброшка outlives a dropped socket for the length of its grace
+    // period, so a returning client has to say hello again to keep its place.
+    release = realtimeClient(fetched.room).subscribe({ frames: onFrame, status: onStatus });
+
+    sendTimer = window.setInterval(sendInput, Math.round(1000 / config.value.sim.input_hz));
+    lastFrameMs = performance.now();
+    frameHandle = requestAnimationFrame(drawFrame);
+  } catch (e) {
+    // Back to the splash rather than into a building we could not finish
+    // building. Half-entered is the one state with no way out of it: the door is
+    // on the splash, so a player left on the play screen with no world has
+    // nothing to press.
+    teardownPlay();
+    phase.value = 'splash';
+    error.value = e instanceof ApiError ? `не вышло (${e.code})` : 'не вышло';
+  } finally {
+    entering.value = false;
+  }
+}
+
+/**
+ * Builds everything derived from the building — the scene, the predictor, the
+ * interpolator, the emitter — and nothing that is derived from the socket.
+ *
+ * Split out because it happens twice: once on the way in, and again when a ready
+ * frame names a building we are not the ones standing in (see adoptBuilding).
+ * The socket, the timers and the input state deliberately survive that second
+ * call: the geometry changed, the connection did not.
+ */
+async function buildWorld(): Promise<void> {
+  if (!world || !config.value) return;
+  const level = world.level;
   health.value = config.value.player.start_health;
   bag.value = {};
-  remaining.value = run.level.pickups.map((p) => p.id);
-  remainingMask = null;
-  aim.yaw = run.level.spawn_yaw;
+  onFloor.value = level.pickups.map((p) => p.id);
+  floorMask = null;
+  occupants.value = 1;
+  aim.yaw = level.spawn_yaw;
   aim.pitch = 0;
-  view.x = run.level.spawn.x;
-  view.y = run.level.spawn.y;
+  view.x = level.spawn.x;
+  view.y = level.spawn.y;
   view.z = config.value.player.eye_height;
   view.yaw = aim.yaw;
 
@@ -460,20 +502,20 @@ async function enterPlay(): Promise<void> {
 
   // Passing the WebGL probe is not the same as GETTING a context: a browser with
   // several 3D tabs open hits its context limit, a driver can be lost, and a
-  // phone in a low-power mode can simply refuse. When that happens the run is
-  // still real — the server is still simulating it — so the HUD and the way out
-  // stay on screen and the player is told, rather than being left staring at a
-  // black rectangle with no button on it.
+  // phone in a low-power mode can simply refuse. When that happens the player is
+  // still in the building — the server is still simulating him — so the HUD
+  // stays on screen and he is told, rather than being left staring at a black
+  // rectangle.
   sceneFailed.value = false;
   try {
     const { createScene } = await import('../render/vanyadumScene');
     scene.value = await createScene({
       canvas,
-      level: run.level,
+      level,
       surfaces: config.value.surfaces,
       reducedMotion: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false,
     });
-    scene.value.setRemaining(remaining.value);
+    scene.value.setOnFloor(onFloor.value);
 
     resizeObserver = new ResizeObserver(() => {
       const box = canvas.getBoundingClientRect();
@@ -495,7 +537,7 @@ async function enterPlay(): Promise<void> {
     maxPerWake: sim.max_commands,
   });
   predictor = createPredictor({
-    level: run.level,
+    level,
     eyeHeight: config.value.player.eye_height,
     constants: {
       walkSpeed: config.value.player.walk_speed,
@@ -506,10 +548,10 @@ async function enterPlay(): Promise<void> {
       collisionPasses: sim.collision_passes,
     },
     start: {
-      x: run.level.spawn.x,
-      y: run.level.spawn.y,
-      sector: run.level.spawn_sector,
-      yaw: run.level.spawn_yaw,
+      x: level.spawn.x,
+      y: level.spawn.y,
+      sector: level.spawn_sector,
+      yaw: level.spawn_yaw,
     },
   });
   // The delay is SERVED, not chosen here: lag compensation on the server
@@ -523,27 +565,17 @@ async function enterPlay(): Promise<void> {
   interp = createInterpolator(sim.interp_delay_ms, 1000 / (sim.hz || 20));
   outbox = [];
   seenTick = 0;
-
-  // The hello goes out from the status callback rather than here: `send` drops
-  // anything written before the socket is OPEN, and subscribing only starts the
-  // handshake. Sending it there also covers every reconnect, which matters —
-  // an arena outlives a dropped socket, so a reconnecting client has to say
-  // hello again to be re-attached to the run it is already in.
-  const client = realtimeClient(run.room);
-  release = client.subscribe({ frames: onFrame, status: onStatus });
-
-  sendTimer = window.setInterval(sendInput, Math.round(1000 / config.value.sim.input_hz));
-  lastFrameMs = performance.now();
-  frameHandle = requestAnimationFrame(drawFrame);
 }
 
-function teardownPlay(): void {
-  if (sendTimer !== undefined) window.clearInterval(sendTimer);
-  sendTimer = undefined;
-  if (frameHandle) cancelAnimationFrame(frameHandle);
-  frameHandle = 0;
-  release?.();
-  release = null;
+/**
+ * Throws away everything built from a building, keeping the socket.
+ *
+ * The counterpart of buildWorld, and the reason the two are a pair: a
+ * regenerated заброшка invalidates every mesh, the predictor's collision data
+ * and the interpolation buffer's contents, all of which describe walls that are
+ * no longer there.
+ */
+function disposeWorld(): void {
   resizeObserver?.disconnect();
   resizeObserver = null;
   scene.value?.dispose();
@@ -555,7 +587,23 @@ function teardownPlay(): void {
   predictor = null;
   outbox = [];
   peers = [];
-  remainingMask = null;
+  floorMask = null;
+}
+
+/**
+ * Leaves the building. Closing the socket IS leaving, so this is also what an
+ * unmount does — there is no goodbye to send and nothing to abandon.
+ */
+function teardownPlay(): void {
+  if (sendTimer !== undefined) window.clearInterval(sendTimer);
+  sendTimer = undefined;
+  if (frameHandle) cancelAnimationFrame(frameHandle);
+  frameHandle = 0;
+  release?.();
+  release = null;
+  disposeWorld();
+  world = null;
+  adopting = false;
   // Handing the mouse back is not optional: leaving a page with the pointer
   // still captured strands the cursor on a screen that no longer uses it.
   if (pointerLocked.value) document.exitPointerLock?.();
@@ -620,7 +668,7 @@ function drawFrame(now: number): void {
 
 /** The send clock. One frame per window, carrying everything sampled in it. */
 function sendInput(): void {
-  if (!run || !predictor || !config.value) return;
+  if (!world || !predictor || !config.value) return;
   const fresh = outbox;
   outbox = [];
   // An empty frame still spends one of the socket's ten a second, so silence is
@@ -642,7 +690,7 @@ function sendInput(): void {
     fresh,
     predictor.unacknowledged(config.value.sim.redundant + fresh.length),
   );
-  realtimeClient(run.room).send({ ...frame });
+  realtimeClient(world.room).send({ ...frame });
 }
 
 // --- the socket ------------------------------------------------------------
@@ -652,14 +700,63 @@ function onFrame(frame: RealtimeFrame): void {
     case 'vanyadum_snap':
       applySnapshot(frame);
       break;
-    case 'vanyadum_over':
-      finish(frame);
+    case 'vanyadum_ready':
+      void adoptBuilding(typeof frame.world_id === 'string' ? frame.world_id : '');
+      break;
+    case 'vanyadum_full':
+      refused();
       break;
     default:
       // Unknown `t` is ignored, which is what lets either end learn a message
       // type without a coordinated deploy.
       break;
   }
+}
+
+/**
+ * Checks the building we are drawing against the one we were let into, and
+ * rebuilds if they disagree.
+ *
+ * A disagreement means the заброшка emptied while we were away and was
+ * regenerated, which is the only thing that changes its id — so every mesh, the
+ * predictor's walls and the interpolation buffer describe a building nobody is
+ * standing in. Re-fetching converges: the level this pulls is the one the server
+ * has now, so the NEXT ready frame agrees and this does nothing.
+ *
+ * The socket is left alone throughout. It is the connection that is still good;
+ * it is the geometry that went stale.
+ */
+async function adoptBuilding(id: string): Promise<void> {
+  if (!id || adopting || id === world?.world_id) return;
+  adopting = true;
+  try {
+    disposeWorld();
+    world = await gameVanyadumApi.world();
+    await buildWorld();
+  } catch (e) {
+    // Out to the splash, because staying here is a dead end: a ready frame only
+    // arrives in answer to a hello, and a hello only goes out while we are
+    // holding a building. Nothing would ever ask again.
+    teardownPlay();
+    phase.value = 'splash';
+    error.value = e instanceof ApiError ? `заброшку перестроили (${e.code})` : 'заброшку перестроили';
+  } finally {
+    adopting = false;
+  }
+}
+
+/**
+ * The заброшка is at capacity and would not let us in.
+ *
+ * Back to the splash, which is where the retry lives: the entry button is the
+ * only way in, so it is also the only way to try again. Nothing is queued and
+ * nothing is scheduled — there is no moment at which a place is KNOWN to come
+ * free, because nothing in this game ends.
+ */
+function refused(): void {
+  teardownPlay();
+  phase.value = 'splash';
+  full.value = true;
 }
 
 function applySnapshot(frame: RealtimeFrame): void {
@@ -703,20 +800,34 @@ function applySnapshot(frame: RealtimeFrame): void {
   }
 
   health.value = num(frame.hp);
-  // WHICH PICKUPS ARE LEFT, AS A BITMASK over the index into the level's own
-  // list: bit i set means the i-th pickup is still on the floor. One number
+  // HOW MANY PEOPLE ARE IN HERE, derived rather than sent: the peer array is
+  // everybody but you, so its length plus one is the building's population. A
+  // dedicated field would be bytes on a repeating payload to restate something
+  // the frame already carries.
+  const heads = (Array.isArray(frame.p) ? frame.p.length : 0) + 1;
+  if (heads !== occupants.value) occupants.value = heads;
+
+  // WHAT IS LYING ON THE FLOOR, AS A BITMASK over the index into the level's own
+  // list: bit i set means the i-th pickup is there to be walked over. One number
   // rather than a list on a frame that repeats twenty times a second forever,
   // and thirty-two bits rather than sixty-four because a JSON number is an
   // IEEE754 double.
+  //
+  // IT MOVES IN BOTH DIRECTIONS. A bottle taken clears its bit and a bottle that
+  // has come back sets it again, and this is the only thing on the wire that
+  // says so — a respawn has no event, because the mask is idempotent full state
+  // and an "it came back" field would be bytes spent to say nothing at all
+  // almost every time it was sent.
   const mask = num(frame.pk) >>> 0;
   // Only touch reactivity when the set actually changed: at twenty frames a
   // second an unconditional assignment is a re-render per frame for nothing. The
-  // mask compares EXACTLY, where the previous list comparison could only afford
-  // to compare lengths — so a swap of one pickup for another now registers.
-  if (mask !== remainingMask) {
-    remainingMask = mask;
-    remaining.value = pickupIdsIn(mask);
-    scene.value?.setRemaining(remaining.value);
+  // mask compares EXACTLY, where a list comparison could only afford to compare
+  // lengths — so one pickup swapped for another registers, and so does the
+  // moment a bottle returns to a floor that had the same number of things on it.
+  if (mask !== floorMask) {
+    floorMask = mask;
+    onFloor.value = pickupsOnFloor(world?.level.pickups ?? [], mask);
+    scene.value?.setOnFloor(onFloor.value);
   }
   const c = frame.c as Record<string, number> | undefined;
   if (c) {
@@ -726,44 +837,16 @@ function applySnapshot(frame: RealtimeFrame): void {
   }
 }
 
-function finish(frame: RealtimeFrame): void {
-  const counters = (frame.c as Record<string, number> | undefined) ?? {};
-  over.value = {
-    success: Boolean(frame.success),
-    seconds: num(frame.secs),
-    beer: counters.beer ?? 0,
-  };
-  teardownPlay();
-  phase.value = 'over';
-  void loadRuns();
-}
-
 function onStatus(status: ConnectionStatus): void {
   link.value = status === 'open' ? 'open' : status === 'connecting' ? 'connecting' : 'lost';
-  // Every open, not just the first — see enterPlay.
-  if (status === 'open' && run) realtimeClient(run.room).send({ t: 'vanyadum_hello' });
+  // Every open, not just the first — see enterPlay. A second hello is a
+  // reconnect rather than a second person: it refreshes the place we already
+  // have instead of taking another one.
+  if (status === 'open' && world) realtimeClient(world.room).send({ t: 'vanyadum_hello' });
 }
 
 function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
-}
-
-/**
- * The pickup ids a `pk` bitmask leaves on the floor.
- *
- * The wire names an INDEX into the level's own list and the renderer names an
- * ID, so this is the one place the two meet — which is also why it reads the id
- * out rather than assuming the two are the same number, as today's generator
- * happens to make them. Thirty-two is the width of the field rather than a limit
- * chosen here; a level carries two or three pickups.
- */
-function pickupIdsIn(mask: number): number[] {
-  const list = run?.level.pickups ?? [];
-  const out: number[] = [];
-  for (let i = 0; i < list.length && i < 32; i++) {
-    if ((mask >>> i) & 1) out.push(list[i].id);
-  }
-  return out;
 }
 
 // --- pointers --------------------------------------------------------------
@@ -963,19 +1046,35 @@ watch(
   opacity: 0.85;
 }
 
-.dum-runs {
+.dum-visits {
   width: 100%;
   max-width: 34rem;
   text-align: left;
   font-size: 0.86rem;
 }
 
-.dum-runs ul {
+.dum-visits ul {
   margin: 0;
   padding-left: 1.1rem;
 }
 
-.dum-start {
+/* The refusal. Loud enough to be the first thing read on a screen that is
+   otherwise a wall of rules, and it wraps rather than overflowing a phone. */
+.dum-full {
+  width: 100%;
+  max-width: 34rem;
+  margin: 0;
+  padding: 10px 12px;
+  border: 2px solid #e2574c;
+  border-radius: 10px;
+  background: rgba(226, 87, 76, 0.15);
+  color: #ffd0c9;
+  font-weight: 700;
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.dum-enter {
   min-height: 48px;
   font-weight: 900;
   letter-spacing: 0.06em;
@@ -991,13 +1090,6 @@ watch(
 
 .dum-loading {
   padding: 24px;
-}
-
-.dum-result {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  font-size: 1.05rem;
 }
 
 /* --- playing ------------------------------------------------------------- */
@@ -1043,8 +1135,15 @@ watch(
   pointer-events: none;
 }
 
-.dum-hud-left {
+/* Pushed to the far end, so the two readouts about the BUILDING sit together
+   and away from the two about you. */
+.dum-hud-right {
   margin-left: auto;
+  opacity: 0.75;
+  font-weight: 400;
+}
+
+.dum-hud-who {
   opacity: 0.75;
   font-weight: 400;
 }
@@ -1120,8 +1219,8 @@ watch(
   background: rgba(255, 255, 255, 0.3);
 }
 
-/* Both buttons are comfortably past the 44px minimum and sit clear of the
-   bottom edge, where a phone's own home indicator lives. */
+/* Comfortably past the 44px minimum and clear of the bottom edge, where a
+   phone's own home indicator lives. */
 .dum-fire {
   position: absolute;
   right: 16px;
@@ -1133,19 +1232,6 @@ watch(
   background: rgba(226, 87, 76, 0.35);
   font-size: 28px;
   line-height: 1;
-}
-
-.dum-quit {
-  position: absolute;
-  right: 12px;
-  top: 8px;
-  min-height: 44px;
-  min-width: 44px;
-  padding: 0 12px;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.35);
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 0.8rem;
 }
 
 @media (prefers-reduced-motion: reduce) {

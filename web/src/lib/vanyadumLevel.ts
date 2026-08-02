@@ -347,6 +347,35 @@ export function levelBounds(level: VanyadumLevel): {
   return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
 }
 
+/**
+ * The pickup ids a `pk` bitmask leaves lying on the floor.
+ *
+ * The wire names an INDEX into the level's own list and the renderer names an
+ * ID, so this is the one place the two meet — which is also why it reads the id
+ * out rather than assuming the two are the same number, as today's generator
+ * happens to make them.
+ *
+ * IT READS BOTH WAYS, AND THAT IS THE POINT. A bottle taken clears its bit, and
+ * a bottle that has come back sets it again — the mask is idempotent full state
+ * rather than a record of what was collected, so the renderer must be able to
+ * put a mesh BACK and not only take one away. That is the whole of how a respawn
+ * reaches the screen: there is no event for it, because an "it came back" field
+ * would be bytes on a payload that repeats twenty times a second, per viewer, to
+ * say nothing at all almost every time it was sent.
+ *
+ * Thirty-two is the width of the field rather than a limit chosen here — a JSON
+ * number is an IEEE754 double, so the server caps a level at that many pickups
+ * (MaxWirePickups) and anything beyond it could not be addressed at all.
+ */
+export function pickupsOnFloor(pickups: VanyadumPickup[], mask: number): number[] {
+  const bits = mask >>> 0;
+  const out: number[] = [];
+  for (let i = 0; i < pickups.length && i < 32; i++) {
+    if ((bits >>> i) & 1) out.push(pickups[i].id);
+  }
+  return out;
+}
+
 /** The sector containing a point, or undefined. Mirrors the server's SectorAt. */
 export function sectorAt(
   level: VanyadumLevel,

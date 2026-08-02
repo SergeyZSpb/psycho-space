@@ -8,10 +8,11 @@
  * that only exists in `content.go` is a rule nobody playing the game knows.
  *
  * So the numbers come from `GET /api/game-vanyadum/config`, which already
- * carries the player's speed, what each pickup grants and how much of it, and
- * the rates the client has to match. Typing them out here would be a second copy
- * of the catalogue, wrong the first afternoon somebody retuned a constant, and
- * silently wrong because nothing compares the two.
+ * carries the player's speed, what each pickup grants and how much of it, how
+ * many people fit in the заброшка and how long a thing takes to come back.
+ * Typing them out here would be a second copy of the catalogue, wrong the first
+ * afternoon somebody retuned a constant, and silently wrong because nothing
+ * compares the two.
  *
  * The part that CANNOT be derived is at the bottom of this file: read the
  * comment on VANYADUM_PROSE before adding a line to it.
@@ -70,6 +71,30 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
   if (!config) return [];
   const blocks: RuleBlock[] = [];
 
+  // FIRST, because it is what the game IS: one заброшка, and everybody who
+  // opens the game is walking around inside it at the same time. Both numbers
+  // below are rules a player would otherwise have to discover by being refused
+  // at the door, or by standing over an empty floor wondering whether waiting is
+  // worth it.
+  blocks.push({
+    title: 'Заброшка',
+    lines: [
+      {
+        // «больше N человек» rather than «N человек»: the number is DERIVED, and
+        // Russian agreement after a numeral depends on it — «4 человека» but
+        // «6 человек». A phrasing that reads correctly for every value is worth
+        // more here than a prettier one that goes wrong the day somebody retunes
+        // the capacity, which is the entire point of not typing the number out.
+        label: '🏚 одна на всех',
+        text: `Заброшка одна, и все ходят по ней одновременно. Больше ${config.world.max_occupants} человек внутрь не пустят — кто зашёл, того и видно.`,
+      },
+      {
+        label: '🔁 всё возвращается',
+        text: `Подобранное появляется на том же месте через ${num(config.world.respawn_seconds, 0)} с. Уносить нечего — заброшка не пустеет.`,
+      },
+    ],
+  });
+
   blocks.push({
     title: 'Ваня',
     lines: [
@@ -108,10 +133,19 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
  * The part that cannot be derived, and the part a rules change must come back
  * and edit BY HAND.
  *
- * Everything here is either a fact about the controls — which the server does
- * not publish because it has no opinion about thumbs — or a fact about this
- * iteration's objective, which is deliberately the smallest one that closes the
- * loop and will be replaced by the keys and the locked door.
+ * Three kinds of thing end up here, and none of them could honestly be
+ * generated. The CONTROLS, because the server has no opinion about thumbs and
+ * publishes none. The ABSENCES — that there is no objective, that nothing ends,
+ * that leaving is just leaving — which no catalogue can carry, because a
+ * catalogue can only publish what exists. And the building's LIFECYCLE: the
+ * config endpoint describes what a заброшка is made of and how many people fit
+ * in it, and carries no field at all for the fact that this one is torn down and
+ * generated again once it empties.
+ *
+ * Those last two matter more than any number on this screen. A player who
+ * assumes there is a win condition will spend the whole visit looking for it,
+ * and a player who remembers the layout will decide the game is broken the first
+ * time he comes back to a building he has never seen.
  *
  * If you add a mechanic, ask first whether the catalogue could carry it. It
  * usually can, and then it belongs above rather than here.
@@ -123,6 +157,17 @@ export const VANYADUM_PROSE: RuleLine[] = [
     label: '⌨️ на компьютере',
     text: 'WASD — идти. Клик по экрану захватывает мышь, дальше смотришь ей как в любом шутере. Esc — отпустить.',
   },
-  { label: '🍺 цель', text: 'Собрать всё пиво на заброшке. Всё — значит всё, потом забег закончится.' },
+  {
+    label: '🎯 цели нет',
+    text: 'Ничего не надо собрать, никуда не надо успеть. Заброшка не кончается, выиграть её нельзя, проиграть тоже.',
+  },
+  {
+    label: '🚪 как уйти',
+    text: 'Уйди со страницы или закрой вкладку — на этом визит и кончается. Сколько ты там пробыл, запишется.',
+  },
+  {
+    label: '🔀 не та же самая',
+    text: 'Пока внутри хоть кто-то есть, заброшка стоит. Ушёл последний — её сносят, и следующего пустят уже в новую: другие комнаты, пиво в других местах. Планировку запоминать бесполезно.',
+  },
   { label: '📡 связь', text: 'Мир считает сервер. Порвётся связь — Ваня постоит на месте и дождётся.' },
 ];
