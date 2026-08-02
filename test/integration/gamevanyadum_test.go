@@ -222,6 +222,7 @@ func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 	}
 	var cfg struct {
 		Player   map[string]float64 `json:"player"`
+		Gun      map[string]any     `json:"gun"`
 		Pickups  []map[string]any   `json:"pickups"`
 		Surfaces []map[string]any   `json:"surfaces"`
 		Sim      map[string]float64 `json:"sim"`
@@ -251,6 +252,29 @@ func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 	if cfg.World["respawn_seconds"] != gamevanyadum.PickupRespawn.Seconds() {
 		t.Fatalf("the catalogue says things come back after %vs, the world says %v",
 			cfg.World["respawn_seconds"], gamevanyadum.PickupRespawn)
+	}
+	// And the gun, which is the part of the cheatsheet a player most needs before
+	// he walks in: how many shots he has, how fast they come, what a reload costs
+	// him and what it is paid in. The ammunition is published as the counter's
+	// name so the splash screen can JOIN it against the pickup that grants it,
+	// rather than being told the same string twice.
+	for _, key := range []string{"barrels", "fire_cooldown_seconds", "reload_seconds", "reload_cost"} {
+		if n, ok := cfg.Gun[key].(float64); !ok || n <= 0 {
+			t.Fatalf("the gun catalogue says nothing usable about %q: %+v", key, cfg.Gun)
+		}
+	}
+	ammo, _ := cfg.Gun["ammo"].(string)
+	if ammo == "" {
+		t.Fatalf("the catalogue does not say what the gun is loaded with: %+v", cfg.Gun)
+	}
+	granted := false
+	for _, p := range cfg.Pickups {
+		if p["grants"] == ammo {
+			granted = true
+		}
+	}
+	if !granted {
+		t.Fatalf("the gun is loaded with %q and nothing in the building grants it", ammo)
 	}
 }
 
@@ -1422,5 +1446,141 @@ func waitForVisits(t *testing.T, tick chan time.Time, clk *dumClock, uid string,
 			t.Fatalf("%s never reached %d recorded visits", uid, want)
 		}
 		clk.step(t, tick)
+	}
+}
+
+// waitForSnap pumps the simulation until a snapshot satisfying `want` arrives,
+// and says what it was looking for when it gives up.
+//
+// BOUNDED BY TIME AND NOT BY A COUNT OF TICKS, for the reason spelled out on
+// waitForFrame: how many ticks fit in a second is a property of the machine, and
+// a loaded CI runner turns an attempt count into a test that lies about why it
+// failed. It also has to READ PAST what is already queued — the frame channel is
+// buffered, so the first snapshots out of it describe ticks from before the
+// input was written.
+func waitForSnap(t *testing.T, frames <-chan []byte, tick chan time.Time, clk *dumClock,
+	what string, want func(map[string]any) bool,
+) map[string]any {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	var last map[string]any
+	for {
+		at := clk.now
+		select {
+		case raw := <-frames:
+			var f map[string]any
+			if err := json.Unmarshal(raw, &f); err != nil || f["t"] != "vanyadum_snap" {
+				continue
+			}
+			last = f
+			if want(f) {
+				return f
+			}
+		case tick <- at:
+			clk.now = clk.now.Add(gamevanyadum.SimStep)
+			clk.ticks++
+		case <-deadline:
+			t.Fatalf("no snapshot ever %s; the last one was %v", what, last)
+			return nil
+		}
+	}
+}
+
+// pullTrigger writes one input frame carrying a single trigger pull, shaped
+// exactly as the browser shapes one.
+func pullTrigger(t *testing.T, conn *websocket.Conn, seq int) {
+	t.Helper()
+	msg, err := json.Marshal(map[string]any{
+		"t": "vanyadum_input", "k": 0,
+		"cmds": []map[string]any{{"q": seq, "dt": 0.025, "f": true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(context.Background(), websocket.MessageText, msg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVanyadumTheTriggerReachesTheWorldAndTheShellCountComesBack(t *testing.T) {
+	// The gun end to end, over a real socket: the client sends a REQUEST to pull
+	// the trigger and the server answers with the state of the weapon. Nothing
+	// inbound claims to have fired and nothing claims to have hit anything —
+	// there is a bit on a command, and everything else is the simulation's.
+	app, tick, _ := buildAppVanyadum(t, dumVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cli := loginAs(t, srv.URL, "910009", "user")
+	clk := newDumClock()
+
+	conn, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cli, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	frames := readFrames(t, conn)
+
+	if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"t":"vanyadum_hello"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitForFrame(t, frames, tick, clk, "vanyadum_ready")
+
+	// A fresh occupant spawns with both barrels and no bottles: two shots free,
+	// and the third costs a walk.
+	first := waitForFrame(t, frames, tick, clk, "vanyadum_snap")
+	if got, _ := first["b"].(float64); int(got) != gamevanyadum.Barrels {
+		t.Fatalf("spawned with %v barrels, the catalogue says %d", first["b"], gamevanyadum.Barrels)
+	}
+	for _, key := range []string{"d", "r"} {
+		if _, ok := first[key]; ok {
+			t.Fatalf("an idle gun published %q: %v", key, first)
+		}
+	}
+
+	// The first barrel. The shell count that comes back is the SERVER's.
+	pullTrigger(t, conn, 1)
+	fired := waitForSnap(t, frames, tick, clk, "reported a spent barrel", func(f map[string]any) bool {
+		b, _ := f["b"].(float64)
+		return int(b) == gamevanyadum.Barrels-1
+	})
+	if cd, _ := fired["d"].(float64); cd <= 0 {
+		t.Fatalf("a shot published no cadence: %v", fired)
+	}
+
+	// And the cadence runs down with NOTHING being sent, which is the whole
+	// reason the world grew an idle fill: a player who fires and then stands
+	// still emits no frames at all, and a gun that only cooled while he walked
+	// would be a gun that worked in the state nobody shoots from.
+	waitForSnap(t, frames, tick, clk, "let the cadence run out in silence", func(f map[string]any) bool {
+		_, busy := f["d"]
+		return !busy
+	})
+
+	// The second barrel, and then an empty gun with no bottle to load: the pull
+	// is answered by nothing at all, which is what makes the beer worth walking
+	// to rather than a counter that goes up.
+	pullTrigger(t, conn, 2)
+	waitForSnap(t, frames, tick, clk, "reported an empty gun", func(f map[string]any) bool {
+		b, _ := f["b"].(float64)
+		return int(b) == 0
+	})
+	waitForSnap(t, frames, tick, clk, "let the second cadence run out", func(f map[string]any) bool {
+		_, busy := f["d"]
+		return !busy
+	})
+
+	pullTrigger(t, conn, 3)
+	for i := 0; i < gamevanyadum.SimHz; i++ {
+		clk.step(t, tick)
+	}
+	dry := waitForSnap(t, frames, tick, clk, "acknowledged the dry trigger", func(f map[string]any) bool {
+		ack, _ := f["ack"].(float64)
+		return ack >= 3
+	})
+	if b, _ := dry["b"].(float64); int(b) != 0 {
+		t.Fatalf("a dry trigger loaded %v barrels out of nowhere: %v", dry["b"], dry)
+	}
+	if _, reloading := dry["r"]; reloading {
+		t.Fatalf("a reload started with nothing in the bag: %v", dry)
 	}
 }

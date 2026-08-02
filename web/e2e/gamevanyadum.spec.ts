@@ -41,6 +41,17 @@ const CONFIG = {
     max_health: 80,
     start_health: 61,
   },
+  // Not production's two barrels, 0.35 s and 1.5 s either, and for the same
+  // reason: the splash states the gun's rules and it must state THESE. A
+  // cheatsheet with a «2» typed into it would pass against the real catalogue
+  // and fail here, which is what makes the numbers wrong on purpose worth having.
+  gun: {
+    barrels: 3,
+    fire_cooldown_seconds: 0.65,
+    reload_seconds: 2.5,
+    reload_cost: 2,
+    ammo: 'beer',
+  },
   pickups: [
     {
       key: 'beer',
@@ -214,8 +225,25 @@ async function stubSocket(page: Page): Promise<{
     // be valid JSON and would decode as the number zero, which reads as an empty
     // floor and is exactly the kind of quiet wrongness this stub exists to
     // avoid. The mask moves in BOTH directions: things come back.
+    // `b` is the shell count and is ALWAYS sent, because a resting gun is full
+    // rather than empty — the resting frame here therefore carries the
+    // catalogue's own barrel count, and `d`/`r` are absent, which is what a gun
+    // that is not busy looks like on the wire.
     snapshot: (fields) =>
-      send({ t: 'vanyadum_snap', k: 1, ack: 1, x: 500, y: 500, z: 165, yaw: 0, s: 0, hp: 61, pk: 0b11, ...fields }),
+      send({
+        t: 'vanyadum_snap',
+        k: 1,
+        ack: 1,
+        x: 500,
+        y: 500,
+        z: 165,
+        yaw: 0,
+        s: 0,
+        hp: 61,
+        pk: 0b11,
+        b: CONFIG.gun.barrels,
+        ...fields,
+      }),
     // The standings: who is in the BUILDING, which is a different question from
     // who is in the snapshot. Unfiltered, identical for every reader, and
     // including the reader himself — so it is the only honest source for how
@@ -375,6 +403,26 @@ test.describe('«ВАНЯДУМ» splash', () => {
     await expect(rules).toContainText('закрой вкладку');
     // And the objective it used to have is gone from the screen entirely.
     await expect(rules).not.toContainText('Собрать всё пиво');
+  });
+
+  test('and it states the обрез’s rules, every number of them derived', async ({ page }) => {
+    // C1a's rules change, and the reason the splash is a gate rather than a
+    // nicety: a player who does not know the gun holds three, has a cadence, and
+    // spends beer to reload will empty it, stand there, and conclude the game is
+    // broken. Every number here is the stub's rather than production's, so a
+    // hand-typed cheatsheet fails.
+    await openSplash(page);
+    const rules = page.getByTestId('vanyadum-rules');
+    await expect(rules).toContainText('0,65 с');
+    await expect(rules).toContainText('2,5 с');
+    // The ammunition is NAMED BY A JOIN — the gun publishes a counter and the
+    // pickup that grants it carries the word — so this is also what says the two
+    // agree.
+    await expect(rules).toContainText('🍺 пиво');
+    // And the honest admission that C1a's gun hits nothing, which no catalogue
+    // could carry: it is an absence, and a player firing into a corridor with no
+    // explanation reads it as a broken game.
+    await expect(rules).toContainText('нейрослопов');
   });
 
   test('and it says you cannot see everybody, and where the rest are listed', async ({ page }) => {
@@ -812,8 +860,10 @@ test.describe('«ВАНЯДУМ» play', () => {
   });
 
   test('the fire control clears 44 px and sits inside the screen', async ({ page }) => {
-    // The only button on the play surface now. «сдаться» went with the runs it
-    // used to end: leaving is leaving the page.
+    // It finally does something, which makes its reachability a rule rather than
+    // a formality: a trigger a thumb cannot land on squarely is a gun that eats
+    // shots. «сдаться» went with the runs it used to end — leaving is leaving
+    // the page.
     await stubSocket(page);
     await openSplash(page);
     await walkIn(page);
@@ -824,6 +874,129 @@ test.describe('«ВАНЯДУМ» play', () => {
     expect(box!.width).toBeGreaterThanOrEqual(44);
     expect(box!.height).toBeGreaterThanOrEqual(44);
     expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+  });
+
+  test('the mute is reachable too, and does not overlap the trigger', async ({ page }) => {
+    // The only sound this game makes is a shotgun, so the person who wants it
+    // off wants it off NOW — which means on the play surface and not behind a
+    // settings screen. Two round controls side by side at the bottom of a 360 px
+    // phone is exactly the arrangement that goes wrong by a few pixels, so the
+    // gap between them is measured rather than eyeballed.
+    await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    const mute = page.getByTestId('vanyadum-mute');
+    await expect(mute).toBeVisible();
+    const box = (await mute.boundingBox())!;
+    const fire = (await page.getByTestId('vanyadum-fire').boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    // Left of the trigger with daylight between them, so neither is pressed by
+    // accident by a thumb aiming at the other.
+    expect(box.x + box.width).toBeLessThanOrEqual(fire.x - 8);
+  });
+
+  test('the mute says which state it is in, in the DOM', async ({ page }) => {
+    // Real DOM like every other control (ADR-047), which is what makes it
+    // assertable at all — and `aria-pressed` is what makes it answerable to a
+    // screen reader rather than only to somebody who can see an emoji change.
+    await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    const mute = page.getByTestId('vanyadum-mute');
+    await expect(mute).toHaveAttribute('aria-pressed', 'false');
+    await mute.click();
+    await expect(mute).toHaveAttribute('aria-pressed', 'true');
+    await mute.click();
+    await expect(mute).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('the shell count is the server’s, and it is real text', async ({ page }) => {
+    // THE HALF OF THE GUN THIS SUITE CAN SEE. The muzzle flash and the kick are
+    // inside the canvas and cannot be asserted on without pixel comparison —
+    // their claims live in the unit tests over the predictor. What is DOM is the
+    // number a player reads, and it is the snapshot's rather than the
+    // prediction's precisely so that it can be trusted.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    // A full gun, from the catalogue's own barrel count.
+    await socket.snapshot({});
+    await expect(page.getByTestId('vanyadum-shells')).toContainText(
+      `${CONFIG.gun.barrels}/${CONFIG.gun.barrels}`,
+    );
+
+    // One barrel gone and the cadence running.
+    await socket.snapshot({ b: CONFIG.gun.barrels - 1, d: 350 });
+    await expect(page.getByTestId('vanyadum-shells')).toContainText(
+      `${CONFIG.gun.barrels - 1}/${CONFIG.gun.barrels}`,
+    );
+
+    // Empty, and reloading — `r` and `d` are never both set, and a reload is the
+    // one state where the count is not the useful thing to show.
+    await socket.snapshot({ b: 0, r: 2500 });
+    await expect(page.getByTestId('vanyadum-shells')).toContainText('жду');
+
+    // And back, which no event announces: the snapshot simply says so again.
+    await socket.snapshot({ b: CONFIG.gun.barrels });
+    await expect(page.getByTestId('vanyadum-shells')).toContainText(
+      `${CONFIG.gun.barrels}/${CONFIG.gun.barrels}`,
+    );
+  });
+
+  test('holding the trigger reaches the server', async ({ page }) => {
+    // The end-to-end claim this suite CAN make about firing: a thumb on the
+    // button produces an input frame carrying the trigger. Deliberately never
+    // sends a snapshot first — a client that could not predict its own gun would
+    // have nothing to say until one arrived.
+    //
+    // Generous, because the frame is built inside a requestAnimationFrame loop
+    // and the whole suite runs in parallel on a machine that throttles the
+    // frames it depends on. The claim is "a pull is eventually sent", not
+    // "within four seconds".
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    const fire = page.getByTestId('vanyadum-fire');
+    await fire.dispatchEvent('pointerdown', { pointerId: 3, isPrimary: true });
+    await expect
+      .poll(
+        async () =>
+          (await socket.sent()).filter((m) => m.includes('vanyadum_input') && m.includes('"f":true'))
+            .length,
+        { timeout: 15_000 },
+      )
+      .toBeGreaterThan(0);
+    await fire.dispatchEvent('pointerup', { pointerId: 3, isPrimary: true });
+  });
+
+  test('and letting go stops it, without holding it down forever', async ({ page }) => {
+    // A trigger left stuck down is a gun that empties itself and a socket that
+    // never goes quiet. Measured by what stops arriving, so it needs the release
+    // to have actually been heard rather than merely dispatched.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    const fire = page.getByTestId('vanyadum-fire');
+    await fire.dispatchEvent('pointerdown', { pointerId: 4, isPrimary: true });
+    await expect
+      .poll(async () => (await socket.sent()).filter((m) => m.includes('"f":true')).length, {
+        timeout: 15_000,
+      })
+      .toBeGreaterThan(0);
+    await fire.dispatchEvent('pointerup', { pointerId: 4, isPrimary: true });
+
+    // Everything already in flight has landed by now; nothing new may.
+    await page.waitForTimeout(500);
+    const settled = (await socket.sent()).filter((m) => m.includes('"f":true')).length;
+    await page.waitForTimeout(700);
+    expect((await socket.sent()).filter((m) => m.includes('"f":true')).length).toBe(settled);
   });
 
   test('the play surface swallows gestures, so a firefight cannot scroll the page', async ({

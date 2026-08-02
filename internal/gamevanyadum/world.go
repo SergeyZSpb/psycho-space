@@ -147,6 +147,44 @@ type Occupant struct {
 	// snapshot. Per occupant, because "you picked up a beer" is addressed to
 	// the person who picked it up.
 	events []Event
+
+	// firedOn is the tick on which this occupant's gun last went off, and it is
+	// what puts Peer.Fired on everybody else's frame for exactly that tick.
+	//
+	// A TICK NUMBER RATHER THAN A FLAG THAT IS CLEARED WHEN READ, and the
+	// difference is the whole correctness of it: SnapshotFor runs once per
+	// VIEWER, so a flag consumed by the first reader would show the shot to one
+	// of the four people watching and hide it from the other three. Events get
+	// away with being consumed because an event belongs to one person; this
+	// belongs to the building. Comparing against World.Tick is idempotent for
+	// every viewer and needs no reset — the tick moves on by itself.
+	//
+	// NOT ON Player, by ADR-058's test: Step never reads it, so the client never
+	// has to simulate it, so it costs no port, no golden vector and no reconcile
+	// spread. The client draws its OWN muzzle flash from the barrel count falling
+	// (web/src/lib/vanyadumPredict.ts, `raw`), which is a value it already has.
+	firedOn int64
+
+	// collected is everything this occupant has picked up during this visit,
+	// keyed exactly as the bag is, and it is what the visit row records.
+	//
+	// IT IS NOT THE BAG, and it stopped being the same number the day the gun
+	// arrived. Until then nothing was ever spent, so what somebody was carrying
+	// when they left was what they had found — and the visit row simply read the
+	// bag. Now a reload takes a bottle out of it, so a player who actually used
+	// the building's beer would have his visit recorded as zero, which is the
+	// opposite of what the column means (migrations/015, and that file is
+	// immutable, so the code is what has to agree with it).
+	//
+	// ON THE OCCUPANT AND NOT ON Player, by ADR-058's test read the easy way:
+	// Step never looks at it, so the client never has to simulate it, so it costs
+	// no port, no golden vector and no reconcile spread.
+	//
+	// Keyed rather than counted, because the loop that fills it is generic over
+	// the catalogue — `collected[kind.Grants] += n` is exactly as general as the
+	// line above it, where a plain int would put the word "beer" inside the
+	// world's collection loop.
+	collected map[string]int
 }
 
 // Stayed is how long this occupant actually had a connection, in whole seconds,
@@ -162,6 +200,20 @@ func (o *Occupant) Stayed() int {
 		return 0
 	}
 	return int(d / time.Second)
+}
+
+// firedThisTick reports whether this occupant's gun went off on the tick the
+// world is currently standing on.
+//
+// THE ZERO VALUE IS "NEVER", and that has to be checked rather than assumed
+// because the world's own counter also starts at zero. SnapshotFor is callable
+// on a world nothing has advanced yet — a client that attaches between two ticks
+// on a building that has just been generated — and a bare equality would put a
+// muzzle flash on every peer in it for that one frame. A shot is only ever
+// recorded from inside Advance, which increments the tick before it steps
+// anybody, so a real firedOn is always at least 1.
+func (o *Occupant) firedThisTick(tick int64) bool {
+	return o.firedOn != 0 && o.firedOn == tick
 }
 
 // World is the one заброшка everybody is standing in.
@@ -672,16 +724,89 @@ func (w *World) Advance(dt float64, now time.Time) []*Occupant {
 		// bounded number of ticks. A test pins that relationship, because
 		// retuning one past the other would freeze an occupant for ever rather
 		// than fail anything.
+		var spent float64
 		for len(o.pending) > 0 && o.pending[0].Dt <= o.budget {
 			c := o.pending[0]
 			o.pending = o.pending[1:]
 			o.budget -= c.Dt
+			spent += c.Dt
+			// A BARREL COUNT FALLING IS THE SHOT, which is the same reading the
+			// client makes of its own frame rather than a second definition kept
+			// in step with it by hand. Nothing else in the simulation lowers it:
+			// a reload only ever raises it, to Barrels. Recorded here so that
+			// everybody watching gets told (Occupant.firedOn); the man who fired
+			// needs no telling, because his own `b` is on his own snapshot.
+			loaded := o.State.Loaded
 			o.State = Step(w.Level, o.State, c)
+			if o.State.Loaded < loaded {
+				o.firedOn = w.Tick
+			}
 			// The queue is strictly ascending in Seq — Enqueue drops everything
 			// at or below highSeq and the overflow trim takes from the front —
 			// so this is the last command actually folded in, which is exactly
 			// what the snapshot's Ack promises.
 			o.State.LastSeq = c.Seq
+		}
+
+		// THE IDLE FILL: whatever part of this tick no command claimed is
+		// simulated as standing perfectly still.
+		//
+		// IT ARRIVED WITH THE GUN, and the gun is what needs it. Everything the
+		// simulation held before was a POSITION, and a player who sends nothing is
+		// a player who is not moving, so a tick nobody claimed had nothing to
+		// advance. A cooldown is not like that: it runs down because time passed,
+		// and the client sends NOTHING while standing still with the screen
+		// untouched (web/src/lib/vanyadumInput.ts, `due`). Without this, firing and
+		// then standing still would stop the cooldown where it was and hang the
+		// reload half-finished — so the gun would work only while you were walking,
+		// which is the state you are least often in when you shoot at something.
+		//
+		// IT CHARGES THE BUDGET, and that is what stops the same second being
+		// spent twice. Without the charge a player could stand still for half a
+		// second — his gun cooling at real time — bank that half second, and then
+		// burst-send it as still commands to cool the gun by another half. Half
+		// again on top of real time, repeatable for as long as he alternated:
+		// close to double the fire rate, and a third off every reload, with no
+		// field out of range anywhere. Charged, the arithmetic closes: every
+		// second granted to the gun is a second the budget paid for, and the
+		// budget is bought at real time.
+		//
+		// ONLY WHEN THE CLIENT CLAIMED NOTHING AT ALL. A client that is sending has
+		// merely under-filled the tick by a millisecond or two of ordinary browser
+		// timer drift, and fabricating stillness in that gap is inventing input the
+		// player did not give — which the sibling game learned the expensive way,
+		// with a fill that added slivers of dash nobody had predicted
+		// (internal/gamefintech/office.go). AND ONLY WHILE THE QUEUE IS EMPTY: the
+		// fill consumes the budget, so one that ran while a command sat waiting for
+		// budget would eat exactly the budget that command was waiting for, and the
+		// two would deadlock for ever.
+		//
+		// AND ONLY WHILE SOMETHING IS ACTUALLY COUNTING DOWN, which is the guard
+		// that keeps the charge from being a tax on standing still. A still step
+		// against a cold gun provably changes nothing at all: the axes are zero so
+		// no position, sector or angle can move, and both timers are already at
+		// rest — so paying budget for it would buy the state it started from. That
+		// costs something real, because the same budget is the honest client's
+		// catch-up cushion after a stall (TestTimeBudgetLetsAStutteringClientCatchUp),
+		// and it would be spent on nothing.
+		//
+		// It also leaves the exploit closed rather than merely smaller, and the
+		// argument is worth following once: the only ticks that now bank are ticks
+		// on which no gun time was granted, so banked seconds are seconds the gun
+		// stood still for. Spending them later moves WHEN the gun advanced without
+		// creating any, and the one-off head start is TimeBudgetCap — the same
+		// bounded cushion movement has always had, from the same cap.
+		//
+		// THE ANGLES ARE THE PLAYER'S OWN AND NOT THE ZERO VALUE. Step assigns
+		// c.Yaw and c.Pitch unconditionally, so a bare Command{Dt: idle} would
+		// snap the view to due north and level every time a player stopped moving.
+		if idle := dt - spent; idle > 0 && spent == 0 && len(o.pending) == 0 && o.State.ticking() {
+			o.State = Step(w.Level, o.State, Command{
+				Dt:    idle,
+				Yaw:   o.State.Yaw,
+				Pitch: o.State.Pitch,
+			})
+			o.budget = math.Max(0, o.budget-idle)
 		}
 		w.collect(o)
 	}
@@ -746,6 +871,17 @@ func (w *World) collect(o *Occupant) {
 		v := o.State.Counters[kind.Grants] + kind.Amount
 		if kind.Max > 0 && v > kind.Max {
 			v = kind.Max
+		}
+		// The tally counts what the bag actually GAINED rather than what the
+		// pickup offers, so somebody standing on a bottle with a full bag is
+		// recorded as having gained nothing — which he did. It keeps "collected"
+		// an upper bound on "carrying" for the whole visit, which is the one
+		// relationship between the two numbers anybody would rely on.
+		if gained := v - o.State.Counters[kind.Grants]; gained > 0 {
+			if o.collected == nil {
+				o.collected = map[string]int{}
+			}
+			o.collected[kind.Grants] += gained
 		}
 		o.State.Counters[kind.Grants] = v
 		o.events = append(o.events, Event{E: EventPickup, K: p.Kind, ID: p.ID})
@@ -871,17 +1007,20 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 	}
 
 	s := Snapshot{
-		T:      TypeSnapshot,
-		Tick:   w.Tick,
-		Ack:    me.State.LastSeq,
-		X:      cm(me.State.Pos.X),
-		Y:      cm(me.State.Pos.Y),
-		Z:      cm(EyeZ(w.Level, me.State)),
-		Yaw:    mrad(me.State.Yaw),
-		Sector: me.State.Sector,
-		Health: me.State.Health,
-		Left:   left,
-		Events: me.events,
+		T:        TypeSnapshot,
+		Tick:     w.Tick,
+		Ack:      me.State.LastSeq,
+		X:        cm(me.State.Pos.X),
+		Y:        cm(me.State.Pos.Y),
+		Z:        cm(EyeZ(w.Level, me.State)),
+		Yaw:      mrad(me.State.Yaw),
+		Sector:   me.State.Sector,
+		Health:   me.State.Health,
+		Left:     left,
+		Loaded:   me.State.Loaded,
+		Cooldown: ms(me.State.CooldownLeft),
+		Reload:   ms(me.State.ReloadLeft),
+		Events:   me.events,
 	}
 	if len(me.State.Counters) > 0 {
 		s.Bag = make(map[string]int, len(me.State.Counters))
@@ -918,6 +1057,10 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 			Y:      cm(o.State.Pos.Y),
 			Sector: o.State.Sector,
 			Yaw:    mrad(o.State.Yaw),
+			// On the tick it happened and on no other. Read rather than
+			// consumed, so all four viewers of a full building are told about
+			// the same shot — see Occupant.firedOn.
+			Fired: o.firedThisTick(w.Tick),
 		})
 	}
 	me.events = nil

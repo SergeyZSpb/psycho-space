@@ -68,6 +68,14 @@
 
       <div class="dum-hud" data-testid="vanyadum-hud">
         <span class="dum-hud-cell">♥ {{ health }}</span>
+        <!-- THE SERVER'S SHELL COUNT, never the prediction's. The browser
+             predicts the gun so that a muzzle flash can be drawn with no round
+             trip, but what is WRITTEN DOWN is what the snapshot says — so a
+             client that predicted a shot the server refused is corrected within
+             one frame rather than showing a number it made up. -->
+        <span class="dum-hud-cell" data-testid="vanyadum-shells">
+          🔫 {{ reloading ? 'жду' : `${loaded}/${barrels}` }}
+        </span>
         <span
           v-for="p in config?.pickups ?? []"
           :key="p.key"
@@ -170,15 +178,42 @@
         <span class="dum-stick-knob" :style="stickKnobStyle" />
       </div>
 
+      <!-- HELD RATHER THAN TAPPED. The обрез has a cadence, so a held trigger
+           is refused between shots by the same rule on both ends — which makes
+           holding the natural control and tapping unnecessary. `pointerup` and
+           `pointercancel` both release it: a pointer the browser takes away
+           mid-gesture must not leave the trigger stuck down.
+
+           The gesture is stopped from reaching the pad underneath, or the same
+           thumb would also be turning the player round. -->
       <button
         class="dum-fire"
         type="button"
         data-testid="vanyadum-fire"
         aria-label="Стрелять"
-        @pointerdown.stop
+        @pointerdown.stop="pullTrigger"
+        @pointerup.stop="releaseTrigger"
+        @pointercancel.stop="releaseTrigger"
+        @pointerleave="releaseTrigger"
         @click.stop
       >
         🔫
+      </button>
+
+      <!-- The mute, within reach of the thumb that is firing and clear of both
+           the stick's half of the screen and the standings. A game whose only
+           sound is a shotgun needs somewhere to turn it off that is not a
+           settings screen nobody will open. -->
+      <button
+        class="dum-mute"
+        type="button"
+        data-testid="vanyadum-mute"
+        :aria-pressed="soundOff"
+        :aria-label="soundOff ? 'Включить звук' : 'Выключить звук'"
+        @pointerdown.stop
+        @click.stop="toggleSound"
+      >
+        {{ soundOff ? '🔇' : '🔊' }}
       </button>
     </section>
   </div>
@@ -241,6 +276,22 @@
  * disagreement is eased out over a tenth of a second, or snapped if it is too
  * large to glide. Peers are the other way round — they cannot be predicted, so
  * they are drawn interpolated in the recent past. See ADR-052.
+ *
+ * THE TRIGGER IS PREDICTED AND THE SHELL COUNT IS NOT, and holding those two
+ * apart is the whole shape of the gun's arrival here. The browser runs the
+ * server's own trigger rule, so it knows within the same frame whether a pull
+ * became a shot — that is what the muzzle flash, the kick and the bang are
+ * driven from, and it is why they land in zero milliseconds instead of a round
+ * trip. What is WRITTEN on the HUD is the snapshot's number, because a shell
+ * count is something a player reads and a guess that is taken back a frame later
+ * is worse than a number that is fifty milliseconds old.
+ *
+ * SOMEBODY ELSE'S SHOT IS THE ONE THING HERE THAT NEEDS TELLING. Your own is
+ * derived — a predicted barrel count falling by one IS the shot — but a peer
+ * carries no barrel count, so his gun going off rides the snapshot as a marker
+ * on the tick it happened, and the заброшка's other four see a flash at him. It
+ * arrives as a LEVEL lasting a tick and is drawn as an EVENT lasting three
+ * frames; the conversion is vanyadumFlash's, and the drawing is the scene's.
  */
 
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
@@ -261,6 +312,7 @@ import {
   type VanyadumAxes,
 } from '../lib/vanyadumInput';
 import { createPredictor, type Predictor } from '../lib/vanyadumPredict';
+import { createGunAudio, type GunAudio } from '../lib/vanyadumSound';
 import { createInterpolator, type Interpolator, type PeerState } from '../lib/vanyadumInterp';
 import { changedHands, clock, decodeBoard, decodePeers, type BoardRow } from '../lib/vanyadumRoster';
 import type { VanyadumScene } from '../render/vanyadumScene';
@@ -285,6 +337,19 @@ const rules = computed(() => buildRules(config.value));
 // --- what the server last told us -----------------------------------------
 const health = ref(0);
 const bag = ref<Record<string, number>>({});
+/**
+ * The gun, as the newest snapshot describes it.
+ *
+ * SEPARATE FROM THE PREDICTION ON PURPOSE, and the split is the whole shape of
+ * this iteration. The prediction is what decides whether to draw a muzzle flash
+ * this instant; these are what the HUD is allowed to WRITE DOWN, because a shell
+ * count is a number a player reads and a number he reads must not be a guess
+ * that is corrected a frame later.
+ */
+const loaded = ref(0);
+const reloading = ref(false);
+/** Barrels a full gun holds, from the catalogue — never a 2 typed out here. */
+const barrels = computed(() => config.value?.gun.barrels ?? 0);
 /** The pickup ids lying on the floor right now. Goes UP as well as down. */
 const onFloor = ref<number[]>([]);
 /**
@@ -427,6 +492,116 @@ const moving = () => {
   return a.mx !== 0 || a.my !== 0;
 };
 
+// --- the trigger -----------------------------------------------------------
+
+/** The обрез's voice. Built once; it wakes no audio hardware until armed. */
+const audio: GunAudio = createGunAudio();
+const soundOff = ref(false);
+/** The key that fires, on a machine that has one. */
+const FIRE_KEY = 'Space';
+/**
+ * Whether the trigger is being held, by a thumb, a key or a mouse button.
+ *
+ * ONE FLAG FOR THREE INPUTS rather than three paths to one outcome. A player on
+ * a laptop with a touchscreen can use any of them, and none of them means
+ * anything different by the time it reaches the emitter.
+ */
+let triggerHeld = false;
+/**
+ * How many barrels the PREDICTION had last frame, and whether it was reloading.
+ *
+ * The flash and the sound are per-frame comparisons over these, which is this
+ * project's rule for exactly this situation: a barrel count falling by one IS
+ * the shot, so nothing has to be published to say one happened, and a reload
+ * timer crossing from zero to non-zero is the reload starting. Both are values
+ * the frame already carries. Compared BEFORE anything overwrites them, and
+ * seeded from the prediction the moment it is built so that entering the
+ * building is not itself read as two shots.
+ */
+let drawnLoaded = 0;
+let drawnReloading = false;
+
+/**
+ * Takes hold of the trigger, from whichever input asked.
+ *
+ * IT ALSO WAKES THE AUDIO, and this is the only place it can. A browser refuses
+ * to start an audio context that no user gesture asked for, and the shot is
+ * played from the render loop a frame or two later — by which time the gesture
+ * is over. Arming here, inside the handler that saw the tap, is what stops the
+ * first shot of a visit being the silent one.
+ */
+function pullTrigger(): void {
+  triggerHeld = true;
+  audio.arm();
+}
+
+function releaseTrigger(): void {
+  triggerHeld = false;
+}
+
+function toggleSound(): void {
+  soundOff.value = audio.toggleMuted();
+}
+
+/**
+ * Whether this frame's command should carry a trigger pull.
+ *
+ * HELD IS NOT THE SAME AS ASKED, and the difference is bytes. A held trigger
+ * with no filter would put `"f":true` on all forty commands a second, uplink, on
+ * mobile data — where a gun that fires as fast as it can manages three shots in
+ * that second. So the request is suppressed while THIS CLIENT'S OWN prediction
+ * says the gun is busy, which it can do honestly because it is running the same
+ * refusal rule the server would: sending a pull it already knows will be refused
+ * is spending the worse half of the connection to be told no.
+ *
+ * The cost of being wrong is bounded and small. The client's timers come from
+ * the snapshot twenty times a second, so the two ends can only disagree by the
+ * millisecond the wire quantises to — and if the client is the pessimistic one,
+ * the trigger is still held, so the pull goes out on the next command a
+ * fortieth of a second later.
+ *
+ * A DRY GUN IS NOT BUSY, deliberately: pulling with nothing to load reaches the
+ * server, because whether there is a bottle in your pockets is the server's to
+ * say and a pickup may have landed since the last frame.
+ */
+function triggerWanted(): boolean {
+  if (!triggerHeld || !predictor) return false;
+  const gun = predictor.raw();
+  return gun.cooldown <= 0 && gun.reload <= 0;
+}
+
+/**
+ * Turns this frame's predicted gun into a flash, a kick and a bang.
+ *
+ * A PER-FRAME COMPARISON RATHER THAN AN EVENT, which is this project's rule for
+ * exactly this: a barrel count falling by one IS the shot and a reload timer
+ * leaving zero IS the reload starting, so neither has to be published to be
+ * seen — on the wire the server makes the identical argument for not sending an
+ * "I fired" field.
+ *
+ * IT READS THE PREDICTION AND NOT THE SNAPSHOT, which is the whole of why the
+ * effect lands the instant a thumb does. The browser has already run the same
+ * trigger rule the server is about to run, so what is marked is a shot that was
+ * GRANTED — a pull refused inside the cadence changes nothing here and draws
+ * nothing, which matters because holding the trigger down is mostly refusals.
+ *
+ * A shot is the count going DOWN. The server permits one command to finish a
+ * reload and fire in the same breath, which would arrive here as the count going
+ * up; this client cannot produce that command, because `triggerWanted` withholds
+ * the pull for as long as its own prediction is still reloading. Anything that
+ * changes there has to come back and look at this.
+ */
+function markGun(gun: { loaded: number; reload: number }): void {
+  const reloadingNow = gun.reload > 0;
+  if (gun.loaded < drawnLoaded) {
+    scene.value?.fire();
+    audio.shot();
+  }
+  if (reloadingNow && !drawnReloading) audio.reload();
+  drawnLoaded = gun.loaded;
+  drawnReloading = reloadingNow;
+}
+
 // --- lifecycle -------------------------------------------------------------
 
 onMounted(async () => {
@@ -461,6 +636,8 @@ onMounted(async () => {
   // longer exists, so which element a move "is over" stops being a meaningful
   // question and the browser is free to deliver it to the document.
   window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('mouseup', onMouseUp);
   document.addEventListener('pointerlockchange', onPointerLockChange);
 });
 
@@ -469,6 +646,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
   window.removeEventListener('mousemove', onMouseMove);
+  window.removeEventListener('mousedown', onMouseDown);
+  window.removeEventListener('mouseup', onMouseUp);
   document.removeEventListener('pointerlockchange', onPointerLockChange);
 });
 
@@ -555,6 +734,10 @@ async function buildWorld(): Promise<void> {
   if (!world || !config.value) return;
   const level = world.level;
   health.value = config.value.player.start_health;
+  // Loaded and dry, exactly as the server's NewPlayer leaves somebody — and
+  // overwritten by the first snapshot, which is a twentieth of a second away.
+  loaded.value = config.value.gun.barrels;
+  reloading.value = false;
   bag.value = {};
   onFloor.value = level.pickups.map((p) => p.id);
   floorMask = null;
@@ -616,6 +799,10 @@ async function buildWorld(): Promise<void> {
       maxPitch: config.value.player.max_pitch,
       maxStepSeconds: sim.max_step_seconds,
       collisionPasses: sim.collision_passes,
+      barrels: config.value.gun.barrels,
+      fireCooldownSeconds: config.value.gun.fire_cooldown_seconds,
+      reloadSeconds: config.value.gun.reload_seconds,
+      reloadCost: config.value.gun.reload_cost,
     },
     start: {
       x: level.spawn.x,
@@ -624,6 +811,10 @@ async function buildWorld(): Promise<void> {
       yaw: level.spawn_yaw,
     },
   });
+  // Seeded from the prediction rather than from zero, or the first frame reads
+  // a full gun appearing out of nothing as two shots and fires twice.
+  drawnLoaded = predictor.raw().loaded;
+  drawnReloading = false;
   // The delay is SERVED, not chosen here: lag compensation on the server
   // rewinds by exactly this number, so a client picking its own would be
   // picking its own advantage.
@@ -688,6 +879,11 @@ function teardownPlay(): void {
   lookPointer = null;
   stick.value = { active: false, originX: 0, originY: 0, x: 0, y: 0 };
   heldKeys.clear();
+  triggerHeld = false;
+  // The audio hardware goes back with everything else. A context left open holds
+  // a device for a game nobody is playing, and the mute survives it in `soundOff`
+  // — the next context is built muted or not exactly as this one was left.
+  audio.close();
 }
 
 // --- the two clocks --------------------------------------------------------
@@ -706,12 +902,17 @@ function drawFrame(now: number): void {
   if (predictor && emitter) {
     predictor.look(aim.yaw, aim.pitch);
     const axes = currentAxes();
-    for (const cmd of emitter.due(now, axes)) {
+    for (const cmd of emitter.due(now, axes, triggerWanted())) {
       // Applied locally the instant it exists, and queued for sending
       // unchanged. Predicting one thing and sending another is the one mistake
       // this whole arrangement cannot survive.
       outbox.push(predictor.apply(cmd));
     }
+    // AFTER the commands and BEFORE anything else touches the prediction, which
+    // is the ordering the comparison depends on: what is being compared is this
+    // frame's gun against last frame's, and a value overwritten first is a shot
+    // nobody hears.
+    markGun(predictor.raw());
     predictor.tick(dt);
     // Drawn over the carry rather than at the last command's endpoint: commands
     // exist forty times a second and this runs sixty to a hundred and
@@ -854,11 +1055,34 @@ function applySnapshot(frame: RealtimeFrame): void {
   // drops what this acknowledges, resets to it, and replays whatever is still
   // pending on top. Assigning it directly is what iteration 1 did, and it is
   // exactly the twenty-hertz camera this change exists to remove.
+  // What the player is carrying, read here because two things need it: the HUD
+  // draws the whole bag, and the predictor needs the one counter the trigger
+  // spends. `c` is omitted for somebody carrying nothing, which is everybody for
+  // their first minute.
+  const carried = (frame.c as Record<string, number> | undefined) ?? {};
+
+  // The authoritative position AND the authoritative gun, folded in rather than
+  // assigned: the predictor drops what this acknowledges, rewinds to it, and
+  // replays whatever is still pending on top.
+  //
+  // THE GUN'S TIMERS COME FROM HERE ON EVERY FRAME AND NOT ONLY ON THE FIRST,
+  // which is ADR-058's sharp edge and the reason this game's own version of it
+  // is worse than the office's. A predicted timer only advances when a command
+  // is emitted, and a player who has just fired and is standing perfectly still
+  // emits nothing at all — so a locally held cadence would stop dead exactly
+  // when somebody stops walking to aim. The server keeps it running (world.go's
+  // idle fill); this is where the client is told.
   predictor?.reconcile({
     x: num(frame.x) / 100,
     y: num(frame.y) / 100,
     sector: num(frame.s),
     ack: num(frame.ack),
+    loaded: num(frame.b),
+    // Milliseconds on the wire, seconds in the simulation. Both are absent at
+    // rest, which is nearly always, and absent means zero.
+    cooldown: num(frame.d) / 1000,
+    reload: num(frame.r) / 1000,
+    ammo: config.value ? num(carried[config.value.gun.ammo]) : 0,
   });
 
   // Peers go into the interpolation buffer stamped with the SERVER'S TICK, and
@@ -889,6 +1113,13 @@ function applySnapshot(frame: RealtimeFrame): void {
   }
 
   health.value = num(frame.hp);
+  // The readouts, which are the SERVER'S and never the prediction's — a shell
+  // count is a number somebody reads, and a number somebody reads must not be a
+  // guess that is taken back a frame later. `b` is always sent, because a
+  // resting gun is full rather than empty and an absent field would have to mean
+  // the worst case.
+  loaded.value = num(frame.b);
+  reloading.value = num(frame.r) > 0;
 
   // WHAT IS LYING ON THE FLOOR, AS A BITMASK over the index into the level's own
   // list: bit i set means the i-th pickup is there to be walked over. One number
@@ -912,11 +1143,8 @@ function applySnapshot(frame: RealtimeFrame): void {
     onFloor.value = pickupsOnFloor(world?.level.pickups ?? [], mask);
     scene.value?.setOnFloor(onFloor.value);
   }
-  const c = frame.c as Record<string, number> | undefined;
-  if (c) {
-    for (const [k, v] of Object.entries(c)) {
-      if (bag.value[k] !== v) bag.value = { ...bag.value, [k]: v };
-    }
+  for (const [k, v] of Object.entries(carried)) {
+    if (bag.value[k] !== v) bag.value = { ...bag.value, [k]: v };
   }
 }
 
@@ -1091,12 +1319,40 @@ function onMouseMove(e: MouseEvent): void {
 function onKeyDown(e: KeyboardEvent): void {
   if (phase.value !== 'playing') return;
   heldKeys.add(e.code);
+  // Space is the trigger on a keyboard, and it MUST be swallowed: unhandled it
+  // scrolls the page, which on a shell this tall means the game moving under the
+  // player every time he fires. Repeat events are ignored — the trigger is
+  // already held, and the auto-repeat rate has nothing to do with the cadence.
+  if (e.code === FIRE_KEY) {
+    e.preventDefault();
+    if (!e.repeat) pullTrigger();
+    return;
+  }
   if (['ArrowLeft', 'ArrowRight'].includes(e.code)) return;
   if (e.code.startsWith('Key') || e.code.startsWith('Arrow')) e.preventDefault();
 }
 
 function onKeyUp(e: KeyboardEvent): void {
   heldKeys.delete(e.code);
+  if (e.code === FIRE_KEY) releaseTrigger();
+}
+
+/**
+ * The mouse's trigger, and it only exists while the pointer is captured.
+ *
+ * Before the capture a click means "grab the mouse", which is a different thing
+ * and the one a player is trying to do — firing on it as well would mean every
+ * desktop session opened with a shot nobody asked for. Bound on the WINDOW like
+ * the movement, because a captured pointer has no cursor and so no element it is
+ * meaningfully over.
+ */
+function onMouseDown(e: MouseEvent): void {
+  if (!pointerLocked.value || phase.value !== 'playing' || e.button !== 0) return;
+  pullTrigger();
+}
+
+function onMouseUp(e: MouseEvent): void {
+  if (e.button === 0) releaseTrigger();
 }
 
 // The murk the scene clears to is fixed, so the game looks the same in both
@@ -1460,6 +1716,39 @@ watch(
   background: rgba(226, 87, 76, 0.35);
   font-size: 28px;
   line-height: 1;
+  /* The one gesture on this screen that must not also scroll or select. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Held reads as held. The trigger is a hold rather than a tap, so a control
+   that looked identical pressed and released would leave the player unable to
+   tell whether his thumb was still on it — and this is a colour change rather
+   than a transform, so it costs nothing under reduced motion and is still
+   there. */
+.dum-fire:active {
+  background: rgba(226, 87, 76, 0.65);
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+/* Beside the trigger rather than under a menu: the only sound this game makes is
+   a shotgun, so the person who wants it off wants it off NOW and with the thumb
+   already down there. Sized to the 44 px minimum and left of the fire button,
+   with a gap wide enough that neither is hit by accident. */
+.dum-mute {
+  position: absolute;
+  right: 100px;
+  bottom: 38px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 18px;
+  line-height: 1;
+  touch-action: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

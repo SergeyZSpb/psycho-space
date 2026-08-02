@@ -24,6 +24,25 @@
 
 import type { VanyadumConfig, VanyadumPickupKind } from '../api/types';
 
+/**
+ * The catalogue entry the gun's ammunition comes from, or null.
+ *
+ * THE JOIN IS THE POINT. `config.gun.ammo` publishes a COUNTER NAME rather than
+ * a description, and the pickup whose `grants` matches it already carries the
+ * title, the icon and the blurb — so the cheatsheet says «🍺 пиво» because the
+ * catalogue said the gun drinks `beer` and that `beer` is what a пиво grants,
+ * not because this file was told twice. The day a second ammunition is added it
+ * is one catalogue line and no frontend change.
+ *
+ * Null when nothing grants it. The server has a test that will not let that
+ * happen (a gun spending a counter nothing scatters can never be reloaded), so
+ * this is the client refusing to render «undefined» rather than a case anybody
+ * expects to see.
+ */
+export function ammoPickup(config: VanyadumConfig): VanyadumPickupKind | null {
+  return config.pickups.find((p) => p.grants === config.gun.ammo) ?? null;
+}
+
 /** One line of the cheatsheet. */
 export interface RuleLine {
   /** A short label, usually an icon or a couple of words. */
@@ -142,6 +161,37 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
     ],
   });
 
+  // THE GUN, and every number on it derived. The cadence, the barrel count, what
+  // a reload costs and how long it takes are all served, so retuning any of them
+  // on the server updates this screen by itself — which is the whole reason the
+  // catalogue carries them rather than the client assuming them.
+  //
+  // The ammunition is NAMED by the join above rather than by a string here: the
+  // gun publishes which counter it spends, and the pickup that grants it already
+  // has a title and an icon. A hand-typed «пиво» would be the one word on this
+  // screen that a second ammunition would not update.
+  {
+    const gun = config.gun;
+    const ammo = ammoPickup(config);
+    const lines: RuleLine[] = [
+      {
+        label: '🔫 стволов',
+        text: `${gun.barrels}. Между выстрелами ${num(gun.fire_cooldown_seconds, 2)} с — дуплетом не выйдет.`,
+      },
+    ];
+    if (ammo) {
+      lines.push({
+        label: `${ammo.icon} чем заряжать`,
+        text: `Одна перезарядка тратит ${gun.reload_cost} · ${ammo.icon} ${ammo.title} и заполняет обрез целиком. Пусто в карманах — обрез молчит.`,
+      });
+    }
+    lines.push({
+      label: '⏳ перезарядка',
+      text: `${num(gun.reload_seconds)} с с пустыми руками. Сама не начинается: жми на курок с пустым обрезом.`,
+    });
+    blocks.push({ title: 'Обрез', lines });
+  }
+
   if (config.pickups.length > 0) {
     blocks.push({
       title: 'Что валяется',
@@ -165,8 +215,13 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
  * Four kinds of thing end up here, and none of them could honestly be
  * generated. The CONTROLS, because the server has no opinion about thumbs and
  * publishes none. The ABSENCES — that there is no objective, that nothing ends,
- * that leaving is just leaving — which no catalogue can carry, because a
- * catalogue can only publish what exists. The building's LIFECYCLE: the config
+ * that leaving is just leaving, and that the обрез has nothing to hit yet —
+ * which no catalogue can carry, because a catalogue can only publish what
+ * exists. That last one is the newest and the one most likely to go stale: the
+ * iteration that gives the ray something to damage has to come back and delete
+ * it, and a cheatsheet still promising a shooting range with no targets in it
+ * would be believed.
+ * The building's LIFECYCLE: the config
  * endpoint describes what a заброшка is made of and how many people fit in it,
  * and carries no field at all for the fact that this one is torn down and
  * generated again once it empties. And the VISIBILITY FILTER — that a snapshot
@@ -190,8 +245,16 @@ export const VANYADUM_PROSE: RuleLine[] = [
   { label: '👈 слева', text: 'Держи палец и веди — Ваня идёт. Стик появляется там, где ты нажал.' },
   { label: '👉 справа', text: 'Веди пальцем — смотришь по сторонам.' },
   {
+    label: '🔫 стрелять',
+    text: 'Круглая кнопка справа снизу. Держи — обрез стреляет так часто, как умеет. Рядом 🔇 — выключить звук.',
+  },
+  {
+    label: '💥 попасть не в кого',
+    text: 'Обрез стреляет, гильзы тратятся, но нейрослопов на заброшке ещё нет. Пока это тир без мишеней.',
+  },
+  {
     label: '⌨️ на компьютере',
-    text: 'WASD — идти. Клик по экрану захватывает мышь, дальше смотришь ей как в любом шутере. Esc — отпустить.',
+    text: 'WASD — идти, пробел или кнопка мыши — стрелять. Клик по экрану захватывает мышь, дальше смотришь ей как в любом шутере. Esc — отпустить.',
   },
   {
     label: '👀 видно не всех',

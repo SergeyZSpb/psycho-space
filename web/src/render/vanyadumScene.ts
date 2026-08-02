@@ -22,6 +22,7 @@
  * names as its own escape hatch, rather than a reversal of it.
  */
 
+import { createFlash, createPeerFlashes } from '../lib/vanyadumFlash';
 import type { LevelMeshes, VanyadumLevel } from '../lib/vanyadumLevel';
 import { buildLevelMeshes, levelBounds } from '../lib/vanyadumLevel';
 import type { VanyadumSurface } from '../lib/vanyadumTexture';
@@ -42,7 +43,16 @@ export interface SceneOptions {
   canvas: HTMLCanvasElement;
   level: VanyadumLevel;
   surfaces: VanyadumSurface[];
-  /** Honoured by damping the view bob; never by hiding anything informative. */
+  /**
+   * Honoured by damping the view bob and the recoil; never by hiding anything
+   * informative. BOTH muzzle flashes stay — your own and the one on whoever
+   * else in the building just fired — because a flash is what says a shot
+   * happened, and somebody who asked for less movement still has to be told.
+   * Neither is animated in any case: a mark is in a frame or it is not, and it
+   * is cleared by a count of frames rather than by an animation ending, which
+   * is the shape this project requires of an acknowledgement precisely so that
+   * turning motion off cannot silence it.
+   */
   reducedMotion: boolean;
 }
 
@@ -176,6 +186,15 @@ export async function createScene(opts: SceneOptions) {
   // per-frame transform of its own. Boxes, because a shotgun seen from the
   // shooter's end is two barrels and a bit of stock.
   const gun = new THREE.Group();
+  /** The gun's resting pose. The recoil is measured from here, never accumulated. */
+  const GUN_REST = { x: 0.17, y: -0.17, z: -0.32, pitch: 0.06 };
+  const muzzle = new THREE.Mesh(
+    // A disc rather than a sphere: it is seen end-on and nothing else, so the
+    // hemisphere behind it would be pixels nobody can look at. Seven sides, for
+    // the same reason the renderer does not antialias — this is a Doom joke.
+    new THREE.CircleGeometry(0.16, 7),
+    new THREE.MeshBasicMaterial({ color: 0xffd9a0, fog: false }),
+  );
   {
     const steel = new THREE.MeshBasicMaterial({ color: 0x2a2d31, fog: false });
     const wood = new THREE.MeshBasicMaterial({ color: 0x5a3a22, fog: false });
@@ -186,11 +205,14 @@ export async function createScene(opts: SceneOptions) {
     right.position.set(0.037, 0, -0.3);
     const stock = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.1, 0.3), wood);
     stock.position.set(0, -0.03, 0.1);
-    gun.add(left, right, stock);
+    // Just past the muzzle end of the barrels, and hidden until something fires.
+    muzzle.position.set(0, 0, -0.63);
+    muzzle.visible = false;
+    gun.add(left, right, stock, muzzle);
     // Low and to the right, tipped up a little — the pose every game in this
     // lineage has used, because it reads as "held" rather than "floating".
-    gun.position.set(0.17, -0.17, -0.32);
-    gun.rotation.set(0.06, 0.04, 0.02);
+    gun.position.set(GUN_REST.x, GUN_REST.y, GUN_REST.z);
+    gun.rotation.set(GUN_REST.pitch, 0.04, 0.02);
     camera.add(gun);
   }
   scene.add(camera);
@@ -198,6 +220,30 @@ export async function createScene(opts: SceneOptions) {
   // --- the loop's state ----------------------------------------------------
   let bobPhase = 0;
   let disposed = false;
+
+  /**
+   * The muzzle flash, COUNTED IN DRAWN FRAMES rather than in seconds.
+   *
+   * The seconds it used to be counted in could expire inside the frame that was
+   * about to draw them, which at twenty frames a second — the rate the view
+   * clamps `dt` at, and one a cheap phone really reaches — meant the flash was
+   * never drawn at all. On exactly that phone it is also the only zero-latency
+   * mark left, since the kick is damped away under `prefers-reduced-motion` and
+   * the sound is gone the moment somebody presses the mute. See vanyadumFlash
+   * for the arithmetic, and for what a frame count costs.
+   *
+   * A flash long enough to LOOK at is the opposite mistake — it takes the eye
+   * off the thing walking towards you, which is the one thing this game will
+   * ever ask anybody to watch. So the count is a floor rather than a target:
+   * enough frames to be caught, never enough to be studied, with the shell
+   * count on the HUD carrying whatever a glance missed.
+   */
+  const flash = createFlash();
+  /** How far the gun is thrown back by a shot, in metres, and how fast it returns. */
+  const RECOIL_METRES = 0.09;
+  const RECOIL_SECONDS = 0.075;
+  /** How much of the recoil is still unspent, 0..1. */
+  let recoil = 0;
 
   function resize(width: number, height: number): void {
     if (disposed || width <= 0 || height <= 0) return;
@@ -224,6 +270,26 @@ export async function createScene(opts: SceneOptions) {
     camera.rotation.y = -state.yaw;
     camera.rotation.x = state.pitch;
 
+    // THE FLASH IS SPENT BY BEING DRAWN AND THE RECOIL DECAYS ON A CLOCK, and
+    // the two answer to different rules. The flash is what SAYS a shot happened,
+    // so it survives `prefers-reduced-motion` intact — somebody who asked for
+    // less movement still has to be told he fired — and it is counted in frames
+    // so that a phone drawing few of them still gets one. The kick is
+    // decoration, so under that setting it is simply not applied, and a decay
+    // measured in seconds is right for it: nothing is lost by a slow phone
+    // skipping most of a spring.
+    muzzle.visible = flash.frame();
+    if (recoil > 0) {
+      // Exponential, so it settles rather than stopping dead, and cut off where
+      // a millimetre of a metre stops being visible on a phone.
+      recoil *= Math.exp(-dtSeconds / RECOIL_SECONDS);
+      if (recoil < 0.01) recoil = 0;
+      const kick = opts.reducedMotion ? 0 : recoil;
+      gun.position.z = GUN_REST.z + kick * RECOIL_METRES;
+      gun.position.y = GUN_REST.y - kick * RECOIL_METRES * 0.3;
+      gun.rotation.x = GUN_REST.pitch + kick * 0.22;
+    }
+
     for (const [, group] of pickupMeshes) {
       // The spin every item in this lineage has had. Cosmetic, driven by the
       // frame clock rather than by the server, and worth nothing on the wire.
@@ -234,7 +300,7 @@ export async function createScene(opts: SceneOptions) {
   }
 
   // --- peers ---------------------------------------------------------------
-  // One capsule per SLOT — a place in the building rather than a person — created
+  // One figure per SLOT — a place in the building rather than a person — created
   // on first sight and reused after. Built here rather than in the level pass
   // because peers come and go with the interpolation buffer, and rebuilding the
   // world when somebody walks in would be absurd.
@@ -244,11 +310,44 @@ export async function createScene(opts: SceneOptions) {
   // people arriving and leaving holds four capsules rather than a hundred. A slot
   // changing hands reuses the same capsule, which is right — nothing about the
   // figure is per-person.
-  const peerMeshes = new Map<number, InstanceType<typeof THREE.Mesh>>();
+  /** A body and the flash at the end of his gun. */
+  interface PeerFigure {
+    body: InstanceType<typeof THREE.Mesh>;
+    /**
+     * The muzzle flash, parented to the body so it follows his position and his
+     * facing for free — and so hiding him hides it, which is what a peer walking
+     * out of the snapshot has to do to an unfinished mark.
+     */
+    muzzle: InstanceType<typeof THREE.Mesh>;
+  }
+  const peerFigures = new Map<number, PeerFigure>();
   const peerGeometry = new THREE.CapsuleGeometry(0.35, 1.1, 4, 8);
+  /**
+   * A blob rather than the disc the player's own muzzle uses.
+   *
+   * His own is seen end-on and nothing else, so a disc is the whole of what
+   * could be looked at; somebody else's is seen from wherever you happen to be
+   * standing, and a disc edge-on is invisible from exactly the angle a shot
+   * across a room arrives at. Six by four segments — a few dozen triangles, and
+   * it reads as a blob of light at any distance a peer is ever drawn at.
+   */
+  const peerMuzzleGeometry = new THREE.SphereGeometry(0.13, 6, 4);
+  /**
+   * WHOSE MUZZLES ARE LIT IN THE FRAME BEING DRAWN.
+   *
+   * The wire marks the tick a shot happened, which is a LEVEL lasting several
+   * drawn frames; this converts it into an event by marking the transition, per
+   * slot. It also counts the mark in frames rather than seconds, for the same
+   * reason the player's own does — see vanyadumFlash.
+   */
+  const peerFlashes = createPeerFlashes();
 
   /**
    * Places every peer the interpolator produced, and hides the ones it did not.
+   *
+   * CALLED EXACTLY ONCE PER DRAWN FRAME, which is not merely how the view
+   * happens to call it: the muzzle marks below are counted in frames, so a
+   * second call inside one frame would spend a mark that was never rendered.
    *
    * Hiding rather than removing IS how somebody leaves the picture, and it has
    * two causes that look identical from here: he left the building, or he walked
@@ -261,24 +360,45 @@ export async function createScene(opts: SceneOptions) {
    * frame is the interpolation buffer running dry, and rebuilding geometry for
    * somebody about to come back is work done to make the world worse.
    */
-  function setPeers(peers: { slot: number; x: number; y: number; z: number; yaw: number }[]): void {
+  function setPeers(
+    peers: { slot: number; x: number; y: number; z: number; yaw: number; firing?: boolean }[],
+  ): void {
     if (disposed) return;
-    for (const m of peerMeshes.values()) m.visible = false;
+    // Before the loop, so every peer's mark is decided against the same frame.
+    const firing = peerFlashes.frame(peers);
+    for (const figure of peerFigures.values()) figure.body.visible = false;
     for (const p of peers) {
-      let mesh = peerMeshes.get(p.slot);
-      if (!mesh) {
-        mesh = new THREE.Mesh(
+      let figure = peerFigures.get(p.slot);
+      if (!figure) {
+        const body = new THREE.Mesh(
           peerGeometry,
           new THREE.MeshBasicMaterial({ color: 0xd05a4a, fog: true }),
         );
-        scene.add(mesh);
-        peerMeshes.set(p.slot, mesh);
+        const muzzle = new THREE.Mesh(
+          peerMuzzleGeometry,
+          // NOT FOGGED, unlike the man holding it, and that is the one place
+          // this mark is allowed to break the scene's own rules. The murk starts
+          // at three metres and is total by the far wall, so a fogged flash
+          // would be dimmest at exactly the distance a player most needs telling
+          // that somebody over there is shooting. The murk is mood; this is not.
+          new THREE.MeshBasicMaterial({ color: 0xffd9a0, fog: false }),
+        );
+        // Half a metre in front of him, a little to one side, at about the
+        // height a двустволка is held: local −Z is the way the capsule faces,
+        // and the body's own centre hangs 0.85 below the eye.
+        muzzle.position.set(0.12, 0.4, -0.5);
+        muzzle.visible = false;
+        body.add(muzzle);
+        scene.add(body);
+        figure = { body, muzzle };
+        peerFigures.set(p.slot, figure);
       }
       // `z` is an EYE height — derived by the client from the sector the wire
       // named, since the wire stopped carrying it — so the body hangs below it.
-      mesh.position.set(p.x, p.z - 0.85, -p.y);
-      mesh.rotation.y = -p.yaw;
-      mesh.visible = true;
+      figure.body.position.set(p.x, p.z - 0.85, -p.y);
+      figure.body.rotation.y = -p.yaw;
+      figure.body.visible = true;
+      figure.muzzle.visible = firing.has(p.slot);
     }
   }
 
@@ -297,6 +417,28 @@ export async function createScene(opts: SceneOptions) {
     for (const [id, group] of pickupMeshes) group.visible = there.has(id);
   }
 
+  /**
+   * The обрез going off: the barrels light and the gun is thrown back.
+   *
+   * CALLED FOR A SHOT THE PREDICTION GRANTED, never for a tap. The browser runs
+   * the same trigger rule the server is about to run, so it already knows
+   * whether a pull became a shot — and a flash drawn on the tap instead would
+   * fire for every refusal inside the cadence, which is most of them when
+   * somebody holds the trigger down. What it buys by being here rather than
+   * waiting for the snapshot is the whole point: zero milliseconds.
+   *
+   * Restarting rather than adding, so the second barrel one cadence later is the
+   * same kick and not a bigger one.
+   */
+  function fire(): void {
+    if (disposed) return;
+    // The mark is only started here; `render` is the sole writer of whether the
+    // muzzle is in a frame. Lighting it from both places is how a flash ends up
+    // cleared by the draw that was supposed to show it.
+    flash.fire();
+    recoil = 1;
+  }
+
   function dispose(): void {
     if (disposed) return;
     disposed = true;
@@ -309,7 +451,7 @@ export async function createScene(opts: SceneOptions) {
     renderer.dispose();
   }
 
-  return { render, resize, setOnFloor, setPeers, dispose };
+  return { render, resize, setOnFloor, setPeers, fire, dispose };
 }
 
 /**

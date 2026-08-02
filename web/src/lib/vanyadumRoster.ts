@@ -81,6 +81,12 @@ export interface BoardRow {
  *
  * A sector index the level has no room for falls back to the bare eye height,
  * which is what the server's own `EyeZ` answers for the same question.
+ *
+ * THE SHOT MARKER IS THE ONE FIELD HERE THAT IS NOT GEOMETRY, and it is on the
+ * peer rather than derivable from one: a barrel count falling says a shot
+ * happened for your OWN gun, but nothing about another man's gun is on the wire
+ * to fall. It is omitted in the resting state, which is almost every peer on
+ * almost every tick, so absent reads as no.
  */
 export function decodePeers(
   raw: unknown,
@@ -100,6 +106,11 @@ export function decodePeers(
       y: num(p.y) / 100,
       z: eyeZ(level, num(p.s), eyeHeight),
       yaw: num(p.yaw) / 1000,
+      // Set on every peer rather than only on the one that fired, so the object
+      // this loop produces has one shape: it is built five times a tick forever,
+      // and a field that comes and goes is the kind of thing an engine
+      // deoptimises for.
+      firing: p.f === true,
     });
   }
   return out;

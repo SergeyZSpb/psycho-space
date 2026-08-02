@@ -447,6 +447,24 @@ describe('drawing the past', () => {
     expect(Math.abs(yaw)).toBeGreaterThan(Math.PI - 0.2);
   });
 
+  it('carries a peer’s shot marker from the newer frame, undiluted', () => {
+    // A shot happened on one tick; it has no midpoint, so it is taken from the
+    // frame the drawn instant is moving TOWARDS rather than blended out of the
+    // one it has already passed. Which is also why it stays set for as long as
+    // that frame is the newer of the pair, and why whoever draws it has to mark
+    // the transition rather than the value — see vanyadumFlash.
+    const i = build();
+    i.push([peer(1, 0)], 20, 1000);
+    i.push([{ ...peer(1, 10), firing: true }], 22, 1100);
+    expect(i.sample(1050 + DELAY)[0].firing).toBe(true);
+    // And once that tick is behind the drawn instant it is over — the marker is
+    // on one frame, never smeared forward into the next one. Spelled out rather
+    // than left off, because that is what `decodePeers` produces: it sets the
+    // field on every peer so the object it builds has one shape.
+    i.push([{ ...peer(1, 20), firing: false }], 24, 1200);
+    expect(i.sample(1150 + DELAY)[0].firing).toBe(false);
+  });
+
   it('interpolates the height too, so a doorway is a step up and not a jump', () => {
     // The height is DERIVED at ingest, from the room the wire named, precisely so
     // that it can be blended like the position. Resolved at draw time instead it

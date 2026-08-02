@@ -5,6 +5,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -356,6 +357,12 @@ func TestTimeBudgetLetsAStutteringClientCatchUp(t *testing.T) {
 	// The other half of the same rule, and the reason the cap is not zero: a
 	// phone that was backgrounded, or a wifi hiccup, delivers a burst that is
 	// completely honest. Refusing it would make the game unplayable on a bus.
+	//
+	// IT IS WHAT THE IDLE FILL'S GUARD PROTECTS. The fill charges the budget for
+	// the time it simulates (Advance), so a fill that ran on every quiet tick
+	// would spend exactly the cushion this test is about — which is why it runs
+	// only when something is actually counting down. Here the gun is cold, so
+	// nothing is, so the half second banks and the burst is affordable.
 	w, acc := newTestWorld(t, 3)
 	start := w.Occupant(acc).State.Pos
 
@@ -702,7 +709,14 @@ func TestTwoPlayersReachingTheSameBeerAreResolvedDeterministically(t *testing.T)
 			standOn(w, id, 0)
 			// The same transcript for everybody, so nothing except the world's
 			// own ordering can separate them.
-			w.Enqueue(id, &ParsedInput{Cmds: []Command{{Seq: 1, Dt: subStep, MY: 1, Yaw: eastward}}})
+			//
+			// THE TRIGGER IS PULLED ON IT, because the digest now hashes the gun
+			// and a digest that hashes something no transcript exercises proves
+			// nothing about it. Everybody spawns loaded, so all three fire on
+			// this step and all three end with one barrel and the same cadence
+			// running — which is what makes any per-occupant disagreement about
+			// the gun a difference in the bytes rather than an invisible one.
+			w.Enqueue(id, &ParsedInput{Cmds: []Command{{Seq: 1, Dt: subStep, MY: 1, Yaw: eastward, Fire: true}}})
 		}
 		w.Advance(SimStep.Seconds(), epoch)
 		return w
@@ -1169,6 +1183,14 @@ func TestNobodyWinsEveryContestedPickup(t *testing.T) {
 // The occupant ids come in from the caller rather than from the world, because a
 // digest that asked the world for its own ordering would be agreeing with the
 // thing it exists to check.
+//
+// EVERY FIELD OF Player BELONGS IN HERE, and the gun is the reason to say so.
+// The digest omitted the barrels and both timers for exactly as long as they
+// existed, which made this a determinism check that could not see a gun: two
+// runs whose occupants had fired in a different order, or whose idle fill had
+// granted a different amount of time to a cooldown, hashed the same. A field
+// left out is not a smaller test, it is a test that passes for a state it never
+// looked at.
 func worldDigest(t *testing.T, w *World, ids ...string) string {
 	t.Helper()
 	type occupantState struct {
@@ -1178,6 +1200,9 @@ func worldDigest(t *testing.T, w *World, ids ...string) string {
 		Health   int
 		LastSeq  int64
 		Counters map[string]int
+		Loaded   int
+		Cooldown float64
+		Reload   float64
 	}
 	out := struct {
 		Tick  int64
@@ -1192,6 +1217,7 @@ func worldDigest(t *testing.T, w *World, ids ...string) string {
 		out.Occs = append(out.Occs, occupantState{
 			ID: id, Pos: o.State.Pos, Sector: o.State.Sector,
 			Health: o.State.Health, LastSeq: o.State.LastSeq, Counters: o.State.Counters,
+			Loaded: o.State.Loaded, Cooldown: o.State.CooldownLeft, Reload: o.State.ReloadLeft,
 		})
 	}
 	// encoding/json sorts map keys, so the maps in here contribute the same bytes
@@ -1213,4 +1239,352 @@ func mustSnapshot(t *testing.T, w *World, accountID string) Snapshot {
 		t.Fatalf("no snapshot for occupant %q", accountID)
 	}
 	return s
+}
+
+// --- the gun, in the world --------------------------------------------------
+
+// arm puts an occupant somewhere harmless with a gun in whatever state a test
+// needs. The spawn room is the one place the generator never puts anything, so
+// the clock can run without something being collected under an assertion.
+func arm(w *World, acc string, loaded, ammo int) *Occupant {
+	standAtSpawn(w, acc)
+	o := w.Occupant(acc)
+	o.State.Loaded = loaded
+	if ammo > 0 {
+		o.State.Counters[AmmoCounter] = ammo
+	}
+	return o
+}
+
+// fireOnTheWire delivers one trigger pull as a client delivers one: a single
+// sub-step carrying the player's own angles, through the queue.
+func fireOnTheWire(w *World, acc string, seq int64) {
+	o := w.Occupant(acc)
+	w.Enqueue(acc, &ParsedInput{Cmds: []Command{
+		{Seq: seq, Dt: subStep, Yaw: o.State.Yaw, Pitch: o.State.Pitch, Fire: true},
+	}})
+}
+
+func TestTheGunKeepsRunningWhileTheClientSaysNothing(t *testing.T) {
+	// THE IDLE FILL, and the reason the world grew one. A client emits a command
+	// only when something happened — moving, or looking somewhere new — so a
+	// player who fires and then stands still with his thumb off the glass sends
+	// NOTHING (web/src/lib/vanyadumInput.ts). Every timer this game had before was
+	// a position, and a position does not change while nobody is asking it to; a
+	// cadence does, because it runs on time passing rather than on input.
+	//
+	// Without the fill the gun would work only while you were walking, which is
+	// the state you are least often in when you are shooting at something.
+	w, acc := newTestWorld(t, 11)
+	o := arm(w, acc, Barrels, 0)
+
+	fireOnTheWire(w, acc, 1)
+	w.Advance(SimStep.Seconds(), epoch)
+	if o.State.Loaded != Barrels-1 {
+		t.Fatalf("a shot over the wire left %d barrels, expected %d", o.State.Loaded, Barrels-1)
+	}
+	if o.State.CooldownLeft <= 0 {
+		t.Fatal("the shot started no cadence")
+	}
+
+	// And now nothing at all arrives, for as long as it takes.
+	ticks := 0
+	for ; o.State.CooldownLeft > 0 && ticks < 4*SimHz; ticks++ {
+		w.Advance(SimStep.Seconds(), epoch)
+	}
+	if o.State.CooldownLeft > 0 {
+		t.Fatalf("%d silent ticks and the cadence still has %.3f s on it", ticks, o.State.CooldownLeft)
+	}
+	if elapsed := float64(ticks) * SimStep.Seconds(); math.Abs(elapsed-FireCooldownSeconds) > SimStep.Seconds()+1e-9 {
+		t.Fatalf("the cadence ran out after %.3f s of silence; the catalogue says %.3f", elapsed, FireCooldownSeconds)
+	}
+	if o.State.Pos != w.Level.Spawn {
+		t.Fatalf("the idle fill walked him from the spawn to %+v", o.State.Pos)
+	}
+}
+
+func TestAnIdleTickDoesNotSnapTheView(t *testing.T) {
+	// The trap inside the fill, and the reason it does not build its command out
+	// of the zero value: Step assigns c.Yaw and c.Pitch unconditionally, so a
+	// bare Command{Dt: idle} would point every player who stopped moving due
+	// north and level — twenty times a second, for as long as they stood there.
+	w, acc := newTestWorld(t, 11)
+	o := arm(w, acc, Barrels, 0)
+	o.State.Yaw, o.State.Pitch = 2.2, -0.7
+
+	fireOnTheWire(w, acc, 1)
+	w.Advance(SimStep.Seconds(), epoch)
+	for i := 0; i < SimHz; i++ {
+		w.Advance(SimStep.Seconds(), epoch)
+	}
+	if math.Abs(o.State.Yaw-2.2) > 1e-9 || math.Abs(o.State.Pitch-(-0.7)) > 1e-9 {
+		t.Fatalf("a second of silence moved the view to %.3f/%.3f", o.State.Yaw, o.State.Pitch)
+	}
+}
+
+func TestQuietTimeCannotBeBankedAndSpentOnTheGun(t *testing.T) {
+	// THE EXPLOIT THE FILL'S CHARGE CLOSES, and it needs no field out of range
+	// anywhere. If the fill granted the gun its idle seconds for free, a client
+	// could stand still while a reload ran — advancing it at real time, because
+	// the world was doing that for him — bank the same seconds in his time
+	// budget, and then deliver them as a burst of standing-still commands to
+	// advance it AGAIN. Close to double the fire rate and a third off every
+	// reload, repeatable for as long as he alternated.
+	//
+	// So the assertion is the invariant rather than the symptom: over any window,
+	// the gun cannot be granted more time than actually passed.
+	w, acc := newTestWorld(t, 11)
+	o := arm(w, acc, 0, ReloadCost)
+
+	fireOnTheWire(w, acc, 1)
+	w.Advance(SimStep.Seconds(), epoch)
+	if o.State.ReloadLeft != ReloadSeconds {
+		t.Fatalf("the reload did not start: %+v", o.State)
+	}
+	ticks := 1
+
+	// Half a second of silence — exactly TimeBudgetCap, which is the most that
+	// could ever be banked.
+	for i := 0; i < SimHz/2; i++ {
+		w.Advance(SimStep.Seconds(), epoch)
+		ticks++
+	}
+
+	// And now the burst: a full frame of the largest sub-steps the parser will
+	// pass through, every one of them standing perfectly still.
+	cmds := make([]Command, 0, MaxCommandsPerFrame)
+	for i := 0; i < MaxCommandsPerFrame; i++ {
+		cmds = append(cmds, Command{Seq: int64(i + 2), Dt: MaxStepSeconds, Yaw: o.State.Yaw})
+	}
+	w.Enqueue(acc, &ParsedInput{Cmds: cmds})
+	w.Advance(SimStep.Seconds(), epoch)
+	ticks++
+
+	granted := ReloadSeconds - o.State.ReloadLeft
+	real := float64(ticks) * SimStep.Seconds()
+	if granted > real+1e-9 {
+		t.Fatalf("%.3f s of reload was granted in %.3f s of real time", granted, real)
+	}
+}
+
+func TestAColdGunIsNotChargedForStandingStill(t *testing.T) {
+	// The other half of the fill's guard, and it is what keeps the charge above
+	// from becoming a tax on doing nothing. A still step against a gun with
+	// nothing counting down provably changes no field of the player — the axes
+	// are zero, so no position, sector or angle can move, and both timers are
+	// already at rest — so charging the budget for it would spend the honest
+	// client's catch-up cushion on a simulation that did nothing.
+	w, acc := newTestWorld(t, 3)
+	o := arm(w, acc, Barrels, 0)
+
+	for i := 0; i < SimHz/2; i++ {
+		w.Advance(SimStep.Seconds(), epoch)
+	}
+	if o.budget < TimeBudgetCap-1e-9 {
+		t.Fatalf("half a second of standing still with a cold gun banked %.3f s, the cap is %.3f",
+			o.budget, TimeBudgetCap)
+	}
+}
+
+func TestTheSnapshotCarriesTheGunAndOmitsItWhenItIsResting(t *testing.T) {
+	// What the HUD draws and what the predictor reconciles against. The shell
+	// count is the SERVER's, so a client that mispredicted a refused shot is put
+	// right within one frame rather than showing a number it made up.
+	w, acc := newTestWorld(t, 11)
+	o := arm(w, acc, Barrels, ReloadCost)
+
+	resting, ok := w.SnapshotFor(acc)
+	if !ok {
+		t.Fatal("no snapshot")
+	}
+	if resting.Loaded != Barrels {
+		t.Fatalf("a full gun was published as %d barrels", resting.Loaded)
+	}
+	raw, err := json.Marshal(resting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"d"`, `"r"`} {
+		if strings.Contains(string(raw), key) {
+			t.Fatalf("an idle gun published %s: %s", key, raw)
+		}
+	}
+
+	// A shot, and the two things a client compares against the previous frame to
+	// know it happened: one fewer barrel, and a cadence that has appeared.
+	fireOnTheWire(w, acc, 1)
+	w.Advance(SimStep.Seconds(), epoch)
+	fired, _ := w.SnapshotFor(acc)
+	if fired.Loaded != Barrels-1 {
+		t.Fatalf("after a shot the frame says %d barrels", fired.Loaded)
+	}
+	if want := ms(FireCooldownSeconds); fired.Cooldown != want {
+		t.Fatalf("the cadence was published as %d ms, expected %d", fired.Cooldown, want)
+	}
+	if fired.Reload != 0 {
+		t.Fatalf("a shot published a reload of %d ms", fired.Reload)
+	}
+
+	// And the reload, in the units the wire carries rather than the simulation's.
+	o.State.Loaded, o.State.CooldownLeft = 0, 0
+	fireOnTheWire(w, acc, 2)
+	w.Advance(SimStep.Seconds(), epoch)
+	reloading, _ := w.SnapshotFor(acc)
+	if want := ms(ReloadSeconds); reloading.Reload != want {
+		t.Fatalf("the reload was published as %d ms, expected %d", reloading.Reload, want)
+	}
+	if reloading.Loaded != 0 {
+		t.Fatalf("a reloading gun published %d barrels", reloading.Loaded)
+	}
+}
+
+// watching puts a second and third occupant in the spawn room alongside the one
+// newTestWorld made, so that everybody can see everybody. It returns the
+// shooter and the people watching him.
+func watching(t *testing.T, n int) (*World, string, []string) {
+	t.Helper()
+	w, shooter := newTestWorld(t, 11)
+	arm(w, shooter, Barrels, 0)
+	var watchers []string
+	for i := 0; i < n; i++ {
+		acc := uuid.New().String()
+		if _, ok := w.Join(acc, "pseudo-"+acc[:8], epoch); !ok {
+			t.Fatalf("watcher %d was refused", i)
+		}
+		standAtSpawn(w, acc)
+		watchers = append(watchers, acc)
+	}
+	return w, shooter, watchers
+}
+
+// firedPeer reads one peer's muzzle flash out of the frame a viewer is actually
+// sent, rather than off the occupant — what is being checked is what crosses the
+// wire, and a field with the wrong json tag would satisfy any assertion made
+// against the struct.
+func firedPeer(t *testing.T, w *World, viewer string, slot int) bool {
+	t.Helper()
+	for _, p := range mustSnapshot(t, w, viewer).Peers {
+		if p.Slot == slot {
+			return p.Fired
+		}
+	}
+	t.Fatalf("slot %d is not on the frame sent to %s at all", slot, viewer)
+	return false
+}
+
+func TestAPeersShotIsOnTheFrameForOneTickOnly(t *testing.T) {
+	// An action nobody else can see is an unfinished action (CLAUDE.md), and a
+	// обрез going off is this game's loudest one — so a shot has to reach the
+	// people it was aimed at and not only the man who pulled the trigger. He
+	// needs no telling: his own barrel count is on his own snapshot, and the
+	// count falling by one IS the shot. A peer carries no barrel count, so this
+	// is the field that says so.
+	//
+	// AND THE WHOLE BUDGET FOR IT RESTS ON IT BEING PER-ACTION. It is priced at
+	// the gun's cadence — three a second — rather than at the twenty a second
+	// every other peer field costs (message.go, Peer.Fired; message_test.go,
+	// firedPerSecond). A flag that stayed up for the whole cooldown, which is the
+	// natural way to write it and the shape a duration would have had, rides
+	// every tick instead of three: 9 bytes × 20 Hz × 4 peers = 720 B/s, where the
+	// frame had 387 B/s of headroom before this field existed at all. So this
+	// test is not about a flash looking right, it is what holds the ceiling
+	// arithmetic true.
+	w, shooter, watchers := watching(t, 1)
+	watcher := watchers[0]
+	slot := w.Occupant(shooter).Slot
+
+	// A world nothing has advanced is on tick zero, and so is an occupant who has
+	// never fired — the two must not be read as agreeing with each other.
+	if firedPeer(t, w, watcher, slot) {
+		t.Fatal("a peer on a freshly generated building is flagged as having just fired")
+	}
+	w.Advance(SimStep.Seconds(), epoch)
+	if firedPeer(t, w, watcher, slot) {
+		t.Fatal("a peer who has never pulled a trigger is flagged as having fired")
+	}
+
+	fireOnTheWire(w, shooter, 1)
+	w.Advance(SimStep.Seconds(), epoch)
+	if w.Occupant(shooter).State.Loaded != Barrels-1 {
+		t.Fatalf("the shot this test is about did not happen: %d barrels", w.Occupant(shooter).State.Loaded)
+	}
+	if !firedPeer(t, w, watcher, slot) {
+		t.Fatal("somebody fired two metres away and the frame said nothing about it")
+	}
+
+	// And it is gone on the very next one, and stays gone for the whole cadence —
+	// which is exactly where a level would have gone on saying "still cooling"
+	// twenty times a second.
+	for tick := 1; tick <= int(FireCooldownSeconds/SimStep.Seconds())+2; tick++ {
+		w.Advance(SimStep.Seconds(), epoch)
+		if firedPeer(t, w, watcher, slot) {
+			t.Fatalf("the flash is still on the frame %d ticks after the shot", tick)
+		}
+	}
+}
+
+func TestEverybodyWatchingIsToldAboutTheSameShot(t *testing.T) {
+	// The reason the mark is a TICK NUMBER compared against the world's, rather
+	// than a flag cleared when it is read. SnapshotFor runs once per VIEWER and
+	// consumes this occupant's events on the way out, so a flash written the same
+	// way would be handed to whichever viewer happened to be rendered first and
+	// withheld from everybody else — and which one that is depends on slot order,
+	// so the bug would look like "sometimes you see it".
+	//
+	// An event is addressed to one person and is right to be consumed; a gunshot
+	// belongs to the building.
+	w, shooter, watchers := watching(t, 3)
+	slot := w.Occupant(shooter).Slot
+
+	fireOnTheWire(w, shooter, 1)
+	w.Advance(SimStep.Seconds(), epoch)
+
+	for i, acc := range watchers {
+		if !firedPeer(t, w, acc, slot) {
+			t.Fatalf("watcher %d was not told about the shot the others were", i)
+		}
+	}
+	// And rendering all of them again does not un-tell anybody: the frame is a
+	// read of the world rather than a queue drained by looking at it.
+	for i, acc := range watchers {
+		if !firedPeer(t, w, acc, slot) {
+			t.Fatalf("watcher %d lost the shot on a second render of the same tick", i)
+		}
+	}
+}
+
+func TestTheVisitRecordsWhatWasFoundAndNotWhatWasLeftOver(t *testing.T) {
+	// The two numbers were the same until the gun started spending beer, and the
+	// column means the first of them — "how much beer was collected on the way",
+	// in a migration that can no longer be edited. So a visit that read the bag
+	// would record a nought for every player who actually used what he found,
+	// which is the one thing the splash screen's «твои визиты» list is for.
+	w, acc := newTestWorld(t, 11)
+	standOn(w, acc, 0)
+	w.Advance(SimStep.Seconds(), epoch)
+
+	o := w.Occupant(acc)
+	found := o.collected["beer"]
+	if found == 0 {
+		t.Fatal("standing on a bottle collected nothing")
+	}
+	if got := o.State.Counters["beer"]; got != found {
+		t.Fatalf("carrying %d of the %d collected before anything was spent", got, found)
+	}
+
+	// Now empty the gun into the floor and reload out of the bag, which is the
+	// ordinary thing a player does with the beer he just picked up.
+	o.State.Loaded = 0
+	standAtSpawn(w, acc)
+	fireOnTheWire(w, acc, 1)
+	w.Advance(SimStep.Seconds(), epoch)
+	if o.State.ReloadLeft <= 0 {
+		t.Fatalf("the reload did not start: %+v", o.State)
+	}
+	if got := o.State.Counters["beer"]; got != found-ReloadCost {
+		t.Fatalf("the bag holds %d after a reload of %d out of %d", got, ReloadCost, found)
+	}
+	if got := o.collected["beer"]; got != found {
+		t.Fatalf("spending beer changed what was collected from %d to %d", found, got)
+	}
 }

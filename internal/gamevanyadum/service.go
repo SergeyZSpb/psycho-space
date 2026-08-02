@@ -330,7 +330,11 @@ func (s *Service) finish(w *World, o *Occupant) {
 		Seed:      w.Level.Seed,
 		JoinedAt:  o.JoinedAt,
 		Seconds:   o.Stayed(),
-		Beer:      o.State.Counters["beer"],
+		// What he COLLECTED and not what he still had. The two were the same
+		// number until the gun started spending it, and the column means the
+		// former (migrations/015, immutable) — a visit that read the bag would now
+		// record a nought for everybody who actually used the building's beer.
+		Beer: o.collected["beer"],
 	}
 	select {
 	case s.saves <- v:

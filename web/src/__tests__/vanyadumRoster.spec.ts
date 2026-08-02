@@ -79,6 +79,24 @@ describe('decodePeers', () => {
     expect(p.y).toBe(0);
   });
 
+  it('reads the shot marker, and reads its absence as no shot', () => {
+    // The one field on a peer that is not geometry. Your own gun needs no such
+    // marker — a barrel count falling by one IS the shot — but another man's gun
+    // has nothing on the wire to fall, so this is the only thing that says a
+    // обрез went off two metres away. Omitted on every tick it did not, which is
+    // almost every tick of almost every peer.
+    const peers = decodePeers(
+      [
+        { n: 0, x: 0, y: 0, s: 0, yaw: 0, f: true },
+        { n: 1, x: 0, y: 0, s: 0, yaw: 0 },
+      ],
+      LEVEL,
+      EYE,
+    );
+    expect(peers[0].firing).toBe(true);
+    expect(peers[1].firing).toBe(false);
+  });
+
   it('answers with nothing when the array is absent, which is the common case', () => {
     // Omitted entirely when there is nobody else in view — and that is most
     // frames, in a building that holds five.

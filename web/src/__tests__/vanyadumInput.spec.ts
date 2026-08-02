@@ -265,6 +265,36 @@ describe('createEmitter', () => {
     expect(e.residualSeconds()).toBeCloseTo(0.005, 9);
   });
 
+  it('emits for a trigger pull alone, from a player who is otherwise still', () => {
+    // THE STATE THIS GAME'S DEFAULT ACTUALLY IS. Standing perfectly still with
+    // the screen untouched emits nothing, which is right and is what keeps a
+    // resting player free — but a pull is something that happened, and a pull
+    // that produced no command would be a trigger the server never hears about.
+    const e = createEmitter(opts);
+    e.due(0, still);
+    const cmds = e.due(30, still, true);
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0].fire).toBe(true);
+  });
+
+  it('puts the pull on exactly one command of the wake', () => {
+    // A pull is a moment, not a state. Four commands each claiming it would ask
+    // the server to fire four times — refused by the cadence, but only after
+    // being told — and would put nine bytes on all four.
+    const e = createEmitter(opts);
+    e.due(0, walking);
+    const cmds = e.due(140, walking, true);
+    expect(cmds.length).toBeGreaterThan(1);
+    expect(cmds.filter((c) => c.fire).length).toBe(1);
+    expect(cmds[0].fire).toBe(true);
+  });
+
+  it('leaves the trigger off every command that was not asked for one', () => {
+    const e = createEmitter(opts);
+    e.due(0, walking);
+    for (const c of e.due(140, walking)) expect(c.fire).toBeUndefined();
+  });
+
   it('never offers more than one period, however far behind it is', () => {
     // Beyond a period the arrears are a stall the wake budget is already
     // refusing, and drawing ahead of a refusal is extrapolation, not carry.
@@ -313,5 +343,20 @@ describe('buildInputFrame', () => {
 
   it('is happy with nothing to resend', () => {
     expect(buildInputFrame(0, [cmd(1)], []).cmds.map((c) => c.q)).toEqual([1]);
+  });
+
+  it('carries the trigger on the command that had one', () => {
+    const frame = buildInputFrame(0, [{ ...cmd(1), fire: true }], []);
+    expect(frame.cmds[0].f).toBe(true);
+  });
+
+  it('omits the trigger rather than sending it false', () => {
+    // Forty sub-steps a second go out for as long as somebody is walking, and
+    // `"f":false` on every one of them is nine bytes forty times a second,
+    // uplink, on mobile data, to say that nothing happened. The `sends intent
+    // and never a fact` test above is what pins the resting key set; this says
+    // why the trigger is not in it.
+    const frame = buildInputFrame(0, [cmd(1), { ...cmd(2), fire: false }], []);
+    for (const c of frame.cmds) expect('f' in c).toBe(false);
   });
 });

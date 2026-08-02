@@ -100,6 +100,14 @@ type wireCommand struct {
 	MY    float64 `json:"my"`
 	Yaw   float64 `json:"yaw"`
 	Pitch float64 `json:"pitch"`
+	// Fire is the trigger, and it is OMITTED IN ITS RESTING STATE because almost
+	// no command is a trigger pull: a client emits forty sub-steps a second and
+	// even a player firing as fast as the gun allows pulls three times in that
+	// second. `"f":true` is nine bytes on the handful of commands that carry it
+	// and nothing at all on the rest, where a field always present would be nine
+	// bytes forty times a second, uplink, on mobile data — the direction of the
+	// connection that is worst.
+	Fire bool `json:"f,omitempty"`
 }
 
 // ParseInbound decodes a frame, returning its type and — for an input frame —
@@ -159,10 +167,11 @@ func parseInput(f InputFrame) *ParsedInput {
 	for i := 0; i < n; i++ {
 		// A direct conversion, which the two types being field-for-field
 		// identical is what permits. They stay separate types because the wire
-		// form is allowed to grow a field (a button bitfield, next iteration)
-		// that the simulation has no opinion about yet — and the day they
-		// diverge, this line stops compiling rather than silently dropping
-		// something.
+		// form is allowed to grow a field the simulation has no opinion about
+		// yet — and the day they diverge, this line stops compiling rather
+		// than silently dropping something. The trigger was the first field
+		// added since, and it went on BOTH: an input the simulation reads is
+		// exactly what this conversion is for.
 		//
 		// This clamp is the WIRE boundary's own, and it is one of three —
 		// World.Enqueue and Step each clamp again, and each carries a guarantee
@@ -279,9 +288,44 @@ type Snapshot struct {
 	//
 	// Still idempotent full state, exactly as the list was: a dropped frame costs
 	// nothing, because the next one restates the whole world.
-	Left   uint32         `json:"pk"`
-	Bag    map[string]int `json:"c,omitempty"`
-	Events []Event        `json:"ev,omitempty"`
+	Left uint32 `json:"pk"`
+	// Loaded is how many barrels are ready to fire, and it is the shell count on
+	// the HUD — the SERVER's, so a client that mispredicted a refused shot is
+	// corrected within one frame rather than showing a number it made up.
+	//
+	// NOT `omitempty`, unlike the two timers below. An empty gun is exactly the
+	// state a player most needs to see, and a resting gun is full rather than
+	// zero, so omitting at zero would save nothing while making the reader
+	// responsible for remembering that an absent field means the worst case.
+	Loaded int `json:"b"`
+	// Cooldown is milliseconds until the gun will fire again and Reload is
+	// milliseconds until a reload finishes. Both omitted at rest, which is nearly
+	// always: a gun is idle for most of every second even in a firefight.
+	//
+	// MILLISECONDS AS AN INT, quantised exactly as everything else on this frame
+	// is. A float64 second serialises to seventeen characters of a precision no
+	// screen can show; the int is three or four, and half a millisecond of error
+	// against a 350 ms cadence is a thousandth of a frame.
+	//
+	// THEY CANNOT BOTH BE SET (sim.go, Player), and the wire budget is measured on
+	// that: the widest frame this game can actually send carries the barrels and
+	// one timer, never two.
+	//
+	// YOUR OWN SHOT NEEDS NO EVENT, and this is why. `b` falling by one between
+	// two frames IS the shot, and `d` going from absent to set is the same
+	// instant — both are per-frame comparisons the client already makes for the
+	// pickup mask. An "I fired" event addressed to the man who fired would be
+	// bytes on a payload that repeats twenty times a second to say nothing at all
+	// almost every time it was sent.
+	//
+	// A PEER'S SHOT IS THE CASE THIS DOES NOT COVER, because a peer carries
+	// neither of these two fields and giving it one would cost more than the flag
+	// that replaced them: see Peer.Fired for the measurement and for why the
+	// cheap derivation available here is not available there.
+	Cooldown int            `json:"d,omitempty"`
+	Reload   int            `json:"r,omitempty"`
+	Bag      map[string]int `json:"c,omitempty"`
+	Events   []Event        `json:"ev,omitempty"`
 	// Peers is everything in the building that is not you AND THAT YOU COULD
 	// PLAUSIBLY SEE — the other people in the заброшка today, the нейрослопы when
 	// they arrive. Omitted entirely when there is nobody, which is the common
@@ -361,11 +405,12 @@ const MaxWirePickups = 32
 // independently can disagree about which room a man in a doorway is in, and he
 // would bob by up to MaxStep while standing still.
 //
-// NOTHING HERE IS `omitempty`, deliberately. Slot 0 is a real place and the first
-// one handed out, and x and y are genuinely zero somewhere in every building — so
-// omitting at zero would make the reader responsible for remembering the default
-// on four separate fields. It would not help the case that matters in any event:
-// the capacity is derived from the worst frame, and nothing is zero in that one.
+// NONE OF THE FIVE POSITION FIELDS IS `omitempty`, deliberately. Slot 0 is a real
+// place and the first one handed out, and x and y are genuinely zero somewhere in
+// every building — so omitting at zero would make the reader responsible for
+// remembering the default on four separate fields. It would not help the case
+// that matters in any event: the capacity is derived from the worst frame, and
+// nothing is zero in that one. `Fired` is the exception and the reason is on it.
 type Peer struct {
 	// Slot is the place in the building this entity holds. The standings frame
 	// says whose it currently is.
@@ -377,6 +422,48 @@ type Peer struct {
 	// is in should make him.
 	Sector int `json:"s"`
 	Yaw    int `json:"yaw"`
+	// Fired says this peer's gun went off ON THIS TICK, and it is omitted on
+	// every tick it did not. It exists so that a shot is visible to the whole
+	// building rather than only to the man who fired it — an action nobody else
+	// can see is an unfinished action (CLAUDE.md), and a обрез going off two
+	// metres away is the action in this game that matters most to everybody
+	// except its author.
+	//
+	// THIS IS THE "DEDICATED EVENT FIELD" THAT RULE CALLS A LAST RESORT, and it
+	// is here having lost the argument against every cheaper shape rather than
+	// instead of trying them. What the rule asks for first is a value the frame
+	// ALREADY CARRIES, and for your own player there is one: `b` falling by one
+	// between two frames IS the shot, which is exactly how the HUD draws your own
+	// muzzle flash without a byte being spent. A peer carries no barrel count and
+	// cannot be given one for less: `,"b":2` is 6 bytes on EVERY tick, which at
+	// four peers is 480 B/s, against the 108 the flag costs at the rates below.
+	//
+	// AND THE SHAPE THIS PROJECT PREFERS — A DURATION — WAS MEASURED AND DOES NOT
+	// FIT. The natural one is the peer's own cooldown, which would let a viewer
+	// draw a smoke trail for as long as it ran. But a cooldown is NON-ZERO FOR
+	// THE WHOLE 0.35 s IT RUNS, so on a peer firing as fast as the gun allows it
+	// is present on all twenty ticks of every second: `,"d":350` is 8 bytes ×
+	// 20 Hz × 4 peers = 640 B/s, against the 387 B/s this frame has left under
+	// wireCeiling at MaxOccupants. It does not fit, and the answer to that is not
+	// a bigger ceiling.
+	//
+	// THE FLAG DOES FIT, and the arithmetic is the whole justification for
+	// spending the bytes: `,"f":true` is 9 bytes, a gun fires at most once per
+	// FireCooldownSeconds — three times a second, rounded up — and a viewer in a
+	// full building sees four peers. 9 × 3 × 4 = 108 B/s, which is a quarter of
+	// what the duration cost and leaves 279 B/s of headroom.
+	// TestEverythingAFullBuildingSendsAViewerFitsTheCeiling counts it at that own
+	// rate rather than at the snapshot rate, because charging a per-action field
+	// twenty times a second would be budgeting a state the cadence forbids —
+	// and TestAPeersShotIsOnTheFrameForOneTickOnly is what stops it quietly
+	// becoming a per-tick field, at which point the arithmetic above is wrong and
+	// the 640 B/s one applies.
+	//
+	// A BOOL AND NOT A COUNT. Two shots cannot land in one tick — the cadence is
+	// 0.35 s against a 0.05 s tick — so a count would be a field with one value,
+	// which is not a field (CLAUDE.md). It says WHERE a shot happened and never
+	// what it hit, which is all this iteration has: nothing is hit yet.
+	Fired bool `json:"f,omitempty"`
 }
 
 // Standings is who is in the building, how long they have each been in it, and
@@ -386,9 +473,15 @@ type Peer struct {
 // ends. A match with no result has nothing to show at the end of it, so what it
 // needs instead is something to look at in the middle: a readout that says how
 // everybody is doing, updated while you play. The metric is deliberately what
-// the game actually has today — time in the building and what has been collected
-// — rather than a shape with empty columns in it. Kills and streaks are fields
-// this frame grows on the day something can be killed, and not before.
+// the game actually has today — time in the building and what everybody is
+// carrying — rather than a shape with empty columns in it. Kills and streaks are
+// fields this frame grows on the day something can be killed, and not before.
+//
+// WHAT IS CARRIED RATHER THAN WHAT WAS FOUND, and since the gun started spending
+// beer the two are different numbers. Carried is the one worth publishing: it
+// says who is out of ammunition, which is a thing to act on, where a lifetime
+// total is trivia. The lifetime total is what the visit row keeps
+// (world.go, Occupant.collected).
 //
 // A FRAME OF ITS OWN AT ONE HERTZ, AND NOT A FIELD ON THE SNAPSHOT. The
 // arithmetic is the whole argument. A seconds-and-bag pair on each peer is about
@@ -434,9 +527,10 @@ type StandingsRow struct {
 	Name string `json:"i"`
 	// Seconds is how long they have been in the building.
 	Seconds int `json:"s"`
-	// Bag is what they have collected, keyed by the catalogue's Grants exactly as
+	// Bag is what they are CARRYING, keyed by the catalogue's Grants exactly as
 	// the snapshot's own is. Omitted entirely for somebody carrying nothing,
-	// which is everybody for their first minute.
+	// which is everybody for their first minute — and everybody again once the
+	// gun has drunk what they found.
 	Bag map[string]int `json:"c,omitempty"`
 }
 
@@ -445,3 +539,9 @@ func cm(v float64) int { return int(math.Round(v * 100)) }
 
 // mrad quantises radians to thousandths for the wire.
 func mrad(v float64) int { return int(math.Round(v * 1000)) }
+
+// ms quantises seconds to milliseconds for the wire. The same arithmetic as
+// mrad and deliberately a separate function: the two carry different units, and
+// one of them existing does not make the other's rounding somebody else's
+// decision.
+func ms(v float64) int { return int(math.Round(v * 1000)) }

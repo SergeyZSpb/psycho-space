@@ -15,6 +15,15 @@
  * on top of it**. Movement then responds in zero milliseconds and updates at
  * frame rate, and the server still decides everything.
  *
+ * WHAT IS PREDICTED, AND WHY THE GUN IS. Position, and — since the обрез — the
+ * shell count, both of its timers and the ammunition the reload spends. The
+ * health is not: nothing the player does moves it, so it is read off the
+ * snapshot. ADR-058's question is the one that decides each of them, asked the
+ * way that record's reasoning asks it rather than the way its one-line test does:
+ * must the CLIENT simulate this? The gun must, because the muzzle flash is drawn
+ * the instant a thumb lands and a flash is only honest if the browser has already
+ * run the same refusal the server is about to run.
+ *
  * WHAT THIS IS NOT. It is not authority. A prediction is a guess that is usually
  * right; when the server disagrees, the server wins, without negotiation and
  * without the client getting a say. See ADR-052.
@@ -24,7 +33,15 @@ import type { VanyadumAxes } from './vanyadumInput';
 import type { VanyadumLevel } from './vanyadumLevel';
 import { eyeZ, step, type StepCommand, type StepConstants, type StepPlayer } from './vanyadumStep';
 
-/** Where the player is authoritatively, as a snapshot reports it. */
+/**
+ * Where the player is authoritatively, as a snapshot reports it.
+ *
+ * EVERY GUN FIELD IS REQUIRED, and required rather than optional on purpose: the
+ * replay base below is a complete object literal with no spread, so a field
+ * added to `StepPlayer` and forgotten here is a compile error at every call
+ * site. That is the property ADR-058 asks for, and it is worth keeping by
+ * construction rather than by luck.
+ */
 export interface Authoritative {
   /** Metres — the client converts from the wire's centimetres. */
   x: number;
@@ -32,6 +49,23 @@ export interface Authoritative {
   sector: number;
   /** The last command sequence the server folded in. */
   ack: number;
+  /** Barrels ready to fire — the server's count, never the client's guess. */
+  loaded: number;
+  /** Seconds until the gun fires again; the caller converts the wire's `d` ms. */
+  cooldown: number;
+  /** Seconds until a reload finishes; the caller converts the wire's `r` ms. */
+  reload: number;
+  /**
+   * How much ammunition the player is carrying, out of the snapshot's bag.
+   *
+   * ON THIS TYPE ALTHOUGH THE TRIGGER IS THE ONLY THING THAT SPENDS IT, because
+   * the trigger is not the only thing that MOVES it: walking over a bottle is
+   * the server's to decide and this client predicts no pickups at all. A locally
+   * held count would therefore only ever fall, so an empty gun would refuse a
+   * reload the server was granting — and the reload is the one branch of the
+   * trigger a player waits a second and a half for.
+   */
+  ammo: number;
 }
 
 /** What the renderer draws. */
@@ -101,6 +135,13 @@ export function createPredictor(opts: PredictorOptions) {
     yaw: opts.start.yaw,
     pitch: 0,
     sector: opts.start.sector,
+    // Loaded and dry, which is how the server's NewPlayer leaves somebody: two
+    // free shots and then a walk to a bottle. Guessed here only for the fraction
+    // of a second before the first snapshot, which overwrites all four.
+    loaded: constants.barrels,
+    cooldown: 0,
+    reload: 0,
+    ammo: 0,
   };
   // The offset being eased out, in metres. Added to the predicted position when
   // rendering and decayed towards zero every frame.
@@ -196,12 +237,48 @@ export function createPredictor(opts: PredictorOptions) {
       const drawnX = predicted.x + errX;
       const drawnY = predicted.y + errY;
 
+      // THE REPLAY BASE, AND THE ONE THING THIS FUNCTION MUST NOT BECOME.
+      //
+      // Until the обрез arrived, every field on the predicted player was
+      // REPLACED — by the snapshot, or by the thumb. The gun brought the first
+      // three that are DECREMENTED, and a decremented field cannot be replayed
+      // on top of a state that already contains it: write `cooldown:
+      // predicted.cooldown` here and every command still pending takes its dt
+      // off the clock a second time, so a walking client burns its cadence at
+      // twice real speed and a reload finishes early. That is ADR-058's subject,
+      // and this literal is where the record is either honoured or lost.
+      //
+      // The base is therefore the SERVER'S gun and not this client's memory of
+      // it, and that choice is deliberate rather than the easier of two. The
+      // server advances the gun through ticks the client sent nothing for
+      // (world.go's idle fill) — and it must, because a player who has fired and
+      // is standing perfectly still emits no commands at all, which is precisely
+      // the state somebody aiming at something is in. A base rewound to what
+      // this client believed before its oldest unacknowledged command would hold
+      // a cooldown that stopped running the moment he stopped walking: he taps,
+      // the browser refuses a shot the server grants, and no muzzle flash is
+      // drawn for a shell that was really spent. Taking it from the snapshot is
+      // what makes the client agree with a clock it is not running.
+      //
+      // What the snapshot costs by comparison is half a millisecond: the timers
+      // cross the wire quantised to the millisecond, against a cadence of 350.
+      // It does not accumulate — every frame restates the server's own exact
+      // value rather than adding to the last one.
+      //
+      // A COMPLETE OBJECT LITERAL WITH NO SPREAD, and that is load-bearing. A
+      // field added to `StepPlayer` and forgotten here stops this file
+      // compiling, which is the only mechanism that reliably survives the next
+      // person adding a timer. Do not "tidy" it into `{ ...predicted, ... }`.
       let replayed: StepPlayer = {
         x: a.x,
         y: a.y,
         yaw: predicted.yaw,
         pitch: predicted.pitch,
         sector: a.sector,
+        loaded: a.loaded,
+        cooldown: a.cooldown,
+        reload: a.reload,
+        ammo: a.ammo,
       };
       for (const c of pending) replayed = step(level, replayed, c, constants);
       predicted = replayed;
@@ -327,7 +404,15 @@ export function createPredictor(opts: PredictorOptions) {
     pendingCount(): number {
       return pending.length;
     },
-    /** The raw prediction, without the correction offset. For tests. */
+    /**
+     * The raw prediction, without the correction offset.
+     *
+     * The view reads THE GUN off this once a frame and compares it against the
+     * frame before, which is how a shot becomes a muzzle flash: a barrel count
+     * falling by one IS the shot, exactly as it is on the wire, so nothing has
+     * to be published to say one happened. The position on it is for tests —
+     * `view` is what the camera is placed from.
+     */
     raw(): StepPlayer {
       return { ...predicted };
     },

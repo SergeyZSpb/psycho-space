@@ -4,6 +4,7 @@ import {
   SILENT_CORRECTION,
   SNAP_CORRECTION,
   createPredictor,
+  type Authoritative,
 } from '../lib/vanyadumPredict';
 import type { VanyadumAxes } from '../lib/vanyadumInput';
 import type { StepConstants } from '../lib/vanyadumStep';
@@ -24,7 +25,22 @@ const K: StepConstants = {
   maxPitch: 1.5,
   maxStepSeconds: 0.2,
   collisionPasses: 3,
+  barrels: 2,
+  fireCooldownSeconds: 0.35,
+  reloadSeconds: 1.5,
+  reloadCost: 1,
 };
+
+/**
+ * A snapshot that says nothing has changed but the position.
+ *
+ * Every reconcile below spreads over this rather than writing the gun out, so
+ * the tests that are about walking stay about walking — and the ones that are
+ * about the gun name only the field they are making a claim about.
+ */
+function snap(over: Partial<Authoritative> & { ack: number }): Authoritative {
+  return { x: 50, y: 50, sector: 0, loaded: K.barrels, cooldown: 0, reload: 0, ammo: 0, ...over };
+}
 
 /** One big empty room, so nothing below is about collision. */
 const ROOM: VanyadumLevel = {
@@ -94,7 +110,7 @@ describe('reconciliation', () => {
   it('drops acknowledged commands and keeps the rest', () => {
     const p = predictor();
     for (let i = 0; i < 5; i++) p.apply(walk);
-    p.reconcile({ x: 50, y: 50.25, sector: 0, ack: 3 });
+    p.reconcile(snap({ x: 50, y: 50.25, ack: 3 }));
     expect(p.pendingCount()).toBe(2);
   });
 
@@ -105,7 +121,7 @@ describe('reconciliation', () => {
     const p = predictor();
     for (let i = 0; i < 4; i++) p.apply(walk);
     // The server has only seen the first two, so it is two steps behind.
-    p.reconcile({ x: 50, y: 50 + 2 * walk.dt * K.walkSpeed, sector: 0, ack: 2 });
+    p.reconcile(snap({ x: 50, y: 50 + 2 * walk.dt * K.walkSpeed, ack: 2 }));
     // Four steps of movement must still be visible, not two.
     expect(p.raw().y).toBeCloseTo(50 + 4 * walk.dt * K.walkSpeed, 6);
   });
@@ -113,7 +129,7 @@ describe('reconciliation', () => {
   it('lands exactly where the server says once everything is acknowledged', () => {
     const p = predictor();
     for (let i = 0; i < 6; i++) p.apply(walk);
-    p.reconcile({ x: 42, y: 17, sector: 0, ack: 6 });
+    p.reconcile(snap({ x: 42, y: 17, ack: 6 }));
     expect(p.raw().x).toBeCloseTo(42, 9);
     expect(p.raw().y).toBeCloseTo(17, 9);
   });
@@ -125,7 +141,7 @@ describe('reconciliation', () => {
     const p = predictor();
     p.apply(walk);
     const y = p.raw().y;
-    p.reconcile({ x: 50, y: y + SILENT_CORRECTION / 2, sector: 0, ack: 1 });
+    p.reconcile(snap({ x: 50, y: y + SILENT_CORRECTION / 2, ack: 1 }));
     expect(p.correction()).toBe(0);
   });
 
@@ -133,7 +149,7 @@ describe('reconciliation', () => {
     const p = predictor();
     p.apply(walk);
     const drawn = p.view(0, STILL);
-    p.reconcile({ x: 50, y: p.raw().y + 0.5, sector: 0, ack: 1 });
+    p.reconcile(snap({ x: 50, y: p.raw().y + 0.5, ack: 1 }));
     // Still drawn where it was, not teleported to the new truth.
     expect(p.view(0, STILL).y).toBeCloseTo(drawn.y, 6);
     expect(p.correction()).toBeGreaterThan(0);
@@ -142,7 +158,7 @@ describe('reconciliation', () => {
   it('and the correction actually goes away', () => {
     const p = predictor();
     p.apply(walk);
-    p.reconcile({ x: 50, y: p.raw().y + 0.5, sector: 0, ack: 1 });
+    p.reconcile(snap({ x: 50, y: p.raw().y + 0.5, ack: 1 }));
     // Exponential decay never reaches zero by arithmetic, so it is cut off at
     // a tenth of a millimetre. A second and a bit of ticks is comfortably past
     // that; the point of the assertion is that it ENDS, not how fast.
@@ -157,7 +173,7 @@ describe('reconciliation', () => {
     // room to arrive at the truth is slower and stranger than putting them there.
     const p = predictor();
     p.apply(walk);
-    p.reconcile({ x: 50, y: p.raw().y + SNAP_CORRECTION * 2, sector: 0, ack: 1 });
+    p.reconcile(snap({ x: 50, y: p.raw().y + SNAP_CORRECTION * 2, ack: 1 }));
     expect(p.correction()).toBe(0);
   });
 
@@ -167,10 +183,111 @@ describe('reconciliation', () => {
     // ends up.
     const p = predictor();
     for (let i = 0; i < 20; i++) p.apply(walk);
-    p.reconcile({ x: 1, y: 1, sector: 0, ack: 20 });
+    p.reconcile(snap({ x: 1, y: 1, ack: 20 }));
     for (let i = 0; i < 60; i++) p.tick(0.016);
     expect(p.view(0, STILL).x).toBeCloseTo(1, 6);
     expect(p.view(0, STILL).y).toBeCloseTo(1, 6);
+  });
+});
+
+describe('the gun, which is the first thing here that is decremented rather than replaced', () => {
+  /** Walking forward with the trigger pulled. */
+  const shoot = { ...walk, fire: true };
+
+  it('predicts a shot the instant the trigger is pulled', () => {
+    // The whole reason the gun is predicted at all: the muzzle flash is drawn
+    // from this, so it has to be true before any snapshot has been anywhere.
+    const p = predictor();
+    p.apply(shoot);
+    expect(p.raw().loaded).toBe(K.barrels - 1);
+    expect(p.raw().cooldown).toBe(K.fireCooldownSeconds);
+  });
+
+  it('refuses a second pull inside the cadence, exactly as the server will', () => {
+    // A refusal predicted correctly is what stops a held trigger drawing a flash
+    // per frame for shots that never happened.
+    const p = predictor();
+    p.apply(shoot);
+    p.apply(shoot);
+    expect(p.raw().loaded).toBe(K.barrels - 1);
+  });
+
+  it('does not decrement a running cooldown twice when a snapshot lands', () => {
+    // THE DEFECT THIS ITERATION EXISTS TO PREVENT, and it could not have been
+    // written before it: until the обрез there was no field here that a replay
+    // could apply twice, because everything was overwritten by the snapshot or
+    // by the thumb. A cadence is DECREMENTED, so a base that already contained
+    // the pending commands would take each command's dt off the clock a second
+    // time — a gun that cooled at twice real speed for as long as anything was
+    // in flight.
+    const p = predictor();
+    p.apply(shoot);
+    // Three more commands the server has not seen: the trigger is still down and
+    // every one of them is refused by the cadence, which is the ordinary case.
+    for (let i = 0; i < 3; i++) p.apply(shoot);
+    expect(p.pendingCount()).toBe(4);
+
+    // The server has folded in the shot and nothing after it, so its cadence
+    // still reads full.
+    p.reconcile(snap({ y: p.raw().y, ack: 1, loaded: K.barrels - 1, cooldown: K.fireCooldownSeconds }));
+
+    // Three replays, three decrements. Six would be the bug.
+    expect(p.raw().cooldown).toBeCloseTo(K.fireCooldownSeconds - 3 * walk.dt, 12);
+    expect(p.raw().loaded).toBe(K.barrels - 1);
+  });
+
+  it('adopts the server’s cadence rather than the one it stopped running', () => {
+    // ADR-058's sharp edge, and this game has it worse than the office does. A
+    // predicted timer only advances inside `apply`, and `apply` only runs when a
+    // command is emitted — so a player who has fired and is standing perfectly
+    // still to aim emits nothing and his local cadence stops dead. The server
+    // keeps it running through those ticks, which is why the base is the
+    // snapshot's gun and not this client's memory of it: without that he taps,
+    // the browser refuses, and no flash is drawn for a shell that was spent.
+    const p = predictor();
+    p.apply(shoot);
+    expect(p.raw().cooldown).toBe(K.fireCooldownSeconds);
+    // Three hundred milliseconds later on the server's clock, with nothing sent.
+    p.reconcile(snap({ y: p.raw().y, ack: 1, loaded: K.barrels - 1, cooldown: 0.05 }));
+    expect(p.raw().cooldown).toBeCloseTo(0.05, 12);
+  });
+
+  it('takes the ammunition from the snapshot, because it never sees a pickup', () => {
+    // Walking over a bottle is the server's to decide and this client predicts
+    // none of it, so a locally held count would only ever fall — and an empty
+    // gun would refuse the reload the server was granting.
+    const p = predictor();
+    expect(p.raw().ammo).toBe(0);
+    p.reconcile(snap({ ack: 0, ammo: 3 }));
+    expect(p.raw().ammo).toBe(3);
+  });
+
+  it('spends one bottle per reload however many times the command is replayed', () => {
+    // The other half of the same hazard. A reload spends ammunition, and a
+    // replay that spent it again would drain a bag at the round-trip rate.
+    const p = predictor();
+    // An empty gun with something to load it: the pull starts a reload.
+    p.reconcile(snap({ ack: 0, loaded: 0, ammo: 2 }));
+    p.apply(shoot);
+    expect(p.raw().reload).toBe(K.reloadSeconds);
+    expect(p.raw().ammo).toBe(1);
+
+    // The same command, still unacknowledged, replayed on top of a snapshot
+    // taken before it.
+    p.reconcile(snap({ y: p.raw().y, ack: 0, loaded: 0, ammo: 2 }));
+    expect(p.raw().ammo).toBe(1);
+    expect(p.raw().reload).toBe(K.reloadSeconds);
+  });
+
+  it('is corrected by the server when it predicted a shot that never happened', () => {
+    // Prediction is a rendering technique here exactly as it is for the
+    // position: the browser may draw a flash the server then refuses, and the
+    // next frame is simply the truth again.
+    const p = predictor();
+    p.apply(shoot);
+    expect(p.raw().loaded).toBe(K.barrels - 1);
+    p.reconcile(snap({ ack: 1, loaded: K.barrels }));
+    expect(p.raw().loaded).toBe(K.barrels);
   });
 });
 
@@ -187,7 +304,7 @@ describe('a predictor rebuilt under an occupant that is still standing there', (
 
   it('counts on from the ack, so its first command is not dropped as stale', () => {
     const p = predictor();
-    p.reconcile({ x: 50, y: 50, sector: 0, ack: 400 });
+    p.reconcile(snap({ x: 50, y: 50, ack: 400 }));
     expect(p.apply(walk).seq).toBeGreaterThan(400);
   });
 
@@ -201,11 +318,11 @@ describe('a predictor rebuilt under an occupant that is still standing there', (
     p.apply(walk);
     p.apply(walk);
     // Below the count: three sent, one folded in so far.
-    p.reconcile({ x: 50, y: p.raw().y, sector: 0, ack: 1 });
+    p.reconcile(snap({ x: 50, y: p.raw().y, ack: 1 }));
     expect(p.apply(walk).seq).toBe(4);
     // Level with it: everything sent has been folded in, and the next command is
     // still simply the next one.
-    p.reconcile({ x: 50, y: p.raw().y, sector: 0, ack: 4 });
+    p.reconcile(snap({ x: 50, y: p.raw().y, ack: 4 }));
     expect(p.apply(walk).seq).toBe(5);
   });
 });
@@ -221,7 +338,7 @@ describe('input redundancy', () => {
   it('offers nothing once everything has been acknowledged', () => {
     const p = predictor();
     for (let i = 0; i < 4; i++) p.apply(walk);
-    p.reconcile({ x: 50, y: p.raw().y, sector: 0, ack: 4 });
+    p.reconcile(snap({ x: 50, y: p.raw().y, ack: 4 }));
     expect(p.unacknowledged(6)).toEqual([]);
   });
 
@@ -339,7 +456,7 @@ describe('aim', () => {
     // turning it, which is far worse than a position doing the same.
     const p = predictor();
     p.look(1.2, -0.3);
-    p.reconcile({ x: 50, y: 50, sector: 0, ack: 0 });
+    p.reconcile(snap({ x: 50, y: 50, ack: 0 }));
     expect(p.view(0, STILL).yaw).toBeCloseTo(1.2, 9);
     expect(p.view(0, STILL).pitch).toBeCloseTo(-0.3, 9);
   });

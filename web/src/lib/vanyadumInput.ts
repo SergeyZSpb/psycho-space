@@ -24,6 +24,15 @@ export interface VanyadumCommand {
   my: number;
   yaw: number;
   pitch: number;
+  /**
+   * A request to pull the trigger, carried by the sub-step it happened in.
+   *
+   * A BIT ON AN ORDINARY COMMAND AND NOT A FRAME OF ITS OWN, which is what makes
+   * the shot resolve at exactly the sub-step the browser predicted it at: a
+   * separate fire-and-forget message would be applied by the server somewhere
+   * between two commands, and the client has no way to guess which two.
+   */
+  fire?: boolean;
 }
 
 /** Where the player is pushing and looking, right now. */
@@ -230,13 +239,20 @@ export function createEmitter(opts: EmitterOptions) {
      * Returns the commands due at this instant — usually none, sometimes one,
      * more only after a stall.
      *
-     * A command is emitted only when something HAPPENED: moving, or looking
-     * somewhere new. Standing still with the screen untouched emits nothing, so
-     * no frame is sent, so a player at rest costs the network nothing at all.
-     * Turning counts as something, because aim is state the server must be told
-     * about even when the feet did not move.
+     * A command is emitted only when something HAPPENED: moving, looking
+     * somewhere new, or pulling the trigger. Standing still with the screen
+     * untouched emits nothing, so no frame is sent, so a player at rest costs
+     * the network nothing at all. Turning counts as something, because aim is
+     * state the server must be told about even when the feet did not move.
+     *
+     * `fire` IS CONSUMED BY THE FIRST COMMAND THIS CALL PRODUCES, and by exactly
+     * one of them. A pull is a moment rather than a state, so putting it on
+     * every command of the wake would ask the server to fire once per sub-step
+     * — which it would refuse, having a cadence, but only after being told four
+     * times. The caller keeps asking until a command comes back carrying it, so
+     * a tap during a frame that produced no command is not silently lost.
      */
-    due(nowMs: number, axes: VanyadumAxes): VanyadumCommand[] {
+    due(nowMs: number, axes: VanyadumAxes, fire = false): VanyadumCommand[] {
       if (last === null) {
         last = nowMs;
         lastYaw = axes.yaw;
@@ -252,21 +268,31 @@ export function createEmitter(opts: EmitterOptions) {
       // would refuse them anyway, and not creating them is what keeps the
       // client's prediction agreeing with that refusal.
       let budget = opts.maxPerWake;
+      let fireLeft = fire;
       while (owed >= period && budget > 0) {
         owed -= period;
         budget -= 1;
         const idle =
-          axes.mx === 0 && axes.my === 0 && axes.yaw === lastYaw && axes.pitch === lastPitch;
+          !fireLeft &&
+          axes.mx === 0 &&
+          axes.my === 0 &&
+          axes.yaw === lastYaw &&
+          axes.pitch === lastPitch;
         if (idle) continue;
         lastYaw = axes.yaw;
         lastPitch = axes.pitch;
-        out.push({
+        const cmd: VanyadumCommand = {
           dt: Math.min(opts.maxStepSeconds, period / 1000),
           mx: axes.mx,
           my: axes.my,
           yaw: axes.yaw,
           pitch: axes.pitch,
-        });
+        };
+        if (fireLeft) {
+          cmd.fire = true;
+          fireLeft = false;
+        }
+        out.push(cmd);
       }
       // Whatever the wake budget could not cover is dropped rather than owed
       // forever, so a long stall costs one gap instead of a slow catch-up the
@@ -313,12 +339,23 @@ export function createEmitter(opts: EmitterOptions) {
 
 export type Emitter = ReturnType<typeof createEmitter>;
 
+/** One command exactly as it goes on the wire — short keys, `f` omitted. */
+export interface WireCommand {
+  q?: number;
+  dt: number;
+  mx: number;
+  my: number;
+  yaw: number;
+  pitch: number;
+  f?: true;
+}
+
 /** One input frame, exactly as it goes on the wire. */
 export interface InputFrame {
   t: 'vanyadum_input';
   /** The last snapshot tick this client drew — the server derives RTT from it. */
   k: number;
-  cmds: { q?: number; dt: number; mx: number; my: number; yaw: number; pitch: number }[];
+  cmds: WireCommand[];
 }
 
 /**
@@ -337,6 +374,14 @@ export interface InputFrame {
  * Redundant commands come FIRST and are de-duplicated against the fresh ones:
  * the server applies them in order and drops any sequence it has already seen,
  * so a repeat costs a few bytes and buys immunity to a single lost packet.
+ *
+ * `f` IS OMITTED RATHER THAN SENT FALSE, and on this frame that is not a
+ * rounding error. Forty sub-steps a second go out for as long as somebody is
+ * walking, and `"f":false` on every one of them would be nine bytes, forty times
+ * a second, UPLINK — the half of a mobile connection that is worse — to say that
+ * nothing happened. The trigger is pulled a handful of times a second at the
+ * very most, so absent is the right resting state and the server reads it as
+ * one.
  */
 export function buildInputFrame(
   seenTick: number,
@@ -348,6 +393,17 @@ export function buildInputFrame(
   return {
     t: 'vanyadum_input',
     k: seenTick,
-    cmds: cmds.map((c) => ({ q: c.seq, dt: c.dt, mx: c.mx, my: c.my, yaw: c.yaw, pitch: c.pitch })),
+    cmds: cmds.map((c) => {
+      const wire: WireCommand = {
+        q: c.seq,
+        dt: c.dt,
+        mx: c.mx,
+        my: c.my,
+        yaw: c.yaw,
+        pitch: c.pitch,
+      };
+      if (c.fire) wire.f = true;
+      return wire;
+    }),
   };
 }

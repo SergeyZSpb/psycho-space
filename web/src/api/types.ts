@@ -842,8 +842,28 @@ export interface VanyadumWorldConfig {
   respawn_seconds: number;
 }
 
+/**
+ * The обрез: enough to draw the shell count, enough to run the same trigger rule
+ * the server runs, and enough to say all of it in Russian on the splash screen.
+ *
+ * `ammo` IS A COUNTER NAME AND NOT A DESCRIPTION, which is what lets the
+ * cheatsheet JOIN it against `pickups[].grants` and reuse that entry's title,
+ * icon and blurb rather than being told the same thing twice. It is also how the
+ * client picks its predicted ammunition out of the snapshot's generic bag.
+ */
+export interface VanyadumGunConfig {
+  barrels: number;
+  fire_cooldown_seconds: number;
+  reload_seconds: number;
+  /** How much of `ammo` one reload spends. */
+  reload_cost: number;
+  /** The counter a reload spends — matches some pickup's `grants`. */
+  ammo: string;
+}
+
 export interface VanyadumConfig {
   player: VanyadumPlayerConfig;
+  gun: VanyadumGunConfig;
   pickups: VanyadumPickupKind[];
   surfaces: VanyadumSurfaceKind[];
   sim: VanyadumSimConfig;

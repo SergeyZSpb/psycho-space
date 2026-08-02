@@ -1,8 +1,8 @@
 // Package gamevanyadum is «ВАНЯДУМ» — the third game, and the first in 3D.
 //
 // Ваня, the last real defender of traditional Russian rap values, walks a
-// generated заброшка, drinks the beer he finds on the way, and eventually kills
-// нейрослопы with punchlines.
+// generated заброшка with a double-barrelled обрез, loads it with the beer he
+// finds on the way, and eventually kills нейрослопы with punchlines.
 //
 // # One building, always running, and nothing that ends
 //

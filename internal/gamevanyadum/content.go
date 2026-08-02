@@ -56,6 +56,56 @@ const (
 	StartHealth = 100
 )
 
+// The gun: a double-barrelled обрез, and пиво is what goes in it. The bottles
+// the building has been scattering since the first iteration finally spend on
+// something, which is what makes walking to one worth the walk.
+//
+// SECONDS AS A FLOAT64 COUNTDOWN, AND NOT A TICK DEADLINE — the opposite of the
+// choice made for the respawn below, so the difference is worth stating rather
+// than looking like an inconsistency. Both are countdowns; they belong to
+// different things. A respawn is the WORLD's, the world owns the tick, and an
+// integer tick is exact where subtracting dt from a float accumulates the error
+// of SimStep's binary expansion. The gun is the PLAYER's, and a player is
+// advanced by Step — which is pure, reads no clock and knows no tick, because
+// the browser runs it too (the golden vectors). A deadline would be a tick
+// number the client does not have and cannot compute, so the only
+// representation both ends can agree on is seconds counted down by the
+// command's own dt.
+//
+// That costs less than it sounds. The two ends fold in the SAME commands in the
+// same order — whatever is predicted is exactly what is sent — and both run
+// IEEE754 binary64, so the accumulated value is not approximately equal on the
+// two sides, it is bit-for-bit equal. What drift there is, both ends have.
+const (
+	// Barrels is how many shots a full gun holds.
+	Barrels = 2
+
+	// FireCooldownSeconds is how long the gun is busy after a shot. It is the
+	// gap between the two barrels, so it wants to be short enough that a double
+	// tap feels like one decision and long enough that a thumb mashing glass
+	// cannot empty the gun by accident.
+	FireCooldownSeconds = 0.35
+
+	// ReloadSeconds is how long a reload takes, and it is the game's only real
+	// punishment for missing: a second and a half standing in a заброшка with
+	// nothing in your hands. Doom's super shotgun is the reference and it is the
+	// right one — the reload is the weapon's whole character.
+	ReloadSeconds = 1.5
+
+	// ReloadCost is how much of AmmoCounter one reload spends. A single bottle
+	// fills both barrels, so beer is counted in shots-times-Barrels and the cap
+	// on the counter (PickupKind.Max) is what bounds how much anybody can hold.
+	ReloadCost = 1
+)
+
+// AmmoCounter is the counter a reload spends.
+//
+// It is a Pickups entry's Grants value and not a name the simulation invented —
+// TestTheAmmunitionIsSomethingTheBuildingActuallyScatters is what keeps the two
+// pointing at each other, because a gun that spends a counter nothing grants is
+// a gun that can never be reloaded and nothing else would say so.
+const AmmoCounter = "beer"
+
 // PickupKind is a thing lying on the floor that is used by walking over it.
 //
 // There is no use button, by design: it is the worst control on a touchscreen,
@@ -78,6 +128,13 @@ type PickupKind struct {
 	// Blurb is one line of Russian for the rules cheatsheet. This is the one
 	// field on a pickup that a human wrote, because "what it is for" is a joke
 	// rather than a number.
+	//
+	// AND IT MUST STAY FREE OF NUMBERS. The cheatsheet derives the gun's rules
+	// from the served catalogue two lines above this one (vanyadumRules.ts), so
+	// a blurb that spelled a constant out in prose would go stale the first time
+	// anybody retuned it — and would do so on the same screen as the derived
+	// line that still had it right. Say what the thing is FOR; the numbers are
+	// generated.
 	Blurb string `json:"blurb"`
 }
 
@@ -96,9 +153,11 @@ type PickupKind struct {
 // IT COMES BACK WHERE IT WAS, which is what makes it free on the wire: the
 // client was sent the level once and the remaining-pickup mask is indexed into
 // it, so a return is one bit changing rather than a position being re-sent.
-// Camping is not worth defending against here — the counter caps at
-// PickupKind.Max and nothing yet spends it — and the day beer buys something,
-// this is the constant that decides whether standing still can farm it.
+// Camping IS worth thinking about now that the gun drinks the beer: a bottle is
+// ammunition rather than a trophy, so a player who stands on one spot waiting
+// for a respawn is farming shots. Thirty seconds against a reload that returns
+// Barrels of them is what keeps that a poor trade compared with touring the
+// building — and this is the constant to move if it ever stops being one.
 const PickupRespawn = 30 * time.Second
 
 // pickupRespawnTicks is that interval as a whole number of simulation steps,
@@ -119,21 +178,42 @@ const pickupRespawnTicks = int64(PickupRespawn / SimStep)
 // wrapped rather than normalised, so it reaches five characters; positions are
 // far beyond anything a generated level produces):
 //
-//	solo snapshot             137 bytes
+//	solo snapshot             160 bytes
 //	the first peer            +56  (the entry, plus the `p` array around it)
 //	each further peer         +50
 //	standings with one row     81
 //	each further row          +53
 //
-// So a viewer pays 20 × (137 + 56 + (N−2)×50) + (81 + (N−1)×53) a second:
+// So a viewer pays 20 × (160 + 56 + (N−2)×50) + (81 + (N−1)×53) a second:
 //
-//	N = 4    293 × 20 + 240 = 6100 B/s
-//	N = 5    343 × 20 + 293 = 7153 B/s
-//	N = 6    393 × 20 + 346 = 8206 B/s — over
+//	N = 4    316 × 20 + 240 = 6560 B/s
+//	N = 5    366 × 20 + 293 = 7613 B/s
+//	N = 6    416 × 20 + 346 = 8666 B/s — over
 //
-// Five, with about 850 B/s of headroom. Pinned by
+// PLUS A THIRD TERM THAT IS NOT ON EVERY FRAME. A peer's muzzle flash rides the
+// tick its owner pulled the trigger and no other (message.go, Peer.Fired), so it
+// is priced at the gun's cadence rather than at the snapshot rate: 9 bytes × 3
+// shots a second × (N−1) peers, which is 108 B/s at five and 135 at six. That
+// takes the two rows that matter to 7721 and 8801.
+//
+// Five, with 279 B/s of headroom. Pinned by
 // TestEverythingAFullBuildingSendsAViewerFitsTheCeiling, which fails when this
 // constant is raised or when either frame grows a field.
+//
+// THE GUN TOOK THE SOLO FRAME FROM 137 TO 160 AND HALVED THAT HEADROOM. The
+// barrel count rides every frame (6 bytes) and the two timers ride the frames
+// where the gun is busy (8 and 9); the measurement above pessimistically counts
+// both at once, which cannot happen. Five still fits and six still does not, so
+// the capacity is unmoved — but the next field of that size is the one that costs
+// a place, and the answer then is a smaller building or the binary codec, not a
+// larger ceiling.
+//
+// MAKING THE SHOT VISIBLE TO EVERYBODY ELSE TOOK ANOTHER 108 OF WHAT WAS LEFT,
+// and it is worth saying which shape it did NOT take: a per-peer cooldown would
+// have been the duration this project prefers, and at 8 bytes on every one of
+// twenty ticks a second it is 640 B/s — comfortably past what there was. The
+// flag fits because the cadence bounds how often it can be sent, which is
+// exactly the property that keeps it out of the twenty-times-a-second column.
 //
 // THE STANDINGS FRAME IS INSIDE THE CEILING AND NOT BESIDE IT. It is traffic to
 // the same viewer, so leaving it out would be moving the line rather than
@@ -183,7 +263,7 @@ var Pickups = []PickupKind{
 		Amount: 1,
 		Max:    9,
 		Tint:   "#c8892f",
-		Blurb:  "Заливаешь — и панчи сами идут. Пока просто копится.",
+		Blurb:  "Патроны для обреза. Стрелять на трезвую голову тут не принято.",
 	},
 }
 
@@ -265,10 +345,28 @@ const (
 // Config is the whole catalogue as the browser receives it.
 type Config struct {
 	Player   PlayerConfig `json:"player"`
+	Gun      GunConfig    `json:"gun"`
 	Pickups  []PickupKind `json:"pickups"`
 	Surfaces []Surface    `json:"surfaces"`
 	Sim      SimConfig    `json:"sim"`
 	World    WorldConfig  `json:"world"`
+}
+
+// GunConfig is everything about the обрез the client has to know: enough to draw
+// the shell count and the reload, enough to run the same trigger rule the server
+// runs, and enough to say all of it in Russian on the splash screen without a
+// number being typed out twice.
+//
+// Ammo is the counter a reload spends, published so the cheatsheet can JOIN it
+// against Pickups rather than being told the name twice: the entry whose Grants
+// matches is the thing to walk to, with its own title, icon and blurb already on
+// it. That join is what lets a second ammunition ever be a catalogue line.
+type GunConfig struct {
+	Barrels             int     `json:"barrels"`
+	FireCooldownSeconds float64 `json:"fire_cooldown_seconds"`
+	ReloadSeconds       float64 `json:"reload_seconds"`
+	ReloadCost          int     `json:"reload_cost"`
+	Ammo                string  `json:"ammo"`
 }
 
 // WorldConfig is what the client needs to describe the building itself: how many
@@ -331,6 +429,13 @@ func BuildConfig() Config {
 			MaxPitch:    MaxPitch,
 			MaxHealth:   MaxHealth,
 			StartHealth: StartHealth,
+		},
+		Gun: GunConfig{
+			Barrels:             Barrels,
+			FireCooldownSeconds: FireCooldownSeconds,
+			ReloadSeconds:       ReloadSeconds,
+			ReloadCost:          ReloadCost,
+			Ammo:                AmmoCounter,
 		},
 		Pickups:  Pickups,
 		Surfaces: Surfaces,

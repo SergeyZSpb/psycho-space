@@ -41,6 +41,30 @@ export interface PeerState {
    */
   z: number;
   yaw: number;
+  /**
+   * Whether the snapshot this peer was read from is one the server marked as
+   * carrying a shot from him.
+   *
+   * A LEVEL ON THE WIRE AND AN EVENT ON THE SCREEN. It is true for the one tick
+   * a shot happened, which is fifty milliseconds — several drawn frames, and
+   * longer while the buffer is holding its newest frame — so whoever draws it
+   * has to mark the TRANSITION rather than the value. See vanyadumFlash, which
+   * is the only thing that reads it.
+   *
+   * NOT INTERPOLATED, and it could not be: a boolean has no midpoint. It is
+   * taken from the NEWER of the two frames being blended, so the mark lands on
+   * the frame the drawn instant is moving towards rather than one it has already
+   * passed.
+   *
+   * WHICH BOUNDS IT, and the bound is worth knowing: a tick is only ever the
+   * newer of a pair for one drawn frame if the phone is drawing at the tick rate
+   * or faster. Below that — under twenty frames a second, where the drawn
+   * instant advances by more than a tick per frame — a shot can fall in a tick
+   * that is stepped straight over and never seen. That is left alone rather than
+   * fixed: catching it would mean scanning the frames the draw skipped, and a
+   * phone drawing ten frames a second has lost more than one man's muzzle flash.
+   */
+  firing?: boolean;
 }
 
 /** One received snapshot, placed on the server's own timeline. */
@@ -300,6 +324,13 @@ export function createInterpolator(delayMs: number, tickMs: number) {
           // step instead of snapping to it.
           z: as.z + (bs.z - as.z) * t,
           yaw: as.yaw + shortestTurn(as.yaw, bs.yaw) * t,
+          // From the NEWER frame, undiluted — a shot is a thing that happened on
+          // one tick rather than a quantity with a midpoint. Taking it from `b`
+          // means the mark appears as the drawn instant moves INTO the tick that
+          // carried it, and stays set for as long as that frame is the newer of
+          // the pair, which is what makes the transition rule in vanyadumFlash
+          // necessary rather than optional.
+          firing: bs.firing,
         });
       }
       return out;

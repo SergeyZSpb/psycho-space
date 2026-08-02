@@ -630,6 +630,17 @@ func TestSomebodyWhoStopsComingBackHasHisVisitWritten(t *testing.T) {
 		return s.world.Level.Seed
 	}()
 
+	// He found two bottles and put one of them in the gun, which is what a player
+	// does with beer now that it is the ammunition. Set directly rather than
+	// walked to, because what is being tested here is what gets WRITTEN.
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		o := s.world.Occupant(acc)
+		o.collected = map[string]int{"beer": 2}
+		o.State.Counters["beer"] = 1
+	}()
+
 	tr.setMembers(nil) // the socket goes, and does not come back
 	tick <- clk.at(20*time.Second + AbandonGrace + time.Second)
 
@@ -648,6 +659,13 @@ func TestSomebodyWhoStopsComingBackHasHisVisitWritten(t *testing.T) {
 	// Twenty seconds of connection, and never the two minutes of grace on top.
 	if written.Seconds != 20 {
 		t.Fatalf("the visit records %d seconds; the grace was counted as time in the building", written.Seconds)
+	}
+	// And what he FOUND rather than what he still had. The two were the same
+	// number until the gun started spending beer; the column means the former and
+	// the migration that says so is immutable, so a visit that read the bag would
+	// quietly record a nought for everybody who actually played.
+	if written.Beer != 2 {
+		t.Fatalf("the visit records %d bottles; he found two and reloaded with one", written.Beer)
 	}
 }
 

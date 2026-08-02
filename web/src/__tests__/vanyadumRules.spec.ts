@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { VANYADUM_PROSE, buildRules, pickupLine } from '../lib/vanyadumRules';
+import { VANYADUM_PROSE, ammoPickup, buildRules, pickupLine } from '../lib/vanyadumRules';
 import type { VanyadumConfig } from '../api/types';
 
 /**
@@ -21,6 +21,13 @@ const config: VanyadumConfig = {
     max_pitch: 1.5,
     max_health: 100,
     start_health: 100,
+  },
+  gun: {
+    barrels: 2,
+    fire_cooldown_seconds: 0.35,
+    reload_seconds: 1.5,
+    reload_cost: 1,
+    ammo: 'beer',
   },
   pickups: [
     {
@@ -187,6 +194,76 @@ describe('buildRules', () => {
     expect(text).not.toContain('забег');
   });
 
+  it("takes the gun's numbers from the catalogue, all of them", () => {
+    // The rule the splash-screen gate exists for: retune the cadence or the
+    // reload on the server and this screen follows with no frontend change. A
+    // hand-typed «0,35 с» is a number that is wrong the first afternoon somebody
+    // decides the обрез is too slow.
+    const retuned = {
+      ...config,
+      gun: { ...config.gun, barrels: 4, fire_cooldown_seconds: 0.8, reload_seconds: 2.5, reload_cost: 3 },
+    };
+    const block = buildRules(retuned).find((b) => b.title === 'Обрез');
+    const text = block?.lines.map((l) => l.text).join(' ') ?? '';
+    expect(text).toContain('4');
+    expect(text).toContain('0,8 с');
+    expect(text).toContain('2,5 с');
+    expect(text).toContain('3');
+    // Not marked as prose, because none of it was typed out.
+    expect(block?.prose).toBeFalsy();
+  });
+
+  it('names the ammunition by joining the gun to the pickup that grants it', () => {
+    // THE JOIN IS THE POINT, and it is what a second ammunition would ride on.
+    // The catalogue publishes a counter NAME, and the entry whose `grants`
+    // matches already carries the title and the icon — so the screen says «🍺
+    // пиво» because the two agree, not because this file was told twice.
+    const renamed = {
+      ...config,
+      gun: { ...config.gun, ammo: 'juice' },
+      pickups: [
+        { ...config.pickups[0], grants: 'juice', title: 'сок', icon: '🧃' },
+      ],
+    };
+    const block = buildRules(renamed).find((b) => b.title === 'Обрез');
+    const text = block?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
+    expect(text).toContain('🧃');
+    expect(text).toContain('сок');
+    expect(text).not.toContain('пиво');
+  });
+
+  it('says nothing about ammunition when nothing in the catalogue grants it', () => {
+    // The server has a test that will not let a gun spend a counter nothing
+    // scatters, so this is the client refusing to render «undefined» rather than
+    // a case anybody expects. The rest of the block still says what it can.
+    const orphaned = { ...config, gun: { ...config.gun, ammo: 'petrol' } };
+    const block = buildRules(orphaned).find((b) => b.title === 'Обрез');
+    expect(block?.lines.length).toBe(2);
+    for (const line of block?.lines ?? []) {
+      expect(`${line.label} ${line.text}`).not.toContain('undefined');
+    }
+  });
+
+  it('says the trigger is held and that the sound can be turned off', () => {
+    // Controls are prose — the server has no opinion about thumbs and publishes
+    // none — but they are still rules, and a fire button nobody knows is held
+    // rather than tapped is a gun that feels broken on a phone.
+    const prose = buildRules(config).find((b) => b.prose);
+    const text = prose?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
+    expect(text).toContain('Держи');
+    expect(text).toContain('🔇');
+    expect(text).toContain('пробел');
+  });
+
+  it('admits the обрез has nothing to hit yet', () => {
+    // An ABSENCE, so it cannot be derived: a catalogue can only publish what
+    // exists. Without it a player empties the gun into a corridor and decides
+    // the game is broken, which is a worse first impression than being told.
+    const prose = buildRules(config).find((b) => b.prose);
+    const text = prose?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
+    expect(text).toContain('нейрослопов');
+  });
+
   it('describes every pickup the catalogue carries, and only those', () => {
     const two = {
       ...config,
@@ -230,6 +307,28 @@ describe('buildRules', () => {
         expect(line.text.trim().length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe('ammoPickup', () => {
+  it('finds the entry whose grants the gun spends', () => {
+    expect(ammoPickup(config)?.title).toBe('пиво');
+  });
+
+  it('answers null rather than guessing when nothing grants it', () => {
+    expect(ammoPickup({ ...config, gun: { ...config.gun, ammo: 'petrol' } })).toBeNull();
+  });
+
+  it('matches on the counter and not on the pickup’s own key', () => {
+    // `key` names the thing on the floor and `grants` names the counter it
+    // fills; they happen to be equal for beer today, which is exactly the sort
+    // of coincidence a join can be written wrong against and still pass.
+    const split = {
+      ...config,
+      gun: { ...config.gun, ammo: 'shells' },
+      pickups: [{ ...config.pickups[0], key: 'beer', grants: 'shells' }],
+    };
+    expect(ammoPickup(split)?.key).toBe('beer');
   });
 });
 
