@@ -267,22 +267,46 @@ type Snapshot struct {
 	// pickup mask. A field to say "you were shot" would be bytes on a payload
 	// that repeats twenty times a second to restate something the payload
 	// carries.
+	//
+	// IT IS ALSO THE DISCRIMINATOR FOR `dn`, which is a second job and a
+	// load-bearing one: zero means the number below is a respawn and anything else
+	// means it is an ampoule emptying into his arm. See Down.
 	Health int `json:"hp"`
-	// Down is milliseconds until you get up, and Protect is milliseconds of
-	// spawn protection left. Both are omitted at rest, which for a player who is
-	// alive and unprotected is every frame.
+	// Down is milliseconds until YOU CAN ACT AGAIN, and Protect is milliseconds
+	// of spawn protection left. Both are omitted at rest, which for a player who
+	// is alive, unprotected and not injecting is every frame.
+	//
+	// `dn` CARRIES TWO THINGS AND `hp` SAYS WHICH, and that reuse is how the
+	// ampoule reached the wire without a field. Health at zero is a man on the
+	// floor waiting out DownTime; anything above it is a man standing perfectly
+	// still with a needle in his forearm, and the number is what is left of the
+	// injection (world.go, outMS). The two are exclusive by construction — a dead
+	// man collects nothing, and being hurt is what ends an injection — so one
+	// number answers both, and it answers the same question either way: how long
+	// until you can move and shoot.
+	//
+	// WHY REUSE AND NOT A NEW FIELD. There were 32 B/s of headroom under the
+	// ceiling when this was written (message_test.go) and the JSON floor for a
+	// field is six bytes, which at the snapshot rate is 120 B/s — four times the
+	// whole of what was left. The options at that point are reuse, a smaller
+	// building, or the binary codec, and a timer another field can carry
+	// unambiguously is not worth a place in the заброшка. What it costs the client
+	// is one branch: `dn` seeds the predicted injection while `hp` is above zero,
+	// and is a readout while it is not.
 	//
 	// DURATIONS RATHER THAN FLAGS, which is the shape this project asks for: a
 	// mark that flashes once says nothing about the seconds that follow, and the
-	// two things a man on the floor wants to know are how long and how long
-	// after that. They cannot both be set — protection begins when the down
-	// window ends — so the widest frame carries one.
+	// things a man who cannot move wants to know are how long, and how long after
+	// that. `dn` and `pr` still cannot both be set — protection begins when the
+	// down window ends, and a protected man is at full health and can therefore
+	// start no injection — so the widest frame carries one of the two.
 	//
 	// PROTECTION MUST BE A NUMBER THE CLIENT CAN SIMULATE, not merely one it can
 	// draw: it is on Player and the browser counts it down through the same Step
 	// (sim.go), because the trigger is refused while it runs and prediction has
 	// to know that before it draws a muzzle flash. It is therefore also the
-	// reconcile base for that timer, exactly as `d` and `r` are for the gun's.
+	// reconcile base for that timer, exactly as `d` and `r` are for the gun's —
+	// and so, while `hp` is above zero, is `dn`.
 	Down    int `json:"dn,omitempty"`
 	Protect int `json:"pr,omitempty"`
 	// Left is what is lying on the floor right now, as a BITMASK: bit i is set
@@ -331,9 +355,13 @@ type Snapshot struct {
 	// screen can show; the int is three or four, and half a millisecond of error
 	// against a 350 ms cadence is a thousandth of a frame.
 	//
-	// THEY CANNOT BOTH BE SET (sim.go, Player), and the wire budget is measured on
-	// that: the widest frame this game can actually send carries the barrels and
-	// one timer, never two.
+	// THESE TWO CANNOT BOTH BE SET (sim.go, Player): the gun is busy for one
+	// reason at a time. Either of them CAN run alongside an injection — a man who
+	// has just fired walks onto an ampoule with the cadence still on the clock —
+	// so the widest frame this game can really send carries the barrels and two
+	// timers. The budget is measured on a fixture that carries FOUR at once, a
+	// state nothing can reach, so it stays a bound rather than a claim
+	// (message_test.go, worstSnapshot).
 	//
 	// YOUR OWN SHOT NEEDS NO EVENT, and this is why. `b` falling by one between
 	// two frames IS the shot, and `d` going from absent to set is the same
@@ -438,7 +466,8 @@ const MaxWirePickups = 32
 // field below has since given the place back, which is what a peer costing 56
 // again means. The pose enum went because nothing could yet reduce anybody's
 // health, so it described a state the simulation could not reach; `St` is that
-// field returning, with the four states the обрез actually produces.
+// field returning, with the five states the обрез and the шприц between them
+// actually produce.
 //
 // THE SECTOR RATHER THAN THE HEIGHT, and being smaller is the lesser reason. The
 // client holds the level, so a sector index is a floor height it can look up and
@@ -466,18 +495,24 @@ type Peer struct {
 	Sector int `json:"s"`
 	Yaw    int `json:"yaw"`
 	// St is everything a viewer has to be told about this peer beyond where he is
-	// standing: PeerFired, PeerHit, PeerDown or PeerProtected. Omitted for a man
-	// who is alive, unprotected and did nothing on this tick, which is almost
-	// every peer on almost every frame.
+	// standing: PeerFired, PeerHit, PeerDown, PeerProtected or PeerInjecting.
+	// Omitted for a man who is alive, unprotected, not injecting and did nothing
+	// on this tick, which is almost every peer on almost every frame.
 	//
-	// ONE FIELD FOR FOUR STATES, because the rules make them mutually exclusive
+	// ONE FIELD FOR FIVE STATES, because the rules make them mutually exclusive
 	// and a field that can only hold one value at a time is one field. A man on
 	// the floor cannot fire and cannot be hit again; a protected man can do
-	// neither either (content.go, SpawnProtectSeconds). The single genuine
-	// collision is firing and being shot on the same tick, and being shot wins —
-	// the viewer is told the thing that changed the building.
+	// neither either (content.go, SpawnProtectSeconds); a man with a needle in his
+	// arm cannot fire, and being hit is what takes the needle out. The single
+	// genuine collision is firing and being shot on the same tick, and being shot
+	// wins — the viewer is told the thing that changed the building.
 	//
-	// IT SAYS WHERE, NOT WHAT (CLAUDE.md). Four values the client tells apart by
+	// A FIFTH VALUE COST NOTHING, and that is why the ampoule is here rather than
+	// in a field of its own: the digit was already being sent. It is the reason
+	// this iteration's "everybody must see it" was affordable on a wire with
+	// 32 B/s left in it.
+	//
+	// IT SAYS WHERE, NOT WHAT (CLAUDE.md). Five values the client tells apart by
 	// colour and shape; no numbers, no names, no damage. It is the acknowledgement
 	// half of every verb this iteration adds, and it is the SAME field for
 	// everybody watching — an effect only its author can see is a bug rather than
@@ -485,10 +520,13 @@ type Peer struct {
 	//
 	// WHAT IT REPLACED, AND WHAT THAT COST. This was `,"f":true`, a bool that rode
 	// the tick a trigger was pulled: 9 bytes at the gun's own cadence, 108 B/s at
-	// the old capacity. Two of the four values above are DURATIONS rather than
-	// actions — a man is down for DownTime and protected for SpawnProtectSeconds,
-	// and both are non-zero on every tick they run, so they are priced at the
-	// snapshot rate exactly as the peer's position is. That is the shape this
+	// the old capacity. Three of the five values above are DURATIONS rather than
+	// actions — a man is down for DownTime, protected for SpawnProtectSeconds and
+	// rooted by an ampoule for SyringeSeconds — and all three are non-zero on every
+	// tick they run, so they are priced at the snapshot rate exactly as the peer's
+	// position is. The ampoule made it three without moving the price, which is the
+	// whole of why it could be added at all: a field already charged at the full
+	// snapshot rate costs nothing more for holding another value. That is the shape this
 	// field's predecessor rejected at 640 B/s, and the reason the answer is
 	// different now is that there is no cheaper one: a hit and a death cannot be
 	// derived from any value the frame already carries, because neither moves the
@@ -511,11 +549,12 @@ type Peer struct {
 //     the client is already holding both in order to interpolate between them.
 //     A player's yaw is not like that: he can stand still and look somewhere
 //     else, which is most of what aiming is. 12 bytes a слоп a tick, derived.
-//   - NO STATE. The four things `Peer.St` exists to say are firing, being hit,
-//     being down and being protected, and a слоп does none of them: it has no
-//     gun, it is never on the floor (one barrel is the whole of it, so it dies
-//     rather than falling), and nothing protects it. 7 bytes a слоп a tick, not
-//     applicable rather than derived.
+//   - NO STATE. The five things `Peer.St` exists to say are firing, being hit,
+//     being down, being protected and injecting, and a слоп does none of them: it
+//     has no gun, it is never on the floor (one barrel is the whole of it, so it
+//     dies rather than falling), nothing protects it, and nothing in the building
+//     is going to patch one up. 7 bytes a слоп a tick, not applicable rather than
+//     derived.
 //   - NO HEALTH, for the same reason and it is the load-bearing one. See
 //     content.go, SlopHealth: the creature is worth exactly one barrel precisely
 //     so that "it is gone from the array" can be the whole acknowledgement of a
@@ -543,8 +582,9 @@ type Foe struct {
 // and not a rule a player is told.
 //
 // PeerHit AND PeerFired ARE INSTANTS and are true for exactly the tick they
-// happened on. PeerDown and PeerProtected are STATES and are true for every tick
-// they last, which is what makes them the expensive half of this field.
+// happened on. PeerDown, PeerProtected and PeerInjecting are STATES and are true
+// for every tick they last, which is what makes those three the expensive ones
+// and why the field is priced at the full snapshot rate.
 const (
 	// PeerFired is his gun going off. The man who fired needs no telling — his
 	// own barrel count is on his own frame — so this is how everybody else finds
@@ -565,6 +605,22 @@ const (
 	// not an event — and because somebody whose shots are bouncing off needs to
 	// be told why rather than left to conclude the game is broken.
 	PeerProtected = 4
+	// PeerInjecting is a man with an ampoule emptying into his forearm: rooted,
+	// unable to fire, and healing (content.go, the шприц). Shown for as long as it
+	// lasts, on the same terms as the two above.
+	//
+	// IT IS THE MOST EXPLOITABLE MOMENT THIS GAME HAS, so it is also the one the
+	// room most needs to be told about: a man standing still who cannot shoot
+	// back is worth crossing a building for, and an injection only its own author
+	// could see would be a rule the other two people in the заброшка are playing
+	// blind against.
+	//
+	// AND IT COST NOTHING AT ALL, which is the reason it is a value here rather
+	// than a field anywhere. `St` was already on every peer and already carried
+	// four states; a fifth is one character inside a field that was going to be
+	// sent regardless, so the whole of what other people see of this iteration is
+	// free on a wire with 32 B/s of headroom.
+	PeerInjecting = 5
 )
 
 // Standings is who is in the building, how long they have each been in it, and

@@ -777,7 +777,14 @@ export interface VanyadumPickupKind {
   title: string;
   /** One emoji, for the HUD and the cheatsheet. The HUD is real text. */
   icon: string;
-  /** Which counter it fills, and by how much. Read generically. */
+  /**
+   * Which counter it fills, and by how much. Read generically.
+   *
+   * EMPTY MEANS THE THING IS USED RATHER THAN CARRIED, which is how the
+   * catalogue says so without a kind field: an ampoule goes into the man the
+   * instant he walks over it and never into a bag, so there is no counter for it
+   * and the HUD must not draw a column of zeroes for one.
+   */
   grants: string;
   amount: number;
   /** Ceiling for that counter; 0 means uncapped. */
@@ -785,6 +792,18 @@ export interface VanyadumPickupKind {
   tint: string;
   /** One line of Russian for the rules cheatsheet. */
   blurb: string;
+  /**
+   * How much health it puts back, and how long the man stands still putting it
+   * back. Both omitted for anything that is not medicine, which is every kind
+   * but the шприц.
+   *
+   * A PAIR AND NOT A SINGLE NUMBER, because the time is the whole point: an
+   * instant heal is a number going up, where a heal with a duration is a
+   * decision about where you are standing. Both are served so the splash
+   * cheatsheet is generated from them rather than typed out beside them.
+   */
+  heals?: number;
+  inject_seconds?: number;
 }
 
 /** How a wall, floor or ceiling is textured — the client generates the pixels. */

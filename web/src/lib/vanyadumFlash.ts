@@ -112,10 +112,12 @@ export interface PeerMarks {
  * peer's previous frame did not carry it, compared per slot and compared BEFORE
  * the previous value is overwritten.
  *
- * ONLY THE TWO INSTANTS ARE IN HERE. Being down and being protected last their
- * whole duration, so they are properties of the figure and are drawn straight
- * off `st` — running them through a mark that expires after three frames would
- * show a man on the floor for a fifth of the three seconds he is lying there.
+ * ONLY THE TWO INSTANTS ARE IN HERE. The other three — being down, being
+ * protected and injecting — last their whole duration, so they are properties of
+ * the figure and are drawn straight off `st`. Running them through a mark that
+ * expires after three frames would show a man on the floor for a fifth of the
+ * three seconds he is lying there, and would do the same to the two and a half
+ * seconds an ampoule takes to empty.
  *
  * TWO KINDS, COMPARED SEPARATELY, because they can follow one another on
  * consecutive ticks: a man who fires and is shot for it goes 1 → 2, and a rule

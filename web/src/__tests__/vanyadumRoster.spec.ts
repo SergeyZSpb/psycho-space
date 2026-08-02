@@ -5,6 +5,7 @@ import {
   PEER_DOWN,
   PEER_FIRED,
   PEER_HIT,
+  PEER_INJECTING,
   PEER_PROTECTED,
   changedHands,
   clock,
@@ -101,17 +102,27 @@ describe('decodePeers', () => {
         { n: 1, x: 0, y: 0, s: 0, yaw: 0, st: PEER_HIT },
         { n: 2, x: 0, y: 0, s: 0, yaw: 0, st: PEER_DOWN },
         { n: 3, x: 0, y: 0, s: 0, yaw: 0, st: PEER_PROTECTED },
-        { n: 4, x: 0, y: 0, s: 0, yaw: 0 },
+        { n: 4, x: 0, y: 0, s: 0, yaw: 0, st: PEER_INJECTING },
+        { n: 5, x: 0, y: 0, s: 0, yaw: 0 },
       ],
       LEVEL,
       EYE,
     );
-    expect(peers.map((p) => p.st)).toEqual([PEER_FIRED, PEER_HIT, PEER_DOWN, PEER_PROTECTED, 0]);
+    expect(peers.map((p) => p.st)).toEqual([
+      PEER_FIRED,
+      PEER_HIT,
+      PEER_DOWN,
+      PEER_PROTECTED,
+      PEER_INJECTING,
+      0,
+    ]);
   });
 
   it('reads a state it has never heard of as nothing rather than as something', () => {
     // Either end may learn a value without a coordinated deploy, so a client one
-    // deploy behind must not draw a fifth state as one of the four it knows.
+    // deploy behind must not draw a sixth state as one of the five it knows —
+    // which is exactly how the шприц's own value arrived, as a fifth on a field
+    // that already carried four.
     // Zero is the resting value, so an unknown one being drawn as "nothing
     // happened" is the safe direction: a missing mark, never an invented one.
     const [p] = decodePeers([{ n: 0, x: 0, y: 0, s: 0, yaw: 0, st: 'нет' }], LEVEL, EYE);
@@ -158,8 +169,9 @@ describe('decodeSlops', () => {
 
   it('carries no angle and no state, because the wire has neither to give', () => {
     // A слоп walks at whoever it is chasing and does nothing else, so its facing
-    // is derived from two of its own positions (vanyadumSlop) — and the four
-    // things a peer's `st` exists to say are all things a слоп cannot do. Four
+    // is derived from two of its own positions (vanyadumSlop) — and the five
+    // things a peer's `st` exists to say are all things a слоп cannot do,
+    // injecting included: nothing in the building is going to patch one up. Four
     // fields against a peer's six, on a payload that repeats twenty times a
     // second, is what a second creature in the building is paid for.
     expect(decodeSlops([{ n: 0, x: 100, y: 100, s: 0 }], LEVEL)[0]).toEqual({

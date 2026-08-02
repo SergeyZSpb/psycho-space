@@ -218,3 +218,31 @@ func TestSubtractPortalsLeavesTheJambs(t *testing.T) {
 		t.Fatalf("an unrelated doorway changed the edge: %+v", got)
 	}
 }
+
+func TestEveryBuildingHoldsOneOfEveryKind(t *testing.T) {
+	// A uniform draw over a heap of two or three produces a building with no beer
+	// in it about one time in eight — a gun that can never be reloaded — and one
+	// with no шприц just as often, which is a whole feature invisible for the
+	// length of a match that never ends. Neither failure says anything about
+	// itself: the заброшка simply does not contain the thing, and the player
+	// concludes the game is broken or that he has not looked hard enough.
+	//
+	// So the generator scatters one of every kind before a second of anything
+	// (level.go, placePickups), and this is what holds it to that across every
+	// seed rather than across the handful anybody happens to play.
+	for seed := int64(0); seed < seeds; seed++ {
+		l := Generate(seed)
+		for _, kind := range Pickups {
+			found := false
+			for _, p := range l.Pickups {
+				if p.Kind == kind.Key {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("seed %d generated %d pickups and none of them is %q", seed, len(l.Pickups), kind.Key)
+			}
+		}
+	}
+}

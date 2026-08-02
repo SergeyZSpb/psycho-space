@@ -85,8 +85,13 @@
         <span class="dum-hud-cell" data-testid="vanyadum-shells">
           🔫 {{ reloading ? 'жду' : `${loaded}/${barrels}` }}
         </span>
+        <!-- ONLY THE KINDS THAT GO INTO THE BAG. An empty `grants` is the
+             catalogue saying a thing is used the instant it is walked over and
+             never carried, so a counter for one would be a column of zeroes for
+             the whole visit. The шприц is a landmark rather than a possession,
+             and the readout that says one is running is the badge below. -->
         <span
-          v-for="p in config?.pickups ?? []"
+          v-for="p in carried"
           :key="p.key"
           class="dum-hud-cell"
           :data-testid="`vanyadum-count-${p.key}`"
@@ -131,8 +136,11 @@
                  something other than being a slightly brighter grey. -->
             <span class="dum-board-name">{{ row.slot === mySlot ? '▸ ' : '' }}{{ row.name }}</span>
             <span class="dum-board-time">{{ clock(row.seconds) }}</span>
+            <!-- The same filter the HUD uses, for the same reason: the board
+                 publishes what somebody is CARRYING, and a kind that is used on
+                 the spot is never carried by anybody. -->
             <span
-              v-for="p in config?.pickups ?? []"
+              v-for="p in carried"
               :key="p.key"
               class="dum-board-bag"
               :data-testid="`vanyadum-board-${p.key}`"
@@ -191,8 +199,32 @@
            — and this one has a second half a player would otherwise discover by
            pulling a trigger that does nothing. Peers get the same rule in the
            scene, where a protected man is drawn blue. -->
-      <p v-if="protectTenths > 0" class="dum-protect" data-testid="vanyadum-protect">
+      <p v-if="protectTenths > 0" class="dum-badge dum-protect" data-testid="vanyadum-protect">
         🛡 тебя не убить — и ты не стреляешь · {{ protectLeft }}
+      </p>
+
+      <!-- THE AMPOULE, AND IT IS A READOUT RATHER THAN SCENERY. The animation
+           lives in the canvas, where nothing can be asserted on without pixel
+           comparison (ADR-047) — so the two facts a player needs, that an
+           injection is running and how long is left of it, are real DOM. The
+           health cell above is the third: it climbs while this counts down.
+           Both of those come off the SAME snapshot — `dn` is what is left of the
+           ampoule and `hp` is what has arrived out of it — so they are two ends
+           of one delivery rather than one number printed twice. The plunger in
+           the canvas draws that same delivery off the PREDICTION instead, which
+           is why it keeps moving in the twentieth of a second these two stand
+           still for.
+
+           Driven by `dn` with `hp` as the discriminator, which is how the wire
+           reached this iteration without growing a field: above zero health that
+           number is the ampoule, at zero health it is the respawn and the card
+           above owns it. The two cannot both be on screen, and neither can this
+           and the shield — the server grants protection only at full health, and
+           a man at full health walks straight over the шприц.
+
+           It shares the badge position with the shield for exactly that reason. -->
+      <p v-if="injectTenths > 0" class="dum-badge dum-inject" data-testid="vanyadum-inject">
+        💉 колешься — не идёшь и не стреляешь · {{ injectLeft }}
       </p>
 
       <p v-if="sceneFailed" class="dum-blind" data-testid="vanyadum-blind">
@@ -348,22 +380,30 @@
  * because your own `hp` falling is on every frame. Nothing about another man is:
  * he carries no barrel count, and being shot MOVES NOBODY, so there is no value
  * on the frame that could imply it. That is the whole of why a peer carries one
- * small integer saying which of four things is true of him — his gun went off, a
- * shot landed on him, he is on the floor, he cannot be touched — and why the
- * budget for it cost the building a place.
+ * small integer saying which of five things is true of him — his gun went off, a
+ * shot landed on him, he is on the floor, he cannot be touched, he has a needle
+ * in his forearm — and why the budget for it cost the building a place.
  *
- * TWO OF THE FOUR ARE INSTANTS AND TWO ARE STATES, and they are drawn
+ * TWO OF THE FIVE ARE INSTANTS AND THREE ARE STATES, and they are drawn
  * differently on purpose. The instants arrive as a LEVEL lasting a tick and are
  * drawn as EVENTS lasting three frames (vanyadumFlash converts, the scene
  * draws). The states last their whole duration and are drawn as properties of
- * the figure for all of it — grey on the floor, blue while untouchable —
- * because a mark that flashes once says nothing about the three seconds that
- * follow, and because somebody you cannot hurt has to LOOK like somebody you
- * cannot hurt.
+ * the figure for all of it — grey on the floor, blue while untouchable, green
+ * with a needle in the arm — because a mark that flashes once says nothing about
+ * the seconds that follow, and because somebody you cannot hurt has to LOOK like
+ * somebody you cannot hurt. The green one is the most exploitable moment this
+ * game has: rooted, unable to fire back, and worth crossing a building for.
  *
- * YOUR OWN DEATH AND YOUR OWN PROTECTION ARE DOM, not the canvas (ADR-047). They
- * are readouts a player reads — a countdown and a state with a duration — and
- * nothing painted into a canvas can be asserted on without pixel comparison.
+ * YOUR OWN DEATH, YOUR OWN PROTECTION AND YOUR OWN AMPOULE ARE DOM, not the
+ * canvas (ADR-047). They are readouts a player reads — a countdown and two states
+ * with durations — and nothing painted into a canvas can be asserted on without
+ * pixel comparison. What IS on the canvas is the syringe itself, because it is
+ * the world rather than a readout: the hand comes up, the needle goes into the
+ * forearm, and the plunger travels exactly as far as the health the PREDICTION
+ * says has arrived — the same straight line the server is drawing, run here so
+ * that it does not wait a round trip to start. The DOM readouts beside it are the
+ * server's own numbers a beat later, and they are what a test can read and what
+ * somebody who asked for less motion is left with.
  */
 
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
@@ -372,7 +412,8 @@ import { gameVanyadumApi } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import type { VanyadumConfig, VanyadumVisitRow, VanyadumWorld } from '../api/types';
 import { pickupsOnFloor } from '../lib/vanyadumLevel';
-import { buildRules } from '../lib/vanyadumRules';
+import { buildRules, carriedKinds, medicinePickup } from '../lib/vanyadumRules';
+import { syringePose } from '../lib/vanyadumViewmodel';
 import {
   axesFromKeys,
   applyLook,
@@ -415,6 +456,16 @@ const sceneFailed = ref(false);
 const config = ref<VanyadumConfig | null>(null);
 const visits = ref<VanyadumVisitRow[]>([]);
 const rules = computed(() => buildRules(config.value));
+/**
+ * The pickup kinds that actually go into a bag, which is what the HUD and the
+ * standings draw a column each of.
+ *
+ * A kind with nothing to grant is used the instant it is walked over and never
+ * carried, so a counter for one would sit at zero for the whole visit. The filter
+ * is shared with the cheatsheet rather than written out here — three readouts
+ * asking the same question is one place to answer it.
+ */
+const carried = computed(() => carriedKinds(config.value));
 
 // --- what the server last told us -----------------------------------------
 const health = ref(0);
@@ -449,8 +500,19 @@ let hurtTimer: number | undefined;
  */
 const downLeft = ref(0);
 const protectTenths = ref(0);
+/**
+ * Tenths of a second of ampoule left, on exactly the terms above.
+ *
+ * IT COMES OFF THE SAME WIRE FIELD THE RESPAWN DOES, and `hp` is what says which
+ * one the number means: the server spends one field on both because they are
+ * exclusive by construction — a dead man collects nothing, and being hurt is what
+ * takes the needle out — and because there was not room on the frame for a
+ * second. So the split happens here, once, in `applySnapshot`.
+ */
+const injectTenths = ref(0);
 /** «1,4» — the Russian decimal comma, from the tenths above. */
 const protectLeft = computed(() => String(protectTenths.value / 10).replace('.', ','));
+const injectLeft = computed(() => String(injectTenths.value / 10).replace('.', ','));
 const bag = ref<Record<string, number>>({});
 /**
  * The gun, as the newest snapshot describes it.
@@ -530,6 +592,26 @@ const padEl = ref<HTMLElement | null>(null);
 const scene = shallowRef<VanyadumScene | null>(null);
 const theme = useTheme();
 
+/**
+ * Whether the player asked for less movement.
+ *
+ * Resolved ONCE and read in two places — the scene damps its bob and its recoil
+ * with it, and the syringe's pose is settled from the first frame rather than
+ * swept up into view. Two `matchMedia` calls could answer differently if the
+ * setting changed between them, which would leave the hands animating inside a
+ * scene that had stopped.
+ */
+const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+/**
+ * How long one ampoule takes, from the catalogue's medicine entry — zero when
+ * the building scatters none, which is a catalogue that can never start one.
+ *
+ * Held rather than looked up per frame: the pose is computed on every drawn
+ * frame, and a `find` over the catalogue sixty times a second to re-answer a
+ * question whose answer changed when the building did is work for nothing.
+ */
+let injectSeconds = 0;
+
 /** The building we fetched and built meshes for, or null on the splash. */
 let world: VanyadumWorld | null = null;
 /**
@@ -600,9 +682,22 @@ function currentAxes(): VanyadumAxes {
   return { mx, my, yaw: aim.yaw, pitch: aim.pitch };
 }
 
+/**
+ * Whether the view bob should be running — which is whether he is WALKING, and
+ * not whether the stick is pushed.
+ *
+ * The two used to be the same question and the ampoule separated them: `step`
+ * roots a man for the whole of an injection and ignores a man on the floor
+ * outright, so both can be leaning on a full stick while going nowhere. Bobbing
+ * the horizon for either would be the camera claiming a walk the server never
+ * granted — and during an injection that is precisely the moment the picture has
+ * to say "you cannot move", not the moment to suggest otherwise.
+ */
 const moving = () => {
   const a = currentAxes();
-  return a.mx !== 0 || a.my !== 0;
+  if (a.mx === 0 && a.my === 0) return false;
+  const me = predictor?.raw();
+  return !me || (me.health > 0 && me.injectLeft <= 0);
 };
 
 // --- the trigger -----------------------------------------------------------
@@ -685,7 +780,18 @@ function triggerWanted(): boolean {
   // the snapshot on every reconcile, and the server would answer a pull sent
   // during either with silence. Suppressing them costs nothing — the trigger is
   // still held, so the first command after either ends carries the pull.
-  return me.health > 0 && me.protectedLeft <= 0 && me.cooldown <= 0 && me.reload <= 0;
+  //
+  // The ampoule is the third of them and the longest: an injection refuses the
+  // trigger for its whole duration, so a client that kept sending pulls would
+  // spend the worse half of the connection asking a question it has already
+  // answered for itself.
+  return (
+    me.health > 0 &&
+    me.protectedLeft <= 0 &&
+    me.injectLeft <= 0 &&
+    me.cooldown <= 0 &&
+    me.reload <= 0
+  );
 }
 
 /**
@@ -917,6 +1023,7 @@ async function buildWorld(): Promise<void> {
   // that neither overlay is on screen for the frame before the first snapshot.
   downLeft.value = 0;
   protectTenths.value = 0;
+  injectTenths.value = 0;
   clearHurt();
   // Loaded and dry, exactly as the server's NewPlayer leaves somebody — and
   // overwritten by the first snapshot, which is a twentieth of a second away.
@@ -957,7 +1064,11 @@ async function buildWorld(): Promise<void> {
         bodyHeight: config.value.player.body_height,
         eyeHeight: config.value.player.eye_height,
       },
-      reducedMotion: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false,
+      // The whole catalogue, because a thing on the floor is drawn in the colour
+      // the catalogue publishes for it and in the shape its `heals` implies —
+      // neither of which this view has any business deciding.
+      pickups: config.value.pickups,
+      reducedMotion,
     });
     scene.value.setOnFloor(onFloor.value);
 
@@ -971,6 +1082,14 @@ async function buildWorld(): Promise<void> {
   } catch {
     sceneFailed.value = true;
   }
+
+  // The ampoule's two numbers, from the catalogue's medicine entry rather than
+  // from anything typed here, so retuning either on the server moves what the
+  // browser predicts AND how long the hand takes to bring the syringe up. Zero
+  // when the building scatters no medicine, which is a building the server can
+  // never start an injection in.
+  const medicine = medicinePickup(config.value);
+  injectSeconds = medicine?.inject_seconds ?? 0;
 
   const sim = config.value.sim;
   emitter = createEmitter({
@@ -994,6 +1113,13 @@ async function buildWorld(): Promise<void> {
       fireCooldownSeconds: config.value.gun.fire_cooldown_seconds,
       reloadSeconds: config.value.gun.reload_seconds,
       reloadCost: config.value.gun.reload_cost,
+      // The cap the ampoule's heal is clamped to, and the ampoule itself. The
+      // browser runs the same arithmetic the server does — the health an
+      // injection delivers is derived from the countdown on both ends — so all
+      // three have to be the catalogue's numbers rather than plausible ones.
+      maxHealth: config.value.player.max_health,
+      syringeHeal: medicine?.heals ?? 0,
+      syringeSeconds: injectSeconds,
     },
     start: {
       x: level.spawn.x,
@@ -1069,6 +1195,7 @@ function teardownPlay(): void {
   // splash screen is worse than none. The timer behind the mark goes with them.
   downLeft.value = 0;
   protectTenths.value = 0;
+  injectTenths.value = 0;
   clearHurt();
   // Handing the mouse back is not optional: leaving a page with the pointer
   // still captured strands the cursor on a screen that no longer uses it.
@@ -1106,11 +1233,23 @@ function drawFrame(now: number): void {
       // this whole arrangement cannot survive.
       outbox.push(predictor.apply(cmd));
     }
+    // ONE READ FOR BOTH, and it is not only an allocation saved: the gun and the
+    // hands have to describe the SAME instant, or a frame could draw a muzzle
+    // flash from one prediction and a syringe from another.
+    //
     // AFTER the commands and BEFORE anything else touches the prediction, which
-    // is the ordering the comparison depends on: what is being compared is this
-    // frame's gun against last frame's, and a value overwritten first is a shot
-    // nobody hears.
-    markGun(predictor.raw());
+    // is the ordering the gun's comparison depends on: what is being compared is
+    // this frame's gun against last frame's, and a value overwritten first is a
+    // shot nobody hears.
+    const me = predictor.raw();
+    markGun(me);
+    // THE HANDS, FROM THE PREDICTION AND NOT FROM THE SNAPSHOT, which is the
+    // whole reason the ampoule is a predicted quantity: the hand has to come up
+    // the instant the man walks onto the шприц rather than a round trip later,
+    // and the plunger has to keep travelling between snapshots instead of
+    // stepping twenty times a second. `syringePose` answers null when nothing is
+    // running, which is also what puts the обрез back in his hands.
+    scene.value?.setSyringe(syringePose(me.injectLeft, injectSeconds, reducedMotion));
     predictor.tick(dt);
     // Drawn over the carry rather than at the last command's endpoint: commands
     // exist forty times a second and this runs sixty to a hundred and
@@ -1265,7 +1404,17 @@ function applySnapshot(frame: RealtimeFrame): void {
   // draws the whole bag, and the predictor needs the one counter the trigger
   // spends. `c` is omitted for somebody carrying nothing, which is everybody for
   // their first minute.
-  const carried = (frame.c as Record<string, number> | undefined) ?? {};
+  const carriedNow = (frame.c as Record<string, number> | undefined) ?? {};
+
+  // `dn` IS TWO THINGS AND `hp` SAYS WHICH, and this is the one place that split
+  // happens. The server spends a single field on the respawn countdown and on the
+  // ampoule because the two are exclusive by construction — a dead man collects
+  // nothing, and being hurt is what takes the needle out — and because there was
+  // not room on a twenty-hertz frame for a second field. Both answer the same
+  // question either way: how long until you can move and shoot.
+  const hp = num(frame.hp);
+  const outMS = num(frame.dn);
+  const injectMS = hp > 0 ? outMS : 0;
 
   // The authoritative position AND the authoritative gun, folded in rather than
   // assigned: the predictor drops what this acknowledges, rewinds to it, and
@@ -1283,17 +1432,24 @@ function applySnapshot(frame: RealtimeFrame): void {
     y: num(frame.y) / 100,
     sector: num(frame.s),
     ack: num(frame.ack),
-    // NOT PREDICTED, AND STILL ON THE REPLAY BASE. Nothing the player does moves
-    // his health, but `step` reads it — a man on the floor does not walk — so a
-    // replay against a stale value would keep walking a corpse for a round trip.
-    health: num(frame.hp),
+    // PARTLY PREDICTED NOW, AND STILL THE REPLAY BASE. Damage is the world's and
+    // is never guessed, but the health an ampoule delivers is produced inside
+    // `step` — so replaying the pending commands on top of THIS number re-derives
+    // exactly what the server derived. `step` reads it besides, because a man on
+    // the floor does not walk, and a replay against a stale value would keep
+    // walking a corpse for a round trip.
+    health: hp,
     loaded: num(frame.b),
-    // Milliseconds on the wire, seconds in the simulation. All three are absent
-    // at rest, which is nearly always, and absent means zero.
+    // Milliseconds on the wire, seconds in the simulation. All four are absent at
+    // rest, which is nearly always, and absent means zero.
     cooldown: num(frame.d) / 1000,
     reload: num(frame.r) / 1000,
     protect: num(frame.pr) / 1000,
-    ammo: config.value ? num(carried[config.value.gun.ammo]) : 0,
+    // The ampoule, and the reconcile base for it: it is decremented rather than
+    // replaced, and the server advances it through ticks a rooted man sends
+    // nothing for, so the frame is the only honest source for how much is left.
+    inject: injectMS / 1000,
+    ammo: config.value ? num(carriedNow[config.value.gun.ammo]) : 0,
   });
 
   // Peers go into the interpolation buffer stamped with the SERVER'S TICK, and
@@ -1332,19 +1488,24 @@ function applySnapshot(frame: RealtimeFrame): void {
 
   // BEING SHOT IS DERIVED RATHER THAN SENT: `hp` falling between two frames IS
   // the hit, so the comparison happens HERE, before the assignment on the next
-  // line overwrites the value being compared against. A rise is a respawn and
-  // marks nothing.
-  const hp = num(frame.hp);
+  // line overwrites the value being compared against. A rise is a respawn — or,
+  // since the шприц, an ampoule emptying — and neither marks anything.
   if (hp < health.value) markHurt();
   health.value = hp;
 
-  // Whole seconds on the floor, and tenths of a second of protection. Rounded UP
-  // so neither reads zero while it is still running: a countdown that shows «0»
-  // for the last half second is a countdown a player stops believing.
-  const down = Math.ceil(num(frame.dn) / 1000);
+  // Whole seconds on the floor, and tenths of a second of the other two. Rounded
+  // UP so none of them reads zero while it is still running: a countdown that
+  // shows «0» for the last half second is a countdown a player stops believing.
+  //
+  // The respawn is the number `dn` carries when there is nothing left of him, and
+  // the injection is the same number when there is — so the two readouts below
+  // are exclusive by the same construction the wire relies on.
+  const down = Math.ceil((hp > 0 ? 0 : outMS) / 1000);
   if (down !== downLeft.value) downLeft.value = down;
   const protect = Math.ceil(num(frame.pr) / 100);
   if (protect !== protectTenths.value) protectTenths.value = protect;
+  const inject = Math.ceil(injectMS / 100);
+  if (inject !== injectTenths.value) injectTenths.value = inject;
 
   // The readouts, which are the SERVER'S and never the prediction's — a shell
   // count is a number somebody reads, and a number somebody reads must not be a
@@ -1376,7 +1537,7 @@ function applySnapshot(frame: RealtimeFrame): void {
     onFloor.value = pickupsOnFloor(world?.level.pickups ?? [], mask);
     scene.value?.setOnFloor(onFloor.value);
   }
-  for (const [k, v] of Object.entries(carried)) {
+  for (const [k, v] of Object.entries(carriedNow)) {
     if (bag.value[k] !== v) bag.value = { ...bag.value, [k]: v };
   }
 }
@@ -1918,12 +2079,19 @@ watch(
   opacity: 0.8;
 }
 
-/* THE PROTECTION BADGE, shown for the whole two seconds it lasts rather than
-   flashed once — a state with a duration is not an event. Bottom-centre, which
-   is clear of the trigger and the mute on the right and of wherever a left thumb
-   drops the stick. Blue, and the peers who are protected are drawn blue too, so
-   the colour means one thing on both sides of the screen. */
-.dum-protect {
+/* THE BADGE SLOT: one place on the screen for "something with a duration is
+   true of you right now", shown for the whole of that duration rather than
+   flashed once, because a state with a duration is not an event.
+
+   ONE POSITION FOR BOTH BADGES, and they cannot collide: the server grants spawn
+   protection only to a man at full health, and a man at full health walks
+   straight over the шприц rather than picking it up. So at most one is ever on
+   screen, and the two sharing a slot is the arrangement that says so rather than
+   two positions that happen not to overlap today.
+
+   Bottom-centre, which is clear of the trigger and the mute on the right and of
+   wherever a left thumb drops the stick. */
+.dum-badge {
   position: absolute;
   left: 50%;
   bottom: 104px;
@@ -1932,15 +2100,34 @@ watch(
   margin: 0;
   padding: 4px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(110, 198, 255, 0.5);
-  background: rgba(0, 20, 34, 0.6);
-  color: #b6e4ff;
   font-size: 0.78rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   text-align: center;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
   pointer-events: none;
+}
+
+/* Blue, and the peers who are protected are drawn blue too, so the colour means
+   one thing on both sides of the screen. */
+.dum-protect {
+  border: 1px solid rgba(110, 198, 255, 0.5);
+  background: rgba(0, 20, 34, 0.6);
+  color: #b6e4ff;
+}
+
+/* Green, on exactly the same terms: a peer with a needle in his arm is drawn
+   green in the scene, so a player who has seen one knows what this badge means
+   about himself — and what everybody else can see of him while it lasts.
+
+   NOT ANIMATED, deliberately. The countdown in the text is what says how far
+   along it is, and a number is legible under `prefers-reduced-motion` while a
+   pulse is not — the syringe in the hands carries the movement, and even that is
+   damped to nothing under the same setting. */
+.dum-inject {
+  border: 1px solid rgba(95, 208, 138, 0.5);
+  background: rgba(3, 30, 18, 0.62);
+  color: #a8ecc4;
 }
 
 .dum-blind {

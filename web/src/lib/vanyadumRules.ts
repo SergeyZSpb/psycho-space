@@ -44,6 +44,33 @@ export function ammoPickup(config: VanyadumConfig): VanyadumPickupKind | null {
   return config.pickups.find((p) => p.grants === config.gun.ammo) ?? null;
 }
 
+/**
+ * The catalogue's medicine, or null when the building scatters none.
+ *
+ * `heals` IS THE TEST, and it is the server's own: `collect` asks exactly this
+ * question before it puts an ampoule in somebody's arm rather than a bottle in
+ * his bag. A client that decided by key would be a second definition of what
+ * medicine is, and the two would part company the first time a second kind of it
+ * was added as a catalogue line.
+ */
+export function medicinePickup(config: VanyadumConfig): VanyadumPickupKind | null {
+  return config.pickups.find((p) => (p.heals ?? 0) > 0) ?? null;
+}
+
+/**
+ * The kinds that go into the bag, which is not all of them any more.
+ *
+ * AN EMPTY `grants` MEANS THE THING IS USED RATHER THAN CARRIED — an ampoule is
+ * spent the instant it is walked over and never held — so there is no counter for
+ * it, and a HUD or a standings row that drew one would show a column of zeroes
+ * for ever. Shared rather than filtered in three places, because the HUD, the
+ * board and the cheatsheet's own list all ask the same question and a fourth
+ * copy of it is a fourth thing to get wrong.
+ */
+export function carriedKinds(config: VanyadumConfig | null): VanyadumPickupKind[] {
+  return (config?.pickups ?? []).filter((p) => p.grants !== '');
+}
+
 /** One line of the cheatsheet. */
 export interface RuleLine {
   /** A short label, usually an icon or a couple of words. */
@@ -79,12 +106,29 @@ function num(v: number, digits = 1): string {
  * than trailing an empty bracket.
  */
 function carriedList(config: VanyadumConfig): string {
-  const named = config.pickups.map((p) => `${p.icon} ${p.title}`).join(', ');
+  const named = carriedKinds(config)
+    .map((p) => `${p.icon} ${p.title}`)
+    .join(', ');
   return named ? ` и сколько собрал (${named})` : '';
 }
 
-/** «пиво» → «пиво (+1, максимум 9)» — the whole line derived from the entry. */
+/**
+ * «пиво» → «пиво (+1, максимум 9)» — the whole line derived from the entry.
+ *
+ * A KIND WITH NOTHING TO GRANT GETS THE OTHER SENTENCE, and which one it gets is
+ * derived rather than keyed: an empty `grants` is the catalogue saying the thing
+ * is used on the spot rather than carried, so «(+0, максимум 0)» would be the
+ * cheatsheet reading a field that does not apply and printing it anyway. What the
+ * ampoule actually does is a block of its own below — this line is the catalogue
+ * listing, and its job is to say what the thing is and how it is picked up.
+ */
 export function pickupLine(p: VanyadumPickupKind): RuleLine {
+  if (p.grants === '') {
+    return {
+      label: `${p.icon} ${p.title}`,
+      text: `${p.blurb} Подбирается сам, когда наступишь, и тут же идёт в дело — в карманах не лежит.`,
+    };
+  }
   const parts = [`+${p.amount}`];
   if (p.max > 0) parts.push(`максимум ${p.max}`);
   return {
@@ -250,6 +294,78 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
         },
       ],
     });
+  }
+
+  // THE ШПРИЦ, which is the first thing in this заброшка that takes TIME to use
+  // — and the only block on this screen whose whole subject is a cost rather than
+  // an effect. A player who reads «чинит» and nothing else will walk onto one
+  // with a нейрослоп in the room and be killed standing perfectly still,
+  // wondering why the controls stopped answering.
+  //
+  // ABSENT WHEN THE CATALOGUE SCATTERS NO MEDICINE, like every other block here:
+  // a heading over nothing is worse than a heading that is not there.
+  {
+    const med = medicinePickup(config);
+    if (med) {
+      // Both are guaranteed by `medicinePickup` — it is `heals` above zero that
+      // makes an entry medicine at all — and are read defensively only because
+      // the catalogue omits them on every other kind.
+      const heals = med.heals ?? 0;
+      const seconds = med.inject_seconds ?? 0;
+      blocks.push({
+        title: 'Шприц',
+        lines: [
+          {
+            label: `${med.icon} ${med.title}`,
+            text: `${med.blurb}`,
+          },
+          {
+            // DERIVED FROM TWO FIELDS OF ONE ENTRY plus the player's own ceiling,
+            // and the ceiling is the half worth stating: the ampoule is spent on
+            // the clock rather than on the health, so what does not fit is simply
+            // lost.
+            label: '♥ сколько чинит',
+            text: `+${heals} здоровья за раз, но выше ${config.player.max_health} не поднимется — остаток ампулы просто пропадёт.`,
+          },
+          {
+            // THE COST, AND IT IS TWO NUMBERS PUT NEXT TO EACH OTHER RATHER THAN
+            // A CLAIM ABOUT WHICH IS BIGGER. Both are served and either can be
+            // retuned, so a sentence saying «дольше перезарядки» would be a
+            // sentence that goes quietly false the afternoon somebody moves one
+            // of them. The нейрослоп clause is a genuine join and cannot invert:
+            // metres are its speed times this duration, whatever both become.
+            label: '⏳ сколько стоять',
+            text: `${num(seconds)} с на месте: не идёшь и не стреляешь, пока не кончится. Перезарядка для сравнения — ${num(config.gun.reload_seconds)} с, а нейрослоп за это время пройдёт ${num(config.slop.speed * seconds, 0)} м.`,
+          },
+          {
+            // TYPED OUT, and this is the line a rules change has to come back and
+            // edit by hand. The catalogue publishes how much and how long and
+            // carries no field at all for what ENDS an injection early, for the
+            // fact that the player cannot cancel it himself, or for what happens
+            // to the part of the ampoule that never went in.
+            label: '🩸 что прерывает',
+            text: 'Только урон. Сам отменить не можешь — курок и шаг всё это время не работают. Что успело войти, то твоё; остаток пропадает вместе с ампулой, а она ляжет обратно на своё место.',
+          },
+          {
+            // TYPED OUT for the same reason: «на полном здоровье не подбирается»
+            // is a rule of the server's `collect` with no field behind it, and
+            // what it turns the шприц into — a landmark you leave and come back
+            // to — is the whole design of the thing.
+            label: '🚶 целым — мимо',
+            text: 'На полном здоровье шприц не подберётся: пройдёшь по нему и оставишь лежать. Запомни где, и вернись, когда прижмёт.',
+          },
+          {
+            // TYPED OUT, because how a peer is DRAWN is a rendering decision this
+            // client makes alone — the server sends a small integer saying the man
+            // is injecting and has no opinion about the colour. It is on the
+            // screen because it is the sharpest rule in the block: an injection is
+            // the one moment somebody is worth crossing a building for.
+            label: '👀 всех видно',
+            text: 'Пока колешься — для всех в комнате ты зелёный. Стоит столбом, не стреляет: лучшей мишени в заброшке нет. Чужой шприц видно так же.',
+          },
+        ],
+      });
+    }
   }
 
   // WHAT HAPPENS WHEN SOMEBODY HITS YOU, and it is its own block because it is

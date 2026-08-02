@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { FLASH_FRAMES, createFlash, createPeerFlashes, createSlopMarks } from '../lib/vanyadumFlash';
-import { PEER_DOWN, PEER_FIRED, PEER_HIT, PEER_PROTECTED } from '../lib/vanyadumRoster';
+import {
+  PEER_DOWN,
+  PEER_FIRED,
+  PEER_HIT,
+  PEER_INJECTING,
+  PEER_PROTECTED,
+} from '../lib/vanyadumRoster';
 
 /**
  * «ВАНЯДУМ» — the marks a shot leaves: the flash at the muzzle that fired it,
@@ -115,20 +121,36 @@ describe('createPeerFlashes', () => {
     expect(second.fired.has(4)).toBe(true);
   });
 
-  it('marks nothing at all for a man who is merely down or protected', () => {
-    // The two STATES are not events and are not in here: they last three seconds
-    // and two, and are drawn as properties of the figure for the whole of it. Run
-    // through a mark that expires after three frames, a corpse would be
-    // acknowledged for a twentieth of the time it is lying there.
+  it('marks nothing at all for a man who is down, protected or injecting', () => {
+    // The three STATES are not events and are not in here: they last seconds
+    // rather than a tick, and are drawn as properties of the figure for the whole
+    // of it. Run through a mark that expires after three frames, a corpse would
+    // be acknowledged for a twentieth of the time it is lying there — and a man
+    // with a needle in his arm for a tenth of the time he is standing there
+    // unable to shoot back, which is the exact window everybody else is watching
+    // for.
     const flashes = createPeerFlashes();
     for (let i = 0; i < 8; i++) {
       const marks = flashes.frame([
         { slot: 0, st: PEER_DOWN },
         { slot: 1, st: PEER_PROTECTED },
+        { slot: 2, st: PEER_INJECTING },
       ]);
       expect(marks.fired.size).toBe(0);
       expect(marks.hit.size).toBe(0);
     }
+  });
+
+  it('still marks the shot that ENDS an injection, because a hit is an instant', () => {
+    // The two live on one field, so the tick a needle is interrupted on is a tick
+    // that says HIT rather than INJECTING — being hurt is what takes the needle
+    // out, and the room has to be told about the thing that changed the building.
+    // A rule that only asked "did `st` change" would light nothing here, which is
+    // why each kind is its own transition against its own previous value.
+    const flashes = createPeerFlashes();
+    flashes.frame([{ slot: 0, st: PEER_INJECTING }]);
+    flashes.frame([{ slot: 0, st: PEER_INJECTING }]);
+    expect(flashes.frame([{ slot: 0, st: PEER_HIT }]).hit.has(0)).toBe(true);
   });
 
   it('flashes again the next time the value arrives', () => {

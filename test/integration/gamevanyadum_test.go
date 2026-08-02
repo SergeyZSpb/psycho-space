@@ -1038,8 +1038,8 @@ type dumPeer struct {
 	X      int `json:"x"`
 	Y      int `json:"y"`
 	Sector int `json:"s"`
-	// St is what he is doing or having done to him: fired, hit, down or
-	// protected, and absent for a man who is simply standing there.
+	// St is what he is doing or having done to him: fired, hit, down, protected
+	// or injecting, and absent for a man who is simply standing there.
 	St int `json:"st"`
 }
 
@@ -1084,9 +1084,10 @@ type dumSnapshot struct {
 	X    int    `json:"x"`
 	Y    int    `json:"y"`
 	Left uint32 `json:"pk"`
-	// Health is what is left of the reader, and zero is the whole of being down;
-	// Down is milliseconds until he gets up and Protect is milliseconds of spawn
-	// protection left. Loaded is the barrel count.
+	// Health is what is left of the reader, and zero is the whole of being down.
+	// Down is milliseconds until he can act again — the respawn when his health is
+	// zero, the ampoule emptying into his arm when it is not — and Protect is
+	// milliseconds of spawn protection left. Loaded is the barrel count.
 	Health  int       `json:"hp"`
 	Loaded  int       `json:"b"`
 	Down    int       `json:"dn"`
@@ -2084,6 +2085,143 @@ func TestVanyadumANeuroslopComesForYouAndTheObrezIsTheAnswer(t *testing.T) {
 	for _, r := range w.board.Rows {
 		if r.Slot == w.slot && r.Betrayals != 0 {
 			t.Fatalf("shooting a слоп scored him %d betrayals", r.Betrayals)
+		}
+	}
+}
+
+// dumAmpoule is where the шприц is in a building, and it fails the test rather
+// than returning nothing: the generator scatters one of every kind before a
+// second of anything (level.go, placePickups), so a заброшка without one is a
+// broken generator rather than an unlucky seed.
+func dumAmpoule(t *testing.T, l *gamevanyadum.Level) (int, gamevanyadum.Pickup) {
+	t.Helper()
+	for i, p := range l.Pickups {
+		if k, ok := gamevanyadum.PickupByKey(p.Kind); ok && k.Heals > 0 {
+			return i, p
+		}
+	}
+	t.Fatal("this building was generated with no шприц in it at all")
+	return -1, gamevanyadum.Pickup{}
+}
+
+func TestVanyadumAShotFriendWalksToTheShprizAndTheRoomWatchesHimMend(t *testing.T) {
+	// THE WHOLE OF C3, END TO END, through two real sockets: a man at full health
+	// walks over the шприц and leaves it lying there, is then shot by his friend,
+	// walks back onto the same spot, and is rooted with a needle in his arm while
+	// his health climbs — and the other man watches all of it from across the
+	// room, because a state with a duration belongs to the whole building rather
+	// than to the person carrying it (CLAUDE.md).
+	//
+	// EVERYTHING HERE IS SERVER-OWNED. There is no use button and no "inject"
+	// message: walking onto the thing IS using it, so what this test sends is
+	// movement and one trigger pull, and everything else it reads off the frames.
+	app, tick, _ := buildAppVanyadum(t, dumVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cliA := loginAs(t, srv.URL, "910018", "user")
+	cliB := loginAs(t, srv.URL, "910019", "user")
+	clk := newDumClock()
+
+	_, level := fetchWorld(t, cliA, srv.URL)
+	idx, amp := dumAmpoule(t, level)
+
+	connA, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cliA, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial a: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cliB, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial b: %v", err)
+	}
+	defer connB.CloseNow()
+
+	a := newDumWire(connA, readFrames(t, connA))
+	b := newDumWire(connB, readFrames(t, connB))
+	room := []*dumWire{a, b}
+	for _, w := range room {
+		w.attach(t)
+	}
+
+	// A MAN WITH NOTHING TO MEND WALKS STRAIGHT OVER IT. B is at full health, so
+	// the ampoule is not taken and the bit stays set on his own frame — which is
+	// what makes the thing a landmark he can come back to rather than something
+	// he wastes by walking the wrong way (content.go, the шприц).
+	dumWalkTo(t, tick, clk, room, b, level, amp.Pos)
+	if b.last.Left&(1<<uint(idx)) == 0 {
+		t.Fatalf("a man at %d of %d health took the шприц he had no use for", b.last.Health, gamevanyadum.StartHealth)
+	}
+	if b.last.Down != 0 {
+		t.Fatalf("nothing happened and his frame says he is out of action for %d ms", b.last.Down)
+	}
+
+	// A JOINS HIM ON THE SAME SPOT, and everything below happens standing on the
+	// ampoule rather than either side of a walk.
+	//
+	// THAT IS A ROBUSTNESS DECISION AND WORTH STATING. The obvious staging — shoot
+	// him somewhere else and have him walk back for the medicine — leaves a
+	// wounded man crossing a заброшка that is spawning нейрослопы at him, and a
+	// creature reaching him on the way costs 25 health, or a death, or an
+	// interrupted injection. None of those is what this test is about, and all of
+	// them present as "it never came". Shooting him where the шприц already is
+	// leaves ONE tick between the barrel landing and the needle going in, so the
+	// only thing that can happen in the gap is the thing being tested.
+	dumWalkTo(t, tick, clk, room, a, level, amp.Pos)
+	dumWaitFor(t, tick, clk, room, "the two of them to see each other with their walk-in protection spent", func() bool {
+		_, sees := peerStateOf(a, b.slot)
+		return sees && a.last.Protect == 0 && b.last.Protect == 0
+	})
+
+	// ONE BARREL, AT ZERO RANGE. They are standing on the same spot and neither
+	// is moving, so the shot cannot be lost to aim — where a ray goes is settled
+	// in hit_test.go against geometry a reader can check.
+	//
+	// A IS AT FULL HEALTH THROUGHOUT, so the ампула is still there when his friend
+	// needs it: the man standing on it is the one who cannot use it.
+	whole := b.last.Health
+	a.send(t, 1, dumCommand{Dt: 0.025, Fire: true})
+	dumWaitFor(t, tick, clk, room, "b to lose half of himself", func() bool {
+		return b.last.Health < whole
+	})
+	hurt := b.last.Health
+	if hurt <= 0 {
+		t.Fatal("one barrel put him on the floor, so there is nobody left to mend")
+	}
+
+	// AND THE NEEDLE GOES IN WHERE HE IS STANDING. The bit clears, the ampoule
+	// starts, and the three things this iteration is about all have to be true at
+	// once: his own frame says he is out of action while his health is above zero,
+	// the man beside him is shown the needle, and the number on the bar goes UP.
+	//
+	// Health climbs about a hit point per tick (SyringeHeal over SyringeSeconds
+	// against SimHz), so "it climbed" is true within a frame or two of the
+	// injection starting rather than at the end of it — which is what keeps this
+	// bounded by what the feature does instead of by how long the building stays
+	// quiet.
+	sawInjecting, sawPeer, climbed := false, false, false
+	dumWaitFor(t, tick, clk, room, "the шприц to go in and the room to see it", func() bool {
+		if b.last.Health > 0 && b.last.Down > 0 {
+			sawInjecting = true
+			if b.last.Health > hurt {
+				climbed = true
+			}
+		}
+		if st, ok := peerStateOf(a, b.slot); ok && st == gamevanyadum.PeerInjecting {
+			sawPeer = true
+		}
+		return sawInjecting && sawPeer && climbed
+	})
+
+	if b.last.Left&(1<<uint(idx)) != 0 {
+		t.Fatalf("he is being injected and the mask %b still says the шприц is lying there", b.last.Left)
+	}
+	// NOTHING WENT INTO A BAG, because medicine is used rather than carried: a
+	// counter for it would be a counter nothing ever spends.
+	if row, ok := rowOf(b, b.slot); ok {
+		for k, n := range row.Bag {
+			if k != "beer" {
+				t.Fatalf("the standings say he is carrying %d %q after an injection", n, k)
+			}
 		}
 	}
 }

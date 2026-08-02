@@ -29,6 +29,9 @@ const K: StepConstants = {
   fireCooldownSeconds: 0.35,
   reloadSeconds: 1.5,
   reloadCost: 1,
+  maxHealth: 100,
+  syringeHeal: 50,
+  syringeSeconds: 2.5,
 };
 
 /**
@@ -49,6 +52,7 @@ function snap(over: Partial<Authoritative> & { ack: number }): Authoritative {
     reload: 0,
     protect: 0,
     ammo: 0,
+    inject: 0,
     ...over,
   };
 }
@@ -384,6 +388,86 @@ describe('being killed, and coming back', () => {
     // And he can walk again, on the very next command.
     p.apply(walk);
     expect(p.raw().y).toBeGreaterThan(50);
+  });
+});
+
+describe('the ampoule, which the frame both starts and re-bases', () => {
+  // THE ONE FIELD ON THIS TYPE THE CALLER HAS TO DISCRIMINATE. The wire spends
+  // `dn` on the respawn countdown AND on the ampoule, with `hp` saying which — so
+  // by the time it reaches `Authoritative.inject` the split has already been made
+  // (GameVanyadumView, applySnapshot). These tests are about what happens after
+  // it: a number that is DECREMENTED rather than replaced, replayed against.
+
+  it('is taken from the frame, so the client never starts one for itself', () => {
+    // Walking over a шприц is the server's to decide, exactly as a bottle is —
+    // the client predicts no pickups at all. What it predicts is the countdown
+    // that follows, because the refusals hang off it.
+    const p = predictor();
+    p.apply(walk);
+    expect(p.raw().injectLeft).toBe(0);
+    p.reconcile(snap({ ack: 1, health: 40, inject: 2.5 }));
+    expect(p.raw().injectLeft).toBe(2.5);
+  });
+
+  it('counts down through this client’s own commands, and roots it while it does', () => {
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, health: 40, inject: 1 }));
+    const before = p.raw().y;
+    p.apply(walk);
+    expect(p.raw().injectLeft).toBeCloseTo(1 - walk.dt, 12);
+    // And he has not moved, however much walking was asked for.
+    expect(p.raw().y).toBe(before);
+  });
+
+  it('re-bases on every frame, so a replay cannot spend it twice', () => {
+    // ADR-058's sharp edge, and the reason this is the base rather than the
+    // client's own memory. Two commands are pending when the frame lands; the
+    // server folded neither in, so the replay has to take exactly their dt off
+    // the SERVER'S number — and a base taken from `predicted` would take it off a
+    // value that already contained them, bringing him out of the injection early
+    // and drawing him walking while the server still has him rooted.
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, health: 40, inject: 2 }));
+    p.apply(walk);
+    p.apply(walk);
+    expect(p.raw().injectLeft).toBeCloseTo(2 - 2 * walk.dt, 12);
+
+    p.reconcile(snap({ ack: 0, health: 40, inject: 2 }));
+    expect(p.raw().injectLeft).toBeCloseTo(2 - 2 * walk.dt, 12);
+  });
+
+  it('the server can end it early, and the client walks on the next command', () => {
+    // Being shot is what takes the needle out, and that is a correction like any
+    // other: the frame simply stops carrying the ampoule. Nothing here has to
+    // know WHY — the base is the frame, so the client is walking again on the
+    // very next command it applies.
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, health: 40, inject: 2 }));
+    p.apply(walk);
+    expect(p.raw().y).toBe(50);
+
+    p.reconcile(snap({ ack: 1, health: 20, inject: 0 }));
+    p.apply(walk);
+    expect(p.raw().injectLeft).toBe(0);
+    expect(p.raw().y).toBeGreaterThan(50);
+  });
+
+  it('lands on the server’s health rather than on a sum of its own', () => {
+    // The health an ampoule delivers is DERIVED from the countdown on both ends,
+    // so replaying pending commands on top of a frame re-derives exactly what the
+    // server derived. An accumulator would drift by a hit point per replay, and
+    // the HUD reads that number.
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, health: 50, inject: K.syringeSeconds }));
+    for (let i = 0; i < 4; i++) p.apply(walk);
+    const replayed = p.raw();
+
+    // The same remaining time reached in one command instead of four.
+    const q = predictor();
+    q.reconcile(snap({ ack: 0, health: 50, inject: K.syringeSeconds }));
+    q.apply({ ...walk, dt: 4 * walk.dt });
+    expect(q.raw().injectLeft).toBeCloseTo(replayed.injectLeft, 12);
+    expect(q.raw().health).toBe(replayed.health);
   });
 });
 

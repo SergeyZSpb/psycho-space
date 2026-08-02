@@ -23,12 +23,18 @@
  * instant a thumb lands and a flash is only honest if the browser has already
  * run the same refusal the server is about to run.
  *
- * HEALTH IS NOT PREDICTED, AND IS STILL REPLAYED AGAINST. Nothing the player
- * does moves it, so it is only ever read off the snapshot — but `step` consults
- * it, because a man on the floor does not walk. Spawn protection is the pair of
- * that: granted by the server, counted down here, and part of the same trigger
- * refusal the gun's timers are. Both are on the replay base below, which is what
- * makes a death and a respawn cost nothing to reconcile.
+ * HEALTH IS PREDICTED IN EXACTLY ONE DIRECTION, and the ampoule is what made it
+ * so. Damage is still the world's — a barrel, a нейрослоп — and arrives as a
+ * correction like any other; the health an injection delivers is produced INSIDE
+ * `step`, from the countdown rather than from a running total, so both ends land
+ * on the same number by computing it the same way instead of by agreeing on a sum.
+ * `step` consults the value besides, because a man on the floor does not walk.
+ *
+ * SPAWN PROTECTION AND THE AMPOULE ARE THE SAME SHAPE: granted by the server,
+ * counted down here, and part of the same trigger refusal the gun's timers are —
+ * with the ampoule refusing every step as well, which is the one refusal that
+ * moves the camera. All of them are on the replay base below, which is what makes
+ * a death, a respawn and an injection cost nothing to reconcile.
  *
  * WHAT THIS IS NOT. It is not authority. A prediction is a guess that is usually
  * right; when the server disagrees, the server wins, without negotiation and
@@ -58,11 +64,14 @@ export interface Authoritative {
   /**
    * What is left of the player, and ZERO IS THE WHOLE OF BEING DEAD.
    *
-   * NOT PREDICTED, BUT READ ON EVERY REPLAY. Nothing the player does moves it,
-   * so it is never guessed — but `step` consults it, because a man on the floor
-   * neither walks nor shoots. Replaying a pending command against a stale
-   * `health` would walk a corpse for a round trip and then snap it back to the
-   * spawn.
+   * THE REPLAY BASE FOR A NUMBER THAT IS NOW PARTLY PREDICTED. Damage is the
+   * world's and is never guessed; the health an ampoule delivers is produced by
+   * `step`, so replaying the pending commands on top of THIS value re-derives
+   * exactly what the server derived. Taking the base from the client's own
+   * predicted player instead would count the same commands' delivery twice.
+   * `step` consults it besides, because a man on the floor neither walks nor
+   * shoots — replaying against a stale `health` would walk a corpse for a round
+   * trip and then snap it back to the spawn.
    */
   health: number;
   /**
@@ -92,6 +101,20 @@ export interface Authoritative {
    * trigger a player waits a second and a half for.
    */
   ammo: number;
+  /**
+   * Seconds of ampoule left, and the CALLER reads the discriminator: the wire
+   * spends one field on this and on the respawn countdown, with `hp` saying
+   * which of the two it means. Above zero health it is the injection; at zero
+   * health it is a man on the floor and nothing here is running.
+   *
+   * THE SAME RECONCILE BASE THE GUN'S TIMERS GET, and for the same reason — it
+   * is decremented rather than replaced, so a base taken from this client's own
+   * memory would take each pending command's dt off it twice and bring somebody
+   * out of an injection early. The server also advances it through ticks the
+   * client sent nothing for, which is exactly the state a rooted man is in: he
+   * cannot walk, so the idle fill is the only thing advancing him at all.
+   */
+  inject: number;
 }
 
 /** What the renderer draws. */
@@ -179,6 +202,7 @@ export function createPredictor(opts: PredictorOptions) {
     cooldown: 0,
     reload: 0,
     ammo: 0,
+    injectLeft: 0,
   };
   // The offset being eased out, in metres. Added to the predicted position when
   // rendering and decayed towards zero every frame.
@@ -318,6 +342,7 @@ export function createPredictor(opts: PredictorOptions) {
         cooldown: a.cooldown,
         reload: a.reload,
         ammo: a.ammo,
+        injectLeft: a.inject,
       };
       for (const c of pending) replayed = step(level, replayed, c, constants);
       predicted = replayed;

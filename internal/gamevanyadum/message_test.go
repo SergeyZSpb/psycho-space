@@ -296,14 +296,23 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// invariant proved in another file would be a budget one refactor away from
 	// being wrong.
 	//
-	// AND DYING ADDED TWO MORE TIMERS, `dn` and `pr`, on the same terms. They
-	// cannot both be set either — protection begins exactly when the down window
-	// ends — and neither can be set alongside the gun's two, since death clears
-	// the gun and a protected man may not pull the trigger (sim.go, stepGun). So
-	// the widest frame this game can really send carries the barrels and ONE
-	// timer, and the fixture carries all four: 19 bytes of deliberate pessimism,
-	// bought for the same reason as before. The budget moves from 160 to 180 to
-	// hold it.
+	// AND DYING ADDED TWO MORE TIMERS, `dn` and `pr`, on the same terms. Those two
+	// cannot both be set — protection begins exactly when the down window ends —
+	// and neither can be set alongside the gun's while it means a man on the
+	// floor, since death clears the gun and a protected man may not pull the
+	// trigger (sim.go, stepGun). The fixture carries all four: 19 bytes of
+	// deliberate pessimism, bought for the same reason as before. The budget moves
+	// from 160 to 180 to hold it.
+	//
+	// AND THE ШПРИЦ ADDED NO TIMER AT ALL, which is the whole of what it cost this
+	// frame. An injection RIDES `dn` and is told apart from a respawn by `hp`
+	// (message.go, Snapshot.Down), so the field above is unchanged and this
+	// measurement did not move. What it does change is the pessimism: `dn` meaning
+	// an injection CAN run alongside a gun timer — a man who has just fired walks
+	// onto an ampoule with the cadence still on the clock — so the widest frame
+	// the game can really send is now the barrels and TWO timers rather than one.
+	// Four in the fixture is still a bound rather than a claim; it is just a
+	// slightly less generous one than it was.
 	s := Snapshot{
 		T: TypeSnapshot, Tick: 999999, Ack: 999999,
 		X: 123456, Y: -123456, Z: 12345, Yaw: 3142, Sector: 12, Health: 100,
@@ -386,12 +395,14 @@ const wireCeiling = 8000
 //
 // EVERY PEER CARRIES A STATE, and that is the field that took a place out of the
 // building. `st` is priced at SnapshotHz like the position beside it, because
-// two of its four values are DURATIONS: a man is down for DownTime and protected
-// for SpawnProtectSeconds, and both are true on every tick they last. There is
-// no honest duty cycle to discount by either — he cannot be hurt while down or
-// protected, so a player killed the instant his protection expires is flagged
-// essentially all the time, and a capacity derived from anything softer would
-// fail the first time somebody was being spawn-camped.
+// three of its five values are DURATIONS: a man is down for DownTime, protected
+// for SpawnProtectSeconds and rooted by an ampoule for SyringeSeconds, and all
+// three are true on every tick they last. There is no honest duty cycle to
+// discount by either — he cannot be hurt while down or protected, so a player
+// killed the instant his protection expires is flagged essentially all the time,
+// and a capacity derived from anything softer would fail the first time somebody
+// was being spawn-camped. The ampoule made it three and changed no arithmetic
+// here: the field was already charged at the full rate for the other two.
 //
 // EVERY СЛОП IS COUNTED, ALL OF THEM, and that is the same rule read for the
 // second kind of entity. They all walk at the nearest man, so the room he is
@@ -439,9 +450,22 @@ func worstSnapshot(n, f int) Snapshot {
 // is not what a ceiling measured in bytes per second is about.
 func worstEventCost(t *testing.T) int {
 	t.Helper()
-	// The widest event this game can emit: the only kind there is, its key, and the
-	// highest index the mask can carry.
-	raw, err := json.Marshal([]Event{{E: EventPickup, K: AmmoCounter, ID: MaxWirePickups - 1}})
+	// The widest event this game can emit: the LONGEST KEY THE CATALOGUE HOLDS,
+	// and the highest index the mask can carry.
+	//
+	// Taken from the catalogue rather than typed here, which stopped being a
+	// refinement the day a second kind arrived: this was `AmmoCounter`, true only
+	// while "beer" was the only key there was, and a catalogue entry with a longer
+	// one would have made the ceiling arithmetic quietly optimistic — the one
+	// direction it may never be, because it is what decides how many people fit in
+	// the building.
+	widest := ""
+	for _, k := range Pickups {
+		if len(k.Key) > len(widest) {
+			widest = k.Key
+		}
+	}
+	raw, err := json.Marshal([]Event{{E: EventPickup, K: widest, ID: MaxWirePickups - 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,10 +519,19 @@ func TestEverythingAFullBuildingSendsAViewerFitsTheCeiling(t *testing.T) {
 	// wanting the fourth back is the binary codec.
 	//
 	// 19 of that 180 assumes a gun reloading AND on its firing cadence while its
-	// owner is simultaneously dead and freshly protected, which is four states at
-	// once and none of them compatible. The pessimism is on purpose (see
-	// worstSnapshot) and it is worth about 380 B/s — which is to say the headroom
-	// this leaves is a good deal smaller than the pessimism inside the number.
+	// owner is simultaneously freshly protected and either dead or being injected,
+	// which is four timers at once and no reachable state carries more than two of
+	// them. The pessimism is on purpose (see worstSnapshot) and it is worth about
+	// 200 B/s — which is to say the headroom this leaves is a good deal smaller
+	// than the pessimism inside the number.
+	//
+	// THE ШПРИЦ IS IN THIS ARITHMETIC AND ADDED NOTHING TO IT, which is not an
+	// omission. Everything it needs on the wire it borrowed: the injection's own
+	// countdown rides `dn` against `hp` (message.go, Snapshot.Down) and what the
+	// room sees is a FIFTH VALUE on a state field every peer was already carrying
+	// (Peer.St). A field of either kind would have been 120 B/s at the JSON floor
+	// against the 32 B/s below, so the alternatives were a smaller building or the
+	// binary codec; the reuse is what made a third occupant survive the iteration.
 	//
 	// WHAT IS STILL NOT COUNTED IS ON wireCeiling: the out-of-turn standings
 	// frames, bounded by an inbound rate limit and delivered to the socket that
@@ -549,6 +582,57 @@ func TestEverythingAFullBuildingSendsAViewerFitsTheCeiling(t *testing.T) {
 		if cost <= wireCeiling {
 			t.Fatalf("%d people and %d слопы would cost %d B/s, inside the %d ceiling — the %s constant is one too low",
 				over.people, over.slo, cost, wireCeiling, over.what)
+		}
+	}
+}
+
+func TestTheAmpouleRidesTheDownTimerWithoutWideningIt(t *testing.T) {
+	// The шприц reached the wire by REUSING `dn` rather than by adding a field
+	// (message.go, Snapshot.Down), and a reuse is only free while the borrowed
+	// field is wide enough to hold what was put in it. The budget above measures
+	// `dn` at DownTime; an injection longer than that would add a digit to a frame
+	// that goes out twenty times a second, which is 20 B/s against 32 B/s of
+	// headroom — and it would do so without any test noticing, because nothing
+	// else in this file knows the field has two meanings.
+	//
+	// The relationship is stated as digits rather than as milliseconds because
+	// digits are what JSON actually charges for.
+	down := int(DownTime / time.Millisecond)
+	inject := ms(SyringeSeconds)
+	if inject > down {
+		t.Fatalf("an injection is %d ms and the down window is %d ms, so `dn` is now wider than the wire budget measured it: "+
+			"either shorten SyringeSeconds, or re-measure worstSnapshot deliberately", inject, down)
+	}
+
+	// And the two really are exclusive, which is what makes one number honest for
+	// both. Proved on the wire's own terms: a frame carrying a positive `dn` says
+	// which meaning it has through `hp`, so there is no state in which the reader
+	// has to guess.
+	//
+	// The simulation's half of that exclusion — a dead man collects nothing, and
+	// being hurt clears the ampoule — is pinned in world_test.go, where the world
+	// that enforces it lives.
+	for _, c := range []struct {
+		what   string
+		health int
+		down   int
+	}{
+		{"a man on the floor", 0, down},
+		{"a man with a needle in his arm", MaxHealth - SyringeHeal, inject},
+	} {
+		raw, err := json.Marshal(Snapshot{T: TypeSnapshot, Health: c.health, Down: c.down})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back Snapshot
+		if err := json.Unmarshal(raw, &back); err != nil {
+			t.Fatal(err)
+		}
+		if back.Down != c.down || back.Health != c.health {
+			t.Fatalf("%s: %s does not round-trip to hp=%d dn=%d", c.what, raw, c.health, c.down)
+		}
+		if (back.Health > 0) != (c.health > 0) {
+			t.Fatalf("%s: the frame %s no longer says which of the two `dn` means", c.what, raw)
 		}
 	}
 }
@@ -621,9 +705,10 @@ func TestNoNameAndNoScoreRidesTheRepeatingFrame(t *testing.T) {
 	//
 	// READ OFF A RESTING FRAME AND NOT OFF worstSnapshot, because that fixture is
 	// now deliberately the worst case: every peer in it is flagged, since the
-	// state field's two expensive values are durations that really can be true on
-	// every tick. What is being pinned here is the OTHER end — that a man who is
-	// alive, unhurt and doing nothing costs five numbers.
+	// state field's three expensive values are durations that really can be true
+	// on every tick. What is being pinned here is the OTHER end — that a man who
+	// is alive, unprotected, carrying no needle and doing nothing costs five
+	// numbers.
 	var resting struct {
 		Peers []map[string]any `json:"p"`
 	}
@@ -651,9 +736,10 @@ func TestNoNameAndNoScoreRidesTheRepeatingFrame(t *testing.T) {
 
 	// And the state really is on the entry when it is set, so the assertion above
 	// is proving that it was omitted rather than that it does not exist. One
-	// digit, whichever of the four it is: a value that needed two would be a
-	// different field's arithmetic.
-	for _, st := range []int{PeerFired, PeerHit, PeerDown, PeerProtected} {
+	// digit, whichever of the five it is: a value that needed two would be a
+	// different field's arithmetic, which is what makes the fifth one worth
+	// listing here rather than trusting to the four that came before it.
+	for _, st := range []int{PeerFired, PeerHit, PeerDown, PeerProtected, PeerInjecting} {
 		marked, err := json.Marshal(Peer{Slot: 9, X: 123456, Y: -123456, Sector: 12, Yaw: -6283, St: st})
 		if err != nil {
 			t.Fatal(err)

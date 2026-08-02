@@ -19,7 +19,8 @@ import type { VanyadumLevel } from '../lib/vanyadumLevel';
  */
 
 /**
- * One step of the trace: where he ended up, and what state his gun is in.
+ * One step of the trace: where he ended up, what state his gun is in, and what
+ * is left of him.
  *
  * The gun's three fields are OPTIONAL because the artefact omits them at rest —
  * `cd`, `rl` and `ammo` are absent far more often than they are present, on a
@@ -45,6 +46,20 @@ interface GoldenPoint {
    * instead of "your gun is wrong".
    */
   pr?: number;
+  /** Seconds of ampoule left, on exactly those terms. */
+  ij?: number;
+  /**
+   * What is left of him, and NOT omitted at zero: zero is a man on the floor,
+   * which is what one whole case is about, and an absent field cannot say it.
+   *
+   * IT WAS NOT ON THE POINT AT ALL until the шприц arrived, because `step` could
+   * not change health — damage belongs to the world, which the browser does not
+   * run. An injection is advanced INSIDE `step` and the health it delivers with
+   * it, so the number is now a product of the thing this file pins. Carrying it
+   * on the cases that do NOT inject is what asserts that walking, firing and
+   * dying still leave it alone.
+   */
+  hp: number;
 }
 
 interface GoldenCase {
@@ -65,6 +80,17 @@ interface GoldenCase {
    */
   down?: boolean;
   start_protect?: number;
+  /**
+   * How much health has already been taken off him when the case begins, and how
+   * many seconds of an ampoule are already running.
+   *
+   * HURT RATHER THAN A HEALTH VALUE, because zero has to mean something and
+   * "unhurt" is the only reading that does not collide with `down` above — a
+   * `start_health` of 0 would be indistinguishable from an absent field on a man
+   * at full health, and would mean the opposite of it.
+   */
+  start_hurt?: number;
+  start_inject?: number;
   commands: {
     dt: number;
     mx?: number;
@@ -89,6 +115,15 @@ interface GoldenFile {
     reload_seconds: number;
     reload_cost: number;
     ammo: string;
+    /**
+     * The ampoule, and the cap its heal is clamped to. A port healing by a
+     * different amount or over a different time would fail every point of the
+     * injection cases, and these are what make the report say which of the three
+     * numbers is wrong instead.
+     */
+    max_health: number;
+    syringe_heal: number;
+    syringe_seconds: number;
   };
   cases: GoldenCase[];
 }
@@ -111,6 +146,9 @@ const K: StepConstants = {
   fireCooldownSeconds: golden.constants.fire_cooldown_seconds,
   reloadSeconds: golden.constants.reload_seconds,
   reloadCost: golden.constants.reload_cost,
+  maxHealth: golden.constants.max_health,
+  syringeHeal: golden.constants.syringe_heal,
+  syringeSeconds: golden.constants.syringe_seconds,
 };
 
 /**
@@ -163,6 +201,9 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
     expect(K.barrels).toBeGreaterThan(0);
     expect(K.fireCooldownSeconds).toBeGreaterThan(0);
     expect(K.reloadSeconds).toBeGreaterThan(0);
+    expect(K.maxHealth).toBeGreaterThan(0);
+    expect(K.syringeHeal).toBeGreaterThan(0);
+    expect(K.syringeSeconds).toBeGreaterThan(0);
   });
 
   it('has a case in which the trigger is actually pulled', () => {
@@ -198,6 +239,34 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
     expect(protection[protection.length - 1]).toBe(0);
   });
 
+  it('has a case about an ampoule, and it runs down and lets him go', () => {
+    // THE SAME GUARD AGAIN, for the three rules C3 added — a rooted man, a
+    // refused trigger, and health climbing inside `step`. All three are things
+    // that DO NOT HAPPEN, so a vector file that never started an injection would
+    // let a port ship without any of them and still reproduce every trace in it.
+    const injecting = golden.cases.filter((c) => (c.start_inject ?? 0) > 0);
+    expect(injecting.length).toBeGreaterThan(0);
+
+    for (const c of injecting) {
+      const left = c.trace.map((p) => p.ij ?? 0);
+      // It has to RUN OUT inside the transcript, or the tail that proves the
+      // root and the refusal end is not in the file at all.
+      expect(left[0]).toBeGreaterThan(0);
+      expect(left[left.length - 1]).toBe(0);
+      // And the health has to MOVE, or the case would pass against a port whose
+      // `stepInject` did nothing but count down.
+      const health = c.trace.map((p) => p.hp);
+      expect(health[health.length - 1]).toBeGreaterThan(health[0]);
+    }
+
+    // The overheal case is the one worth naming: it ends at the cap having spent
+    // the whole ampoule anyway, which is the rule that makes injecting at nearly
+    // full health a bad trade rather than a free top-up.
+    const overheal = injecting.find((c) => (c.start_hurt ?? 0) < K.syringeHeal);
+    expect(overheal).toBeDefined();
+    expect(overheal!.trace[overheal!.trace.length - 1].hp).toBe(K.maxHealth);
+  });
+
   for (const c of golden.cases) {
     it(`reproduces the trace: ${c.name} (${c.trace.length} steps)`, () => {
       let p: StepPlayer = {
@@ -206,11 +275,18 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
         yaw: 0,
         pitch: 0,
         sector: c.sector,
-        // Alive unless the case is about being dead, and the health value itself
-        // does not matter beyond that: `step` only ever asks whether it is at or
-        // below zero, so the vectors carry no health column at all.
-        health: c.down ? 0 : 100,
+        // Whole unless the case says otherwise, and the number now MATTERS: an
+        // ampoule adds to it and stops at the cap, so a case that starts at the
+        // wrong health overheals or fails to.
+        //
+        // `max_health` MINUS THE HURT, because that is the only expression the
+        // artefact makes available — it carries the cap and not the starting
+        // health, and the server pins the two as equal (a man is whole when he
+        // walks in, which is also what stops a spawn ever carrying an ampoule and
+        // a shield at once).
+        health: c.down ? 0 : golden.constants.max_health - (c.start_hurt ?? 0),
         protectedLeft: c.start_protect ?? 0,
+        injectLeft: c.start_inject ?? 0,
         // The gun always starts full, exactly as the server's NewPlayer leaves
         // it, and the ammunition is the case's own — a reload cannot be
         // exercised by somebody with empty pockets.
@@ -258,6 +334,15 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
           Math.abs(p.protectedLeft - (want.pr ?? 0)),
           `${c.name} step ${i}: protection got ${p.protectedLeft} want ${want.pr ?? 0}`,
         ).toBeLessThanOrEqual(EXACT);
+        expect(
+          Math.abs(p.injectLeft - (want.ij ?? 0)),
+          `${c.name} step ${i}: ampoule got ${p.injectLeft} want ${want.ij ?? 0}`,
+        ).toBeLessThanOrEqual(EXACT);
+        // EXACT, and it is an integer either side: the health an ampoule delivers
+        // is `Math.round` of a ratio of served constants, so a port that rounded
+        // differently — or accumulated instead of deriving — drifts by a hit
+        // point every few frames and this is what catches it.
+        expect(p.health, `${c.name} step ${i}: health`).toBe(want.hp);
       }
     });
   }
@@ -313,6 +398,7 @@ describe('the gun, where the vectors cannot reach', () => {
     cooldown: 0,
     reload: 0,
     ammo: 1,
+    injectLeft: 0,
   });
 
   it('fires while standing perfectly still', () => {
@@ -385,5 +471,124 @@ describe('the gun, where the vectors cannot reach', () => {
     const snapshot = { ...before };
     step(level, before, { ...standing, fire: true }, K);
     expect(before).toEqual(snapshot);
+  });
+});
+
+describe('the шприц, where the vectors cannot reach', () => {
+  /** The room the injection cases are run in, with nothing in the way. */
+  const level = golden.cases[golden.cases.length - 1].level;
+  const walking = { dt: 0.025, mx: 0, my: 1, yaw: 0, pitch: 0 };
+  /** A man halfway through an ampoule, with a full gun and somewhere to walk. */
+  const injecting = (over: Partial<StepPlayer> = {}): StepPlayer => ({
+    x: 20,
+    y: 20,
+    yaw: 0,
+    pitch: 0,
+    sector: 0,
+    health: 40,
+    protectedLeft: 0,
+    loaded: K.barrels,
+    cooldown: 0,
+    reload: 0,
+    ammo: 1,
+    injectLeft: K.syringeSeconds,
+    ...over,
+  });
+
+  it('roots him where he stands, however hard the stick is held', () => {
+    // THE CLAIM THE GOLDEN VECTORS MAKE AND THIS ONE NAMES. It is stated
+    // separately because it is the refusal the CAMERA depends on: a client that
+    // kept walking would draw a man leaving a room the server has him standing
+    // in, and would then be corrected twenty times a second for the whole
+    // injection.
+    const after = step(level, injecting(), { ...walking, mx: 1 }, K);
+    expect(after.x).toBe(20);
+    expect(after.y).toBe(20);
+  });
+
+  it('still lets him look around, because the camera is the client’s', () => {
+    // The angles land even while the feet do not. A first-person game that takes
+    // the view away from somebody is worse than one that takes his feet — and it
+    // is also how he watches whatever is walking towards him.
+    const after = step(level, injecting(), { ...walking, yaw: 1.1, pitch: -0.4 }, K);
+    expect(after.yaw).toBeCloseTo(1.1, 12);
+    expect(after.pitch).toBeCloseTo(-0.4, 12);
+  });
+
+  it('refuses the trigger and the reload for the whole of it', () => {
+    // THE INJECTION WINS, ALWAYS. The kind rule — a trigger pull that cancels the
+    // needle — is the rule that deletes the feature, because a window you can
+    // leave by tapping the thing you are already holding is not a window. This is
+    // predicted rather than merely drawn precisely so the browser refuses the
+    // muzzle flash in the same frame as the thumb.
+    const after = step(level, injecting(), { ...walking, fire: true }, K);
+    expect(after.loaded).toBe(K.barrels);
+    expect(after.cooldown).toBe(0);
+
+    const dry = step(level, injecting({ loaded: 0, ammo: 2 }), { ...walking, fire: true }, K);
+    expect(dry.reload).toBe(0);
+    expect(dry.ammo).toBe(2);
+  });
+
+  it('gives him the step it ends on, rather than one more of standing still', () => {
+    // The same rule the server applies to a man getting up off the floor: the
+    // countdown is advanced and THEN the refusals are read, so the step an
+    // injection finishes on is a step he can move and shoot in. At 20 Hz the
+    // other ordering is a whole tick of a game that ignores you for no reason a
+    // player can see.
+    const last = step(level, injecting({ injectLeft: 0.02 }), { ...walking, fire: true }, K);
+    expect(last.injectLeft).toBe(0);
+    expect(last.y).toBeGreaterThan(20);
+    expect(last.loaded).toBe(K.barrels - 1);
+  });
+
+  it('delivers exactly one ampoule, and not a hit point more', () => {
+    let p = injecting({ health: K.maxHealth - K.syringeHeal });
+    for (let i = 0; i < 200 && p.injectLeft > 0; i++) p = step(level, p, walking, K);
+    expect(p.injectLeft).toBe(0);
+    expect(p.health).toBe(K.maxHealth);
+  });
+
+  it('does not overheal, and spends the time anyway', () => {
+    // The cap is applied to the GRANT and not to the ampoule, so a man who fills
+    // up a fifth of the way through is still rooted for the rest of it. That is
+    // what makes injecting at nearly full health a bad trade rather than a free
+    // top-up.
+    let p = injecting({ health: K.maxHealth - 1 });
+    const half = step(level, p, walking, K);
+    expect(half.injectLeft).toBeLessThan(K.syringeSeconds);
+    for (let i = 0; i < 200 && p.injectLeft > 0; i++) p = step(level, p, walking, K);
+    expect(p.health).toBe(K.maxHealth);
+  });
+
+  it('replaying a command advances the ampoule again, which is why the base is the frame', () => {
+    // ADR-058's property, stated from this side of the port. `injectLeft` is
+    // DECREMENTED rather than replaced, so applying one command to one state
+    // twice moves it twice — which is exactly what the predictor does on every
+    // reconcile, and exactly why its replay base has to be the snapshot's number
+    // rather than this client's own.
+    const start = injecting();
+    const once = step(level, start, walking, K);
+    const twice = step(level, once, walking, K);
+    expect(twice.injectLeft).toBeCloseTo(K.syringeSeconds - 2 * walking.dt, 12);
+
+    // AND THE HEALTH IS DERIVED FROM THE CLOCK RATHER THAN ACCUMULATED, which is
+    // what makes that survivable: two routes to the same remaining time land on
+    // the same health, so a player replayed from a snapshot arrives where the
+    // server is instead of on a sum of his own history.
+    let long = start;
+    long = step(level, long, { ...walking, dt: 2 * walking.dt }, K);
+    expect(long.injectLeft).toBeCloseTo(twice.injectLeft, 12);
+    expect(long.health).toBe(twice.health);
+  });
+
+  it('runs none of it for a man on the floor', () => {
+    // A corpse does nothing at all, and that includes mending. The world clears
+    // the ampoule when it kills him; this is the port refusing to run one that
+    // somehow survived, so the two ends cannot disagree about a dead man.
+    const dead = injecting({ health: 0 });
+    const after = step(level, dead, { ...walking, fire: true }, K);
+    expect(after.injectLeft).toBe(K.syringeSeconds);
+    expect(after.health).toBe(0);
   });
 });

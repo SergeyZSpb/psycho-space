@@ -43,15 +43,17 @@ export interface PeerState {
   yaw: number;
   /**
    * What the server says about this peer beyond where he is standing: his gun
-   * going off, a shot landing on him, him lying on the floor, or him being
-   * untouchable. See PEER_FIRED in vanyadumRoster for the four values.
+   * going off, a shot landing on him, him lying on the floor, him being
+   * untouchable, or him standing rooted with an ampoule emptying into his arm.
+   * See PEER_FIRED in vanyadumRoster for the five values.
    *
    * TWO OF THEM ARE LEVELS ON THE WIRE AND EVENTS ON THE SCREEN. Firing and
    * being hit are true for the one tick they happened on, which is fifty
    * milliseconds — several drawn frames, and longer while the buffer is holding
    * its newest frame — so whoever draws them has to mark the TRANSITION rather
-   * than the value. See vanyadumFlash. The other two last their whole duration
-   * and are drawn straight off this field, because a state with a duration is
+   * than the value. See vanyadumFlash. The other three last their whole duration
+   * — three seconds on the floor, two of protection, two and a half of injection
+   * — and are drawn straight off this field, because a state with a duration is
    * not an event.
    *
    * NOT INTERPOLATED, and it could not be: an enumeration has no midpoint. It is
@@ -66,8 +68,8 @@ export interface PeerState {
    * fall in a tick that is stepped straight over and never seen. That is left
    * alone rather than fixed: catching it would mean scanning the frames the draw
    * skipped, and a phone drawing ten frames a second has lost more than one
-   * man's muzzle flash. The two STATES cannot be missed that way at all, because
-   * they are true of every tick they last.
+   * man's muzzle flash. The three STATES cannot be missed that way at all,
+   * because they are true of every tick they last.
    */
   st?: number;
 }
@@ -85,10 +87,12 @@ export interface PeerState {
  * NO YAW AND NO STATE, and both absences are the server's measurement rather
  * than this client's convenience. A слоп walks at whoever it is chasing and does
  * nothing else, so the way it faces is the way it moves and two consecutive
- * positions give it (see `slopFacing`); and the four things a peer's `st` exists
- * to say — firing, being hit, being down, being protected — are all things a
- * слоп cannot do. It dies to one barrel, so there is no wounded state to report:
- * being absent from the next frame is the whole of having been shot.
+ * positions give it (see `slopFacing`); and the five things a peer's `st` exists
+ * to say — firing, being hit, being down, being protected, injecting — are all
+ * things a слоп cannot do. It has no gun, nothing protects it, and nothing in the
+ * building is going to patch one up. It dies to one barrel, so there is no
+ * wounded state to report: being absent from the next frame is the whole of
+ * having been shot.
  */
 export interface SlopState {
   id: number;

@@ -146,6 +146,66 @@ type Player struct {
 	// tick, so seconds counted down by the command's own dt is the only
 	// representation both ends can agree on.
 	ProtectedLeft float64
+
+	// InjectLeft is seconds until the ampoule in his forearm is empty — zero when
+	// there is none. While it runs he cannot walk and cannot fire (content.go,
+	// the шприц), and Health climbs as it empties.
+	//
+	// HERE FOR THE SAME REASON THE GUN'S TIMERS ARE, and it is the same test:
+	// does the CLIENT have to simulate it? It does, twice over. The browser
+	// decides whether to draw a muzzle flash the instant a thumb lands and the
+	// trigger is refused while this runs; and it predicts its own position, which
+	// while this runs does not move however hard the stick is held. A rule the
+	// client cannot predict is a rule it renders wrong for a whole round trip,
+	// and here that is a man drawn walking away from a room he is rooted in. So
+	// this pays the five coordinated edits ADR-058 prices, exactly as the gun and
+	// the protection did.
+	//
+	// IT IS ALSO WHY Health IS NOW A PREDICTED QUANTITY. Every other change to it
+	// is the world's — a barrel, a нейрослоп — and the client simply reads the
+	// frame; this one happens INSIDE Step, so the browser produces it too and the
+	// golden vectors carry it. What the client still cannot predict is damage,
+	// which is a correction like any other.
+	//
+	// A COUNTDOWN IN SECONDS AND NOT A WORLD DEADLINE, unlike the respawn, the
+	// down window, and the SPAWN PROTECTION directly above — and that last one is
+	// the comparison that has to be made, because it is the same shape of timer and
+	// it did get a deadline (world.go, Occupant.protectedUntil). The two directions
+	// a client can bend this in are not symmetric, and only one of them is worth
+	// anything:
+	//
+	//   - STRETCHING IT IS A PUNISHMENT rather than an exploit. A client that
+	//     under-claims its ticks lengthens its own helplessness and slows its own
+	//     healing, so the direction the protection had to be clamped in is one
+	//     nobody would ever take here (TestStretchingAnInjectionOnlyLengthensIt).
+	//   - COMPRESSING IT IS THE EXPLOITABLE ONE, and it is CONCEDED with the bound
+	//     named. The time budget banks up to TimeBudgetCap on ticks a client claims
+	//     nothing on while nothing is counting down (world.go, Advance), so standing
+	//     perfectly still with a cold gun beside an ampoule fills it — and the first
+	//     tick of the injection can then spend the whole bank at once. The floor on
+	//     a SyringeSeconds window is therefore SyringeSeconds − TimeBudgetCap +
+	//     SimStep of wall clock — 2.05 s against an honest 2.5 as the constants
+	//     stand, so up to 0.45 s off the only thing the ampoule charges. IT CANNOT
+	//     COMPOUND, and the reason is arithmetic rather than a guard: the budget
+	//     accrues exactly dt a tick and is capped, so the total time a client can
+	//     claim over any window is that window plus one bankful, ever. Rebuilding
+	//     the bank mid-injection means under-claiming, which gives back precisely
+	//     what the burst will buy. It is also exactly the head start the gun's
+	//     cooldown and reload already concede from the same cap. Pinned by
+	//     TestABurstBudgetTakesAtMostTheBudgetCapOffTheInjection.
+	//
+	// WHY THE PROTECTION'S DEADLINE IS NOT SIMPLY COPIED, since that is the obvious
+	// answer and it does not fit. That clamp only ever SHORTENS a countdown nothing
+	// is derived from. Ending this one on time is the opposite operation — raising
+	// InjectLeft back to whatever the world's clock still allows — and the health IS
+	// derived from that number: stepInject reads injectDelivered afresh on both
+	// sides of every decrement, so restoring half a second of ampoule hands the same
+	// half second out a second time, and a fifty-point ampoule would deliver sixty.
+	// Taking the health back with it means unwinding the MaxHealth cap too, which is
+	// the world computing a second time what Step has already computed once — a
+	// second path to the same number, which this project does not keep. A bounded,
+	// pinned, one-off head start is the cheaper of the two mistakes.
+	InjectLeft float64
 }
 
 // NewPlayer places somebody at the level's spawn with a full bar, a loaded gun
@@ -175,7 +235,7 @@ func NewPlayer(l *Level) Player {
 // is a bug that only appears when somebody stops moving — the state a player is
 // in whenever he is aiming at something.
 func (p Player) ticking() bool {
-	return p.CooldownLeft > 0 || p.ReloadLeft > 0 || p.ProtectedLeft > 0
+	return p.CooldownLeft > 0 || p.ReloadLeft > 0 || p.ProtectedLeft > 0 || p.InjectLeft > 0
 }
 
 // Clone copies a player deeply enough that the copy can be stepped without the
@@ -222,7 +282,7 @@ func Step(l *Level, p Player, c Command) Player {
 	p.Yaw, p.Pitch = c.Yaw, c.Pitch
 
 	// A MAN ON THE FLOOR DOES NOTHING BUT LOOK AROUND. He does not walk, he does
-	// not shoot, and neither of his timers runs — what gets him up again is the
+	// not shoot, and none of his timers runs — what gets him up again is the
 	// world's own deadline (world.go, rise) rather than anything he sends.
 	//
 	// IT IS A RULE OF Step AND NOT OF THE WORLD, deliberately, because the client
@@ -243,11 +303,30 @@ func Step(l *Level, p Player, c Command) Player {
 	// SpawnProtectSeconds).
 	p.ProtectedLeft = math.Max(0, p.ProtectedLeft-c.Dt)
 
+	// The ampoule first, because the gun below asks whether one is running. Both
+	// obey the same ordering rule for the same reason: the timer is advanced and
+	// THEN the trigger is read, so a shot asked for on the very step an injection
+	// finishes is honoured rather than refused by a state the arm has just left.
+	p = stepInject(p, c)
+
 	// BEFORE the standing-still return below, and that ordering is the whole of
 	// whether the gun works: firing while standing perfectly still is not an edge
 	// case, it is how anybody shoots at anything. A gun folded in after that
 	// return would cool down only while its owner was walking.
 	p = stepGun(p, c)
+
+	// A MAN WITH A NEEDLE IN HIS ARM DOES NOT WALK, and this is the whole of the
+	// vulnerability the ampoule buys (content.go). It is refused HERE rather than
+	// by zeroing the axes, so his angles still land — the camera belongs to the
+	// client, and a first-person game that takes the view away from somebody is
+	// worse than one that takes his feet.
+	//
+	// AFTER the gun and after the injection's own countdown, so that the step an
+	// injection ends on is a step he can move in — the same rule the world
+	// applies to a man getting up off the floor (world.go, rise).
+	if p.InjectLeft > 0 {
+		return p
+	}
 
 	// The movement axes are in the player's own frame, so yaw turns them into
 	// the world. Yaw zero looks along +Y; the client's camera uses the same
@@ -270,6 +349,52 @@ func Step(l *Level, p Player, c Command) Player {
 	target := Vec2{X: p.Pos.X + dx*dist, Y: p.Pos.Y + dy*dist}
 	p.Pos, p.Sector = resolve(l, p.Pos, p.Sector, target)
 	return p
+}
+
+// stepInject advances the ampoule by one command: the countdown by the command's
+// own dt, and the health that went in while it ran.
+//
+// THE HEALTH IS DERIVED FROM THE CLOCK AND NEVER ACCUMULATED. How much has gone
+// in is a pure function of how much is left (injectDelivered), so the step grants
+// the DIFFERENCE between the two readings either side of the decrement. The
+// obvious alternative — a fractional accumulator carried on Player — would be a
+// second piece of state to serialise, to reconcile and to keep in step with the
+// timer it is derived from, and it would drift: the sum of Heals×dt/Seconds over
+// commands a client chose the lengths of is not the same number twice.
+//
+// WHICH MATTERS BECAUSE THE CLIENT RUNS THIS TOO. Derived, the arithmetic is
+// idempotent in the only sense prediction needs — a player replayed from a
+// snapshot arrives at exactly the health the server has, because both ends
+// computed it from the same remaining time rather than from a sum of their own
+// histories.
+//
+// IT DOES NOT OVERHEAL. The cap is applied to the grant rather than to the
+// ampoule, so a man who fills up halfway through is still rooted for the rest of
+// it — the ampoule is spent on the clock, not on the health, and injecting at
+// nearly full health is therefore a bad trade rather than a free top-up.
+func stepInject(p Player, c Command) Player {
+	if p.InjectLeft <= 0 {
+		return p
+	}
+	before := injectDelivered(p.InjectLeft)
+	p.InjectLeft = math.Max(0, p.InjectLeft-c.Dt)
+	if gain := injectDelivered(p.InjectLeft) - before; gain > 0 {
+		p.Health = int(math.Min(float64(p.Health+gain), MaxHealth))
+	}
+	return p
+}
+
+// injectDelivered is how much of one ampoule has gone in by the time `left`
+// seconds of it remain: nothing at the start, the whole of SyringeHeal at the
+// end, and a straight line between the two.
+//
+// ROUNDED RATHER THAN TRUNCATED, and that is the one line in this game where
+// two languages could disagree. Go's math.Round and JavaScript's Math.round part
+// company on exact halves of negative numbers, and nothing here is ever negative:
+// `left` is clamped to zero at the low end and to SyringeSeconds at the high one,
+// so the argument is bounded by 0 and SyringeHeal and the two agree bit for bit.
+func injectDelivered(left float64) int {
+	return int(math.Round(SyringeHeal * (SyringeSeconds - left) / SyringeSeconds))
 }
 
 // stepGun advances the обрез by one command: the timers by the command's own dt,
@@ -308,7 +433,17 @@ func stepGun(p Player, c Command) Player {
 	// PROTECTION IS PART OF THE REFUSAL AND NOT A SEPARATE CHECK, so a protected
 	// man cannot start a reload either — otherwise the window would be spent
 	// filling the gun he is about to be untouchable with.
-	if !c.Fire || p.CooldownLeft > 0 || p.ReloadLeft > 0 || p.ProtectedLeft > 0 {
+	//
+	// AND SO IS THE AMPOULE, WHICH IS HOW THE TRIGGER AND THE INJECTION AGREE
+	// ABOUT WHO WINS: the injection does, always, for as long as it lasts. The
+	// other way round — a trigger pull that cancels the needle — reads as the
+	// generous rule and is in fact the rule that deletes the feature: a window
+	// you can leave by tapping the thing you were already holding is not a window,
+	// and nobody would ever be caught in one. Committed, the ampoule costs
+	// SyringeSeconds of being unable to answer, which is the entire price it
+	// charges. The same refusal keeps a reload from starting mid-injection, since
+	// the trigger is the only thing that starts one.
+	if !c.Fire || p.CooldownLeft > 0 || p.ReloadLeft > 0 || p.ProtectedLeft > 0 || p.InjectLeft > 0 {
 		return p
 	}
 	if p.Loaded > 0 {

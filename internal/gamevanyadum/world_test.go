@@ -1269,6 +1269,12 @@ func worldDigest(t *testing.T, w *World, ids ...string) string {
 		Loaded   int
 		Cooldown float64
 		Reload   float64
+		// The ampoule, for exactly the reason the gun's timers are here: two runs
+		// in which a contested syringe went to different men, or in which one run's
+		// injection was interrupted a tick earlier, produce identical positions and
+		// different arms. A field left out is a determinism check that cannot see
+		// the thing that changed.
+		Inject float64
 		// The three counters are here for the same reason, and they are the ones
 		// the нейрослопы made worth hashing: a transcript in which the same shots
 		// landed on different targets, or in which one run's слоп reached a
@@ -1315,7 +1321,8 @@ func worldDigest(t *testing.T, w *World, ids ...string) string {
 			ID: id, Pos: o.State.Pos, Sector: o.State.Sector,
 			Health: o.State.Health, LastSeq: o.State.LastSeq, Counters: o.State.Counters,
 			Loaded: o.State.Loaded, Cooldown: o.State.CooldownLeft, Reload: o.State.ReloadLeft,
-			Kills: o.kills, Deaths: o.deaths, Betrayals: o.betrayals,
+			Inject: o.State.InjectLeft,
+			Kills:  o.kills, Deaths: o.deaths, Betrayals: o.betrayals,
 		})
 	}
 	// encoding/json sorts map keys, so the maps in here contribute the same bytes
@@ -1586,7 +1593,7 @@ func TestAPeersShotIsOnTheFrameForOneTickOnly(t *testing.T) {
 	// is the field that says so.
 	//
 	// AND IT IS AN INSTANT RATHER THAN A STATE, which is what this test holds it
-	// to. `st` carries four values (message.go, Peer.St) and two of them are
+	// to. `st` carries five values (message.go, Peer.St) and three of them are
 	// DURATIONS a man is in for seconds at a time — which is why the field is now
 	// priced at the full snapshot rate and why it cost the building a place. The
 	// muzzle flash must not quietly join them: a flash that stayed up for the
@@ -2611,5 +2618,543 @@ func TestTheFloorMaskIsCutToTheRoomsYouCanSee(t *testing.T) {
 	stand(t, w, reader, Vec2{X: 15, Y: 5}, eastward)
 	if got := mustSnapshot(t, w, reader).Left; got&2 == 0 {
 		t.Fatalf("standing next door to it, the mask %b still says it is not there", got)
+	}
+}
+
+// --- the шприц, in the world -------------------------------------------------
+
+// medIndex is where the ampoule is in a generated level's heap. The generator
+// scatters one of every kind before a second of anything (level.go,
+// placePickups), so kind i is at index i — which is a property worth reading
+// through a helper rather than a literal, because the day it stops being true
+// every test below would silently be about a bottle.
+func medIndex(t *testing.T, w *World) int {
+	t.Helper()
+	for i, p := range w.Level.Pickups {
+		if k, ok := PickupByKey(p.Kind); ok && k.Heals > 0 {
+			return i
+		}
+	}
+	t.Fatal("this building has no ampoule in it at all")
+	return -1
+}
+
+// hurtBy takes health off somebody without going through the world's own damage,
+// so a test can put a man at an exact number without a shot, a слоп or a death
+// happening on the way there.
+func hurtBy(w *World, acc string, damage int) *Occupant {
+	o := w.Occupant(acc)
+	o.State.Health -= damage
+	return o
+}
+
+func TestWalkingOverAnAmpouleStartsAnInjection(t *testing.T) {
+	// The whole of the interaction: there is no use button, so walking onto the
+	// thing IS pressing it (content.go, the шприц).
+	w, acc := newTestWorld(t, 11)
+	i := medIndex(t, w)
+	hurtBy(w, acc, SyringeHeal)
+	standOn(w, acc, i)
+
+	w.Advance(SimStep.Seconds(), epoch)
+
+	o := w.Occupant(acc)
+	if o.State.InjectLeft <= 0 {
+		t.Fatal("he stood on the ampoule and nothing is running")
+	}
+	if w.available(i) {
+		t.Fatal("the ampoule is still lying there after he took it")
+	}
+	// NOTHING WENT INTO THE BAG. Medicine is used rather than carried, so a
+	// counter for it would be a counter nothing ever spends.
+	if len(o.State.Counters) != 0 {
+		t.Fatalf("taking an ampoule put %v in his bag", o.State.Counters)
+	}
+	// And it was announced, on the same event every pickup uses — the client draws
+	// the needle from the state field and the sound from this.
+	snap := mustSnapshot(t, w, acc)
+	if len(snap.Events) != 1 || snap.Events[0].E != EventPickup {
+		t.Fatalf("taking an ampoule produced %v", snap.Events)
+	}
+
+	// And it comes back where it was, exactly like a bottle: the respawn is the
+	// generic machinery and the ampoule buys no exemption from it.
+	w.Tick += pickupRespawnTicks
+	if !w.available(i) {
+		t.Fatal("the ampoule did not come back after PickupRespawn")
+	}
+}
+
+func TestAManWithNothingToMendWalksStraightOverTheAmpoule(t *testing.T) {
+	// The refusal that turns the thing into a LANDMARK. Taking something you
+	// cannot use is how a resource is wasted by accident, and leaving it lying
+	// there is what lets him remember where it is and come back once he needs it.
+	w, acc := newTestWorld(t, 11)
+	i := medIndex(t, w)
+	standOn(w, acc, i)
+
+	w.Advance(SimStep.Seconds(), epoch)
+
+	o := w.Occupant(acc)
+	if o.State.InjectLeft != 0 {
+		t.Fatalf("a man at %d/%d started an injection anyway", o.State.Health, MaxHealth)
+	}
+	if !w.available(i) {
+		t.Fatal("he took the ampoule he had no use for")
+	}
+	if snap := mustSnapshot(t, w, acc); len(snap.Events) != 0 {
+		t.Fatalf("nothing happened and he was told %v about it", snap.Events)
+	}
+}
+
+func TestAnAmpouleAlreadyRunningRefusesASecond(t *testing.T) {
+	// The timer is one countdown, so a second ampoule cannot be held anywhere:
+	// taking one mid-injection would silently throw the first away and restart the
+	// clock, which is a man paying the window twice for one heal.
+	w, acc := newTestWorld(t, 11)
+	i := medIndex(t, w)
+	o := hurtBy(w, acc, SyringeHeal+20)
+	o.State.InjectLeft = SyringeSeconds / 2
+	standOn(w, acc, i)
+
+	w.Advance(SimStep.Seconds(), epoch)
+
+	if !w.available(i) {
+		t.Fatal("he took a second ampoule with one already running")
+	}
+	if o.State.InjectLeft > SyringeSeconds/2 {
+		t.Fatalf("the running ampoule was refilled to %.3f", o.State.InjectLeft)
+	}
+}
+
+func TestAManOnTheFloorStartsNoInjection(t *testing.T) {
+	// The same rule collect already applies to a bottle, and it matters more here:
+	// `dn` on the wire carries the injection or the respawn depending on health
+	// (message.go, Snapshot.Down), so a corpse with an ampoule running would be a
+	// frame whose two meanings collided.
+	l := room(0, 0, 20, 20, 0)
+	l.Pickups = []Pickup{{ID: 0, Kind: "med", Sector: 0, Pos: Vec2{X: 9, Y: 10}}}
+	w := worldIn(t, l)
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	victim := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
+
+	arm(w, shooter, Barrels, 0)
+	stand(t, w, shooter, Vec2{X: 5, Y: 10}, eastward)
+	// The ampoule is away while he is being shot, so that what puts him on the
+	// floor is the two barrels and not this test's fixture racing them.
+	w.ready[0] = w.Tick + pickupRespawnTicks
+	shot(w, sw, shooter, 1)
+	sw.run(w, int(FireCooldownSeconds*SimHz)+2)
+	shot(w, sw, shooter, 2)
+
+	v := w.Occupant(victim)
+	if v.State.Health > 0 {
+		t.Fatalf("this test needs him on the floor and he is at %d", v.State.Health)
+	}
+	// And it comes back UNDER HIM, during his three seconds down.
+	w.ready[0] = w.Tick
+	sw.run(w, 2)
+	if v.State.InjectLeft != 0 {
+		t.Fatalf("a corpse started an injection: %.3f left", v.State.InjectLeft)
+	}
+	if !w.available(0) {
+		t.Fatal("a corpse took the ampoule it was lying on")
+	}
+}
+
+func TestGettingUpLeavesNoNeedleBehind(t *testing.T) {
+	// THE STATE THIS BUILDS CANNOT HAPPEN, and that is the point of pinning it. A
+	// man reaches the floor only through hurt, and hurt takes the needle out before
+	// it decides whether the damage was fatal — so nothing can put a corpse and a
+	// running ampoule together, and the reset in rise has never had anything to do.
+	//
+	// It is pinned because the ampoule's entire place on the wire is that
+	// invariant: `dn` is a respawn while `hp` is zero and an injection otherwise
+	// (message.go, Snapshot.Down). A man who got up still injecting would be
+	// published as counting down a respawn he is not in, and the room would draw a
+	// needle in the arm of somebody standing at the spawn on full health. So the
+	// guarantee is asserted at the place a reader looks for it — the reset list —
+	// rather than left to be re-derived from hurt every time somebody reads either.
+	w, acc := newTestWorld(t, 11)
+	sw := newStopwatch()
+	o := w.Occupant(acc)
+	o.State.Health = 0
+	o.downUntil = w.Tick + downTicks
+	o.State.InjectLeft = SyringeSeconds
+
+	sw.run(w, int(downTicks)+1)
+
+	if o.State.Health <= 0 {
+		t.Fatalf("this test needs him back on his feet and he is at %d", o.State.Health)
+	}
+	if o.State.InjectLeft != 0 {
+		t.Fatalf("he got up with %.3f s of ampoule still running, so `dn` means two things at once",
+			o.State.InjectLeft)
+	}
+	if snap := mustSnapshot(t, w, acc); snap.Down != 0 {
+		t.Fatalf("a man on full health at the spawn is sent `dn` = %d", snap.Down)
+	}
+}
+
+func TestABurstBudgetTakesAtMostTheBudgetCapOffTheInjection(t *testing.T) {
+	// THE ONE DIRECTION AN INJECTION CAN BE CHEATED IN, conceded with a bound
+	// rather than closed (sim.go, Player.InjectLeft). The time budget banks while a
+	// client claims nothing and nothing is counting down (Advance), so a man
+	// standing perfectly still beside an ampoule with a cold gun fills it — and the
+	// first tick of the injection can then spend the whole bank at once.
+	//
+	// WHAT IS PINNED IS THE BOUND, because that is the whole of what makes the
+	// concession safe: the head start is the bank and never more than the bank. A
+	// change that let a client claim past TimeBudgetCap in one tick, or that stopped
+	// charging the idle fill for the time it grants, would fail here rather than in
+	// a game where somebody healed through a firefight.
+	w, acc := newTestWorld(t, 11)
+	i := medIndex(t, w)
+	o := hurtBy(w, acc, SyringeHeal)
+	sw := newStopwatch()
+
+	// THE BANK IS FILLED FIRST, and it has to be first: an injection makes
+	// ticking() true, which is exactly what makes the idle fill CHARGE the budget
+	// instead of letting it accrue. So the bank is bought before the ampoule, at
+	// real time, standing still — from the middle of the first room, which is the
+	// one place the generator never puts anything.
+	standAtSpawn(w, acc)
+	sw.run(w, int(TimeBudgetCap/SimStep.Seconds())+1)
+	if o.budget < TimeBudgetCap {
+		t.Fatalf("the bank filled to %.3f s and the head start this test measures needs the whole %.3f",
+			o.budget, TimeBudgetCap)
+	}
+	if o.State.InjectLeft != 0 {
+		t.Fatal("something started an injection while he was banking, so this is no longer a fresh ampoule")
+	}
+
+	// The ampoule, taken on this tick. collect runs at the end of an occupant's
+	// turn, so the injection starts with the bank still untouched.
+	standOn(w, acc, i)
+	sw.tick(w)
+	if o.State.InjectLeft != SyringeSeconds {
+		t.Fatalf("he is standing on the ampoule and the injection reads %.3f s", o.State.InjectLeft)
+	}
+
+	// And the burst. MaxStepSeconds is the largest command that can exist
+	// (Enqueue clamps to it), so three of them are how a modified client spends
+	// TimeBudgetCap inside one tick.
+	w.Enqueue(acc, &ParsedInput{Cmds: []Command{
+		{Seq: 1, Dt: MaxStepSeconds, Yaw: o.State.Yaw},
+		{Seq: 2, Dt: MaxStepSeconds, Yaw: o.State.Yaw},
+		{Seq: 3, Dt: TimeBudgetCap - 2*MaxStepSeconds, Yaw: o.State.Yaw},
+	}})
+	sw.tick(w)
+	if left := o.State.InjectLeft; left+1e-9 < SyringeSeconds-TimeBudgetCap {
+		t.Fatalf("one tick took a %.2f s ampoule down to %.4f s; the bank is %.2f s and that is the whole of what a tick may take off it",
+			SyringeSeconds, left, TimeBudgetCap)
+	}
+
+	// AND THE WHOLE WINDOW, IN WALL CLOCK, which is the number a player would
+	// notice. From here the client claims nothing, so the idle fill advances the
+	// ampoule at real time and charges the budget for exactly what it granted — the
+	// bank stays empty and the head start is not taken a second time.
+	//
+	// The burst tick counts as the first tick of the window; the tick he took the
+	// ampoule on does not, because the injection did not exist until the end of it.
+	ticks := 1
+	for o.State.InjectLeft > 0 {
+		sw.tick(w)
+		ticks++
+		if ticks > 2*int(SyringeSeconds/SimStep.Seconds()) {
+			t.Fatalf("the ampoule still holds %.4f s after twice its own length", o.State.InjectLeft)
+		}
+	}
+
+	wall := float64(ticks) * SimStep.Seconds()
+	// The floor: at most TimeBudgetCap of the window can be spent inside one tick,
+	// and that tick is itself SimStep of wall clock.
+	if floor := SyringeSeconds - TimeBudgetCap + SimStep.Seconds(); wall+1e-9 < floor {
+		t.Fatalf("a bursting client emptied a %.2f s ampoule in %.3f s of wall clock; the budget cap allows no better than %.3f s",
+			SyringeSeconds, wall, floor)
+	}
+	// And the other end of the same bound: the head start is REAL, which is what
+	// makes it a conceded number rather than a hypothetical one. A failure here
+	// means somebody closed the concession — good, and then the argument on
+	// sim.go's Player.InjectLeft has to move in the same commit, because it
+	// currently states this as the cost of not having a world-side deadline.
+	if wall >= SyringeSeconds {
+		t.Fatalf("the burst bought nothing: %.3f s of wall clock for a %.2f s ampoule, so this test is no longer measuring the concession it is named for",
+			wall, SyringeSeconds)
+	}
+}
+
+func TestStretchingAnInjectionOnlyLengthensIt(t *testing.T) {
+	// THE OTHER DIRECTION, and the reason the ampoule needs no world-side deadline
+	// where the spawn protection did (Occupant.protectedUntil). The mechanism is
+	// identical: a client that drip-feeds slivers of command suppresses the idle
+	// fill and runs its own countdown at a few percent of real time. For a window
+	// of being UNTOUCHABLE that was the exploit that bought protection its deadline;
+	// for a window of being unable to move, shoot or heal it is a man punishing
+	// himself, so the world lets him.
+	w, acc := newTestWorld(t, 11)
+	sw := newStopwatch()
+	o := hurtBy(w, acc, SyringeHeal)
+	standAtSpawn(w, acc)
+	o.State.InjectLeft = SyringeSeconds
+
+	const sliver = 0.001
+	ticks := int(SyringeSeconds / SimStep.Seconds())
+	for tick := 0; tick < ticks; tick++ {
+		w.Enqueue(acc, &ParsedInput{Cmds: []Command{
+			{Seq: int64(tick) + 1, Dt: sliver, Yaw: o.State.Yaw, Pitch: o.State.Pitch},
+		}})
+		sw.tick(w)
+	}
+
+	// A whole SyringeSeconds of wall clock later he is still holding the needle,
+	// and the world has not shortened it by so much as a tick.
+	if want := SyringeSeconds - sliver*float64(ticks); math.Abs(o.State.InjectLeft-want) > 1e-9 {
+		t.Fatalf("after %.2f s of wall clock the ampoule reads %.4f s rather than the %.4f s he actually claimed — something clamped it",
+			float64(ticks)*SimStep.Seconds(), o.State.InjectLeft, want)
+	}
+	// And he has been paid what he claimed and nothing more: a fiftieth of real
+	// time is a fiftieth of the ampoule, which is one hit point of the fifty it
+	// holds.
+	if got, want := o.State.Health-(StartHealth-SyringeHeal), injectDelivered(o.State.InjectLeft); got != want {
+		t.Fatalf("a client running at %.0f%% of real time collected %d of the ampoule's %d, and the clock says %d",
+			100*sliver/SimStep.Seconds(), got, SyringeHeal, want)
+	}
+}
+
+func TestBeingShotTakesTheNeedleOut(t *testing.T) {
+	// THE WINDOW IS REAL, which is the whole reason the heal is not instant: a man
+	// with an ampoule running is a man who cannot move and cannot shoot back, and
+	// what lands on him lands.
+	//
+	// AND WHAT WENT IN STAYS IN. The health already delivered is his; the rest goes
+	// with the ampoule, which is on the floor of the room he took it from with a
+	// respawn running (content.go).
+	w, sw, shooter, victim := duel(t)
+	arm(w, shooter, Barrels, 0)
+	stand(t, w, shooter, Vec2{X: 5, Y: 10}, eastward)
+	v := hurtBy(w, victim, SyringeHeal)
+	v.State.InjectLeft = SyringeSeconds
+
+	// Let a little of it go in, through the world's own idle fill — he is standing
+	// perfectly still and sending nothing, which is exactly the state an injection
+	// puts a man in.
+	sw.run(w, 10)
+	partial := v.State.Health
+	if partial <= MaxHealth-SyringeHeal {
+		t.Fatalf("nothing went in over half a second: %d", partial)
+	}
+	if v.State.InjectLeft <= 0 {
+		t.Fatal("the ampoule emptied before this test could interrupt it")
+	}
+
+	shot(w, sw, shooter, 1)
+
+	if v.State.InjectLeft != 0 {
+		t.Fatalf("a barrel landed and the ampoule is still running: %.3f left", v.State.InjectLeft)
+	}
+	// WHAT WENT IN IS STILL IN HIM: the barrel comes off the health he had reached
+	// rather than off the health he started the ampoule at.
+	//
+	// A ONE HIT POINT WINDOW, AND IT IS THE TICK ORDER RATHER THAN SLOP. The shot
+	// lands inside an Advance that also steps the victim, and which of the two men
+	// goes first rotates by the tick (turnOrder) — so the tick that interrupts the
+	// injection may or may not have delivered one more of it first. The heal is
+	// SyringeHeal over SyringeSeconds against SimHz, which is exactly one hit point
+	// a tick, so that is the whole of the ambiguity and it is bounded rather than
+	// waved at.
+	low, high := partial-BarrelDamage, partial+1-BarrelDamage
+	if v.State.Health < low || v.State.Health > high {
+		t.Fatalf("he is at %d after a barrel on %d, expected %d or %d — the health already delivered was taken back",
+			v.State.Health, partial, low, high)
+	}
+	// And it stays out: nothing restarts it, so the rest of the ampoule is lost.
+	after := v.State.Health
+	sw.run(w, 10)
+	if v.State.InjectLeft != 0 || v.State.Health != after {
+		t.Fatalf("the interrupted ampoule went on healing: %.3f left, %d health then %d",
+			v.State.InjectLeft, after, v.State.Health)
+	}
+}
+
+func TestTheAmpouleRidesTheDownTimerAndTheHealthSaysWhich(t *testing.T) {
+	// The reuse, from the world's side (message.go, Snapshot.Down): one number on
+	// the wire, and `hp` is what says whether it is a man on the floor or a man
+	// with a needle in his arm. The two are exclusive, so the reader never guesses.
+	w, sw, shooter, victim := duel(t)
+	arm(w, shooter, Barrels, 0)
+	stand(t, w, shooter, Vec2{X: 5, Y: 10}, eastward)
+	v := hurtBy(w, victim, SyringeHeal)
+	v.State.InjectLeft = SyringeSeconds
+
+	sw.tick(w)
+	snap := mustSnapshot(t, w, victim)
+	if snap.Health <= 0 {
+		t.Fatalf("this test needs him alive and he is at %d", snap.Health)
+	}
+	if want := ms(v.State.InjectLeft); snap.Down != want {
+		t.Fatalf("`dn` says %d for a man injecting, the ampoule has %d ms left", snap.Down, want)
+	}
+
+	// And on the floor it is the respawn again, with the ampoule gone.
+	shot(w, sw, shooter, 1)
+	shot(w, sw, shooter, 2)
+	sw.run(w, int(FireCooldownSeconds*SimHz)+2)
+	shot(w, sw, shooter, 3)
+	dead := mustSnapshot(t, w, victim)
+	if dead.Health != 0 {
+		t.Fatalf("this test needs him on the floor and he is at %d", dead.Health)
+	}
+	if dead.Down <= 0 {
+		t.Fatal("`dn` says nothing for a man on the floor")
+	}
+	if v.State.InjectLeft != 0 {
+		t.Fatal("he died with an ampoule still running, so `dn` means two things at once")
+	}
+}
+
+func TestTheWholeRoomSeesTheNeedle(t *testing.T) {
+	// A man standing perfectly still who cannot shoot back is the most exploitable
+	// moment this game has, so it is the one the room most needs to be told about.
+	// An effect only its author could see would be a rule the other people in the
+	// building are playing blind against (CLAUDE.md).
+	w, sw, watcher, injectee := duel(t)
+	o := hurtBy(w, injectee, SyringeHeal)
+	o.State.InjectLeft = SyringeSeconds
+
+	sw.tick(w)
+	snap := mustSnapshot(t, w, watcher)
+	if len(snap.Peers) != 1 {
+		t.Fatalf("the watcher was sent %d peers", len(snap.Peers))
+	}
+	if snap.Peers[0].St != PeerInjecting {
+		t.Fatalf("the peer with a needle in his arm reads %d, expected %d", snap.Peers[0].St, PeerInjecting)
+	}
+
+	// SHOWN FOR AS LONG AS IT LASTS, because a state with a duration is not an
+	// event — and gone the moment it is over.
+	sw.run(w, 4)
+	if st := mustSnapshot(t, w, watcher).Peers[0].St; st != PeerInjecting {
+		t.Fatalf("half a second later the peer reads %d rather than still injecting", st)
+	}
+	o.State.InjectLeft = 0
+	sw.tick(w)
+	if st := mustSnapshot(t, w, watcher).Peers[0].St; st != 0 {
+		t.Fatalf("the ampoule is empty and the peer still reads %d", st)
+	}
+}
+
+func TestBeingShotMidInjectionIsToldToTheRoomAsAHit(t *testing.T) {
+	// The precedence on the state field, in the one case it decides (world.go,
+	// peerState). Being hurt is what ENDS an injection, so the tick the needle
+	// comes out is a tick there is no needle — and what the room is told is the
+	// thing that changed the building.
+	w, sw, shooter, victim := duel(t)
+	arm(w, shooter, Barrels, 0)
+	stand(t, w, shooter, Vec2{X: 5, Y: 10}, eastward)
+	v := hurtBy(w, victim, SyringeHeal)
+	v.State.InjectLeft = SyringeSeconds
+	sw.run(w, 3)
+
+	shot(w, sw, shooter, 1)
+
+	snap := mustSnapshot(t, w, shooter)
+	if len(snap.Peers) != 1 {
+		t.Fatalf("the shooter was sent %d peers", len(snap.Peers))
+	}
+	if snap.Peers[0].St != PeerHit {
+		t.Fatalf("the man he shot mid-injection reads %d, expected %d", snap.Peers[0].St, PeerHit)
+	}
+}
+
+func TestTwoHurtMenReachingTheSameAmpouleAreResolvedDeterministically(t *testing.T) {
+	// The same property the contested bottle has, over the state the ampoule
+	// added: only one of them gets it, and which one is a function of the tick
+	// rather than of Go's map ordering. The digest hashes the injection
+	// (worldDigest), so a run that awarded it differently — or interrupted it a
+	// tick earlier — is a difference in the bytes rather than an invisible one.
+	ids := []string{"account-a", "account-b", "account-c"}
+	build := func() *World {
+		w := NewWorld(uuid.Nil, 11)
+		noSlops(w)
+		i := -1
+		for _, id := range ids {
+			if _, ok := w.Join(id, "pseudo-"+id, epoch); !ok {
+				t.Fatalf("%s was refused", id)
+			}
+			settled(w, id)
+			if i < 0 {
+				i = medIndex(t, w)
+			}
+			hurtBy(w, id, SyringeHeal)
+			standOn(w, id, i)
+			// The same transcript for everybody, so nothing except the world's own
+			// ordering can separate them.
+			w.Enqueue(id, &ParsedInput{Cmds: []Command{{Seq: 1, Dt: subStep, MY: 1, Yaw: eastward}}})
+		}
+		w.Advance(SimStep.Seconds(), epoch)
+		return w
+	}
+
+	first := build()
+	running := 0
+	for _, id := range ids {
+		if first.Occupant(id).State.InjectLeft > 0 {
+			running++
+		}
+	}
+	if running != 1 {
+		t.Fatalf("%d ampoules running off one шприц; the contention this test needs did not happen", running)
+	}
+
+	want := worldDigest(t, first, ids...)
+	for run := 1; run < 200; run++ {
+		if got := worldDigest(t, build(), ids...); got != want {
+			t.Fatalf("run %d produced a different world:\n want %s\n  got %s", run, want, got)
+		}
+	}
+}
+
+func TestAProtectedManStartsNoInjectionBecauseHeSpawnsWhole(t *testing.T) {
+	// A WIRE INVARIANT WEARING A GAMEPLAY DISGUISE. `dn` carries the injection and
+	// `pr` carries the protection, and the budget is measured on the two never
+	// being set at once (message.go, Snapshot.Down). What actually guarantees that
+	// is not a rule anybody wrote: it is that everybody who is protected has just
+	// materialised at the spawn on StartHealth, so there is nothing for an ampoule
+	// to mend and collect refuses him one.
+	//
+	// Which makes StartHealth against MaxHealth load-bearing in a place nobody
+	// would look. Retune the first below the second and a freshly-spawned man can
+	// be injected while protected, both fields appear on one frame, and the widest
+	// snapshot grows by about ten bytes — 200 B/s at the snapshot rate, against
+	// 32 B/s of headroom. It would present as a phone on mobile data rather than
+	// as a failing test, so it is a failing test.
+	if StartHealth < MaxHealth {
+		t.Fatalf("a man spawns on %d of %d, so he can be injected inside his spawn protection and `dn` and `pr` "+
+			"can both ride one frame — re-measure the wire budget before shipping that", StartHealth, MaxHealth)
+	}
+
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	w.Level.Pickups = []Pickup{{ID: 0, Kind: "med", Sector: 0, Pos: Vec2{X: 10, Y: 10}}}
+	w.ready = make([]int64, 1)
+	acc := walkIn(t, w, Vec2{X: 10, Y: 10}, 0) // walkIn, not joinTo: this test wants the protection
+
+	w.Advance(SimStep.Seconds(), epoch)
+
+	o := w.Occupant(acc)
+	if !w.protected(o) {
+		t.Fatal("this test needs him inside his walk-in protection and he is not")
+	}
+	if o.State.InjectLeft != 0 {
+		t.Fatalf("a protected man standing on a шприц started an injection: %.3f left", o.State.InjectLeft)
+	}
+	snap := mustSnapshot(t, w, acc)
+	if snap.Protect <= 0 {
+		t.Fatalf("his frame says %d ms of protection", snap.Protect)
+	}
+	if snap.Down != 0 {
+		t.Fatalf("`dn` says %d alongside `pr` %d — the two the wire budget assumes are exclusive are both set",
+			snap.Down, snap.Protect)
 	}
 }

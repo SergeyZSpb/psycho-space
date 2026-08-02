@@ -219,6 +219,24 @@ type PickupKind struct {
 	Amount int    `json:"amount"`
 	// Max is the ceiling for that counter; zero means uncapped.
 	Max int `json:"max"`
+	// Heals is how much health the thing puts back and InjectSeconds is how long
+	// it takes to put it back. Zero on both means the thing is not medicine,
+	// which is every kind but the шприц.
+	//
+	// A PAIR AND NOT A SINGLE NUMBER, because the time is the whole point: an
+	// instant heal is a number going up, where a heal with a duration is a
+	// decision about where you are standing (see SyringeSeconds). They are two
+	// fields rather than one because either could be retuned without the other,
+	// and both are served so the splash screen's cheatsheet is generated from
+	// them rather than typed out beside them.
+	//
+	// GRANTS IS EMPTY FOR MEDICINE, and that is not an omission. A bottle fills a
+	// counter in the bag and the HUD draws it; an ampoule is used the instant it
+	// is walked over and never carried, so there is nothing to put in a bag and
+	// nothing for the HUD to count. The two fields below are what a kind that is
+	// used rather than kept says about itself.
+	Heals         int     `json:"heals,omitempty"`
+	InjectSeconds float64 `json:"inject_seconds,omitempty"`
 	// Tint is the colour the procedural mesh is built in. There is no art file
 	// anywhere in this game — see the package doc.
 	Tint string `json:"tint"`
@@ -261,6 +279,79 @@ const PickupRespawn = 30 * time.Second
 // which is the unit World.ready is expressed in. Derived rather than typed out,
 // so the two can never disagree.
 const pickupRespawnTicks = int64(PickupRespawn / SimStep)
+
+// The шприц: the second thing the building scatters, and the first thing in it
+// that cannot be used instantly.
+//
+// IT IS USED BY WALKING OVER IT, exactly as the bottle is, and for exactly the
+// reason stated on PickupKind: there is no use button in this game and there is
+// not going to be one. So the decision an ampoule asks for is not "when do I
+// press it" but "when do I walk onto it" — and a man at full health leaves it
+// lying there (world.go, collect), because taking something you cannot use is
+// how a resource is wasted by accident. That turns the thing into a LANDMARK:
+// you see where it is, you take the beating somewhere else, and you come back
+// for it. Which is the same loop the beer already asks for, bought a second time
+// with no new control on a touchscreen.
+//
+// AND WALKING ONTO IT COMMITS YOU, which is the whole iteration. For
+// SyringeSeconds the man cannot walk and cannot shoot: the hand comes up, the
+// needle goes into the forearm, the plunger goes down, and the health arrives
+// while it empties rather than the instant it is touched. The kind rule — heal
+// on contact, keep walking — costs nothing and is therefore worth nothing to
+// decide about. This one is a decision every time, because the cost of being
+// wrong is standing perfectly still in a заброшка with two нейрослопы in it.
+//
+// ONLY BEING HURT STOPS IT, and everything else is refused rather than
+// interrupting: the trigger is refused while it runs and so is every step
+// (sim.go, Step and stepGun), so there is nothing left for the player himself to
+// interrupt it WITH. That is the harsher of the two available rules and it is
+// chosen deliberately — the kind one lets a panicking man cancel and run, which
+// makes the window free and therefore not a window at all.
+//
+// AN INTERRUPTED AMPOULE IS GONE, AND WHAT WENT IN STAYS IN. The health already
+// delivered is his, because it is already in him and taking it back would be the
+// simulation undoing something the player watched happen; the remainder is lost
+// with the ampoule, which is lying on the floor of the room he took it from and
+// coming back in PickupRespawn like everything else. So being caught halfway
+// costs the rest of the heal AND the walk back, and that is the price that makes
+// picking one up a decision rather than a reflex.
+const (
+	// SyringeHeal is how much health one ampoule holds, and it is EXACTLY
+	// BarrelDamage.
+	//
+	// One ampoule undoes one barrel, which is the shortest true sentence the
+	// cheatsheet can print about it and the only relationship anybody has to
+	// remember. It is half of MaxHealth, so a man shot once is whole again and a
+	// man shot twice is on the floor and never gets to use it — the ampoule
+	// answers the first mistake and never the second, which is what keeps a
+	// firefight decided by the second barrel rather than by who is standing
+	// nearer the medicine.
+	//
+	// IT IS NOT A TRADE FOR THE MAN WHO SHOT YOU. He spends a barrel and a
+	// cadence to take 50 off you; you spend SyringeSeconds of complete
+	// helplessness to put it back, which is longer than the reload that gives him
+	// both barrels again. So healing under fire is a losing move by construction,
+	// and the ampoule is for BETWEEN fights — which is the behaviour worth
+	// rewarding in a building nobody can leave.
+	SyringeHeal = 50
+
+	// SyringeSeconds is how long the injection takes, and the number is chosen
+	// against the two other waits this game already has rather than in the
+	// abstract: it is longer than ReloadSeconds and shorter than DownTime.
+	//
+	// LONGER THAN A RELOAD, so it is never the cheaper thing to do when somebody
+	// is in the room — a reload gets you both barrels back in 1.5 s and the
+	// ampoule gets you nothing you can shoot with in 2.5. SHORTER THAN A DEATH,
+	// so the worst case of misjudging it (caught halfway, killed) costs about the
+	// same again on top, and the two together are not so long that a phone screen
+	// is showing a man doing nothing for the length of a loading screen.
+	//
+	// IN METRES IT IS EIGHT OF THEM AT SlopSpeed: a нейрослоп anywhere in the
+	// room with you arrives before the plunger is down. That is the number to
+	// read this constant by — "am I far enough from it" is the question the
+	// injection asks, and this is the answer in the only unit that matters.
+	SyringeSeconds = 2.5
+)
 
 // The нейрослоп: the first thing in this заброшка that is not a friend.
 //
@@ -481,10 +572,17 @@ const MaxOccupants = 3
 
 // Pickups is every kind that can be generated into a level.
 //
-// Iteration 1 has exactly one. The syringe and the keys are designed (see the
-// living doc) and deliberately absent: a walking skeleton proves the loop with
-// the simplest possible member of the family, and the second entry is then a
-// catalogue line rather than a feature.
+// THE GENERATOR SCATTERS ONE OF EVERY KIND BEFORE IT SCATTERS A SECOND OF
+// ANYTHING (level.go, placePickups), so the order here is not cosmetic: a
+// building generated with no ammunition is a gun that cannot be reloaded and one
+// generated with no medicine is this whole iteration invisible, and a uniform
+// draw over two kinds produces the first about one building in eight.
+//
+// THE KEYS ARE ASCII AND SHORT, and that is a wire decision rather than a
+// stylistic one: a key rides the pickup event (message.go, Event), and the
+// budget prices that array at the widest key the catalogue holds
+// (message_test.go, worstEventCost). The Russian is in Title, which is served
+// once and never repeats.
 var Pickups = []PickupKind{
 	{
 		Key:    "beer",
@@ -495,6 +593,15 @@ var Pickups = []PickupKind{
 		Max:    9,
 		Tint:   "#c8892f",
 		Blurb:  "Патроны для обреза. Стрелять на трезвую голову тут не принято.",
+	},
+	{
+		Key:           "med",
+		Title:         "шприц",
+		Icon:          "💉",
+		Heals:         SyringeHeal,
+		InjectSeconds: SyringeSeconds,
+		Tint:          "#9fd6c8",
+		Blurb:         "Чинит. Медленно, стоя на месте и с открытым ртом — так что выбирай, где именно тебе не страшно.",
 	},
 }
 

@@ -71,6 +71,11 @@ const CONFIG = {
     spawn_seconds: 14,
     kills_title: 'слопики',
   },
+  // The шприц's numbers are wrong on purpose too, and its `grants` is EMPTY —
+  // which is the catalogue saying a thing is used the instant it is walked over
+  // rather than carried. Three readouts filter on that field, so an entry with it
+  // empty is what proves they do: a HUD or a standings row that drew a counter
+  // for medicine would show a column of zeroes for the whole visit.
   pickups: [
     {
       key: 'beer',
@@ -81,6 +86,18 @@ const CONFIG = {
       max: 9,
       tint: '#c8892f',
       blurb: 'Заливаешь — и панчи сами идут.',
+    },
+    {
+      key: 'med',
+      title: 'шприц',
+      icon: '💉',
+      grants: '',
+      amount: 0,
+      max: 0,
+      tint: '#9fd6c8',
+      blurb: 'Чинит, но стоя.',
+      heals: 35,
+      inject_seconds: 4,
     },
   ],
   surfaces: [
@@ -146,9 +163,14 @@ const LEVEL = {
     { v: false, a: 0, lo: 10, hi: 20, s: 1 },
     { v: false, a: 10, lo: 10, hi: 20, s: 1 },
   ],
+  // Two bottles and an ampoule, so the scene is asked to build both silhouettes
+  // — a kind whose `heals` is set is drawn as a syringe rather than as a bottle
+  // in a different colour, because walking onto the wrong one costs seconds of
+  // being unable to move.
   pickups: [
     { id: 0, k: 'beer', s: 1, p: { x: 14, y: 4 } },
     { id: 1, k: 'beer', s: 1, p: { x: 17, y: 7 } },
+    { id: 2, k: 'med', s: 0, p: { x: 3, y: 8 } },
   ],
   spawn: { x: 5, y: 5 },
   spawn_sector: 0,
@@ -524,6 +546,48 @@ test.describe('«ВАНЯДУМ» splash', () => {
     // The claim this iteration made false is gone: there ARE strangers in the
     // building now, and a friend shot still scores nothing towards them.
     await expect(rules).not.toContainText('чужих тут нет');
+  });
+
+  test('and it states the шприц’s rules, cost first', async ({ page }) => {
+    // C3's rules change, and the one a cheatsheet most has to get right: the
+    // ampoule is the first thing in this building that takes TIME to use, and a
+    // player who reads «чинит» and nothing else will walk onto one with a
+    // нейрослоп in the room and be killed standing perfectly still, reading it as
+    // the controls having stopped answering. Every number is the stub's rather
+    // than production's, so a hand-typed cheatsheet fails.
+    await openSplash(page);
+    const rules = page.getByTestId('vanyadum-rules');
+    await expect(rules).toContainText('шприц');
+    await expect(rules).toContainText('Чинит, но стоя.');
+    // How much, against the player's own ceiling — which is the half that says
+    // topping up at nearly full health throws the remainder away.
+    await expect(rules).toContainText('+35 здоровья');
+    await expect(rules).toContainText('80');
+    // How long, beside the reload rather than compared to it, and the one join
+    // that cannot invert: the нейрослоп's own speed times the ampoule's own
+    // duration, which is 2,5 × 4 on this catalogue.
+    await expect(rules).toContainText('4 с');
+    await expect(rules).toContainText('10 м');
+    // What ends it, and that the player cannot end it himself — typed out,
+    // because the catalogue carries no field for either.
+    await expect(rules).toContainText('Только урон');
+    await expect(rules).toContainText('Сам отменить не можешь');
+    // That a whole man leaves it lying there, which is what makes it a landmark.
+    await expect(rules).toContainText('На полном здоровье');
+    // And that the whole room can see it, which is the sharpest rule in the
+    // block: it is the most exploitable moment the game has.
+    await expect(rules).toContainText('зелён');
+  });
+
+  test('and it does not price the шприц as something you carry', async ({ page }) => {
+    // An empty `grants` is the catalogue saying a thing is used on the spot and
+    // never kept, so the listing must not print «(+0, максимум 0)» — a cheatsheet
+    // reading a field that does not apply and rendering it anyway.
+    await openSplash(page);
+    const rules = page.getByTestId('vanyadum-rules');
+    await expect(rules).toContainText('в карманах не лежит');
+    await expect(rules).not.toContainText('+0');
+    await expect(rules).not.toContainText('максимум 0');
   });
 
   test('and it says you cannot see everybody, and where the rest are listed', async ({ page }) => {
@@ -1146,6 +1210,100 @@ test.describe('«ВАНЯДУМ» play', () => {
     await expect(page.getByTestId('vanyadum-protect')).toHaveCount(0);
   });
 
+  test('an injection is a readout, with the countdown that ends it', async ({ page }) => {
+    // WHAT THE CANVAS CANNOT SAY. The syringe animation is inside the canvas and
+    // ADR-047 accepts that a canvas is opaque to this suite — so the two facts a
+    // player actually needs are real DOM: that an injection is running, and how
+    // long is left of it. Without them, seconds of refused input read as the game
+    // having crashed, exactly as being killed would.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.snapshot({ hp: 40 });
+    await expect(page.getByTestId('vanyadum-inject')).toHaveCount(0);
+
+    // `dn` with health still above zero IS the ampoule — the wire spends one
+    // field on this and on the respawn, and `hp` is the discriminator.
+    await socket.snapshot({ hp: 40, dn: 3200 });
+    const badge = page.getByTestId('vanyadum-inject');
+    await expect(badge).toBeVisible();
+    await expect(badge).toContainText('3,2');
+    // Both halves of the cost, because neither is discoverable without paying it.
+    await expect(badge).toContainText('не идёшь');
+    await expect(badge).toContainText('не стреляешь');
+
+    // It counts down, and the health climbs beside it — the two are the same
+    // number seen from either end.
+    await socket.snapshot({ hp: 52, dn: 1500 });
+    await expect(badge).toContainText('1,5');
+    await expect(page.getByTestId('vanyadum-health')).toContainText('52');
+
+    // And the server simply stops sending it.
+    await socket.snapshot({ hp: 75 });
+    await expect(page.getByTestId('vanyadum-inject')).toHaveCount(0);
+  });
+
+  test('the same number is a respawn when there is nothing left of him', async ({ page }) => {
+    // THE DISCRIMINATOR, AND IT IS THE WHOLE REASON THE WIRE DID NOT GROW A
+    // FIELD. `dn` at zero health is a man on the floor and at any other health is
+    // an ampoule emptying into his arm — a client that read it as one thing would
+    // put a healing badge on a corpse, or a death card on somebody standing up.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.snapshot({ hp: 0, dn: 2400 });
+    await expect(page.getByTestId('vanyadum-down')).toBeVisible();
+    await expect(page.getByTestId('vanyadum-inject')).toHaveCount(0);
+
+    await socket.snapshot({ hp: 30, dn: 2400 });
+    await expect(page.getByTestId('vanyadum-inject')).toBeVisible();
+    await expect(page.getByTestId('vanyadum-down')).toHaveCount(0);
+  });
+
+  test('a man being mended is not marked as a man being shot', async ({ page }) => {
+    // The hurt mark is `hp` FALLING between two frames, and an ampoule is the one
+    // thing in this game that makes it rise a hit point at a time for seconds on
+    // end. A comparison written the wrong way round would strobe the health cell
+    // for the whole injection.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    const hp = page.getByTestId('vanyadum-health');
+    await socket.snapshot({ hp: 30, dn: 4000 });
+    for (const [health, left] of [
+      [42, 3000],
+      [54, 2000],
+      [66, 1000],
+    ]) {
+      await socket.snapshot({ hp: health, dn: left });
+      await expect(hp).toContainText(String(health));
+      await expect(hp).not.toHaveClass(/is-hurt/);
+    }
+  });
+
+  test('the шприц gets no counter, because nothing about it is carried', async ({ page }) => {
+    // An empty `grants` is the catalogue saying a thing is used the instant it is
+    // walked over. A HUD that iterated the whole catalogue would draw «💉 0» for
+    // the entire visit — a column that can never be anything else, next to one
+    // that means something.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+    await socket.snapshot({ hp: 61, c: { beer: 3 } });
+
+    await expect(page.getByTestId('vanyadum-count-beer')).toContainText('3');
+    await expect(page.getByTestId('vanyadum-count-med')).toHaveCount(0);
+
+    // And the standings do not grow one either — the board publishes what people
+    // are CARRYING, and nobody ever carries an ampoule.
+    await socket.board([{ n: 0, i: 'Ваня', s: 12, c: { beer: 3 } }]);
+    await expect(page.getByTestId('vanyadum-board-beer')).toHaveCount(1);
+    await expect(page.getByTestId('vanyadum-board-med')).toHaveCount(0);
+  });
+
   test('neither overlay runs off a 360 px phone', async ({ page }) => {
     const socket = await stubSocket(page);
     await openSplash(page);
@@ -1157,16 +1315,28 @@ test.describe('«ВАНЯДУМ» play', () => {
     expect(card.x).toBeGreaterThanOrEqual(0);
     expect(card.x + card.width).toBeLessThanOrEqual(viewport.width);
 
-    await socket.snapshot({ hp: 80, pr: 5000 });
-    const badge = (await page.getByTestId('vanyadum-protect').boundingBox())!;
-    expect(badge.x).toBeGreaterThanOrEqual(0);
-    expect(badge.x + badge.width).toBeLessThanOrEqual(viewport.width);
-    // And clear of the two controls at the bottom, so neither is covered by a
-    // notice that appears while somebody is trying to press one.
     const fire = (await page.getByTestId('vanyadum-fire').boundingBox())!;
     const mute = (await page.getByTestId('vanyadum-mute').boundingBox())!;
-    expect(badge.y + badge.height).toBeLessThanOrEqual(fire.y);
-    expect(badge.y + badge.height).toBeLessThanOrEqual(mute.y);
+
+    // BOTH BADGES, AND THEY SHARE A POSITION. The server grants protection only
+    // to a man at full health and a man at full health walks straight over the
+    // шприц, so at most one is ever on screen — which is why they occupy one slot
+    // rather than two that happen not to overlap today. Each is measured because
+    // each has its own text, and the longer of the two is the one that would run
+    // off a phone.
+    for (const [testid, fields] of [
+      ['vanyadum-protect', { hp: 80, pr: 5000 }],
+      ['vanyadum-inject', { hp: 40, dn: 4000 }],
+    ] as const) {
+      await socket.snapshot(fields);
+      const badge = (await page.getByTestId(testid).boundingBox())!;
+      expect(badge.x).toBeGreaterThanOrEqual(0);
+      expect(badge.x + badge.width).toBeLessThanOrEqual(viewport.width);
+      // And clear of the two controls at the bottom, so neither is covered by a
+      // notice that appears while somebody is trying to press one.
+      expect(badge.y + badge.height).toBeLessThanOrEqual(fire.y);
+      expect(badge.y + badge.height).toBeLessThanOrEqual(mute.y);
+    }
 
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,

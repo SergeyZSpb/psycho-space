@@ -51,26 +51,36 @@ function num(v: unknown): number {
  * The values a peer's `st` takes — everything a viewer has to be told about
  * somebody beyond where he is standing.
  *
- * ONE FIELD FOR FOUR VALUES, because the server's rules make them mutually
- * exclusive: a man on the floor cannot fire and cannot be hit again, and a
- * protected man can do neither either. Its precedence is the server's — down
- * beats protected beats hit beats fired — so a killing blow arrives as DOWN
- * rather than as HIT, and the acknowledgement for it is the figure going over.
+ * ONE FIELD FOR FIVE VALUES, because the server's rules make them mutually
+ * exclusive: a man on the floor cannot fire and cannot be hit again, a protected
+ * man can do neither either, and a man with a needle in his arm cannot fire while
+ * being hit is what takes the needle out. Its precedence is the server's — down
+ * beats protected beats hit beats injecting beats fired — so a killing blow
+ * arrives as DOWN rather than as HIT, and the acknowledgement for it is the
+ * figure going over.
  *
- * TWO INSTANTS AND TWO STATES, and the difference decides how each is drawn.
+ * TWO INSTANTS AND THREE STATES, and the difference decides how each is drawn.
  * `FIRED` and `HIT` are true for exactly the tick they happened on, so they are
- * marked on the TRANSITION and shown for a few frames (vanyadumFlash). `DOWN`
- * and `PROTECTED` last their whole duration, so they are drawn as properties of
- * the figure for as long as the field carries them — a mark that flashed once
- * would say nothing about the three seconds that follow.
+ * marked on the TRANSITION and shown for a few frames (vanyadumFlash). `DOWN`,
+ * `PROTECTED` and `INJECTING` last their whole duration, so they are drawn as
+ * properties of the figure for as long as the field carries them — a mark that
+ * flashed once would say nothing about the seconds that follow.
+ *
+ * `INJECTING` COST NOTHING TO ADD, which is why the room can see it at all: the
+ * digit was already on every peer, so a fifth value is one character inside a
+ * field that was going to be sent regardless. It is also the value the room most
+ * needs — a man standing perfectly still who cannot shoot back is the single most
+ * exploitable moment this game has, and an injection only its own author could
+ * see would be a rule the rest of the заброшка is playing blind against.
  *
  * Zero — which is the omitted state, and almost every peer on almost every tick
- * — is a man who is alive, unprotected and did nothing.
+ * — is a man who is alive, unprotected, not injecting and did nothing.
  */
 export const PEER_FIRED = 1;
 export const PEER_HIT = 2;
 export const PEER_DOWN = 3;
 export const PEER_PROTECTED = 4;
+export const PEER_INJECTING = 5;
 
 /**
  * One row of the standings: a place in the building and who is in it.
@@ -150,7 +160,7 @@ export const BETRAYALS_ICON = '🔪';
  * than derivable from one. Your own gun needs no marker — a barrel count falling
  * IS the shot — but nothing about another man's gun is on the wire to fall, and
  * a HIT moves nobody at all, so there is no value already on the frame that
- * could imply either. See PEER_FIRED above for the four values and for which of
+ * could imply either. See PEER_FIRED above for the five values and for which of
  * them are instants. Omitted in the resting state, which is almost every peer on
  * almost every tick, so absent reads as nothing happening.
  */

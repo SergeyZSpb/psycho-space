@@ -68,6 +68,14 @@ type goldenConstants struct {
 	ReloadSeconds       float64 `json:"reload_seconds"`
 	ReloadCost          int     `json:"reload_cost"`
 	Ammo                string  `json:"ammo"`
+	// The ampoule, on the same terms: a port healing by a different amount or
+	// over a different time would fail every point of the injection case, and
+	// this is what makes the report say which of the three numbers is wrong. Full
+	// health is here because it is the cap the heal is clamped to, so a port that
+	// had it wrong would overheal instead of stopping.
+	MaxHealth      int     `json:"max_health"`
+	SyringeHeal    int     `json:"syringe_heal"`
+	SyringeSeconds float64 `json:"syringe_seconds"`
 }
 
 type goldenCase struct {
@@ -88,10 +96,20 @@ type goldenCase struct {
 	// and an omitted number would have to mean the opposite of what it says. The
 	// port reads this as "set health to nothing"; what happens next is the whole
 	// of the case.
-	Down         bool          `json:"down,omitempty"`
-	StartProtect float64       `json:"start_protect,omitempty"`
-	Commands     []goldenCmd   `json:"commands"`
-	Trace        []goldenPoint `json:"trace"`
+	Down         bool    `json:"down,omitempty"`
+	StartProtect float64 `json:"start_protect,omitempty"`
+	// StartHurt is how much health has already been taken off him when the case
+	// begins, and StartInject is how many seconds of an ampoule are already
+	// running.
+	//
+	// HURT RATHER THAN A HEALTH VALUE, because zero has to mean something and
+	// "unhurt" is the only reading that does not collide with Down above — a
+	// start_health of 0 would be indistinguishable from an absent field on a man
+	// at full health, and would mean the opposite of it.
+	StartHurt   int           `json:"start_hurt,omitempty"`
+	StartInject float64       `json:"start_inject,omitempty"`
+	Commands    []goldenCmd   `json:"commands"`
+	Trace       []goldenPoint `json:"trace"`
 }
 
 type goldenCmd struct {
@@ -131,21 +149,37 @@ type goldenPoint struct {
 	// trigger so that a port whose arithmetic drifts reports "your protection is
 	// wrong" instead of "your gun is wrong".
 	Protected float64 `json:"pr,omitempty"`
+	// Inject is seconds of ampoule left, on exactly those terms.
+	Inject float64 `json:"ij,omitempty"`
+	// Health is what is left of him, and it is NOT omitted at zero: zero is a man
+	// on the floor, which is the state one whole case is about, and an absent
+	// field cannot say it.
+	//
+	// IT USED TO BE ABSENT ALTOGETHER, on the grounds that Step never changed it —
+	// damage belongs to the world, which the browser does not run. The шприц ended
+	// that: an injection is advanced INSIDE Step, and the health it delivers is
+	// derived from the countdown rather than accumulated, so the browser produces
+	// the number too and a port that rounded it differently would drift from the
+	// server by a hit point every few frames. Nine bytes a step, which buys the
+	// assertion that walking, firing and dying still do NOT move it.
+	Health int `json:"hp"`
 }
 
 // pointOf records everything the port has to reproduce about one step.
 //
-// HEALTH IS NOT HERE, deliberately. Step never changes it — damage belongs to
-// the world, which the browser does not run — so a field carried on nine hundred
-// points would be nine hundred copies of the number the case started with. What
-// the port has to prove about a dead man is that he does NOTHING, and the
-// position and the gun on every point below are exactly that assertion.
+// EVERY PREDICTED QUANTITY BELONGS HERE, and health is the one that had to be
+// argued about twice. It was left out while Step could not change it; the
+// ampoule made it a product of Step (sim.go, stepInject), so it is on the point
+// like everything else — and carrying it on the cases that do NOT inject is what
+// asserts that nothing else in the simulation touches it.
 func pointOf(p Player) goldenPoint {
 	return goldenPoint{
 		X: p.Pos.X, Y: p.Pos.Y, Sector: p.Sector,
 		Loaded: p.Loaded, Cooldown: p.CooldownLeft, Reload: p.ReloadLeft,
 		Ammo:      p.Counters[AmmoCounter],
 		Protected: p.ProtectedLeft,
+		Inject:    p.InjectLeft,
+		Health:    p.Health,
 	}
 }
 
@@ -173,6 +207,9 @@ func buildGolden() goldenFile {
 			ReloadSeconds:       ReloadSeconds,
 			ReloadCost:          ReloadCost,
 			Ammo:                AmmoCounter,
+			MaxHealth:           MaxHealth,
+			SyringeHeal:         SyringeHeal,
+			SyringeSeconds:      SyringeSeconds,
 		},
 	}
 
@@ -371,6 +408,60 @@ func buildGolden() goldenFile {
 			c.Trace = append(c.Trace, pointOf(p))
 		}
 		f.Cases = append(f.Cases, c)
+	}
+
+	// The ampoule, twice: a wounded man who gets the whole of it, and a nearly
+	// whole one who is rooted for the same time and given only what fits.
+	//
+	// THREE RULES IN ONE TRANSCRIPT, all of them running against a full stick and
+	// a held trigger for every step. He does not MOVE — the position is the one he
+	// started at until the countdown reaches zero, and then he walks; he does not
+	// FIRE — the barrel count sits at Barrels through the whole injection and the
+	// first pull after it is honoured; and his HEALTH climbs a hit point at a time
+	// as the countdown falls, which is the number this file did not carry until
+	// this iteration.
+	//
+	// THE SUB-STEP IS 0.03 AND NOT THE CLIENT'S 0.025, so the window expires in
+	// the middle of a step rather than on a boundary — the same trick the spawn
+	// protection case plays, and for the same reason: a port that only ever
+	// compared against clean boundaries would pass and still be wrong.
+	//
+	// THE SECOND CASE IS THE OVERHEAL, and it is the one worth reading. He starts
+	// 6 short of full against an ampoule holding SyringeHeal, so the heal is
+	// exhausted against the cap a fifth of the way in — and the trace then shows
+	// health FLAT at MaxHealth while the countdown goes on running and the stick
+	// goes on being refused. That is the rule the catalogue chose: the ampoule is
+	// spent on the clock rather than on the health, so injecting at nearly full is
+	// a bad trade rather than a free top-up.
+	for _, c := range []struct {
+		name string
+		hurt int
+	}{
+		{"syringe", SyringeHeal + 13},
+		{"syringe-overheal", 6},
+	} {
+		l := &Level{Sectors: []Sector{{ID: 0, MinX: 0, MinY: 0, MaxX: 40, MaxY: 40, FloorZ: 0, CeilZ: CeilingHeight}}}
+		l.Walls = buildWalls(l)
+		p := NewPlayer(l)
+		p.Pos, p.Sector = Vec2{X: 20, Y: 20}, 0
+		p.Health = MaxHealth - c.hurt
+		p.InjectLeft = SyringeSeconds
+		g := goldenCase{
+			Name: c.name, Level: l, Start: p.Pos, Sector: p.Sector,
+			StartHurt: c.hurt, StartInject: SyringeSeconds,
+		}
+		// Long enough to outlast the injection and then some, so the tail of the
+		// trace is a man walking and shooting again — which is the assertion that
+		// the root and the refusal actually END.
+		for i := 0; i < 110; i++ {
+			cmd := goldenCmd{Dt: 0.03, MX: 0.5, MY: 1, Yaw: 0.4, Fire: true}
+			g.Commands = append(g.Commands, cmd)
+			p = Step(l, p, Command{
+				Dt: cmd.Dt, MX: cmd.MX, MY: cmd.MY, Yaw: cmd.Yaw, Pitch: cmd.Pitch, Fire: cmd.Fire,
+			})
+			g.Trace = append(g.Trace, pointOf(p))
+		}
+		f.Cases = append(f.Cases, g)
 	}
 
 	return f

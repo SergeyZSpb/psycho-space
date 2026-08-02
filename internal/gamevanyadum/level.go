@@ -395,19 +395,48 @@ func subtractPortals(e Wall, portals []Portal) []Wall {
 	return segs
 }
 
-// placePickups scatters beer through the level, never in the room the player
-// starts in — walking somewhere to find it is the entire loop this iteration
-// exists to prove.
+// placePickups scatters things through the level, never in the room the player
+// starts in — walking somewhere to find them is the entire loop this game is
+// built around.
+//
+// ONE OF EVERY KIND BEFORE A SECOND OF ANYTHING, which stopped being a nicety
+// the moment there were two kinds. A uniform draw over a heap of two or three
+// produces a building with no beer in it about one time in eight — a gun that
+// can never be reloaded — and one with no шприц just as often, which is this
+// whole iteration invisible for the length of a match that never ends. Neither
+// is a rare enough accident to leave to a die, and both are silent: nothing
+// about the заброшка says what it failed to generate.
+//
+// SO THE HEAP IS len(Pickups) GUARANTEED PLUS ONE OR TWO DRAWN AT RANDOM. The
+// count moved up by one with the ampoule rather than staying where it was,
+// because medicine is an ADDITION to the building and not a bottle taken out of
+// it: the beer feeds a gun that spends it, and thinning the ammunition to make
+// room for the cure would have retuned the firefight by accident.
 func (l *Level) placePickups(rng *rand.Rand) {
 	if len(l.Sectors) < 2 {
 		return
 	}
-	count := 2 + rng.Intn(2)
+	count := len(Pickups) + 1 + rng.Intn(2)
 	for i := 0; i < count; i++ {
 		s := l.Sectors[1+rng.Intn(len(l.Sectors)-1)]
+		// The first pass down the catalogue is the guarantee; everything after it
+		// is a fair draw. A draw rather than `i % len(Pickups)`, which would make
+		// the surplus a fixed rotation — the same kinds in the same order in every
+		// building ever generated.
+		//
+		// AND THE DRAW HAPPENS EITHER WAY, discarded on the guaranteed ones. A
+		// level is reproducible from its seed, so how many numbers each pickup
+		// takes off the stream is part of the reproduction: consuming one here and
+		// none there would make every position after the first differ by which
+		// branch ran, which is a generator whose output moves when the catalogue
+		// grows an entry.
+		kind := Pickups[rng.Intn(len(Pickups))]
+		if i < len(Pickups) {
+			kind = Pickups[i]
+		}
 		l.Pickups = append(l.Pickups, Pickup{
 			ID:     i,
-			Kind:   Pickups[rng.Intn(len(Pickups))].Key,
+			Kind:   kind.Key,
 			Sector: s.ID,
 			Pos:    randomSpot(rng, s),
 		})

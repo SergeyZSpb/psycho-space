@@ -623,3 +623,246 @@ func TestTheAmmunitionIsSomethingTheBuildingActuallyScatters(t *testing.T) {
 	}
 	t.Fatalf("nothing in the catalogue grants %q, so the gun can never be reloaded", AmmoCounter)
 }
+
+// --- the шприц ---------------------------------------------------------------
+
+// injecting is somebody standing in the middle of a room, hurt by `hurt`, with a
+// full ampoule running. It is the state collect leaves a man in the tick after he
+// walks over one (world.go).
+func injecting(hurt int) (*Level, Player) {
+	l, p := armed(0)
+	p.Health = MaxHealth - hurt
+	p.InjectLeft = SyringeSeconds
+	return l, p
+}
+
+// walkHard is a command with the stick fully forward, which is what a rooted man
+// is sending while he waits: he does not know he is rooted until the frame comes
+// back saying so, and his thumb is already down.
+func walkHard(p Player, seconds float64) Command {
+	return Command{Dt: seconds, MX: 0.5, MY: 1, Yaw: p.Yaw, Pitch: p.Pitch}
+}
+
+func TestTheAmpouleRunsDownHealsAndFinishes(t *testing.T) {
+	// The whole of the verb, in one transcript: the countdown falls, the health
+	// climbs while it falls, and both land exactly where the catalogue says.
+	l, p := injecting(SyringeHeal)
+	start := p.Health
+
+	// Sub-steps that do NOT divide the duration, so the last one lands past the
+	// end rather than exactly on it — which is where an implementation that
+	// subtracted without clamping would go negative and heal past the ampoule.
+	const sub = 0.03
+	last := p.Health
+	for p.InjectLeft > 0 {
+		next := Step(l, p, holdStill(p, sub))
+		if next.Health < last {
+			t.Fatalf("health went DOWN during an injection: %d then %d", last, next.Health)
+		}
+		if next.InjectLeft >= p.InjectLeft {
+			t.Fatalf("the countdown did not move: %.4f then %.4f", p.InjectLeft, next.InjectLeft)
+		}
+		p, last = next, next.Health
+	}
+	if p.InjectLeft != 0 {
+		t.Fatalf("the ampoule finished at %.6f rather than at zero", p.InjectLeft)
+	}
+	if got := p.Health - start; got != SyringeHeal {
+		t.Fatalf("one ampoule delivered %d, the catalogue says %d", got, SyringeHeal)
+	}
+
+	// And it stays finished: a step after the end is an ordinary step, so nothing
+	// goes on climbing.
+	if after := Step(l, p, holdStill(p, sub)); after.Health != p.Health {
+		t.Fatalf("health moved to %d after the ampoule was empty", after.Health)
+	}
+}
+
+func TestTheAmpouleDoesNotOverheal(t *testing.T) {
+	// A man 6 short of full against an ampoule holding SyringeHeal. The surplus is
+	// lost rather than banked, AND THE TIME IS STILL SPENT — the ampoule is spent
+	// on the clock rather than on the health, which is what makes injecting at
+	// nearly full a bad trade instead of a free top-up (content.go).
+	const short = 6
+	l, p := injecting(short)
+
+	filled := false
+	for i := 0; p.InjectLeft > 0 && i < 1000; i++ {
+		p = Step(l, p, walkHard(p, 0.03))
+		if p.Health > MaxHealth {
+			t.Fatalf("health reached %d, the cap is %d", p.Health, MaxHealth)
+		}
+		if p.Health == MaxHealth && !filled {
+			filled = true
+			// Full, and still rooted: the rest of the duration is owed whatever the
+			// bar says.
+			if p.InjectLeft <= 0 {
+				t.Fatal("the ampoule ended the moment the bar filled, so the overheal costs nothing")
+			}
+		}
+	}
+	if !filled {
+		t.Fatalf("an ampoule of %d on a man %d short never filled him", SyringeHeal, short)
+	}
+	if p.Health != MaxHealth {
+		t.Fatalf("finished at %d rather than at the cap of %d", p.Health, MaxHealth)
+	}
+}
+
+func TestAManWithANeedleInHisArmCannotWalkAndCannotFire(t *testing.T) {
+	// The window, which is the whole reason the heal is not instant. He is sending
+	// everything he has — full stick, trigger held — and none of it lands until the
+	// countdown reaches zero.
+	l, p := injecting(SyringeHeal)
+	where, loaded := p.Pos, p.Loaded
+
+	// Enough steps to outlast SyringeSeconds and then some, at a sub-step that
+	// does not divide it — so the window expires in the middle of one rather than
+	// on a boundary.
+	//
+	// THE ASSERTION IS ON THE STATE AFTER EACH STEP AND NOT BEFORE IT, because the
+	// step that EMPTIES the ampoule is deliberately a step he can use (see
+	// TestTheStepAnAmpouleEndsOnIsAStepHeCanUse). So the loop stops the moment the
+	// countdown reaches zero, and everything before that is the window.
+	done := false
+	for i := 0; i < 200 && !done; i++ {
+		p = Step(l, p, Command{Dt: 0.03, MX: 0.5, MY: 1, Yaw: 0.4, Fire: true})
+		if p.InjectLeft == 0 {
+			done = true
+			break
+		}
+		if p.Pos != where {
+			t.Fatalf("step %d: he moved to %+v with an ampoule running", i, p.Pos)
+		}
+		if p.Loaded != loaded {
+			t.Fatalf("step %d: a barrel went while an ampoule was running", i)
+		}
+		if p.CooldownLeft != 0 || p.ReloadLeft != 0 {
+			t.Fatalf("step %d: the gun started something (cd %.3f, reload %.3f)", i, p.CooldownLeft, p.ReloadLeft)
+		}
+	}
+	if !done {
+		t.Fatalf("the ampoule is still running after 6 s of steps: %.3f left", p.InjectLeft)
+	}
+
+	// The yaw landed throughout, because the camera is the client's and taking it
+	// away is the one thing a first-person game may not do.
+	if math.Abs(p.Yaw-0.4) > 1e-9 {
+		t.Fatalf("his view is at %.4f rather than where he pointed it", p.Yaw)
+	}
+
+	// And it really has ended: the step that emptied it already walked and fired.
+	if p.Pos == where {
+		t.Fatal("he is still rooted on the step the ampoule emptied")
+	}
+	if p.Loaded != loaded-1 {
+		t.Fatalf("the pull on the step the ampoule emptied left %d barrels, expected %d", p.Loaded, loaded-1)
+	}
+}
+
+func TestTheStepAnAmpouleEndsOnIsAStepHeCanUse(t *testing.T) {
+	// The same ordering rule the gun already has: the timer is advanced and THEN
+	// the trigger is read, so a shot asked for on the step an injection finishes
+	// is honoured rather than refused by a state the arm has just left. At 20 Hz
+	// the difference is a tap eaten for no reason a player can see.
+	l, p := injecting(SyringeHeal)
+	p.InjectLeft = dt // exactly one sub-step left
+
+	end := Step(l, p, Command{Dt: dt, MY: 1, Yaw: 0, Fire: true})
+	if end.InjectLeft != 0 {
+		t.Fatalf("the ampoule has %.4f left after the step that should have emptied it", end.InjectLeft)
+	}
+	if end.Loaded != Barrels-1 {
+		t.Fatal("the pull on the step the ampoule emptied was refused")
+	}
+	if end.Pos == p.Pos {
+		t.Fatal("he did not move on the step the ampoule emptied")
+	}
+}
+
+func TestReplayingACommandAdvancesTheAmpouleAgain(t *testing.T) {
+	// The ampoule is a COUNTDOWN, so it has the same reconciliation property the
+	// gun's timers have and needs the same replay base: the snapshot's, never the
+	// client's own predicted player (ADR-058, and the Player doc in sim.go). A
+	// predictor that replayed pending commands on top of its own state would burn
+	// the injection at the round-trip rate — the man would be walking and shooting
+	// in the browser while the server still had him rooted, which is the single
+	// most visible mistake this iteration can produce.
+	l, p := injecting(SyringeHeal)
+	c := holdStill(p, dt)
+
+	once := Step(l, p, c)
+	twice := Step(l, once, c)
+	if math.Abs((once.InjectLeft-twice.InjectLeft)-dt) > 1e-9 {
+		t.Fatalf("applying the same command twice moved the ampoule by %.4f, one step is %.4f",
+			once.InjectLeft-twice.InjectLeft, dt)
+	}
+
+	// And the health follows the countdown rather than a sum of its own history,
+	// which is what makes replaying from a snapshot land on the server's number:
+	// two different routes to the same remaining time produce the same health.
+	direct := Step(l, p, holdStill(p, 2*dt))
+	if math.Abs(direct.InjectLeft-twice.InjectLeft) > 1e-9 {
+		t.Fatalf("two sub-steps left %.6f and one double step left %.6f", twice.InjectLeft, direct.InjectLeft)
+	}
+	if direct.Health != twice.Health {
+		t.Fatalf("the same remaining time produced %d health one way and %d the other", direct.Health, twice.Health)
+	}
+}
+
+func TestADeadManHasNoAmpouleRunning(t *testing.T) {
+	// Step returns at once for a man with no health, so an ampoule that somehow
+	// survived his death would sit on him at whatever it read — and `dn` on the
+	// wire carries the injection or the respawn depending on exactly that health
+	// (message.go, Snapshot.Down). The world is what clears it (world.go, hurt);
+	// this is the assertion that Step does not run one on a corpse if it ever did.
+	l, p := injecting(SyringeHeal)
+	p.Health = 0
+	before := p
+
+	after := Step(l, p, Command{Dt: dt, MX: 1, MY: 1, Yaw: 1, Fire: true})
+	if after.InjectLeft != before.InjectLeft {
+		t.Fatalf("the ampoule moved on a man with no health: %.4f then %.4f", before.InjectLeft, after.InjectLeft)
+	}
+	if after.Health != 0 {
+		t.Fatalf("a corpse healed to %d", after.Health)
+	}
+}
+
+func TestAnAmpouleKeepsTheIdleFillRunning(t *testing.T) {
+	// A man being injected is standing PERFECTLY STILL and sending nothing at all
+	// (web/src/lib/vanyadumInput.ts, `due`), so the world's idle fill is the only
+	// thing advancing him — and the fill runs only while something on him is
+	// counting down. A timer missing from `ticking` is a timer that stops the
+	// moment its owner stops moving, which for this one is every tick of it.
+	var p Player
+	p.InjectLeft = SyringeSeconds
+	if !p.ticking() {
+		t.Fatal("a running ampoule does not count as ticking, so the idle fill will not advance it")
+	}
+	p.InjectLeft = 0
+	if p.ticking() {
+		t.Fatal("an empty ampoule keeps the idle fill running, which taxes standing still for nothing")
+	}
+}
+
+func TestTheAmpouleIsSomethingTheBuildingActuallyScatters(t *testing.T) {
+	// The same guard the ammunition has: the injection's constants are the
+	// simulation's, and a catalogue with no medicine in it would mean nothing can
+	// ever start one — silently, because a building simply would not scatter any.
+	for _, k := range Pickups {
+		if k.Heals <= 0 {
+			continue
+		}
+		if k.InjectSeconds <= 0 {
+			t.Fatalf("%q heals %d over %.2f s, so it heals instantly and the window this iteration is about does not exist",
+				k.Key, k.Heals, k.InjectSeconds)
+		}
+		if k.Grants != "" {
+			t.Fatalf("%q both heals and grants %q; medicine is used rather than carried, so a bag entry is a counter nothing spends",
+				k.Key, k.Grants)
+		}
+		return
+	}
+	t.Fatal("nothing in the catalogue heals, so no ampoule can ever be started")
+}

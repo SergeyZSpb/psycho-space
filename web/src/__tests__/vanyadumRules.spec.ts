@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { VANYADUM_PROSE, ammoPickup, buildRules, pickupLine } from '../lib/vanyadumRules';
-import type { VanyadumConfig } from '../api/types';
+import {
+  VANYADUM_PROSE,
+  ammoPickup,
+  buildRules,
+  carriedKinds,
+  medicinePickup,
+  pickupLine,
+} from '../lib/vanyadumRules';
+import type { VanyadumConfig, VanyadumPickupKind } from '../api/types';
 
 /**
  * The splash-screen cheatsheet.
@@ -553,6 +560,173 @@ describe('buildRules', () => {
         expect(line.text.trim().length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+/**
+ * The same catalogue with medicine scattered in it.
+ *
+ * ITS NUMBERS ARE NOT THE SERVER'S, exactly like everything else in this file: a
+ * cheatsheet with 50 or 2,5 typed into it would pass against production and fail
+ * here, which is the whole point of a fixture that is wrong on purpose. `grants`
+ * is EMPTY, because that is what the catalogue says about a thing that is used on
+ * the spot rather than carried — and it is the field three readouts filter on.
+ */
+const MEDICINE: VanyadumPickupKind = {
+  key: 'med',
+  title: 'шприц',
+  icon: '💉',
+  grants: '',
+  amount: 0,
+  max: 0,
+  tint: '#9fd6c8',
+  blurb: 'Чинит, но стоя.',
+  heals: 35,
+  inject_seconds: 4,
+};
+
+const medConfig: VanyadumConfig = { ...config, pickups: [...config.pickups, MEDICINE] };
+
+describe('the шприц block', () => {
+  it('is absent when the building scatters no medicine', () => {
+    // A heading over nothing is worse than a heading that is not there — the
+    // same rule the pickup block already follows.
+    expect(buildRules(config).some((b) => b.title === 'Шприц')).toBe(false);
+  });
+
+  it('takes how much and how long from the catalogue, and the cap from the player', () => {
+    const block = buildRules(medConfig).find((b) => b.title === 'Шприц');
+    const text = block?.lines.map((l) => l.text).join(' ') ?? '';
+    expect(text).toContain('+35 здоровья');
+    // The cap the heal is clamped to, which is what makes injecting at nearly
+    // full health a bad trade rather than a free top-up.
+    expect(text).toContain('100');
+    expect(text).toContain('4 с');
+    // And it is not marked as prose: the numbers are all derived, and the two
+    // typed-out lines live in a block whose other lines are not.
+    expect(block?.prose).toBeFalsy();
+  });
+
+  it('follows a retune with no frontend change, which is the whole claim', () => {
+    const retuned = buildRules({
+      ...medConfig,
+      pickups: [config.pickups[0], { ...MEDICINE, heals: 12, inject_seconds: 7.5 }],
+    })
+      .find((b) => b.title === 'Шприц')
+      ?.lines.map((l) => l.text)
+      .join(' ');
+    expect(retuned).toContain('+12 здоровья');
+    expect(retuned).toContain('7,5 с');
+    expect(retuned).not.toContain('35');
+  });
+
+  it('puts the cost next to the reload rather than claiming which is worse', () => {
+    // BOTH NUMBERS, NO COMPARISON. Either can be retuned, so a sentence saying
+    // «дольше перезарядки» is a sentence that goes quietly false the afternoon
+    // somebody moves one of them — the same reasoning the capacity line follows.
+    const line = buildRules(medConfig)
+      .find((b) => b.title === 'Шприц')
+      ?.lines.find((l) => l.label.includes('стоять'));
+    expect(line?.text).toContain('4 с');
+    expect(line?.text).toContain('1,5 с');
+  });
+
+  it('says how far a нейрослоп walks in that time, which is a join that cannot invert', () => {
+    // The only unit that answers the question the injection actually asks —
+    // "am I far enough from it" — and it is the creature's own speed times the
+    // ampoule's own duration, so it stays true whatever either becomes.
+    const line = buildRules(medConfig)
+      .find((b) => b.title === 'Шприц')
+      ?.lines.find((l) => l.label.includes('стоять'));
+    expect(line?.text).toContain('14 м');
+  });
+
+  it('says what interrupts it, and that nothing else can', () => {
+    // TYPED OUT, and the line a rules change has to come back and edit by hand:
+    // the catalogue publishes how much and how long and carries no field at all
+    // for what ends an injection early or for what happens to the remainder.
+    const text =
+      buildRules(medConfig)
+        .find((b) => b.title === 'Шприц')
+        ?.lines.map((l) => l.text)
+        .join(' ') ?? '';
+    expect(text).toContain('Только урон');
+    expect(text).toContain('Сам отменить не можешь');
+    expect(text).toContain('остаток пропадает');
+  });
+
+  it('says a whole man walks straight over it, which is what makes it a landmark', () => {
+    const text =
+      buildRules(medConfig)
+        .find((b) => b.title === 'Шприц')
+        ?.lines.map((l) => l.text)
+        .join(' ') ?? '';
+    expect(text).toContain('На полном здоровье');
+    expect(text).toContain('вернись');
+  });
+
+  it('says the whole room can see it, because that is the rule worth knowing', () => {
+    // How a peer is DRAWN is this client's decision alone — the server sends a
+    // small integer and has no opinion about the colour — so it is typed out. It
+    // is on the screen because a man mid-injection is the most exploitable thing
+    // in the building, and a player who did not know that would take one in the
+    // open.
+    const text =
+      buildRules(medConfig)
+        .find((b) => b.title === 'Шприц')
+        ?.lines.map((l) => l.text)
+        .join(' ') ?? '';
+    expect(text).toContain('зелён');
+    expect(text).toContain('Чужой шприц видно так же');
+  });
+
+  it('never renders an empty line here either', () => {
+    for (const block of buildRules(medConfig)) {
+      expect(block.title.length).toBeGreaterThan(0);
+      for (const line of block.lines) {
+        expect(line.label.trim().length).toBeGreaterThan(0);
+        expect(line.text.trim().length).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+describe('medicinePickup', () => {
+  it('finds the entry by what it heals, which is the server’s own test', () => {
+    expect(medicinePickup(medConfig)?.key).toBe('med');
+  });
+
+  it('answers null when the catalogue scatters none', () => {
+    expect(medicinePickup(config)).toBeNull();
+  });
+
+  it('does not decide by the key, which would be a second definition of medicine', () => {
+    // `collect` asks whether `heals` is above zero and nothing else, so a client
+    // matching on «med» would part company with it the first time a second kind
+    // of medicine was added as a catalogue line.
+    const renamed = { ...medConfig, pickups: [config.pickups[0], { ...MEDICINE, key: 'ampoule' }] };
+    expect(medicinePickup(renamed)?.key).toBe('ampoule');
+  });
+});
+
+describe('carriedKinds', () => {
+  it('leaves out anything that is used rather than carried', () => {
+    // AN EMPTY `grants` IS THE CATALOGUE SAYING SO. The HUD and the standings
+    // draw one column per kind this returns, and a column for the шприц would
+    // sit at zero for the whole visit — there is no counter behind it.
+    expect(carriedKinds(medConfig).map((p) => p.key)).toEqual(['beer']);
+  });
+
+  it('answers nothing at all before the catalogue has arrived', () => {
+    expect(carriedKinds(null)).toEqual([]);
+  });
+
+  it('keeps the standings sentence to what is actually carried', () => {
+    const line = buildRules(medConfig)
+      .find((b) => b.title === 'Заброшка')
+      ?.lines.find((l) => l.label.includes('табло'));
+    expect(line?.text).toContain('🍺 пиво');
+    expect(line?.text).not.toContain('💉 шприц');
   });
 });
 

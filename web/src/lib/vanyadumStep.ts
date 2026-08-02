@@ -44,6 +44,21 @@ export interface StepConstants {
   reloadSeconds: number;
   /** How much ammunition one reload spends. */
   reloadCost: number;
+  /**
+   * The most health a man can hold. Here because it is the CAP AN AMPOULE IS
+   * CLAMPED TO, and clamping is the whole of why injecting at nearly full health
+   * is a bad trade rather than a free top-up.
+   */
+  maxHealth: number;
+  /**
+   * How much health one ampoule holds, and how long it takes to empty.
+   *
+   * Both come from the catalogue's medicine entry — `heals` and
+   * `inject_seconds` — rather than being constants here, so retuning either on
+   * the server moves what the browser predicts with no frontend change.
+   */
+  syringeHeal: number;
+  syringeSeconds: number;
 }
 
 /** One sub-step of input. Mirrors the server's Command. */
@@ -75,14 +90,20 @@ export interface StepCommand {
  *     raised: the muzzle flash is drawn the instant a thumb lands, and a flash
  *     can only be honest if the browser has already run the same refusal the
  *     server is about to run.
- *   * READ — `health`. Nothing the player does moves it, so it is taken off the
- *     snapshot on every reconcile and never changed here. It is on this type all
- *     the same, because `step` READS it: a man on the floor does not walk, and a
- *     client that went on walking him would have his corpse dragged down the
- *     corridor and corrected twenty times a second.
- *   * BOTH — `protectedLeft`. It is SET by the server (a respawn grants it) and
- *     COUNTED DOWN here, because a protected man cannot pull the trigger and
- *     that refusal has to run in the same frame as the thumb.
+ *   * BOTH — `protectedLeft` and `injectLeft`. Each is SET by the server (a
+ *     respawn grants the first, walking over an ampoule the second) and COUNTED
+ *     DOWN here, because each refuses the trigger and that refusal has to run in
+ *     the same frame as the thumb. The ampoule also refuses every STEP, so a
+ *     client that did not run it would draw a man walking out of a room the
+ *     server has him rooted in.
+ *   * BOTH, AND IT USED TO BE NEITHER — `health`. Nothing the player does moved
+ *     it while damage was the world's alone, so it was only ever read off the
+ *     snapshot. The шприц ended that: an injection is advanced INSIDE `step` and
+ *     the health it delivers with it, so the browser now produces the number too.
+ *     Damage is still a correction like any other, and `step` still READS the
+ *     value besides — a man on the floor does not walk, and a client that went on
+ *     walking him would have his corpse dragged down the corridor and corrected
+ *     twenty times a second.
  *
  * `ammo` IS ONE NUMBER WHERE THE SERVER KEEPS A WHOLE BAG. `Step` reads exactly
  * one key of `Player.Counters` — the one a reload spends — and the golden vectors
@@ -104,6 +125,10 @@ export interface StepPlayer {
   /**
    * What is left of him. ZERO IS THE WHOLE OF BEING DEAD — there is no separate
    * flag, on the wire or here.
+   *
+   * PREDICTED ONLY WHERE AN AMPOULE IS RUNNING. `stepInject` below is the one
+   * thing in this file that writes it; every other movement of the number is
+   * damage, which belongs to the world and arrives as a correction.
    */
   health: number;
   /**
@@ -122,6 +147,19 @@ export interface StepPlayer {
   reload: number;
   /** How much of the reload's ammunition is in the player's pockets. */
   ammo: number;
+  /**
+   * Seconds until the ampoule in his forearm is empty; zero when there is none.
+   *
+   * While it runs he CANNOT WALK and CANNOT FIRE, and `health` climbs as it
+   * empties. Both refusals are why it is predicted rather than merely drawn: the
+   * browser decides whether to draw a muzzle flash the instant a thumb lands, and
+   * it predicts its own position, which while this runs does not move however
+   * hard the stick is held.
+   *
+   * Counted down by the command's own dt, exactly as the gun's timers are,
+   * because `step` is pure and knows no tick.
+   */
+  injectLeft: number;
 }
 
 /** Squared epsilon used where the Go uses 1e-9. Kept identical on purpose. */
@@ -299,6 +337,12 @@ export function step(
   // do, and it is what stops the trigger below.
   out.protectedLeft = Math.max(0, out.protectedLeft - c.dt);
 
+  // The ampoule first, because the gun below asks whether one is running. Both
+  // obey the same ordering rule for the same reason: the timer is advanced and
+  // THEN the trigger is read, so a shot asked for on the very step an injection
+  // finishes is honoured rather than refused by a state the arm has just left.
+  stepInject(out, c, k);
+
   // BEFORE the standing-still return below, and that ordering is the whole of
   // whether the gun works: firing while standing perfectly still is not an edge
   // case, it is how anybody shoots at anything. A gun folded in after that
@@ -306,6 +350,17 @@ export function step(
   // vectors' `gun` case walks throughout precisely so that a port which got this
   // wrong would still pass a stationary trace.
   stepGun(out, c, k);
+
+  // A MAN WITH A NEEDLE IN HIS ARM DOES NOT WALK, and this is the whole of the
+  // vulnerability the ampoule buys. It is refused HERE rather than by zeroing the
+  // axes, so his angles still land — the camera belongs to the client, and a
+  // first-person game that takes the view away from somebody is worse than one
+  // that takes his feet.
+  //
+  // AFTER the gun and after the injection's own countdown, so that the step an
+  // injection ends on is a step he can move in — the same rule the server applies
+  // to a man getting up off the floor.
+  if (out.injectLeft > 0) return out;
 
   // The movement axes are in the player's own frame, so yaw turns them into the
   // world. Yaw zero looks along +Y; the renderer's camera uses the same
@@ -331,6 +386,59 @@ export function step(
   out.y = r.y;
   out.sector = r.sector;
   return out;
+}
+
+/**
+ * Advances the ampoule by one command: the countdown by the command's own dt,
+ * and the health that went in while it ran. Mirrors `stepInject` in
+ * `internal/gamevanyadum/sim.go`.
+ *
+ * THE HEALTH IS DERIVED FROM THE CLOCK AND NEVER ACCUMULATED, and on this side
+ * of the port that is what makes reconciliation work at all. How much has gone in
+ * is a pure function of how much is left (`injectDelivered`), so the step grants
+ * the DIFFERENCE between the two readings either side of the decrement — and a
+ * player replayed from a snapshot therefore arrives at exactly the health the
+ * server has, because both ends computed it from the same remaining time rather
+ * than from a sum of their own histories. A fractional accumulator carried on the
+ * player would be a second piece of state to reconcile, and the sum of
+ * heal×dt/seconds over commands a client chose the lengths of is not the same
+ * number twice.
+ *
+ * IT DOES NOT OVERHEAL. The cap is applied to the grant rather than to the
+ * ampoule, so a man who fills up halfway through is still rooted for the rest of
+ * it — the ampoule is spent on the clock, not on the health.
+ *
+ * WRITES INTO ITS ARGUMENT, exactly as `stepGun` below does and for the same
+ * reason: `step` has already made the copy.
+ */
+function stepInject(p: StepPlayer, c: StepCommand, k: StepConstants): void {
+  if (p.injectLeft <= 0) return;
+  const before = injectDelivered(p.injectLeft, k);
+  p.injectLeft = Math.max(0, p.injectLeft - c.dt);
+  const gain = injectDelivered(p.injectLeft, k) - before;
+  if (gain > 0) p.health = Math.min(p.health + gain, k.maxHealth);
+}
+
+/**
+ * How much of one ampoule has gone in by the time `left` seconds of it remain:
+ * nothing at the start, the whole of `syringeHeal` at the end, and a straight
+ * line between the two.
+ *
+ * ROUNDED RATHER THAN TRUNCATED, and this is the one line in the game where two
+ * languages could disagree. Go's `math.Round` and JavaScript's `Math.round` part
+ * company on exact halves of NEGATIVE numbers, and nothing here is ever negative:
+ * `left` is clamped to zero at the low end and to `syringeSeconds` at the high
+ * one, so the argument is bounded by 0 and `syringeHeal` and the two agree bit
+ * for bit.
+ *
+ * THE GUARD IS FOR A CATALOGUE WITH NO MEDICINE IN IT, which is a config the
+ * server would never start an injection from — but the constants are served
+ * rather than compiled in, and a zero duration here would divide and put a NaN
+ * into the health the HUD reads. Cheap insurance, not a case anybody expects.
+ */
+function injectDelivered(left: number, k: StepConstants): number {
+  if (!(k.syringeSeconds > 0)) return 0;
+  return Math.round((k.syringeHeal * (k.syringeSeconds - left)) / k.syringeSeconds);
 }
 
 /**
@@ -370,7 +478,17 @@ function stepGun(p: StepPlayer, c: StepCommand, k: StepConstants): void {
   // PROTECTION IS PART OF THE REFUSAL AND NOT A SEPARATE CHECK, so a protected
   // man cannot start a reload either — otherwise the window would be spent
   // filling the gun he is about to be untouchable with.
-  if (!c.fire || p.cooldown > 0 || p.reload > 0 || p.protectedLeft > 0) return;
+  //
+  // AND SO IS THE AMPOULE, WHICH IS HOW THE TRIGGER AND THE INJECTION AGREE
+  // ABOUT WHO WINS: the injection does, always, for as long as it lasts. The
+  // other way round — a trigger pull that cancels the needle — reads as the
+  // generous rule and is in fact the rule that deletes the feature, because a
+  // window you can leave by tapping the thing you were already holding is not a
+  // window. The same refusal keeps a reload from starting mid-injection, since
+  // the trigger is the only thing that starts one.
+  if (!c.fire || p.cooldown > 0 || p.reload > 0 || p.protectedLeft > 0 || p.injectLeft > 0) {
+    return;
+  }
   if (p.loaded > 0) {
     p.loaded -= 1;
     p.cooldown = k.fireCooldownSeconds;

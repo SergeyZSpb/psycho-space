@@ -25,7 +25,8 @@
 import { createFlash, createPeerFlashes, createSlopMarks } from '../lib/vanyadumFlash';
 import type { LevelMeshes, VanyadumLevel } from '../lib/vanyadumLevel';
 import { buildLevelMeshes, levelBounds } from '../lib/vanyadumLevel';
-import { PEER_DOWN, PEER_PROTECTED } from '../lib/vanyadumRoster';
+import { PEER_DOWN, PEER_INJECTING, PEER_PROTECTED } from '../lib/vanyadumRoster';
+import type { ViewmodelPose } from '../lib/vanyadumViewmodel';
 import {
   SLOP_SPRITE_SIZE,
   createSlopFacings,
@@ -63,6 +64,21 @@ export interface SceneOptions {
    */
   player: { radius: number; bodyHeight: number; eyeHeight: number };
   /**
+   * What each thing on the floor looks like, straight from the catalogue.
+   *
+   * THE COLOUR IS SERVED AND NOT CHOSEN HERE — `tint` exists on a pickup kind
+   * precisely so that the procedural mesh is built in it, and a hex typed into
+   * this file would be a second copy of it that goes stale the afternoon anybody
+   * retunes the palette.
+   *
+   * `heals` PICKS THE SHAPE, and it is the server's own test for medicine
+   * (`collect` asks exactly this). It has to be a shape and not only a colour: a
+   * player walks onto a bottle for free and onto an ampoule for seconds of being
+   * unable to move, so mistaking one for the other at ten metres is the most
+   * expensive misreading in the game.
+   */
+  pickups: { key: string; tint: string; heals?: number }[];
+  /**
    * Honoured by damping the view bob and the recoil; never by hiding anything
    * informative. EVERY MARK STAYS — both muzzle flashes, the blow on whoever was
    * hit, the flash where a нейрослоп stopped being, the grey of a man on the
@@ -72,6 +88,11 @@ export interface SceneOptions {
    * or it is not and is cleared by a count of frames rather than by an animation
    * ending, and a state is a colour. That is the shape this project requires of
    * an acknowledgement precisely so that turning motion off cannot silence it.
+   *
+   * The syringe in the player's own hands obeys the same division one layer up:
+   * the SWEEP of it is damped away by `syringePose`, which hands this scene a
+   * settled pose from the first frame, and the plunger goes on travelling because
+   * that is the part that says an injection is running and how far along it is.
    */
   reducedMotion: boolean;
 }
@@ -181,20 +202,51 @@ export async function createScene(opts: SceneOptions) {
   scene.add(levelGroup);
 
   // --- the things lying about ----------------------------------------------
-  // A bottle: two cylinders, built in code like everything else here. It is not
-  // meant to be convincing at two metres; it is meant to be unmistakably a
-  // bottle at ten, which low-poly and a strong tint achieve and detail does not.
+  // Two silhouettes, built in code like everything else here. Neither is meant to
+  // be convincing at two metres; each is meant to be unmistakable at ten, and to
+  // be unmistakable FROM THE OTHER — which is why the шприц is a different shape
+  // rather than a bottle in a different colour. Walking onto a bottle is free and
+  // walking onto an ampoule roots you for seconds, so a player who cannot tell
+  // them apart across a room pays for it with the only thing this game charges.
+  //
+  // A bottle: two cylinders. A syringe: a barrel lying on its side with a plunger
+  // out of one end and a needle out of the other, which reads as a syringe at any
+  // distance a low-poly bottle reads as a bottle.
   const pickupMeshes = new Map<number, InstanceType<typeof THREE.Group>>();
   const bottleBody = new THREE.CylinderGeometry(0.11, 0.13, 0.3, 8);
   const bottleNeck = new THREE.CylinderGeometry(0.045, 0.06, 0.16, 6);
+  const ampouleBody = new THREE.CylinderGeometry(0.055, 0.055, 0.3, 8);
+  const ampoulePlunger = new THREE.CylinderGeometry(0.03, 0.03, 0.12, 6);
+  const ampouleNeedle = new THREE.CylinderGeometry(0.008, 0.008, 0.16, 4);
+  // Keyed by the catalogue's own key, which is what the level's `k` names. A
+  // pickup of a kind the catalogue does not carry cannot be drawn honestly, so it
+  // falls back to the bottle rather than being left invisible — the server would
+  // have to be serving a level and a catalogue that disagree for it to happen.
+  const kinds = new Map(opts.pickups.map((p) => [p.key, p]));
   for (const p of opts.level.pickups) {
+    const kind = kinds.get(p.k);
     const group = new THREE.Group();
-    const colour = new THREE.Color(0xc8892f);
-    const material = new THREE.MeshBasicMaterial({ color: colour, fog: true });
-    const body = new THREE.Mesh(bottleBody, material);
-    const neck = new THREE.Mesh(bottleNeck, material);
-    neck.position.y = 0.22;
-    group.add(body, neck);
+    const material = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(kind?.tint ?? '#c8892f'),
+      fog: true,
+    });
+    if ((kind?.heals ?? 0) > 0) {
+      const barrel = new THREE.Mesh(ampouleBody, material);
+      // On its side, so the thing is read by its length rather than by its end.
+      barrel.rotation.z = Math.PI / 2;
+      const plunger = new THREE.Mesh(ampoulePlunger, material);
+      plunger.rotation.z = Math.PI / 2;
+      plunger.position.x = -0.2;
+      const needle = new THREE.Mesh(ampouleNeedle, material);
+      needle.rotation.z = Math.PI / 2;
+      needle.position.x = 0.22;
+      group.add(barrel, plunger, needle);
+    } else {
+      const body = new THREE.Mesh(bottleBody, material);
+      const neck = new THREE.Mesh(bottleNeck, material);
+      neck.position.y = 0.22;
+      group.add(body, neck);
+    }
     const sector = opts.level.sectors.find((s) => s.id === p.s);
     group.position.set(p.p.x, (sector?.fz ?? 0) + 0.2, -p.p.y);
     scene.add(group);
@@ -235,6 +287,90 @@ export async function createScene(opts: SceneOptions) {
     gun.rotation.set(GUN_REST.pitch, 0.04, 0.02);
     camera.add(gun);
   }
+
+  // --- the шприц, and the forearm it goes into -----------------------------
+  //
+  // THE ONE ANIMATION IN THIS GAME, and the reason it is worth the geometry: the
+  // ampoule costs seconds of being unable to move or shoot, and a player who is
+  // given no picture of what he is doing reads those seconds as the controls
+  // having stopped answering. The hand comes up, the needle goes into the
+  // forearm, the plunger goes down, and the health arrives while it empties — so
+  // the screen is doing the same thing the simulation is.
+  //
+  // ITS TIMING IS NOT HERE. Where the syringe sits this frame is a pure function
+  // of the countdown the client already predicts (`syringePose` in
+  // lib/vanyadumViewmodel), which is what makes the animation unit-testable
+  // without a GPU. This half only assigns what that produced, and owns the one
+  // thing that genuinely needs the scene graph: the rest pose it is an offset
+  // from.
+  //
+  // THE FOREARM EXISTS SO THE NEEDLE HAS SOMEWHERE TO GO. A needle travelling
+  // towards empty space is a shape moving; a needle travelling into an arm is an
+  // injection, and it is the difference between the two that the whole cost of
+  // this iteration is being explained by.
+  /** The syringe and the forearm together: shown and hidden as one thing. */
+  const hands = new THREE.Group();
+  /** The syringe alone, which is the only part a pose moves. */
+  const syringe = new THREE.Group();
+  /** The plunger, which is the only part of the syringe that moves within it. */
+  const plunger = new THREE.Group();
+  /** The syringe's resting pose. Every pose is an offset from exactly this. */
+  const SYRINGE_REST = { x: 0.08, y: -0.17, z: -0.4, pitch: 0.12, roll: -0.22 };
+  /** Where the plunger sits fully drawn, and how far the thumb pushes it. */
+  const PLUNGER_OUT = 0.15;
+  const PLUNGER_TRAVEL = 0.13;
+  {
+    // The barrel's colour is the catalogue's, exactly as the one on the floor is,
+    // so the thing in your hands is recognisably the thing you walked over.
+    const medicine = opts.pickups.find((p) => (p.heals ?? 0) > 0);
+    const glass = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(medicine?.tint ?? '#9fd6c8'),
+      fog: false,
+    });
+    const steel = new THREE.MeshBasicMaterial({ color: 0xb9c0c6, fog: false });
+    const skin = new THREE.MeshBasicMaterial({ color: 0xb98b6a, fog: false });
+
+    // Lying along the view's own X so the needle points LEFT, at the arm — which
+    // is the direction the pose then travels in when the needle goes in.
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.26, 8), glass);
+    barrel.rotation.z = Math.PI / 2;
+    const needle = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.15, 4), steel);
+    needle.rotation.z = Math.PI / 2;
+    needle.position.x = -0.2;
+
+    // The plunger is its own group because it is the only part that MOVES within
+    // the item, and `ViewmodelPose.action` is what moves it. The flange rides
+    // with the rod, which is the whole of drawing a thumb pressing something —
+    // an actual thumb would be a hand model this game is never going to have.
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.18, 6), steel);
+    rod.rotation.z = Math.PI / 2;
+    const flange = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.1, 0.1), steel);
+    flange.position.x = 0.09;
+    plunger.add(rod, flange);
+    plunger.position.x = PLUNGER_OUT;
+
+    syringe.add(barrel, needle, plunger);
+    syringe.position.set(SYRINGE_REST.x, SYRINGE_REST.y, SYRINGE_REST.z);
+    syringe.rotation.set(SYRINGE_REST.pitch, 0, SYRINGE_REST.roll);
+
+    // The arm being injected: one box, low and to the left, angled across the
+    // bottom of the view the way a forearm held up in front of you is.
+    //
+    // ITS PLACEMENT IS COMPOSED AGAINST THE POSE RATHER THAN CHOSEN BY EYE. At
+    // full insert the syringe has travelled `INSERT_TRAVEL` along −x and rolled,
+    // which puts the needle's tip just inside this box — so the needle ends up IN
+    // the arm rather than hovering over it or through it. Move either the rest
+    // pose above or this position and the two stop meeting, which is the one way
+    // this animation can look wrong while every test still passes.
+    const forearm = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.08, 0.1), skin);
+    forearm.position.set(-0.16, -0.215, -0.42);
+    forearm.rotation.z = 0.22;
+
+    hands.add(syringe, forearm);
+    hands.visible = false;
+    camera.add(hands);
+  }
+
   scene.add(camera);
 
   // --- the loop's state ----------------------------------------------------
@@ -386,7 +522,7 @@ export async function createScene(opts: SceneOptions) {
    */
   const peerBlowGeometry = new THREE.SphereGeometry(peerRadius + 0.14, 8, 6);
   /**
-   * The three colours a figure is drawn in, and each is a RULE rather than a
+   * The four colours a figure is drawn in, and each is a RULE rather than a
    * preference.
    *
    * Somebody who cannot be hurt has to LOOK like somebody who cannot be hurt, or
@@ -394,10 +530,25 @@ export async function createScene(opts: SceneOptions) {
    * so protection is a property of the figure for the whole two seconds it lasts,
    * exactly as this project requires of a buff. A man on the floor goes grey and
    * stays grey for as long as he is lying there, for the same reason.
+   *
+   * AND A MAN WITH A NEEDLE IN HIS ARM GOES GREEN, which is the one this
+   * iteration adds and the one the room most needs. He is rooted, he cannot fire
+   * back and he is healing, all for as long as the colour lasts — the most
+   * exploitable moment this game has, and an injection only its own author could
+   * see would be a rule the other two people in the заброшка are playing blind
+   * against. A PROPERTY OF THE FIGURE AND NOT A FLASH, on the same terms as the
+   * other two states: a mark that appeared once would say nothing about the
+   * seconds that follow, which are the whole of what is worth knowing.
+   *
+   * GREEN BECAUSE NOTHING ELSE IN THIS GAME IS. Red is a man, grey is a corpse,
+   * blue is untouchable, and cyan is where a нейрослоп stopped being — so mending
+   * gets the one hue left, and no two things that can be on screen together are
+   * told apart by shade.
    */
   const PEER_TINT_ALIVE = 0xd05a4a;
   const PEER_TINT_DOWN = 0x4c4f52;
   const PEER_TINT_PROTECTED = 0x6ec6ff;
+  const PEER_TINT_INJECTING = 0x5fd08a;
   /**
    * WHICH PEERS ARE MARKED IN THE FRAME BEING DRAWN — his gun going off, and a
    * shot landing on him.
@@ -504,7 +655,9 @@ export async function createScene(opts: SceneOptions) {
             ? PEER_TINT_DOWN
             : st === PEER_PROTECTED
               ? PEER_TINT_PROTECTED
-              : PEER_TINT_ALIVE,
+              : st === PEER_INJECTING
+                ? PEER_TINT_INJECTING
+                : PEER_TINT_ALIVE,
         );
       }
       figure.body.visible = true;
@@ -722,6 +875,40 @@ export async function createScene(opts: SceneOptions) {
    * Restarting rather than adding, so the second barrel one cadence later is the
    * same kick and not a bigger one.
    */
+  /**
+   * Puts the шприц in the player's hands, or takes it out again.
+   *
+   * ONE ARGUMENT AND ONE BRANCH: a pose means an injection is running, and null
+   * means there is none. The alternative — a pose plus a flag — is two things
+   * that can disagree about the same fact.
+   *
+   * IT ALSO PUTS THE ОБРЕЗ AWAY, and that is a rule rather than a flourish. The
+   * trigger is refused for the whole time an injection lasts (`stepGun` runs the
+   * same refusal on both ends), so a gun still sitting in the corner of the
+   * screen would be the picture telling a player he can shoot while the
+   * simulation refuses every pull. The hands hold one thing at a time.
+   *
+   * CALLED ONCE PER DRAWN FRAME, like `setPeers` and `setSlops` — though this one
+   * would survive being called twice, since a pose is assigned rather than
+   * counted down.
+   */
+  function setSyringe(pose: ViewmodelPose | null): void {
+    if (disposed) return;
+    hands.visible = pose !== null;
+    gun.visible = pose === null;
+    if (!pose) return;
+    syringe.position.set(
+      SYRINGE_REST.x + pose.x,
+      SYRINGE_REST.y + pose.y,
+      SYRINGE_REST.z + pose.z,
+    );
+    syringe.rotation.set(SYRINGE_REST.pitch + pose.pitch, 0, SYRINGE_REST.roll + pose.roll);
+    // The plunger travels towards the needle end as the ampoule empties, and
+    // `action` is the delivered fraction rather than an eased curve — so where
+    // the thumb has pushed it to IS how much health has gone in.
+    plunger.position.x = PLUNGER_OUT - pose.action * PLUNGER_TRAVEL;
+  }
+
   function fire(): void {
     if (disposed) return;
     // The mark is only started here; `render` is the sole writer of whether the
@@ -751,7 +938,7 @@ export async function createScene(opts: SceneOptions) {
     renderer.dispose();
   }
 
-  return { render, resize, setOnFloor, setPeers, setSlops, fire, dispose };
+  return { render, resize, setOnFloor, setPeers, setSlops, setSyringe, fire, dispose };
 }
 
 /**

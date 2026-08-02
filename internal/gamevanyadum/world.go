@@ -1131,6 +1131,31 @@ func (w *World) collect(o *Occupant) {
 		if !known {
 			continue
 		}
+		// MEDICINE IS USED RATHER THAN CARRIED, so it leaves the generic path
+		// here: nothing goes into the bag, nothing is tallied for the visit row —
+		// there is no column for it (migrations/015 is immutable, and a column
+		// nothing needs is a migration this iteration does not need) — and what
+		// the man gets instead is an ampoule in his forearm and SyringeSeconds of
+		// being unable to do anything about anything (content.go, the шприц).
+		//
+		// A MAN WITH NOTHING TO MEND WALKS STRAIGHT OVER IT, and that refusal is
+		// the interesting half of the rule. Taking something you cannot use is
+		// how a resource is wasted by accident, and leaving it lying there turns
+		// it into a landmark he can come back to — which is the whole reason it
+		// is worth remembering where one is.
+		//
+		// AND NOT WHILE ONE IS ALREADY RUNNING, or walking over two of them would
+		// silently throw the first away and restart the clock: the timer is a
+		// single countdown, so a second ampoule cannot be held anywhere.
+		if kind.Heals > 0 {
+			if o.State.Health >= MaxHealth || o.State.InjectLeft > 0 {
+				continue
+			}
+			w.ready[i] = w.Tick + pickupRespawnTicks
+			o.State.InjectLeft = kind.InjectSeconds
+			o.events = append(o.events, Event{E: EventPickup, K: p.Kind, ID: p.ID})
+			continue
+		}
 		w.ready[i] = w.Tick + pickupRespawnTicks
 		if o.State.Counters == nil {
 			o.State.Counters = map[string]int{}
@@ -1442,6 +1467,20 @@ func (w *World) rise(o *Occupant) {
 	o.State.Health = StartHealth
 	o.State.Loaded = Barrels
 	o.State.CooldownLeft, o.State.ReloadLeft = 0, 0
+	// AND THE AMPOULE, WHICH NOTHING CAN HAVE LEFT RUNNING TODAY. hurt clears it
+	// before it decides whether the damage was fatal, and hurt is the only thing in
+	// the building that takes health off anybody — so a man who has reached the
+	// floor never has a needle left in him, and this line has never had anything to
+	// zero.
+	//
+	// It is written down anyway because the ampoule's whole place on the wire rests
+	// on that invariant: `dn` is a respawn while `hp` is zero and an injection
+	// otherwise (message.go, Snapshot.Down), so a man who got up still injecting
+	// would be published as counting down a respawn he is not in, and drawn with a
+	// needle in his arm at full health. This reset list is where the next reader
+	// will look for that guarantee, and one kept only at the far end of another
+	// function is one somebody eventually moves.
+	o.State.InjectLeft = 0
 	w.protect(o)
 	o.downUntil = 0
 }
@@ -1596,6 +1635,15 @@ func (w *World) wound(shooter, victim *Occupant) {
 // and there is one right way to answer it.
 func (w *World) hurt(victim *Occupant, damage int) bool {
 	victim.State.Health -= damage
+	// THE AMPOULE STOPS THE INSTANT ANYTHING LANDS, and this is the only thing in
+	// the game that interrupts one (content.go, the шприц). It is cleared here
+	// rather than in the two callers because being hurt is exactly the condition,
+	// and a barrel and a нейрослоп interrupt it identically.
+	//
+	// WHAT WENT IN STAYS IN: the health already delivered is above this line and
+	// nothing takes it back, and the remainder goes with the ampoule. Cleared
+	// BEFORE the survival check below so that it happens whether he lived or not.
+	victim.State.InjectLeft = 0
 	if victim.State.Health > 0 {
 		return false
 	}
@@ -1772,7 +1820,7 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 		Loaded:   me.State.Loaded,
 		Cooldown: ms(me.State.CooldownLeft),
 		Reload:   ms(me.State.ReloadLeft),
-		Down:     w.downMS(me),
+		Down:     w.outMS(me),
 		Protect:  ms(me.State.ProtectedLeft),
 		Events:   me.events,
 	}
@@ -1838,29 +1886,51 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 	return s, true
 }
 
-// downMS is how long this occupant has left on the floor, in the milliseconds
-// the wire carries, or zero for anybody standing up.
+// outMS is how long this occupant is out of action for, in the milliseconds the
+// wire carries: on the floor waiting out DownTime, or standing perfectly still
+// with an ampoule emptying into his arm. Zero for anybody who can act.
 //
-// A deadline in ticks turned into a duration at the edge, which is the same
-// direction of travel every other quantity on this frame makes: exact where it
-// is simulated, small where it is sent.
-func (w *World) downMS(o *Occupant) int {
-	if o.State.Health > 0 || o.downUntil <= w.Tick {
-		return 0
+// ONE NUMBER FOR BOTH, WHICH IS WHY THE FRAME DOES NOT GROW. The two states are
+// exclusive by construction — a dead man collects nothing (collect returns on
+// health, and Step refuses him everything besides) and an injection is cleared
+// the instant anything hurts him (hurt) — and health, which is on every frame
+// already, is what says which of them the number means. That is the whole of the
+// wire cost of this iteration for the man it is happening to: see Snapshot.Down.
+//
+// A DEADLINE IN TICKS TURNED INTO A DURATION AT THE EDGE for the first, and a
+// countdown in seconds quantised at the same edge for the second. The difference
+// belongs to what owns them — the world owns the respawn and Step owns the
+// ampoule (sim.go, Player.InjectLeft) — and it does not reach the wire, which
+// carries milliseconds either way.
+func (w *World) outMS(o *Occupant) int {
+	if o.State.Health <= 0 {
+		if o.downUntil <= w.Tick {
+			return 0
+		}
+		return int(time.Duration(o.downUntil-w.Tick) * SimStep / time.Millisecond)
 	}
-	return int(time.Duration(o.downUntil-w.Tick) * SimStep / time.Millisecond)
+	return ms(o.State.InjectLeft)
 }
 
 // peerState is what one peer's frame says about him beyond where he is standing.
-// See Peer.St for the four values and why they are one field.
+// See Peer.St for the five values and why they are one field.
 //
 // THE ORDER IS THE PRECEDENCE, and it is a precedence rather than a sequence of
-// independent checks because the field holds one value. The two STATES come
+// independent checks because the field holds one value. DOWN AND PROTECTED come
 // first because they last, and because a viewer whose shots are bouncing off a
 // protected man needs telling that more than he needs a muzzle flash. Between
 // the two INSTANTS, being hit beats firing: a man who pulled the trigger and was
 // shot on the same tick has had the more interesting fifty milliseconds, and it
-// is the thing that changed the building.
+// is the thing that changed the building. The third lasting state — the ampoule —
+// is the one exception to states-before-instants, argued below.
+//
+// THE AMPOULE SITS BELOW THE HIT AND NOT ABOVE IT, which is the one placement
+// here that is not the states-before-instants rule. It cannot actually collide:
+// being hurt is what ENDS an injection (hurt), so the tick a needle is
+// interrupted on is a tick there is no needle. The order is what the frame says
+// if that ever stops being true, and then the hit is the thing the room needs to
+// know — a man who was just shot is news, where a man still standing there with
+// his thumb on a plunger will be there on the next frame too.
 func (w *World) peerState(o *Occupant) int {
 	switch {
 	case o.State.Health <= 0:
@@ -1872,6 +1942,8 @@ func (w *World) peerState(o *Occupant) int {
 		return PeerProtected
 	case o.hitThisTick(w.Tick):
 		return PeerHit
+	case o.State.InjectLeft > 0:
+		return PeerInjecting
 	case o.firedThisTick(w.Tick):
 		return PeerFired
 	}
