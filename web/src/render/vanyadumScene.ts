@@ -234,35 +234,48 @@ export async function createScene(opts: SceneOptions) {
   }
 
   // --- peers ---------------------------------------------------------------
-  // One capsule per other entity, created on first sight and reused after.
-  // Built here rather than in the level pass because peers come and go with the
-  // interpolation buffer, and rebuilding the world when somebody walks in would
-  // be absurd.
-  const peerMeshes = new Map<string, InstanceType<typeof THREE.Mesh>>();
+  // One capsule per SLOT — a place in the building rather than a person — created
+  // on first sight and reused after. Built here rather than in the level pass
+  // because peers come and go with the interpolation buffer, and rebuilding the
+  // world when somebody walks in would be absurd.
+  //
+  // Keying on the slot also BOUNDS this map, where keying on a pseudonym did not:
+  // there are only ever MaxOccupants places, so a tab left open through a hundred
+  // people arriving and leaving holds four capsules rather than a hundred. A slot
+  // changing hands reuses the same capsule, which is right — nothing about the
+  // figure is per-person.
+  const peerMeshes = new Map<number, InstanceType<typeof THREE.Mesh>>();
   const peerGeometry = new THREE.CapsuleGeometry(0.35, 1.1, 4, 8);
 
   /**
    * Places every peer the interpolator produced, and hides the ones it did not.
    *
-   * Meshes are kept rather than disposed when a peer disappears: the commonest
-   * reason to vanish for a frame is the interpolation buffer running dry, and
-   * rebuilding geometry for somebody about to come back is work done to make the
-   * world worse.
+   * Hiding rather than removing IS how somebody leaves the picture, and it has
+   * two causes that look identical from here: he left the building, or he walked
+   * two rooms away and the server stopped sending him. Neither is announced —
+   * the peer array is filtered full state — so what is drawn is exactly what the
+   * newest frame named, and nothing is kept alive because nothing said to remove
+   * it.
+   *
+   * Meshes are kept rather than disposed: the commonest reason to vanish for a
+   * frame is the interpolation buffer running dry, and rebuilding geometry for
+   * somebody about to come back is work done to make the world worse.
    */
-  function setPeers(peers: { id: string; x: number; y: number; z: number; yaw: number }[]): void {
+  function setPeers(peers: { slot: number; x: number; y: number; z: number; yaw: number }[]): void {
     if (disposed) return;
     for (const m of peerMeshes.values()) m.visible = false;
     for (const p of peers) {
-      let mesh = peerMeshes.get(p.id);
+      let mesh = peerMeshes.get(p.slot);
       if (!mesh) {
         mesh = new THREE.Mesh(
           peerGeometry,
           new THREE.MeshBasicMaterial({ color: 0xd05a4a, fog: true }),
         );
         scene.add(mesh);
-        peerMeshes.set(p.id, mesh);
+        peerMeshes.set(p.slot, mesh);
       }
-      // The wire carries an EYE height, so the body hangs below it.
+      // `z` is an EYE height — derived by the client from the sector the wire
+      // named, since the wire stopped carrying it — so the body hangs below it.
       mesh.position.set(p.x, p.z - 0.85, -p.y);
       mesh.rotation.y = -p.yaw;
       mesh.visible = true;

@@ -77,14 +77,53 @@
           {{ p.icon }} {{ bag[p.grants] ?? 0 }}
         </span>
         <!-- Not «осталось»: nothing is being counted down any more. What is on
-             the floor goes up as well as down, and how many people are in here
-             is the whole point of there being one building. -->
+             the floor goes up as well as down. -->
         <span class="dum-hud-cell dum-hud-right" data-testid="vanyadum-floor">
           на полу {{ onFloor.length }}
         </span>
-        <span class="dum-hud-cell dum-hud-who" data-testid="vanyadum-occupants">
-          👥 {{ occupants }}
-        </span>
+      </div>
+
+      <!-- THE STANDINGS. Real DOM, never inside the canvas (ADR-047) — it is a
+           readout somebody reads, and nothing painted into a canvas can be
+           asserted on without pixel comparison.
+
+           It is of the BUILDING rather than of the view: it lists everybody in
+           the заброшка, including the people two rooms away who are deliberately
+           missing from the snapshot. That makes it the only honest source for
+           how many are in here — the peer array is filtered now, so counting it
+           would report how many are visible and would tick up and down as
+           somebody walked through a doorway.
+
+           Absent rather than empty before the first board frame lands, which is
+           a fraction of a second after walking in: a roster change publishes one
+           on the tick it happened. Absent again for as long as the link is down
+           — a directory nothing is refreshing stops being true, and the hello
+           that follows a reconnect brings a fresh one (`onStatus`). -->
+      <div v-if="board.length" class="dum-board" data-testid="vanyadum-board">
+        <div class="dum-board-head">👥 {{ board.length }} на заброшке</div>
+        <ol class="dum-board-rows">
+          <li
+            v-for="row in board"
+            :key="row.slot"
+            class="dum-board-row"
+            :class="{ 'is-me': row.slot === mySlot }"
+            data-testid="vanyadum-board-row"
+          >
+            <!-- The arrow is in the text rather than in a ::before, so it is
+                 real content a test can read — and so the row is told apart by
+                 something other than being a slightly brighter grey. -->
+            <span class="dum-board-name">{{ row.slot === mySlot ? '▸ ' : '' }}{{ row.name }}</span>
+            <span class="dum-board-time">{{ clock(row.seconds) }}</span>
+            <span
+              v-for="p in config?.pickups ?? []"
+              :key="p.key"
+              class="dum-board-bag"
+              :data-testid="`vanyadum-board-${p.key}`"
+            >
+              {{ p.icon }}{{ row.bag[p.grants] ?? 0 }}
+            </span>
+          </li>
+        </ol>
       </div>
 
       <p v-if="link !== 'open'" class="dum-link" data-testid="vanyadum-link">
@@ -173,6 +212,15 @@
  * axes the player is pushing and never a position — a prediction is something
  * this file draws, never something it asserts.
  *
+ * WHAT YOU SEE AND WHAT IS TRUE ARE TWO DIFFERENT FRAMES. A snapshot is cut to
+ * the room you are standing in and the rooms through its doorways, so somebody
+ * further off is simply absent from it rather than announced as gone; the
+ * standings frame, once a second, is of the whole building and names everybody
+ * including you. Peers are addressed by a SLOT — a place, not a person, reused
+ * after its holder leaves — and the standings are the only thing that says whose
+ * slot it currently is. See vanyadumRoster for both, and for the one ordering
+ * hazard that arrangement has.
+ *
  * TWO SETS OF CONTROLS, AND THE DEVICE PICKS. A phone gets thumbs: a stick that
  * appears where the left one lands, a drag on the right half to look. A desktop
  * gets WASD and the mouse, which needs the pointer CAPTURED — otherwise looking
@@ -214,6 +262,7 @@ import {
 } from '../lib/vanyadumInput';
 import { createPredictor, type Predictor } from '../lib/vanyadumPredict';
 import { createInterpolator, type Interpolator, type PeerState } from '../lib/vanyadumInterp';
+import { changedHands, clock, decodeBoard, decodePeers, type BoardRow } from '../lib/vanyadumRoster';
 import type { VanyadumScene } from '../render/vanyadumScene';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
 
@@ -246,8 +295,30 @@ const onFloor = ref<number[]>([]);
  * without the first empty floor being mistaken for it.
  */
 let floorMask: number | null = null;
-/** How many people are in the building, including you. Derived from the frame. */
-const occupants = ref(1);
+/**
+ * The standings: everybody in the building, in slot order, as the newest board
+ * frame described them.
+ *
+ * FULL STATE, replaced rather than merged — a person who has gone is simply not
+ * in the next one, exactly as a peer who has walked out of view is simply not in
+ * the next snapshot. It is also the slot directory: the map from the small
+ * integer a snapshot addresses a peer by to whoever is currently standing in
+ * that place.
+ *
+ * EMPTIED WHENEVER THE LINK IS NOT OPEN, because a directory is only true while
+ * something is keeping it true — see `onStatus`.
+ */
+const board = ref<BoardRow[]>([]);
+/**
+ * Our own place in the building, or −1 while we do not know it: before the first
+ * ready frame, and again from the moment the socket goes until the next one.
+ *
+ * NOTHING ELSE EVER TELLS US. A snapshot names everybody except its own reader,
+ * so without this the standings could be read in full without knowing which row
+ * was ours. −1 rather than 0, because slot 0 is a real place and the first one
+ * handed out — defaulting to it would put the arrow on somebody else.
+ */
+const mySlot = ref(-1);
 const link = ref<'connecting' | 'open' | 'lost'>('connecting');
 
 /**
@@ -487,7 +558,6 @@ async function buildWorld(): Promise<void> {
   bag.value = {};
   onFloor.value = level.pickups.map((p) => p.id);
   floorMask = null;
-  occupants.value = 1;
   aim.yaw = level.spawn_yaw;
   aim.pitch = 0;
   view.x = level.spawn.x;
@@ -588,6 +658,10 @@ function disposeWorld(): void {
   outbox = [];
   peers = [];
   floorMask = null;
+  // The standings describe the building that has just been thrown away. Keeping
+  // them would list the people who were standing in it for as long as it took
+  // the next board to arrive.
+  board.value = [];
 }
 
 /**
@@ -604,6 +678,9 @@ function teardownPlay(): void {
   disposeWorld();
   world = null;
   adopting = false;
+  // The place we were holding is given back the moment the socket goes, so it
+  // is no longer ours to point an arrow at.
+  mySlot.value = -1;
   // Handing the mouse back is not optional: leaving a page with the pointer
   // still captured strands the cursor on a screen that no longer uses it.
   if (pointerLocked.value) document.exitPointerLock?.();
@@ -700,7 +777,15 @@ function onFrame(frame: RealtimeFrame): void {
     case 'vanyadum_snap':
       applySnapshot(frame);
       break;
+    case 'vanyadum_board':
+      applyStandings(frame);
+      break;
     case 'vanyadum_ready':
+      // Our own place, and the only frame that ever says it. Read before the
+      // building is checked, because a reconnect into the SAME building is
+      // answered with a ready frame and nothing else — `adoptBuilding` then
+      // correctly does nothing, and the slot would never be picked up.
+      mySlot.value = typeof frame.slot === 'number' ? frame.slot : -1;
       void adoptBuilding(typeof frame.world_id === 'string' ? frame.world_id : '');
       break;
     case 'vanyadum_full':
@@ -783,29 +868,27 @@ function applySnapshot(frame: RealtimeFrame): void {
   // compensation rewinds to exactly `serverTick − delay`, so keying on anything
   // else has the two ends disagreeing about which instant was on screen. See
   // vanyadumInterp.
-  if (interp) {
-    const raw = Array.isArray(frame.p) ? (frame.p as Record<string, number | string>[]) : [];
+  //
+  // A peer is addressed by a SLOT and its height is derived from the room the
+  // frame named — see vanyadumRoster for both, and for why the height is
+  // resolved here at ingest rather than when the figure is drawn.
+  //
+  // A slot the standings have not named yet is pushed exactly like any other.
+  // The figure is drawn with nothing attached to it, which is what it means to
+  // be safe about the one ordering hazard this arrangement has: the server
+  // publishes the board ahead of the snapshot that first carries a new holder,
+  // so this only happens if that board frame was dropped, and it heals within a
+  // second. Dropping the peer instead would make somebody invisible; guessing a
+  // name would put the wrong one on him.
+  if (interp && world && config.value) {
     interp.push(
-      raw.map((p) => ({
-        id: String(p.i ?? ''),
-        x: num(p.x) / 100,
-        y: num(p.y) / 100,
-        z: num(p.z) / 100,
-        yaw: num(p.yaw) / 1000,
-        state: num(p.s),
-      })),
+      decodePeers(frame.p, world.level, config.value.player.eye_height),
       tick,
       performance.now(),
     );
   }
 
   health.value = num(frame.hp);
-  // HOW MANY PEOPLE ARE IN HERE, derived rather than sent: the peer array is
-  // everybody but you, so its length plus one is the building's population. A
-  // dedicated field would be bytes on a repeating payload to restate something
-  // the frame already carries.
-  const heads = (Array.isArray(frame.p) ? frame.p.length : 0) + 1;
-  if (heads !== occupants.value) occupants.value = heads;
 
   // WHAT IS LYING ON THE FLOOR, AS A BITMASK over the index into the level's own
   // list: bit i set means the i-th pickup is there to be walked over. One number
@@ -837,12 +920,67 @@ function applySnapshot(frame: RealtimeFrame): void {
   }
 }
 
+/**
+ * The standings — who is in the building, how long they have been in it, and
+ * what they are carrying.
+ *
+ * Once a second, and again on the tick anybody joins or leaves. It is full
+ * state, so it REPLACES rather than merges: a row that is not in the newest
+ * frame is somebody who has gone.
+ *
+ * IT IS ALSO THE SLOT DIRECTORY, and that second job is what the forgetting
+ * below is for. A slot is a place and not a person — it is handed back when its
+ * holder leaves and given to the next arrival — so a slot whose name has changed
+ * has a different man standing in it, and everything the interpolation buffer
+ * remembers about where that place was a moment ago belongs to the person who
+ * left. Blended, that draws one man sliding across the building into another
+ * man's position. Only the changed slots are dropped; resetting the whole buffer
+ * would pause every other peer every time anybody walked in.
+ */
+function applyStandings(frame: RealtimeFrame): void {
+  const next = decodeBoard(frame.b);
+  for (const slot of changedHands(board.value, next)) interp?.forget(slot);
+  board.value = next;
+}
+
 function onStatus(status: ConnectionStatus): void {
   link.value = status === 'open' ? 'open' : status === 'connecting' ? 'connecting' : 'lost';
-  // Every open, not just the first — see enterPlay. A second hello is a
-  // reconnect rather than a second person: it refreshes the place we already
-  // have instead of taking another one.
-  if (status === 'open' && world) realtimeClient(world.room).send({ t: 'vanyadum_hello' });
+  if (status === 'open') {
+    // Every open, not just the first — see enterPlay. A second hello is a
+    // reconnect rather than a second person: it refreshes the place we already
+    // have instead of taking another one.
+    if (world) realtimeClient(world.room).send({ t: 'vanyadum_hello' });
+    return;
+  }
+
+  // THE LINK GOING AWAY VOIDS THE DIRECTORY, AND EVERYTHING KEYED BY IT.
+  //
+  // A slot is a place and not a person: it is handed back when its holder leaves
+  // and given to the next arrival. That hand-over is only ever announced by a
+  // standings frame, and a socket that is down carries no frames — so an outage
+  // is precisely the window in which the mapping this client is holding can stop
+  // being true without it hearing a word. Come back a few seconds later and slot
+  // 1 may be somebody else entirely.
+  //
+  // Kept, that costs two different wrong things. The readout would go on
+  // asserting that a man who has left is standing in the building, and nothing
+  // about a frozen list tells its reader it is frozen — a screen naming human
+  // beings is the last one to leave saying something it can no longer support.
+  // And the interpolation buffer would blend the newcomer's first positions out
+  // of the previous holder's last ones, drawing one man sliding across the
+  // заброшка into another man's place: the snapshots resume the instant the
+  // socket is back, and the board frame that would have said the place changed
+  // hands is not guaranteed to have arrived first.
+  //
+  // So all three go, and the cost of dropping them is a fraction of a second of
+  // saying less: the standings are republished on every hello, so a reconnect
+  // refills the board almost as soon as it is open, and peers reappear on the
+  // next snapshot. `reset` rather than `forget` per slot, because after an
+  // outage EVERY slot is suspect — and because a long enough one can mean the
+  // building was torn down and rebuilt, whose ticks start from zero again.
+  board.value = [];
+  mySlot.value = -1;
+  interp?.reset();
 }
 
 function num(v: unknown): number {
@@ -1099,6 +1237,22 @@ watch(
   inset: 0;
   overflow: hidden;
   background: #0d0f10;
+
+  /* THE TOP-OVERLAY WIDTH BUDGET, declared once because two overlays share it.
+     The standings hug the right edge and the connection notice the left, at
+     nearly the same height — so their widths are not two independent choices,
+     they are one sum. Picked separately and by eye, 56vw and 38vw plus the two
+     insets came to 358.4 px on a 360 px phone: correct, but by a pixel and a
+     half, and by accident.
+
+     So the link's cap is DERIVED from what the board reserves, and the gap
+     below is what must stay clear between them. Neither can be widened into the
+     other, at any viewport width, without editing this block — which is the
+     point of it being a block. */
+  --dum-board-x: 8px;
+  --dum-board-w: 56vw;
+  --dum-link-x: 12px;
+  --dum-overlay-gap: 12px;
 }
 
 .dum-canvas {
@@ -1135,17 +1289,77 @@ watch(
   pointer-events: none;
 }
 
-/* Pushed to the far end, so the two readouts about the BUILDING sit together
-   and away from the two about you. */
+/* Pushed to the far end, so what is true of the BUILDING sits away from what is
+   true of you. */
 .dum-hud-right {
   margin-left: auto;
   opacity: 0.75;
   font-weight: 400;
 }
 
-.dum-hud-who {
-  opacity: 0.75;
-  font-weight: 400;
+/* The standings, under the HUD strip and against the right edge — clear of the
+   stick, which appears wherever a left thumb lands, and clear of the fire
+   button at the bottom.
+
+   Sized in vw rather than in pixels, and the name column is what gives: a
+   twelve-character pseudonym is ellipsised on a 360 px screen rather than
+   pushing the clock and the bag off the side. `pointer-events: none` because it
+   is a readout — a tap on it belongs to the game underneath.
+
+   Its inset and its cap come from the shared overlay budget on `.dum-play`,
+   because the notice on the other side is sized against what this reserves. */
+.dum-board {
+  position: absolute;
+  top: 32px;
+  right: var(--dum-board-x);
+  max-width: var(--dum-board-w);
+  padding: 4px 7px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.42);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+}
+
+.dum-board-head {
+  font-weight: 700;
+  opacity: 0.7;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.dum-board-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dum-board-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.dum-board-row.is-me {
+  color: #ffd28a;
+  font-weight: 700;
+}
+
+.dum-board-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dum-board-time,
+.dum-board-bag {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .dum-blind {
@@ -1161,10 +1375,24 @@ watch(
   pointer-events: none;
 }
 
+/* Capped so it wraps rather than running under the standings on the other side
+   of the screen — two short lines beat one that collides. The cap is what is
+   LEFT once the board's column and both insets are taken out of the viewport,
+   less the gap that must stay clear, so the two cannot meet however narrow the
+   phone is. See the budget on `.dum-play`.
+
+   They are not on screen together today: the link leaving `open` empties the
+   standings, because a directory nothing is refreshing stops being true (see
+   `onStatus`). The budget holds anyway — a notice that only appears when
+   something has already gone wrong is the last place to want a layout that
+   depends on the other overlay being absent. */
 .dum-link {
   position: absolute;
   top: 36px;
-  left: 12px;
+  left: var(--dum-link-x);
+  max-width: calc(
+    100vw - var(--dum-board-x) - var(--dum-board-w) - var(--dum-link-x) - var(--dum-overlay-gap)
+  );
   margin: 0;
   font-size: 0.8rem;
   color: #ffd28a;

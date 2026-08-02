@@ -44,6 +44,9 @@ const (
 	TypeReady = "vanyadum_ready"
 	// TypeSnapshot is the idempotent full-state frame.
 	TypeSnapshot = "vanyadum_snap"
+	// TypeStandings is the once-a-second readout of who is in the building. The
+	// same bytes for everybody, unlike a snapshot.
+	TypeStandings = "vanyadum_board"
 	// TypeFull refuses a hello because the заброшка already holds MaxOccupants.
 	TypeFull = "vanyadum_full"
 )
@@ -170,7 +173,8 @@ func parseInput(f InputFrame) *ParsedInput {
 	return out
 }
 
-// Ready tells a freshly-attached socket which building it is now standing in.
+// Ready tells a freshly-attached socket which building it is now standing in,
+// and which place in it the reader has been given.
 //
 // WorldID IS THE CACHE KEY FOR THE GEOMETRY, and that is the whole reason it is
 // on this frame. The заброшка is regenerated whenever it empties, so a client
@@ -181,6 +185,17 @@ func parseInput(f InputFrame) *ParsedInput {
 type Ready struct {
 	T       string `json:"t"`
 	WorldID string `json:"world_id"`
+	// Slot is the place in the building this reader now holds, and it is how
+	// they find THEMSELVES in the standings.
+	//
+	// Nothing else ever tells them: a snapshot names everybody EXCEPT its own
+	// reader, so a client that was not told this could read the whole board and
+	// not know which row was its own. It belongs here for the same reason the
+	// world id does — it is constant for as long as the occupant is in the
+	// building, so it is sent once per attach rather than on anything that
+	// repeats. A reconnect is answered with the same number, because a second
+	// hello is the same person walking back to the place he was holding.
+	Slot int `json:"slot"`
 }
 
 // Full is the answer to a hello the заброшка cannot honour, because it already
@@ -267,22 +282,32 @@ type Snapshot struct {
 	Left   uint32         `json:"pk"`
 	Bag    map[string]int `json:"c,omitempty"`
 	Events []Event        `json:"ev,omitempty"`
-	// Peers is everything in the building that is not you — the other people in
-	// the заброшка today, the нейрослопы when they arrive. Omitted entirely when
-	// you are alone in there, which is the common case and the one that should
-	// cost nothing.
+	// Peers is everything in the building that is not you AND THAT YOU COULD
+	// PLAUSIBLY SEE — the other people in the заброшка today, the нейрослопы when
+	// they arrive. Omitted entirely when there is nobody, which is the common
+	// case and the one that should cost nothing.
+	//
+	// FILTERED TO THE VIEWER'S OWN ROOM AND THE ROOMS THROUGH ITS DOORWAYS
+	// (level.go, buildVisibility), plus anybody who was in one of those within the
+	// last visibleHold. That makes the array a function of what is visible rather
+	// than of how many people are in the building, which is what a phone on mobile
+	// data actually experiences — though it does nothing for the worst case, where
+	// everybody is standing in one room, and it is the worst case MaxOccupants is
+	// derived from.
+	//
+	// ABSENCE IS THE WHOLE OF LEAVING THE SET, exactly as a bit going clear is
+	// the whole of a pickup being taken: this array is idempotent full state, so
+	// a peer who has walked out of view simply stops being in it. There is no
+	// "he went away" event, and the client draws whoever the newest frames name
+	// and nobody else — a figure kept alive because nothing said to remove it is
+	// a ghost standing where somebody used to be.
 	//
 	// THIS IS WHAT BOUNDS MaxOccupants. The array is per viewer and holds
 	// everybody else, so its cost is (occupants − 1) × a peer × the snapshot
-	// rate, per viewer — and a peer is a MEASURED 72 bytes at the widest
-	// quantisation the wire can carry, about 60 at the magnitudes a generated
-	// level produces. See that constant for the arithmetic, for the 8 kB/s
-	// ceiling it is derived from, and for why the answer today is four.
-	//
-	// ID IS THE PART OF A PEER WORTH SHRINKING FIRST, and it is called out here
-	// because this struct is where it would be done: the pseudonym is 19 bytes
-	// of an entry's 71 and it does not change for the life of an occupant, which
-	// is exactly what a repeating frame is not supposed to carry.
+	// rate, per viewer — and a peer is a MEASURED 49 bytes at the widest
+	// quantisation the wire can carry. See that constant for the arithmetic, for
+	// the 8 kB/s ceiling it is derived from, and for why the answer today is
+	// five.
 	//
 	// A peer is drawn INTERPOLATED, about a hundred milliseconds in the past,
 	// because its intent cannot be predicted the way your own is.
@@ -306,19 +331,113 @@ const MaxWirePickups = 32
 // Peer is one entity that is not the player receiving this frame.
 //
 // Quantised exactly as self is — centimetres and thousandths of a radian — and
-// identified by a PER-PROCESS PSEUDONYM rather than by an account id. A frame
-// is addressed to one player, but it names another, and an account id would be
-// a durable handle on a person handed to everybody who shares the building with
-// them. The same rule «Ванягоччи» settled on for its roster (ADR-037).
+// addressed by a SLOT: a small integer naming a place in the building, published
+// against a pseudonym on the standings frame, and reused once its holder leaves.
+// An account id is still nowhere near this struct and never will be, because a
+// frame addressed to one player names another and an account id would be a
+// durable handle on a person handed to everybody who shares the building with
+// them (ADR-037).
+//
+// THE PSEUDONYM ITSELF USED TO BE HERE, and it was 19 of the entry's 71 bytes,
+// constant for the life of an occupant, on a payload that repeats twenty times a
+// second — precisely what this project's bytes-on-the-wire rule forbids. What
+// went, and what each removal saved at the widest quantisation the wire can
+// carry:
+//
+//	the pseudonym, for the slot      −13   `"i":"K3jf9sLm2QpZ"` → `"n":9`
+//	the eye height, for the sector    −3   `"z":12345` → `"s":12`
+//	the pose enum                     −6   it was 0 in every frame ever sent
+//
+// 71 bytes to 49, which is the whole of what took MaxOccupants from four to
+// five. The pose enum went because nothing in this game can yet reduce anybody's
+// health, so it was a field describing a state the simulation cannot reach; it
+// comes back with whatever first does damage.
+//
+// THE SECTOR RATHER THAN THE HEIGHT, and being smaller is the lesser reason. The
+// client holds the level, so a sector index is a floor height it can look up and
+// a light level it could not have derived at all. Deriving the height from the
+// POSITION instead would have cost nothing on the wire and been wrong at every
+// doorway: a shared boundary belongs to both rooms, so two ends resolving it
+// independently can disagree about which room a man in a doorway is in, and he
+// would bob by up to MaxStep while standing still.
+//
+// NOTHING HERE IS `omitempty`, deliberately. Slot 0 is a real place and the first
+// one handed out, and x and y are genuinely zero somewhere in every building — so
+// omitting at zero would make the reader responsible for remembering the default
+// on four separate fields. It would not help the case that matters in any event:
+// the capacity is derived from the worst frame, and nothing is zero in that one.
 type Peer struct {
-	ID  string `json:"i"`
-	X   int    `json:"x"`
-	Y   int    `json:"y"`
-	Z   int    `json:"z"`
-	Yaw int    `json:"yaw"`
-	// State is a small enum for the pose: 0 idle, 1 moving, 2 dead. Everything
-	// a peer's appearance needs that is not its position.
-	State int `json:"s,omitempty"`
+	// Slot is the place in the building this entity holds. The standings frame
+	// says whose it currently is.
+	Slot int `json:"n"`
+	X    int `json:"x"`
+	Y    int `json:"y"`
+	// Sector is the room he is standing in: the client's source for how high to
+	// draw him (that sector's floor plus the eye height) and how dark the room he
+	// is in should make him.
+	Sector int `json:"s"`
+	Yaw    int `json:"yaw"`
+}
+
+// Standings is who is in the building, how long they have each been in it, and
+// what they are carrying.
+//
+// IT IS THIS GAME'S WHOLE NOTION OF A SCORE, and it exists because nothing here
+// ends. A match with no result has nothing to show at the end of it, so what it
+// needs instead is something to look at in the middle: a readout that says how
+// everybody is doing, updated while you play. The metric is deliberately what
+// the game actually has today — time in the building and what has been collected
+// — rather than a shape with empty columns in it. Kills and streaks are fields
+// this frame grows on the day something can be killed, and not before.
+//
+// A FRAME OF ITS OWN AT ONE HERTZ, AND NOT A FIELD ON THE SNAPSHOT. The
+// arithmetic is the whole argument. A seconds-and-bag pair on each peer is about
+// 25 bytes (`"s":999999,"c":{"beer":9}`), and the snapshot is built per occupant
+// and carries everybody, so at MaxOccupants that is 25 × 20 × 5 ≈ 2.5 kB/s per
+// viewer — nearly a third of the whole budget — to restate numbers that change a
+// few times a minute, twenty times a second. The same rows on their own frame at
+// StandingsInterval cost 293 B/s. Twenty times cheaper, for a readout nobody
+// reads at frame rate.
+//
+// IT IS NOT FILTERED, and that is the point of it rather than an oversight. A
+// snapshot is what you can SEE and is therefore cut to your own room and the
+// rooms through its doorways; this is what is TRUE OF THE BUILDING, so it lists
+// everybody — including the person reading it, and including the man two rooms
+// away that reader has no idea is there. Which also makes it identical for every
+// reader, so the service marshals it once and writes the same bytes to every
+// connection.
+//
+// IT IS ALSO THE SLOT DIRECTORY, and that is not a second job bolted on. A
+// snapshot addresses a peer by a slot, and a slot is reused after its holder
+// leaves, so the mapping from slot to pseudonym has to be published somewhere —
+// and a per-occupant roster that already exists at 1 Hz is exactly where it
+// costs nothing extra. It is why the roster CHANGING publishes one too, on the
+// tick it changed: see World.RosterVersion.
+//
+// NO TICK ON IT. A frame that has to be placed on a timeline carries one (see
+// Snapshot, and the interpolation that runs on it); this is a readout with no
+// history, the socket delivers in order, and the newest one to arrive is simply
+// the truth.
+type Standings struct {
+	T    string         `json:"t"`
+	Rows []StandingsRow `json:"b,omitempty"`
+}
+
+// StandingsRow is one occupant on that readout.
+type StandingsRow struct {
+	// Slot is the place in the building, and it is the same number the snapshot
+	// addresses this person's peer entry by. That correspondence is the entire
+	// reason both frames exist in the shape they do.
+	Slot int `json:"n"`
+	// Name is the per-process pseudonym other players are told (ADR-037) — never
+	// an account id, and meaningless after a restart.
+	Name string `json:"i"`
+	// Seconds is how long they have been in the building.
+	Seconds int `json:"s"`
+	// Bag is what they have collected, keyed by the catalogue's Grants exactly as
+	// the snapshot's own is. Omitted entirely for somebody carrying nothing,
+	// which is everybody for their first minute.
+	Bag map[string]int `json:"c,omitempty"`
 }
 
 // cm quantises metres to centimetres for the wire.

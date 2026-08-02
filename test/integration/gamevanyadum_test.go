@@ -559,8 +559,7 @@ func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
 	}
 
 	// A few ticks so both of them are in a frame, then each must be able to see
-	// the other. A peer is named by a twelve-character handle and never by an
-	// account id (ADR-037).
+	// the other. Both spawn in the same room, so nothing is filtered out yet.
 	deadline := time.Now().Add(20 * time.Second)
 	for (len(a.last.Peers) == 0 || len(b.last.Peers) == 0) && time.Now().Before(deadline) {
 		dumPump(t, tick, clk, room...)
@@ -569,22 +568,42 @@ func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
 		t.Fatalf("a sees %d peers and b sees %d; they are not in the same building",
 			len(a.last.Peers), len(b.last.Peers))
 	}
-	if a.last.Peers[0].ID == b.last.Peers[0].ID {
-		t.Fatalf("both frames name the peer %q — somebody is looking at himself", a.last.Peers[0].ID)
+	// A peer is a SLOT and nothing else. Each of them is shown the other's place
+	// in the building, and neither is shown his own.
+	if a.last.Peers[0].Slot == b.last.Peers[0].Slot {
+		t.Fatalf("both frames name slot %d — somebody is looking at himself", a.last.Peers[0].Slot)
 	}
-	for who, s := range map[string]dumSnapshot{"a": a.last, "b": b.last} {
-		if len(s.Peers[0].ID) != 12 {
-			t.Fatalf("%s's neighbour is called %q, which is not a handle", who, s.Peers[0].ID)
+	if a.last.Peers[0].Slot != b.slot || b.last.Peers[0].Slot != a.slot {
+		t.Fatalf("a is in slot %d and sees %d; b is in slot %d and sees %d",
+			a.slot, a.last.Peers[0].Slot, b.slot, b.last.Peers[0].Slot)
+	}
+	// And the standings is where that slot becomes a name: a twelve-character
+	// handle, never an account id (ADR-037), once a second rather than twenty
+	// times.
+	dumWaitFor(t, tick, clk, room, "the standings to name both of them",
+		func() bool { return len(a.board.Rows) == 2 && len(b.board.Rows) == 2 })
+	for who, w := range map[string]*dumWire{"a": a, "b": b} {
+		for _, slot := range []int{a.slot, b.slot} {
+			if name := w.nameOf(slot); len(name) != 12 {
+				t.Fatalf("%s's standings call slot %d %q, which is not a handle", who, slot, name)
+			}
 		}
 	}
 
 	// A walks somewhere. B must SEE him move — a peer whose position never
 	// changes is a figure drawn once, which is not the same thing as a shared
 	// world.
+	//
+	// Read from where B was LAST SHOWN him rather than from B's newest frame:
+	// interest management means A drops off that frame entirely once he is two
+	// rooms away, and where the generator put the beer is not this test's
+	// business. The metre asserted below is comfortably inside the walk to the
+	// first doorway, since a room is at least RoomMin across and A starts in the
+	// middle of one.
 	target := level.Pickups[0]
-	before := b.last.Peers[0]
+	before := b.lastSeen(t, a.slot)
 	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, level.SpawnSector, target.Sector, target.Pos))
-	after := b.peerNamed(t, before.ID)
+	after := b.lastSeen(t, a.slot)
 	if moved := math.Hypot(float64(after.X-before.X), float64(after.Y-before.Y)) / 100; moved < 1 {
 		t.Fatalf("a crossed the заброшка and b saw him move %.2f m", moved)
 	}
@@ -642,6 +661,131 @@ func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
 	if seed != level.Seed {
 		t.Fatalf("the visit records building %d, they were in %d", seed, level.Seed)
 	}
+}
+
+func TestVanyadumYouAreSentWhatYouCanSeeAndToldAboutEverybody(t *testing.T) {
+	// THE TWO FRAMES, OVER TWO REAL SOCKETS, saying deliberately different
+	// things. A snapshot is cut to the reader's own room and the rooms through
+	// its doorways, so a man two rooms away is not on it at all. The standings is
+	// a readout of the BUILDING, so he is on that — with his handle and his time
+	// — the whole while.
+	app, tick, _ := buildAppVanyadum(t, dumVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cliA := loginAs(t, srv.URL, "910013", "user")
+	cliB := loginAs(t, srv.URL, "910014", "user")
+	clk := newDumClock()
+
+	_, level := fetchWorld(t, cliA, srv.URL)
+	connA, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cliA, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial a: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cliB, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial b: %v", err)
+	}
+	defer connB.CloseNow()
+
+	a := newDumWire(connA, readFrames(t, connA))
+	b := newDumWire(connB, readFrames(t, connB))
+	room := []*dumWire{a, b}
+	for _, w := range room {
+		w.attach(t)
+	}
+
+	// They spawn in the same room, so they start out visible to each other.
+	dumWaitFor(t, tick, clk, room, "each of them to see the other",
+		func() bool { return len(a.last.Peers) > 0 && len(b.last.Peers) > 0 })
+
+	// Then to opposite ends of the заброшка. The furthest pair rather than "walk
+	// A away from the spawn", because the generator's tree is occasionally a star
+	// — every room hanging off the first one — and in that shape nowhere is two
+	// doorways from the spawn, though two leaves are always two doorways from
+	// each other.
+	here, there, apart := dumFurthestRooms(t, level)
+	if apart < 2 {
+		t.Fatalf("seed %d generated %d rooms with no two of them a room apart", level.Seed, len(level.Sectors))
+	}
+	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, level.SpawnSector, here, level.Sectors[here].Center()))
+	dumWalkTo(t, tick, clk, room, b, dumRouteTo(t, level, level.SpawnSector, there, level.Sectors[there].Center()))
+
+	dumWaitFor(t, tick, clk, room, "each of them to drop off the other's frame",
+		func() bool { return len(a.last.Peers) == 0 && len(b.last.Peers) == 0 })
+
+	// AND THE STANDINGS DOES NOT CARE WHERE ANYBODY IS STANDING. Both of them are
+	// still on it, by handle, with the time they have spent in the building — the
+	// point of a readout in a match that never ends is that it is of the building
+	// and not of the doorway you happen to be looking through.
+	dumWaitFor(t, tick, clk, room, "the standings to name both of them anyway",
+		func() bool { return len(a.board.Rows) == 2 && len(b.board.Rows) == 2 })
+	for who, w := range map[string]*dumWire{"a": a, "b": b} {
+		for _, slot := range []int{a.slot, b.slot} {
+			if name := w.nameOf(slot); len(name) != 12 {
+				t.Fatalf("%s's standings call slot %d %q with nobody in sight", who, slot, name)
+			}
+		}
+	}
+	// Somebody has been in the building long enough for the clock on it to have
+	// moved, which is what makes it a score rather than a column of zeroes.
+	dumWaitFor(t, tick, clk, room, "the standings clock to advance", func() bool {
+		for _, r := range a.board.Rows {
+			if r.Seconds > 0 {
+				return true
+			}
+		}
+		return false
+	})
+
+	// And walking back into the same room puts each of them back on the other's
+	// frame. Nothing announces either direction: the peers array is full state,
+	// so being in it and not being in it is the whole of the protocol.
+	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, here, there, level.Sectors[there].Center()))
+	dumWaitFor(t, tick, clk, room, "them to see each other again",
+		func() bool { return len(a.last.Peers) > 0 && len(b.last.Peers) > 0 })
+}
+
+// dumFurthestRooms is the two sectors with the most doorways between them, and
+// how many that is.
+//
+// The portal graph is a tree (level.go), so a breadth-first search from every
+// room is both exhaustive and cheap at the ten-odd rooms a заброшка has. Any tree
+// of three or more rooms has a pair at least two apart, which is what a test
+// about interest management needs and what asking for "somewhere far from the
+// spawn" does not reliably give.
+func dumFurthestRooms(t *testing.T, l *gamevanyadum.Level) (a, b, apart int) {
+	t.Helper()
+	neighbours := make([][]int, len(l.Sectors))
+	for _, p := range l.Portals {
+		neighbours[p.A] = append(neighbours[p.A], p.B)
+		neighbours[p.B] = append(neighbours[p.B], p.A)
+	}
+	for from := range l.Sectors {
+		dist := make([]int, len(l.Sectors))
+		for i := range dist {
+			dist[i] = -1
+		}
+		dist[from] = 0
+		queue := []int{from}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			for _, next := range neighbours[cur] {
+				if dist[next] >= 0 {
+					continue
+				}
+				dist[next] = dist[cur] + 1
+				queue = append(queue, next)
+			}
+		}
+		for to, d := range dist {
+			if d > apart {
+				a, b, apart = from, to, d
+			}
+		}
+	}
+	return a, b, apart
 }
 
 func TestVanyadumMyVisitsReadsBackWhatWasWritten(t *testing.T) {
@@ -782,11 +926,27 @@ type dumInput struct {
 	Cmds []dumCommand `json:"cmds"`
 }
 
-// dumPeer is one other person in the building, as the frame names him.
+// dumPeer is one other person in the building, as the frame names him: a SLOT
+// and a position, and no name of any kind. Who is standing in that place is on
+// the standings frame, once a second rather than twenty times.
 type dumPeer struct {
-	ID string `json:"i"`
-	X  int    `json:"x"`
-	Y  int    `json:"y"`
+	Slot   int `json:"n"`
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Sector int `json:"s"`
+}
+
+// dumRow is one line of the standings, and dumBoard is the frame it arrives on.
+type dumRow struct {
+	Slot    int            `json:"n"`
+	Name    string         `json:"i"`
+	Seconds int            `json:"s"`
+	Bag     map[string]int `json:"c"`
+}
+
+type dumBoard struct {
+	T    string   `json:"t"`
+	Rows []dumRow `json:"b"`
 }
 
 // dumSnapshot is the part of a snapshot a driving test reads. Typed rather than
@@ -821,13 +981,29 @@ type dumWire struct {
 	// last is the newest snapshot folded in, which is what the steering below
 	// aims from.
 	last dumSnapshot
+	// slot is the place in the building this socket was given, on its ready
+	// frame. It is the only way it can find ITSELF on the standings, since a
+	// snapshot names everybody except its own reader.
+	slot int
+	// board is the newest standings folded in: the slot-to-handle directory, the
+	// scores, and the one frame that is the same for everybody.
+	board dumBoard
+	// seenAt is the last place this socket was SHOWN each slot.
+	//
+	// Kept because a peer's absence from a frame is ordinary rather than
+	// exceptional: interest management sends only the reader's own room and the
+	// rooms through its doorways, so somebody who walks two rooms away simply
+	// stops being on the frame. An assertion about how far he was seen to move
+	// therefore has to remember where he was last seen, not read a frame that no
+	// longer mentions him.
+	seenAt map[int]dumPeer
 	// lastSend is when a frame was last written, and it is what keeps a driving
 	// test inside the socket's own rate limit — see dumSendGap.
 	lastSend time.Time
 }
 
 func newDumWire(conn *websocket.Conn, frames <-chan []byte) *dumWire {
-	return &dumWire{conn: conn, frames: frames}
+	return &dumWire{conn: conn, frames: frames, seenAt: map[int]dumPeer{}}
 }
 
 // dumSendGap is the shortest interval this file will put between two input
@@ -896,7 +1072,8 @@ func (w *dumWire) sendExactly(t *testing.T, fresh []dumCommand) {
 }
 
 // attach sends a hello and returns the world id it is answered with, folding in
-// any snapshot that arrives on the way.
+// any snapshot that arrives on the way and recording the place in the building
+// the socket was given (w.slot).
 //
 // It is the JOIN — there is no start endpoint — and it is ALSO this file's
 // delivery barrier. One connection's messages are read in order on one read
@@ -930,12 +1107,14 @@ func (w *dumWire) attach(t *testing.T) string {
 			var f struct {
 				T       string `json:"t"`
 				WorldID string `json:"world_id"`
+				Slot    int    `json:"slot"`
 			}
 			if json.Unmarshal(raw, &f) != nil {
 				continue
 			}
 			switch f.T {
 			case gamevanyadum.TypeReady:
+				w.slot = f.Slot
 				return f.WorldID
 			case gamevanyadum.TypeFull:
 				t.Fatal("the заброшка refused this socket as full")
@@ -972,28 +1151,46 @@ func (w *dumWire) draw(t *testing.T, clk *dumClock) dumSnapshot {
 	}
 }
 
-// peerNamed is the entry for one handle on this socket's newest frame.
-func (w *dumWire) peerNamed(t *testing.T, id string) dumPeer {
+// lastSeen is where this socket was last shown the occupant of a slot, whether
+// or not the newest frame still carries him. See the field.
+func (w *dumWire) lastSeen(t *testing.T, slot int) dumPeer {
 	t.Helper()
-	for _, p := range w.last.Peers {
-		if p.ID == id {
-			return p
+	p, ok := w.seenAt[slot]
+	if !ok {
+		t.Fatalf("this socket has never been shown slot %d at all", slot)
+	}
+	return p
+}
+
+// nameOf is who the standings say is holding a slot, or "" if it has never named
+// one.
+func (w *dumWire) nameOf(slot int) string {
+	for _, r := range w.board.Rows {
+		if r.Slot == slot {
+			return r.Name
 		}
 	}
-	t.Fatalf("this frame does not mention %q at all: %+v", id, w.last.Peers)
-	return dumPeer{}
+	return ""
 }
 
 // apply reads one delivered frame, reporting the snapshot it was — anything
-// else on this socket is a ready or a refusal, and neither says anything about
-// what has been simulated.
+// else on this socket is a ready, a standings or a refusal, and none of those
+// says anything about what has been simulated.
 func (w *dumWire) apply(raw []byte) (dumSnapshot, bool) {
+	var board dumBoard
+	if json.Unmarshal(raw, &board) == nil && board.T == gamevanyadum.TypeStandings {
+		w.board = board
+		return dumSnapshot{}, false
+	}
 	var s dumSnapshot
 	if json.Unmarshal(raw, &s) != nil || s.T != gamevanyadum.TypeSnapshot {
 		return dumSnapshot{}, false
 	}
 	w.seen = s.Tick
 	w.last = s
+	for _, p := range s.Peers {
+		w.seenAt[p.Slot] = p
+	}
 	if s.Ack > w.ack {
 		w.ack = s.Ack
 	}

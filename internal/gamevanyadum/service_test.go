@@ -211,6 +211,42 @@ func TestHelloIsTheJoinAndNamesTheBuilding(t *testing.T) {
 	if ready[0]["world_id"] != id.String() {
 		t.Fatalf("ready names world %v, the building is %v", ready[0]["world_id"], id)
 	}
+	// And which place in the building he has been given, which is the only thing
+	// that ever tells him: a snapshot names everybody EXCEPT its own reader, so
+	// without this he could read the whole standings and not know which row was
+	// his.
+	if got, ok := ready[0]["slot"]; !ok || got != float64(0) {
+		t.Fatalf("the first arrival was told his place is %v", ready[0]["slot"])
+	}
+}
+
+func TestAReconnectIsGivenBackTheSamePlace(t *testing.T) {
+	// A page reload, a tunnel or a phone waking up produces a second hello, and
+	// the man is still standing where he was — so he is still in the same place in
+	// the building. A reconnect that moved him would tell every other client that
+	// one figure had vanished and an unrelated one appeared, which is the one
+	// thing a slot is not allowed to do while its holder is here.
+	acc := uuid.New().String()
+	m := realtime.Member{ConnID: "c1", AccountID: acc}
+	tr := newFakeTransport(m)
+	s := NewService(tr, Room, nil, newFakeRepo())
+
+	// Somebody else is in the building first, so the place under test is not
+	// zero — which is the value an omitted field would read back as.
+	sayHello(s, realtime.Member{ConnID: "c0", AccountID: uuid.New().String()})
+	sayHello(s, m)
+	sayHello(s, m)
+
+	ready := tr.framesOfType(TypeReady)
+	if len(ready) != 3 {
+		t.Fatalf("three hellos were answered %d times", len(ready))
+	}
+	if ready[1]["slot"] == float64(0) {
+		t.Fatal("the second arrival was given the first arrival's place")
+	}
+	if ready[1]["slot"] != ready[2]["slot"] {
+		t.Fatalf("a reconnect moved him from place %v to %v", ready[1]["slot"], ready[2]["slot"])
+	}
 }
 
 func TestASecondHelloIsAReconnectAndNotASecondPersonInTheRoom(t *testing.T) {
@@ -347,7 +383,8 @@ func TestBothOfAPlayersDevicesGetTheSnapshot(t *testing.T) {
 
 func TestTwoPeopleInTheBuildingSeeEachOther(t *testing.T) {
 	// The whole point of the iteration, at the service's own level: one world,
-	// two occupants, and a frame per occupant that names the OTHER one.
+	// two occupants, and a frame per occupant naming the OTHER one — by the slot
+	// he holds, which the standings frame turns into a handle.
 	a, b := uuid.New().String(), uuid.New().String()
 	ma := realtime.Member{ConnID: "ca", AccountID: a}
 	mb := realtime.Member{ConnID: "cb", AccountID: b}
@@ -361,25 +398,206 @@ func TestTwoPeopleInTheBuildingSeeEachOther(t *testing.T) {
 
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	saw := map[string]string{}
+	saw := map[string]int{}
 	for _, m := range tr.sent {
 		var f Snapshot
 		if json.Unmarshal(m.body, &f) != nil || f.T != TypeSnapshot || len(f.Peers) == 0 {
 			continue
 		}
-		saw[m.connID] = f.Peers[0].ID
+		saw[m.connID] = f.Peers[0].Slot
 	}
 	if len(saw) != 2 {
 		t.Fatalf("only these connections were told about anybody else: %v", saw)
 	}
 	if saw["ca"] == saw["cb"] {
-		t.Fatalf("both frames name the peer %q — somebody is looking at himself", saw["ca"])
+		t.Fatalf("both frames name slot %d — somebody is looking at himself", saw["ca"])
 	}
-	// A HANDLE AND NEVER AN ACCOUNT (ADR-037): an account id is a UUID, which is
-	// far longer than the twelve base64url characters a pseudonym is.
-	for conn, id := range saw {
-		if len(id) != 12 {
-			t.Fatalf("%s was told its neighbour is %q, which is not a handle", conn, id)
+
+	// And the name that goes with each slot is on the standings, where it is sent
+	// once a second instead of twenty times. A HANDLE AND NEVER AN ACCOUNT
+	// (ADR-037): an account id is a UUID, far longer than the twelve base64url
+	// characters a pseudonym is.
+	named := map[int]string{}
+	for _, m := range tr.sent {
+		var board Standings
+		if json.Unmarshal(m.body, &board) != nil || board.T != TypeStandings {
+			continue
+		}
+		for _, r := range board.Rows {
+			named[r.Slot] = r.Name
+		}
+	}
+	for conn, slot := range saw {
+		name, ok := named[slot]
+		if !ok {
+			t.Fatalf("%s was shown slot %d and never told whose it is: %v", conn, slot, named)
+		}
+		if len(name) != 12 {
+			t.Fatalf("%s's neighbour is called %q, which is not a handle", conn, name)
+		}
+	}
+}
+
+func TestTheStandingsGoOutOnceASecondAndNotOnEveryTick(t *testing.T) {
+	// The rate is the whole reason this is its own frame. Twenty a second would
+	// cost twenty times as much to restate numbers that move a few times a minute
+	// — which is exactly what putting them on the snapshot would have done.
+	acc := uuid.New().String()
+	member := realtime.Member{ConnID: "c1", AccountID: acc}
+	tr := newFakeTransport(member)
+	s, tick := startService(t, tr, newFakeRepo())
+	clk := newClock()
+
+	sayHello(s, member)
+	// Three seconds of ticks, driven on the tick's own clock. ONE SEND PER TICK
+	// and a barrier at the end, rather than tickAndSettle throughout: that helper
+	// sends twice, so a loop built on it would advance the world twice as far as
+	// the seconds it is counting.
+	const seconds = 3
+	for i := 0; i < seconds*SimHz; i++ {
+		tick <- clk.next()
+	}
+	tickAndSettle(tick, clk.next())
+
+	snapshots := len(tr.framesOfType(TypeSnapshot))
+	boards := len(tr.framesOfType(TypeStandings))
+	if snapshots < seconds*SimHz {
+		t.Fatalf("only %d snapshots in %d seconds of ticks", snapshots, seconds)
+	}
+	// AN EXACT COUNT, BECAUSE THE CADENCE IS EXACT. A range wide enough to be
+	// comfortable is a range that lets twice the intended rate through, which is
+	// the one thing this frame's whole existence rests on not happening. Two
+	// terms, both of them deliberate:
+	//
+	//	the first tick    1   joining moved the roster, and a snapshot may not name
+	//	                      a slot the reader has never been given a name for —
+	//	                      which is also the tick that boards this connection
+	//	the seconds       3   ticks 20, 40 and 60 of the 60 driven here
+	//
+	// It is not a race with the tick loop either: the barrier above guarantees
+	// steps 1 to seconds*SimHz+1 have completed, and the one step that may still
+	// be running is past the last multiple of standingsEvery, moves no roster, and
+	// has no unboarded connection to serve — so it cannot publish anything.
+	want := 1 + seconds*SimHz/int(standingsEvery)
+	if boards != want {
+		t.Fatalf("%d standings frames in %d seconds of ticks, expected exactly %d, alongside %d snapshots",
+			boards, seconds, want, snapshots)
+	}
+}
+
+func TestASnapshotNeverNamesASlotTheStandingsHaveNot(t *testing.T) {
+	// The invariant that makes a slot safe to be the only name on a repeating
+	// frame. A peer arrives as a bare number, so a client that has not been told
+	// whose number it is can neither label the figure nor tell that the place has
+	// changed hands since it last drew somebody there — and interpolating a
+	// newcomer from where the last holder stood draws a man sliding across the
+	// building.
+	//
+	// Once a second is not enough on its own, which is why the roster CHANGING
+	// publishes one too, ahead of the snapshot on the same connection. Here the
+	// second player joins mid-second, precisely where a naive once-a-second
+	// cadence would leave the first player looking at a stranger.
+	//
+	// AND THE ROSTER IS NOT ENOUGH EITHER, which is what the third act is for. A
+	// new CONNECTION belonging to somebody already in the building changes no
+	// roster at all — Join hands back the occupant he already is — so nothing was
+	// published for it, while the tick sent it snapshots naming everybody. It is
+	// not the "a frame was dropped" case: a page reload, a tunnel coming back and a
+	// second device all produce one, and a client that kept its old directory
+	// across the outage labels a place that changed hands with the previous
+	// holder's handle and interpolates him from the previous holder's positions —
+	// exactly the mislabelling a slot is not allowed to cause.
+	a, b := uuid.New().String(), uuid.New().String()
+	ma := realtime.Member{ConnID: "ca", AccountID: a}
+	mb := realtime.Member{ConnID: "cb", AccountID: b}
+	tr := newFakeTransport(ma)
+	s, tick := startService(t, tr, newFakeRepo())
+	clk := newClock()
+
+	sayHello(s, ma)
+	// Off the second boundary on purpose.
+	for i := 0; i < 7; i++ {
+		tickAndSettle(tick, clk.next())
+	}
+	tr.setMembers([]realtime.Member{ma, mb})
+	sayHello(s, mb)
+	for i := 0; i < 5; i++ {
+		tickAndSettle(tick, clk.next())
+	}
+
+	// A second device for a, and a rebuilt socket for b. Both are new connections
+	// for occupants who never left, and the ticks that follow stay clear of the
+	// next second boundary so nothing rescues them by cadence.
+	//
+	// THE SECOND DEVICE IS TICKED BEFORE IT SAYS HELLO, which is not an odd case
+	// but the ordinary one: a socket joins the room at the upgrade and is a
+	// snapshot's destination from the very next tick, a whole round trip before
+	// its hello can arrive. Answering the hello is therefore too late by
+	// construction, and a fix that only answered it would leave exactly this
+	// window mislabelling a reconnect.
+	ma2 := realtime.Member{ConnID: "ca2", AccountID: a}
+	mb2 := realtime.Member{ConnID: "cb2", AccountID: b}
+	tr.setMembers([]realtime.Member{ma, ma2, mb2})
+	for i := 0; i < 3; i++ {
+		tickAndSettle(tick, clk.next())
+	}
+	sayHello(s, ma2)
+	sayHello(s, mb2)
+	for i := 0; i < 3; i++ {
+		tickAndSettle(tick, clk.next())
+	}
+
+	// Replayed in the order the connection received them, which is what the
+	// invariant is actually about: it is not enough for a standings to exist
+	// somewhere, it has to have arrived FIRST.
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	known := map[string]map[int]bool{}
+	for _, m := range tr.sent {
+		var env struct {
+			T string `json:"t"`
+		}
+		if json.Unmarshal(m.body, &env) != nil {
+			continue
+		}
+		switch env.T {
+		case TypeStandings:
+			var board Standings
+			if json.Unmarshal(m.body, &board) != nil {
+				continue
+			}
+			seen := map[int]bool{}
+			for _, r := range board.Rows {
+				seen[r.Slot] = true
+			}
+			known[m.connID] = seen
+		case TypeSnapshot:
+			var f Snapshot
+			if json.Unmarshal(m.body, &f) != nil {
+				continue
+			}
+			for _, p := range f.Peers {
+				if !known[m.connID][p.Slot] {
+					t.Fatalf("%s was sent a peer in slot %d before any standings named it (knew: %v)",
+						m.connID, p.Slot, known[m.connID])
+				}
+			}
+		}
+	}
+	// And the invariant is not vacuously true because nobody was ever a peer — per
+	// connection, not in total, since the reconnects are the whole point and a
+	// count over the lot would be carried by the first two sockets alone.
+	peers := map[string]int{}
+	for _, m := range tr.sent {
+		var f Snapshot
+		if json.Unmarshal(m.body, &f) == nil && f.T == TypeSnapshot {
+			peers[m.connID] += len(f.Peers)
+		}
+	}
+	for _, conn := range []string{"ca", "cb", "ca2", "cb2"} {
+		if peers[conn] == 0 {
+			t.Fatalf("no snapshot sent to %s ever carried a peer, so this proves nothing about it: %v",
+				conn, peers)
 		}
 	}
 }

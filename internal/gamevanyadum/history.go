@@ -30,8 +30,9 @@ type historyFrame struct {
 	tick int64
 	at   time.Time
 	// spots is every entity's position at that instant, keyed by the same
-	// identity the snapshot publishes.
-	spots map[string]Spot
+	// identity the snapshot publishes — the SLOT, because a slot is all a client
+	// has to name what it was aiming at with.
+	spots map[int]Spot
 }
 
 // Spot is one entity's place in the world at one instant.
@@ -76,10 +77,10 @@ func newHistory() *history {
 
 // record stores one instant. The map is reused rather than reallocated when the
 // ring wraps, for the same reason the ring is fixed-size.
-func (h *history) record(tick int64, at time.Time, spots map[string]Spot) {
+func (h *history) record(tick int64, at time.Time, spots map[int]Spot) {
 	f := &h.frames[h.next]
 	if f.spots == nil {
-		f.spots = make(map[string]Spot, len(spots)+2)
+		f.spots = make(map[int]Spot, len(spots)+2)
 	} else {
 		clear(f.spots)
 	}
@@ -107,7 +108,7 @@ func (h *history) record(tick int64, at time.Time, spots map[string]Spot) {
 // future clamps to the newest. Both are honest answers: the alternative is
 // fabricating a position, and a fabricated position is a hit registered against
 // something that was never there.
-func (h *history) at(instant time.Time) map[string]Spot {
+func (h *history) at(instant time.Time) map[int]Spot {
 	if h.count == 0 {
 		return nil
 	}
@@ -140,7 +141,7 @@ func (h *history) at(instant time.Time) map[string]Spot {
 			return b.spots
 		}
 		t := float64(instant.Sub(a.at)) / float64(span)
-		out := make(map[string]Spot, len(b.spots))
+		out := make(map[int]Spot, len(b.spots))
 		for id, bs := range b.spots {
 			as, ok := a.spots[id]
 			if !ok {
@@ -189,7 +190,7 @@ func (h *history) at(instant time.Time) map[string]Spot {
 // against a world seconds old. The clamp is on the composition and not only on
 // the sample: the two terms are added here, so this is the only place their sum
 // exists.
-func (w *World) RewindTo(now time.Time, rtt time.Duration) map[string]Spot {
+func (w *World) RewindTo(now time.Time, rtt time.Duration) map[int]Spot {
 	if rtt < 0 {
 		rtt = 0
 	}

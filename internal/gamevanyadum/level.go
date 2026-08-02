@@ -322,6 +322,50 @@ func buildWalls(l *Level) []Wall {
 	return out
 }
 
+// buildVisibility precomputes the potentially-visible set: visible[a][b] reports
+// whether somebody standing in sector b is drawn by somebody standing in sector
+// a.
+//
+// THE SECTOR GRAPH IS ALREADY THE ANSWER, which is what makes filtering peers
+// nearly free. Rooms are rectangles joined by portals cut through the walls they
+// share, so from inside one room the only things there are to see are what is in
+// it and what is through one of its doorways — adjacency in the portal graph IS
+// the visible set. It is a table of a hundred-odd booleans built once per
+// building and read twice per peer per frame, against a line-of-sight test that
+// would sweep every wall in the заброшка for every pair of people on every tick.
+//
+// IT IS AN APPROXIMATION IN BOTH DIRECTIONS, and both are accepted rather than
+// overlooked. It OVER-sends: a peer in the next room may be standing behind that
+// room's far wall with the doorway nowhere near him, and he is sent anyway. It
+// also UNDER-sends: two doorways that happen to line up genuinely do show you
+// the room beyond the next one, and somebody standing in that line is not sent —
+// so he appears at the doorway rather than being visible through it. Both errors
+// are bounded by a room, which is the trade every adjacency-based PVS makes.
+//
+// SYMMETRIC BY CONSTRUCTION, because adjacency is. If you are on my frame I am
+// on yours, and the day something shoots that is what stops a player being hit
+// by somebody his own client was never told about.
+//
+// IT SAYS NOTHING ABOUT TIME, WHICH IS WHY IT IS NOT READ ON ITS OWN. A sector is
+// derived from a position, so somebody standing in a doorway belongs to whichever
+// room the last sub-centimetre of movement put him in, and this table answers a
+// different question either side of that line — which strobes everybody who is
+// adjacent to one of the two rooms and not the other. The set is therefore held
+// for a moment after it changes rather than read raw: world.go, heldVisible, and
+// visibleHold for the argument.
+func buildVisibility(l *Level) [][]bool {
+	out := make([][]bool, len(l.Sectors))
+	for i := range out {
+		out[i] = make([]bool, len(l.Sectors))
+		// Your own room, which no portal reports.
+		out[i][i] = true
+	}
+	for _, p := range l.Portals {
+		out[p.A][p.B], out[p.B][p.A] = true, true
+	}
+	return out
+}
+
 // subtractPortals cuts every opening that lies on this edge out of it, returning
 // what is left solid. An edge with no opening comes back unchanged; one whose
 // opening spans it entirely comes back as nothing at all.

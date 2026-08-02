@@ -102,6 +102,53 @@ const SimStep = time.Second / SimHz
 // the constant to change — not the simulation rate.
 const SnapshotInterval = SimStep
 
+// StandingsInterval is how often the standings frame goes out.
+//
+// A SECOND RATHER THAN A TICK, because it is a readout and not a picture. The
+// numbers on it move a few times a minute — how long you have been in the
+// building advances once a second by construction, and what you are carrying
+// changes when you walk over a bottle — and nobody reads a score twenty times a
+// second. Putting the same numbers on the snapshot instead would cost twenty
+// times as much to say the same thing; the arithmetic is written out on the
+// Standings type.
+//
+// It is not the ONLY thing that publishes one. The roster changing publishes one
+// on the tick it changed, and a connection that has never been sent one gets it
+// ahead of its first snapshot, so that no client is ever shown a slot it has not
+// been given a name for. See World.RosterVersion and Service.boarded.
+const StandingsInterval = time.Second
+
+// standingsEvery is that interval in simulation ticks, which is the unit the
+// world counts in. Derived rather than typed out, so the two can never disagree.
+const standingsEvery = int64(StandingsInterval / SimStep)
+
+// visibleHold is how long a peer stays on a reader's frame after leaving the set
+// that reader could plausibly see.
+//
+// IT EXISTS BECAUSE A SECTOR IS DERIVED FROM A POSITION, so a man standing in a
+// doorway between two rooms belongs to whichever of them the last sub-centimetre
+// of movement put him in — and he crosses back and forth at up to the tick rate
+// without walking anywhere. Interest management sends the reader's own room and
+// the rooms through its doorways (level.go, buildVisibility), so that flip moves
+// the whole visible set with it: a third room adjacent to one of the two and not
+// to the other joins and leaves the frame twenty times a second, and the people
+// in it strobe. It happens at BOTH ends — a peer jittering on a boundary drops
+// out of a set he never really left, exactly as a reader jittering does.
+//
+// The fix is a memory rather than a smoothed position: a peer is sent while he
+// is visible OR was visible within the last visibleHold, so a set that keeps
+// coming back never goes away. Two hundred milliseconds is the shortest span
+// that comfortably outlasts jitter at the tick rate — four ticks, so a flip has
+// to stay flipped for four consecutive ticks to remove anybody — and it is short
+// enough that somebody who genuinely walked out of sight is not left standing in
+// a doorway he left. A hold can only ADD to a filtered set, so it cannot exceed
+// the unfiltered one the wire budget is taken on (message_test.go).
+const visibleHold = 200 * time.Millisecond
+
+// visibleHoldTicks is that hold in simulation ticks, which is the unit the world
+// counts in. Derived rather than typed out, so the two can never disagree.
+const visibleHoldTicks = int64(visibleHold / SimStep)
+
 // MaxCommandsPerFrame bounds an input frame. The socket already allows only ten
 // frames a second (internal/realtime/conn.go), and the client samples input at
 // four times that, so four sub-steps per frame is exactly the ratio — anything

@@ -121,7 +121,7 @@ export function createPredictor(opts: PredictorOptions) {
     return {
       x: shown.x,
       y: shown.y,
-      z: eyeZ(level, shown, eyeHeight),
+      z: eyeZ(level, shown.sector, eyeHeight),
       yaw: shown.yaw,
       pitch: shown.pitch,
       sector: shown.sector,

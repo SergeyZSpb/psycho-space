@@ -75,6 +75,15 @@ type Occupant struct {
 	AccountID string
 	Pseudonym string
 
+	// Slot is the place in the building this occupant holds, and it is what the
+	// WIRE calls them: a snapshot addresses a peer by this number rather than by
+	// the pseudonym, which is 19 constant bytes a repeating frame has no business
+	// carrying. The standings frame publishes the pairing.
+	//
+	// Stable for as long as they are in the building, and handed to somebody else
+	// once they are not. See World.slots.
+	Slot int
+
 	State Player
 
 	// JoinedAt is when this occupant walked in, and LastSeen is the last tick on
@@ -168,6 +177,62 @@ type World struct {
 
 	occupants map[string]*Occupant
 
+	// slots[i] is the account holding place i in the building, and an empty
+	// string is a place nobody is standing in.
+	//
+	// IT IS THE WIRE'S ADDRESSING. A snapshot names a peer by their index here,
+	// because a place in a building of MaxOccupants is one digit where the
+	// pseudonym it replaced was twelve characters — 13 bytes of every entry, on a
+	// frame that repeats twenty times a second (message.go, Peer). The standings
+	// frame publishes which handle currently answers to which index.
+	//
+	// IT IS ALSO THE CAPACITY, which is why nothing counts occupants to decide
+	// whether somebody may come in: the заброшка is full exactly when there is no
+	// empty string left, so there is no second number to fall out of step with
+	// this one.
+	//
+	// THIS TABLE AND THE OCCUPANT MAP ARE WRITTEN TOGETHER OR NOT AT ALL — Join
+	// fills both, release empties both, and nothing else touches either. Every
+	// read below relies on that: a slot holding an account the map does not have
+	// would be a nil dereference on the tick, and it is kept impossible rather
+	// than guarded against in the half-dozen places that would each have to.
+	//
+	// A SLOT IS REUSED once its holder has gone, which is what makes it small
+	// enough to be worth sending — and what obliges the standings to say whose it
+	// is now. See RosterVersion for how a client is stopped from interpolating
+	// the newcomer from where the last holder was standing.
+	slots [MaxOccupants]string
+
+	// roster advances whenever somebody joins or leaves. See RosterVersion.
+	roster int64
+
+	// visible is the potentially-visible set, precomputed from the sector graph
+	// when the building was generated: visible[a][b] is whether somebody in
+	// sector b is drawn by somebody in sector a. See buildVisibility (level.go)
+	// for what it approximates, and canSee for how it is read.
+	visible [][]bool
+
+	// lastVisible[a][b] is the last TICK on which the occupant holding place b
+	// was inside the potentially-visible set of the occupant holding place a, and
+	// it is the whole of the hysteresis described on visibleHold: a peer is sent
+	// while he is visible now or was visible recently enough.
+	//
+	// A TICK RATHER THAN A COUNTDOWN, for the reason the respawn deadline is one:
+	// an integer tick is exact, is the same number on every process replaying the
+	// same world, and needs no per-tick decrement. Zero is "never" and cannot
+	// collide with a real recording, because Advance increments before it records
+	// and so the first tick anything is written on is one.
+	//
+	// SYMMETRIC BY CONSTRUCTION, because canSee is and both entries of a pair are
+	// written on the same tick. That is what stops the hold from creating a man
+	// who can see somebody who cannot see him — the property a hit test will rest
+	// on the day something shoots.
+	//
+	// CLEARED WHEN A PLACE IS FREED (release), so a newcomer never inherits the
+	// last holder's memory. Keyed by slot for the same reason the wire is: it is
+	// a fixed-width array rather than a map, so nothing allocates on a tick.
+	lastVisible [MaxOccupants][MaxOccupants]int64
+
 	// ready[i] is the TICK at which the pickup at index i is back on the floor,
 	// and the whole of what "taken" means here. Zero is the resting state — the
 	// world starts at tick zero, so `Tick >= ready[i]` is "it is lying there"
@@ -202,6 +267,7 @@ func NewWorld(id uuid.UUID, seed int64) *World {
 		occupants: make(map[string]*Occupant, MaxOccupants),
 		ready:     make([]int64, len(l.Pickups)),
 		history:   newHistory(),
+		visible:   buildVisibility(l),
 	}
 }
 
@@ -212,24 +278,138 @@ func NewWorld(id uuid.UUID, seed int64) *World {
 // A SECOND HELLO IS A RECONNECT AND NOT A SECOND VISIT. A page reload, a tunnel
 // or a phone waking up all produce one, and the occupant is still standing where
 // he was: the only thing that changes is LastSeen, which is what stops the grace
-// from expiring under a socket that has just come back.
+// from expiring under a socket that has just come back. He keeps his slot too,
+// so nobody watching him sees him vanish and reappear as somebody else.
+//
+// THE LOWEST FREE PLACE, which is a decision only because a slot is reused: the
+// alternative — cycling through the places so a freed one is the last to be
+// handed out again — buys nothing here, because it stops helping the moment the
+// заброшка is nearly full, and the standings frame answers reuse properly for
+// every case rather than for the common one.
 func (w *World) Join(accountID, pseudonym string, now time.Time) (*Occupant, bool) {
 	if o, ok := w.occupants[accountID]; ok {
 		o.LastSeen = now
 		return o, true
 	}
-	if len(w.occupants) >= MaxOccupants {
+	slot := -1
+	for i, held := range w.slots {
+		if held == "" {
+			slot = i
+			break
+		}
+	}
+	if slot < 0 {
 		return nil, false
 	}
 	o := &Occupant{
 		AccountID: accountID,
 		Pseudonym: pseudonym,
+		Slot:      slot,
 		State:     NewPlayer(w.Level),
 		JoinedAt:  now,
 		LastSeen:  now,
 	}
 	w.occupants[accountID] = o
+	w.slots[slot] = accountID
+	w.roster++
 	return o, true
+}
+
+// release takes somebody out of the building and frees the place they were
+// holding. It is the ONLY way an occupant leaves, which is what keeps the slot
+// table, the occupant map and the roster version unable to disagree.
+func (w *World) release(o *Occupant) {
+	delete(w.occupants, o.AccountID)
+	w.slots[o.Slot] = ""
+	// Both directions of this place's visibility memory, so the next person to
+	// stand here starts with none of it. Holding a peer visible for a fifth of a
+	// second after he leaves is the point (visibleHold); holding a STRANGER
+	// visible because the man whose place he took was, is not.
+	for i := range w.lastVisible {
+		w.lastVisible[o.Slot][i] = 0
+		w.lastVisible[i][o.Slot] = 0
+	}
+	w.roster++
+}
+
+// RosterVersion changes whenever somebody joins or leaves, and never otherwise.
+//
+// IT IS WHAT PUBLISHES A STANDINGS FRAME OUT OF TURN. A snapshot names slots and
+// nothing else, so a slot the client has not yet been given a name for is a
+// figure it cannot label — and a slot that has been REUSED is worse than
+// unlabelled, because a client that did not know would interpolate the newcomer
+// from wherever the last holder was standing, and draw a man sliding across the
+// building. Publishing the roster on the tick it changed, ahead of the snapshot
+// that first names the new occupant, removes both.
+//
+// IT IS NOT THE ONLY TRIGGER, and it cannot be. A new CONNECTION for somebody
+// already in the building — a reload, a tunnel coming back, a second device —
+// moves nothing here, because Join hands back the occupant he already is, and
+// that socket is being sent snapshots naming everybody from its first tick. This
+// counter is for everybody ALREADY watching; a connection that has never been
+// told anything is boarded by its own ledger (service.go, Service.boarded).
+//
+// A counter rather than a comparison of the published bytes, which differ every
+// second anyway because the seconds on it advance; and rather than a comparison
+// of the slot table, which is only unambiguous while a place cannot be freed and
+// refilled between two publishes — that holds today, but it is a property of
+// where the lock is taken rather than of the data, and this is one integer.
+func (w *World) RosterVersion() int64 { return w.roster }
+
+// canSee reports whether somebody standing in sector `at` is drawn by somebody
+// standing in sector `from`.
+//
+// A sector index out of range is answered YES rather than no. It cannot happen —
+// resolve only ever moves a player between real sectors — but if it ever did,
+// being drawn from too far away is a smaller failure than being invisible in a
+// building where the other people in it will eventually be shooting.
+func (w *World) canSee(from, at int) bool {
+	if from < 0 || from >= len(w.visible) || at < 0 || at >= len(w.visible) {
+		return true
+	}
+	return w.visible[from][at]
+}
+
+// rememberVisibility records, for every pair of people in the building, whether
+// one was inside the other's potentially-visible set on this tick. Advance is its
+// only caller, and it runs AFTER the step, so what is recorded is where everybody
+// actually ended up.
+//
+// It is what heldVisible reads, and between them they are the whole of the
+// doorway hysteresis argued on visibleHold. At most MaxOccupants² pairs, a table
+// lookup each and one array write for the pairs that can see each other, nothing
+// allocated.
+func (w *World) rememberVisibility() {
+	for a, ida := range w.slots {
+		if ida == "" {
+			continue
+		}
+		from := w.occupants[ida].State.Sector
+		for b, idb := range w.slots {
+			if idb == "" || b == a {
+				continue
+			}
+			if w.canSee(from, w.occupants[idb].State.Sector) {
+				w.lastVisible[a][b] = w.Tick
+			}
+		}
+	}
+}
+
+// heldVisible reports whether the occupant holding place `at` was inside the
+// potentially-visible set of the one holding place `from` recently enough to
+// still belong on his frame. See visibleHold for why a peer is held at all.
+//
+// A place outside the table is answered NO, which is the opposite of canSee's
+// out-of-range answer and right for the same reason: canSee is the live test and
+// errs towards being seen, where this is a memory and there is nothing to
+// remember about a place that does not exist.
+func (w *World) heldVisible(from, at int) bool {
+	if from < 0 || from >= MaxOccupants || at < 0 || at >= MaxOccupants {
+		return false
+	}
+	last := w.lastVisible[from][at]
+	return last > 0 && w.Tick-last < visibleHoldTicks
 }
 
 // Occupant returns one player, or nil.
@@ -252,10 +432,11 @@ func (w *World) Seen(accountID string, now time.Time) {
 // reports whether they were in it. It is the admin «забыть» path: a visit
 // belonging to somebody who is being erased is not a result.
 func (w *World) Remove(accountID string) bool {
-	if _, ok := w.occupants[accountID]; !ok {
+	o, ok := w.occupants[accountID]
+	if !ok {
 		return false
 	}
-	delete(w.occupants, accountID)
+	w.release(o)
 	return true
 }
 
@@ -505,9 +686,11 @@ func (w *World) Advance(dt float64, now time.Time) []*Occupant {
 		w.collect(o)
 	}
 
-	// Recorded AFTER the step, so a frame describes the world as the snapshot
-	// about to go out describes it. Recording before would leave the rewind
-	// buffer a tick behind everything that reads it.
+	// Both of these are recorded AFTER the step, so they describe the world as the
+	// snapshot about to go out describes it. Recording before would leave the
+	// rewind buffer a tick behind everything that reads it, and would hold peers
+	// against where everybody was standing rather than where they are.
+	w.rememberVisibility()
 	w.history.record(w.Tick, now, w.spots(ids))
 
 	// And whoever has stopped being here. In keys' order rather than the rotated
@@ -519,7 +702,7 @@ func (w *World) Advance(dt float64, now time.Time) []*Occupant {
 		if now.Sub(o.LastSeen) <= AbandonGrace {
 			continue
 		}
-		delete(w.occupants, id)
+		w.release(o)
 		left = append(left, o)
 	}
 	return left
@@ -570,20 +753,68 @@ func (w *World) collect(o *Occupant) {
 }
 
 // spots is every entity's position this instant, in the shape the rewind buffer
-// stores. Keyed by PSEUDONYM rather than by account, so a rewound world and a
-// published one name the same things — which is what lets a future hit test
-// take the id it was shot at straight from the client's aim.
+// stores. Keyed by SLOT rather than by account, so a rewound world and a
+// published one name the same things — which is what lets a future hit test take
+// the id it was shot at straight from the client's aim, and the client's aim has
+// nothing but a slot to name it with.
+//
+// It was keyed by pseudonym, which was the same argument against the identity
+// the wire published at the time. The key follows the wire; it is not an
+// independent choice.
+//
+// EVERYBODY IS RECORDED, INCLUDING THE PEOPLE NOBODY COULD SEE. Interest
+// management decides what is SENT, and this is the world as it actually was —
+// a shot resolved against a filtered past would miss the man who stepped through
+// the doorway in the interval being rewound over.
 //
 // The occupant list arrives as an argument rather than being derived here, and
 // it is keys' order rather than the rotated one — but neither choice changes the
 // ANSWER, because a map does not remember what order it was filled in. It takes
 // the caller's list so that the frame recorded for a tick is of exactly the
 // occupants that tick stepped, rather than of a second reading of the roster.
-func (w *World) spots(ids []string) map[string]Spot {
-	out := make(map[string]Spot, len(ids))
+func (w *World) spots(ids []string) map[int]Spot {
+	out := make(map[int]Spot, len(ids))
 	for _, id := range ids {
 		o := w.occupants[id]
-		out[o.Pseudonym] = Spot{Pos: o.State.Pos, Sector: o.State.Sector, Alive: o.State.Health > 0}
+		out[o.Slot] = Spot{Pos: o.State.Pos, Sector: o.State.Sector, Alive: o.State.Health > 0}
+	}
+	return out
+}
+
+// Standings is the readout of who is in the building: everybody, in slot order,
+// with how long they have been here and what they are carrying.
+//
+// NOT ADDRESSED TO ANYBODY, unlike a snapshot — it describes the building rather
+// than one person's view of it, so it lists the reader as well as everybody
+// else, and the same bytes go to every connection. See the Standings type for
+// why it is its own frame at its own rate.
+//
+// THE TIME IS MEASURED FROM WHEN THEY WALKED IN, and deliberately not the way a
+// visit row measures it (Occupant.Stayed, which stops at the last connection).
+// Somebody inside the abandon grace is still holding a place and is still drawn
+// standing where he stopped, so a board that had quietly stopped counting for him
+// would be disagreeing with what everybody can see.
+func (w *World) Standings(now time.Time) Standings {
+	out := Standings{T: TypeStandings}
+	for slot, id := range w.slots {
+		if id == "" {
+			continue
+		}
+		o := w.occupants[id]
+		secs := int(now.Sub(o.JoinedAt) / time.Second)
+		if secs < 0 {
+			// A clock that went backwards is not a negative visit, and it is not
+			// a negative score either.
+			secs = 0
+		}
+		row := StandingsRow{Slot: slot, Name: o.Pseudonym, Seconds: secs}
+		if len(o.State.Counters) > 0 {
+			row.Bag = make(map[string]int, len(o.State.Counters))
+			for k, v := range o.State.Counters {
+				row.Bag[k] = v
+			}
+		}
+		out.Rows = append(out.Rows, row)
 	}
 	return out
 }
@@ -595,9 +826,12 @@ func (w *World) spots(ids []string) map[string]Spot {
 // frame. A frame that re-sent it would replay the same sound forever, which is
 // the failure that makes people mute a game.
 //
-// Everybody else in the building arrives as a PEER, to be drawn interpolated in
-// the recent past — their intent cannot be predicted the way the reader's own
-// can.
+// Everybody else THE READER COULD PLAUSIBLY SEE arrives as a PEER, to be drawn
+// interpolated in the recent past — their intent cannot be predicted the way the
+// reader's own can. Everybody he could not, and has not been able to for
+// visibleHold, is simply absent — which is what interest management is: see
+// canSee and heldVisible, and Standings for the frame that tells him about the
+// rest of the building anyway.
 func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 	me := w.occupants[accountID]
 	if me == nil {
@@ -615,6 +849,20 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 	// frame. An event saying "something respawned" would be bytes on a payload
 	// that repeats twenty times a second, per viewer, to say nothing at all
 	// almost every time it was sent.
+	//
+	// IT IS OF THE WHOLE BUILDING AND IS NOT FILTERED, and that leaks a position
+	// interest management otherwise withholds. A bit clearing names the position
+	// of the thing that was taken — the client holds the level, so an index is a
+	// place — and the next standings frame says whose bag grew, so the two
+	// together put a man the reader was never sent at a known spot at a known
+	// instant. It is left as it is on purpose: nothing in this game shoots yet, so
+	// what is being reconstructed is a stranger drinking a beer in another room,
+	// and both frames earn their shape elsewhere (this one is one word rather than
+	// a per-viewer list; the standings is one marshalling for everybody). THE DAY
+	// SOMETHING SHOOTS THIS BECOMES A REAL CONCERN — knowing where somebody is
+	// standing is exactly what the filter exists to deny — and closing it starts
+	// with cutting the mask to the reader's own visible sectors, which is a
+	// per-viewer computation this deliberately does not pay today.
 	var left uint32
 	for i := range w.Level.Pickups {
 		if w.available(i) {
@@ -641,26 +889,35 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 			s.Bag[k] = v
 		}
 	}
-	// In account order, so two renders of an unchanged world produce the same
-	// array. Map order here would make the peers array shuffle between frames,
-	// which is a golden test that flaps and a client asked to re-key its
-	// bookkeeping for no reason. See keys.
-	for _, id := range w.keys() {
-		if id == accountID {
+	// In SLOT order, which is stable by construction — an occupant's slot does
+	// not move while he is in the building — and is the order the standings lists
+	// the same people in, so a client reading the two frames together never has
+	// to sort either. Walking the slot table also avoids the sort keys() does,
+	// on a path that runs once per occupant per tick.
+	//
+	// THE FILTER IS INTEREST MANAGEMENT: the viewer's own room, the rooms through
+	// its doorways, and whoever was in one of those recently enough to still be
+	// held. buildVisibility (level.go) says what the set approximates and in which
+	// direction; visibleHold says why leaving it is not instant — a sector is
+	// derived from a position, so a man in a doorway changes rooms without
+	// walking, and without the hold everybody adjacent to one of the two rooms and
+	// not the other would strobe at the tick rate. The array is full state either
+	// way, so somebody who has walked out of view is simply absent from it rather
+	// than announced as gone.
+	for slot, id := range w.slots {
+		if id == "" || id == accountID {
 			continue
 		}
 		o := w.occupants[id]
-		state := 0
-		if o.State.Health <= 0 {
-			state = 2
+		if !w.canSee(me.State.Sector, o.State.Sector) && !w.heldVisible(me.Slot, slot) {
+			continue
 		}
 		s.Peers = append(s.Peers, Peer{
-			ID:    o.Pseudonym,
-			X:     cm(o.State.Pos.X),
-			Y:     cm(o.State.Pos.Y),
-			Z:     cm(EyeZ(w.Level, o.State)),
-			Yaw:   mrad(o.State.Yaw),
-			State: state,
+			Slot:   slot,
+			X:      cm(o.State.Pos.X),
+			Y:      cm(o.State.Pos.Y),
+			Sector: o.State.Sector,
+			Yaw:    mrad(o.State.Yaw),
 		})
 	}
 	me.events = nil

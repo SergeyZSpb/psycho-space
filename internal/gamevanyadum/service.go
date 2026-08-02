@@ -57,6 +57,39 @@ type Service struct {
 	// nothing regenerates under anybody's feet.
 	world *World
 
+	// boarded is every connection that has been sent the standings and is still
+	// here. A nil or missing entry reads as "this socket has never been given the
+	// slot directory", which is the right starting state and the one a fresh
+	// service is in.
+	//
+	// IT IS WHAT MAKES "A SNAPSHOT NEVER NAMES A SLOT THE STANDINGS HAVE NOT" TRUE
+	// OF EVERY CONNECTION rather than of most of them. Publishing on the cadence
+	// and on a roster change covers everybody who was already watching, and
+	// neither fires for a NEW SOCKET belonging to somebody already in the
+	// building: a reload, a tunnel coming back or a second device joins the room
+	// at the upgrade and is sent snapshots naming everybody from the very next
+	// tick — a whole round trip before its hello arrives, and for up to a second
+	// after it. A client keeps its old directory across an outage, so a place that
+	// changed hands while it was away is drawn with the PREVIOUS holder's handle
+	// and interpolated from the previous holder's positions, which is precisely
+	// what a slot is not allowed to cause.
+	//
+	// Rebuilt every tick from the connections actually served, so a socket that
+	// has gone away takes its entry with it and the map cannot grow.
+	boarded map[string]bool
+
+	// publishedRoster is the world's roster version as of the last standings
+	// frame sent, and −1 whenever a building has been generated and no standings
+	// has gone out for it yet.
+	//
+	// THE SENTINEL IS LOAD-BEARING. A fresh world starts its roster at zero and
+	// counts up, so carrying the previous building's number over would silently
+	// suppress the first standings of the new one on the day the two happened to
+	// match — a client watching a peer it had no name for, once in a while, for
+	// as long as it took the once-a-second frame to arrive. ensureWorld resets
+	// it, which is the one place a building is ever created.
+	publishedRoster int64
+
 	// saves carries finished visits to the writer goroutine, so the tick never
 	// waits on Postgres. A full channel drops the visit and says so in the log:
 	// stalling twenty-hertz simulation for everybody to record one summary is
@@ -161,6 +194,10 @@ func (s *Service) step(ctx context.Context, now time.Time) {
 	s.mu.Lock()
 	w := s.world
 	if w == nil || w.Occupants() == 0 {
+		// Nobody is in the building, so nobody has been told anything about it.
+		// Whoever is holding a socket is boarded again on the tick they become an
+		// occupant, which is the same rule the ledger runs on below.
+		clear(s.boarded)
 		s.mu.Unlock()
 		return
 	}
@@ -181,14 +218,46 @@ func (s *Service) step(ctx context.Context, now time.Time) {
 		s.world = nil
 	}
 
+	// The standings, when one is due. ONE FRAME FOR EVERYBODY: it describes the
+	// building rather than one person's view of it, so it is marshalled once here
+	// and the same bytes are written to every connection — where a snapshot has
+	// to be built per occupant because each names everybody except its own reader.
+	//
+	// TWO REASONS TO SEND ONE TO EVERYBODY, and the second is not a nicety. Once a
+	// second is the rate the readout is for; the roster having CHANGED is the
+	// correctness half, because the snapshot below addresses peers by slot and a
+	// client that has not been told whose slot that is can neither label the
+	// figure nor tell that the place has changed hands since it last drew it.
+	//
+	// Both are about the BUILDING changing, so both go to the whole of it. What
+	// neither covers is a CONNECTION that has never been told anything, and that
+	// is the ledger's job below.
+	var board []byte
+	if w.Tick%standingsEvery == 0 || w.RosterVersion() != s.publishedRoster {
+		if raw, err := json.Marshal(w.Standings(now)); err == nil {
+			board = raw
+			s.publishedRoster = w.RosterVersion()
+		}
+	}
+
 	// One snapshot PER OCCUPANT, not one per world: a frame names everybody
 	// except its reader, so two people in one building get two different frames.
 	var out []outbound
+	// directory is the same frame for a connection that has never been sent one,
+	// on a tick where none was due. Marshalled at most once per tick, and only if
+	// somebody needs it — which is a handful of times in a session, not per tick.
+	var directory []byte
+	boarded := make(map[string]bool, len(conns))
 	for account, cs := range conns {
 		frame, ok := w.SnapshotFor(account)
 		if !ok {
-			// A connection in the room that has not said hello, or one whose
-			// occupant was just taken out. Neither is in the building.
+			// A connection whose ACCOUNT is not in the building: nobody on it has
+			// said hello yet, or the occupant behind it was just taken out.
+			// Nothing is sent a snapshot here, so nothing is sent the standings
+			// either — these frames go to the people in the заброшка, not to
+			// everybody holding a socket. Nor does the connection enter the
+			// ledger, so the tick that does put it in the building is still a
+			// first time.
 			continue
 		}
 		msg, err := json.Marshal(frame)
@@ -196,9 +265,29 @@ func (s *Service) step(ctx context.Context, now time.Time) {
 			continue
 		}
 		for _, c := range cs {
+			line := board
+			if line == nil && !s.boarded[c] {
+				if directory == nil {
+					if raw, err := json.Marshal(w.Standings(now)); err == nil {
+						directory = raw
+					}
+				}
+				line = directory
+			}
+			// The standings goes FIRST on each connection. The hub writes a
+			// connection's queue in order, so this is what makes "a snapshot
+			// never names a slot the newest standings did not" true at the far
+			// end and not merely at this one.
+			if line != nil {
+				out = append(out, outbound{c, line})
+			}
+			// A marshalling failure leaves the connection unboarded rather than
+			// silently boarded, so the next tick tries again.
+			boarded[c] = line != nil || s.boarded[c]
 			out = append(out, outbound{c, msg})
 		}
 	}
+	s.boarded = boarded
 	s.mu.Unlock()
 
 	s.publish(ctx, out)
@@ -302,6 +391,9 @@ func (s *Service) ensureWorld() *World {
 	// chat to say "we played this one".
 	seed := int64(binary.LittleEndian.Uint64(b[:]) & math.MaxInt64)
 	s.world = NewWorld(uuid.New(), seed)
+	// A version no world can have, so the first tick of this building always
+	// publishes a standings frame. See the field.
+	s.publishedRoster = -1
 	return s.world
 }
 
@@ -386,11 +478,29 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 // a frame it cannot read, but a full заброшка is a frame it read perfectly well
 // and cannot honour, and a player who was told nothing would sit watching an
 // empty screen deciding the game is broken.
+//
+// AN ACCEPTED HELLO ALSO TAKES THE CONNECTION BACK OUT OF THE STANDINGS LEDGER,
+// so the next tick sends it the slot directory again. One frame per attach, and
+// it covers the case the ledger cannot see for itself: a ready frame naming a
+// building the client is not holding makes it re-fetch the level and throw away
+// everything it had cached — the standings among it — so a connection that was
+// already boarded has to be boarded again.
+//
+// The re-board rides the next tick, so it lands after the ready this call is
+// about to publish unless a tick fires inside the few microseconds between the
+// unlock below and that publish. In that case the directory is the thing thrown
+// away, and the client draws UNLABELLED figures until the next once-a-second
+// frame — never mislabelled ones, because what it threw away it threw away.
 func (s *Service) hello(ctx context.Context, m realtime.Member) {
 	s.mu.Lock()
 	w := s.ensureWorld()
-	_, joined := w.Join(m.AccountID, s.pseudonym(m.AccountID), time.Now())
+	o, joined := w.Join(m.AccountID, s.pseudonym(m.AccountID), time.Now())
 	worldID := w.ID.String()
+	slot := 0
+	if joined {
+		slot = o.Slot
+		delete(s.boarded, m.ConnID)
+	}
 	s.mu.Unlock()
 
 	var (
@@ -398,7 +508,7 @@ func (s *Service) hello(ctx context.Context, m realtime.Member) {
 		err error
 	)
 	if joined {
-		msg, err = json.Marshal(Ready{T: TypeReady, WorldID: worldID})
+		msg, err = json.Marshal(Ready{T: TypeReady, WorldID: worldID, Slot: slot})
 	} else {
 		msg, err = json.Marshal(Full{T: TypeFull})
 	}

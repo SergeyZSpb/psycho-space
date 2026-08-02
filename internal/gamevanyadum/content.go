@@ -108,57 +108,65 @@ const pickupRespawnTicks = int64(PickupRespawn / SimStep)
 
 // MaxOccupants is how many people may be in the заброшка at once.
 //
-// FOUR IS A STEP, NOT A CEILING, and the arithmetic is what makes it one rather
-// than a guess. A snapshot is built PER OCCUPANT and carries everybody else, so
-// what a viewer pays grows with the building's population and the capacity is
-// simply whatever that product can afford.
-//
-// THE CEILING IS 8 kB/s PER VIEWER — the number this game's design named as the
-// point at which interest management stops being optional — and at SnapshotHz
-// that affords 400 bytes a frame.
+// FIVE IS A MEASURED LIMIT AND NOT A PREFERENCE. What a viewer is sent is two
+// things: a snapshot built for them twenty times a second which carries
+// everybody else, and the standings frame once a second which carries everybody
+// including them. The ceiling is 8 kB/s PER VIEWER — the number this game's
+// design named as the point at which interest management stops being optional —
+// and the capacity is simply the largest N whose total fits under it.
 //
 // THE MEASUREMENT, at the widest quantisation the wire can carry (yaw is
 // wrapped rather than normalised, so it reaches five characters; positions are
 // far beyond anything a generated level produces):
 //
-//	solo frame                137 bytes
-//	the first peer            +78  (the entry, plus the `p` array around it)
-//	each further peer         +72
+//	solo snapshot             137 bytes
+//	the first peer            +56  (the entry, plus the `p` array around it)
+//	each further peer         +50
+//	standings with one row     81
+//	each further row          +53
 //
-// So 137 + 78 + (N−2)×72 ≤ 400 gives N = 4: a full house is 359 bytes, 7.2 kB/s
-// per viewer, where five would be 431 bytes and 8.6 kB/s. A realistic peer — the
-// magnitudes a заброшка of a few tens of metres actually produces — is about 60
-// bytes rather than 72, but the budget is deliberately taken on the WORST case,
-// because a phone on bad mobile data is exactly the situation in which the worst
-// case is the case. Pinned by TestAFullBuildingsFrameStaysInsideItsBudget.
+// So a viewer pays 20 × (137 + 56 + (N−2)×50) + (81 + (N−1)×53) a second:
 //
-// SIX WAS DERIVED FROM A PEER SIZE THAT DID NOT SURVIVE MEASUREMENT. The design
-// doc budgeted about 25 bytes for one; the real entry is 72 worst case and about
-// 60 realistic, 2.4–2.9× the estimate, which put a full six-person house at 503
-// bytes — 10.1 kB/s, a quarter over the ceiling the same document set. The
-// measurement is the improvement; six was simply never re-derived after it.
+//	N = 4    293 × 20 + 240 = 6100 B/s
+//	N = 5    343 × 20 + 293 = 7153 B/s
+//	N = 6    393 × 20 + 346 = 8206 B/s — over
 //
-// TWO THINGS BUY THE WAY BACK UP, and both belong in the next slice rather than
-// here:
+// Five, with about 850 B/s of headroom. Pinned by
+// TestEverythingAFullBuildingSendsAViewerFitsTheCeiling, which fails when this
+// constant is raised or when either frame grows a field.
 //
-//   - INTEREST MANAGEMENT — sending only what a player could plausibly see. The
-//     sector graph already publishes a neighbour set, so filtering to the
-//     viewer's sector and its neighbours is nearly free. It makes the frame a
-//     function of what is VISIBLE rather than of the population, which is what
-//     decouples capacity from bandwidth — though only if the visible set is
-//     itself bounded, since a room everybody crowds into is the worst case
-//     again.
-//   - A SMALLER PEER. The 12-character pseudonym is 19 bytes of a peer entry's
-//     71 and it is CONSTANT for the life of an occupant, which is precisely what
-//     this project's bytes-on-the-wire rule forbids on a repeating frame
-//     (CLAUDE.md, and ADR-037 for the same rule applied to a face). A small slot
-//     index, with the mapping published once, takes the entry to about 58 bytes,
-//     which is one more place on its own under the same ceiling.
+// THE STANDINGS FRAME IS INSIDE THE CEILING AND NOT BESIDE IT. It is traffic to
+// the same viewer, so leaving it out would be moving the line rather than
+// meeting it — which is how this constant came to be six before anybody measured
+// a peer.
+//
+// FOUR WAS THE SAME ARITHMETIC OVER A FATTER PEER. The entry lost its 19-byte
+// pseudonym for a slot index, its eye height for a sector index, and a pose enum
+// that nothing has ever set — 71 bytes to 49 (message.go, Peer) — and that is
+// the whole of what bought the fifth place.
+//
+// INTEREST MANAGEMENT BOUGHT NONE OF IT, which is worth stating plainly rather
+// than letting the two changes be credited together. Filtering peers to the
+// viewer's own sector and the rooms through its doorways (level.go,
+// buildVisibility) makes the TYPICAL frame much smaller, which is what a phone
+// on mobile data actually experiences and is why it is worth having. But the
+// budget is taken on the WORST case, and the worst case is everybody standing in
+// one room — where the filter removes nothing at all. A capacity derived from
+// the typical frame would be a capacity that fails the first time five people
+// crowd into one doorway. The same argument covers the hold that keeps a peer on
+// the frame for a moment after he leaves the set (visibleHold): it can only ADD
+// to a filtered set, and the unfiltered set is what is budgeted here.
+//
+// THE NEXT STEP UP NEEDS THE BINARY CODEC. There is no further byte worth
+// finding in JSON: a peer is five integers behind keys of one and three
+// characters, and what is left of the entry is punctuation. The design doc
+// earmarked a binary codec as an iteration of its own, and that — rather than
+// another round of trimming — is what a sixth place costs.
 //
 // A refusal is a refusal and never a queue: somebody who arrives at a full
 // заброшка is told so (the `vanyadum_full` frame) rather than being put on hold,
 // because there is nothing to hold them for — nothing here ends.
-const MaxOccupants = 4
+const MaxOccupants = 5
 
 // Pickups is every kind that can be generated into a level.
 //

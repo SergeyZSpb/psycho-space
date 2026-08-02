@@ -233,13 +233,23 @@ export function step(
 }
 
 /**
- * Where the camera sits for a player standing in this level. Mirrors `EyeZ`.
+ * Where an eye sits for somebody standing in this sector. Mirrors `EyeZ`.
+ *
+ * Takes the sector rather than a whole player because it has two callers that
+ * hold different things: the predictor knows the player it is simulating, and
+ * the peer decode knows only the sector index the wire named — a peer's height
+ * is no longer sent, precisely so the client can look it up here (see
+ * vanyadumRoster). Both of them must land on the same number as the server, and
+ * one function is how that stays true.
  *
  * Predicted rather than taken from the snapshot for the same reason the
  * position is: a camera height that only changed twenty times a second would
  * make every step visibly jolt.
+ *
+ * A sector nothing matches is the eye height alone, exactly as the server's own
+ * bounds check answers.
  */
-export function eyeZ(level: VanyadumLevel, p: StepPlayer, eyeHeight: number): number {
-  const s = sectorById(level, p.sector);
+export function eyeZ(level: VanyadumLevel, sector: number, eyeHeight: number): number {
+  const s = sectorById(level, sector);
   return (s ? s.fz : 0) + eyeHeight;
 }

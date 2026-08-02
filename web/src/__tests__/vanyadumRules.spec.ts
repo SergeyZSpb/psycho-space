@@ -110,6 +110,72 @@ describe('buildRules', () => {
     expect(text).toContain('в новую');
   });
 
+  it('says you cannot see everybody, which no catalogue could have told it', () => {
+    // Half of W1b's rules change, and the half that has to be typed out: the
+    // filter is a property of how a snapshot is built, and the config endpoint
+    // has no field for it. A player who is not told reads a peer vanishing at a
+    // doorway as the game losing him.
+    const prose = buildRules(config).find((b) => b.prose);
+    const text = prose?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
+    expect(text).toContain('в соседней через проём');
+    expect(text).toContain('пропадает');
+    // And it points at where the rest of them are, rather than leaving the
+    // player to discover that the building is fuller than it looks.
+    expect(text).toContain('табло');
+  });
+
+  it('describes the standings, and names their columns from the catalogue', () => {
+    // The other half, and it is DERIVED: a board row renders one number per
+    // entry in `config.pickups`, so the line describing those columns is
+    // generated from the same list. «сколько пива собрал» typed out here would
+    // be wrong the first afternoon a second pickup landed — the board would grow
+    // a column and the cheatsheet would not.
+    const two = {
+      ...config,
+      pickups: [
+        ...config.pickups,
+        {
+          key: 'syringe',
+          title: 'шприц',
+          icon: '💉',
+          grants: 'health',
+          amount: 25,
+          max: 0,
+          tint: '#c9d6d2',
+          blurb: 'В руку и на поршень.',
+        },
+      ],
+    };
+    const block = buildRules(two).find((b) => b.title === 'Заброшка');
+    const line = block?.lines.find((l) => l.label.includes('табло'));
+    expect(line?.text).toContain('даже те, кого не видно');
+    expect(line?.text).toContain('🍺 пиво');
+    expect(line?.text).toContain('💉 шприц');
+    // Not marked as prose, because none of it was typed out.
+    expect(block?.prose).toBeFalsy();
+  });
+
+  it('leaves the bag out of the standings line when there is nothing to carry', () => {
+    // A catalogue with nothing to pick up in it must not produce «и сколько
+    // собрал ()». The board has no bag columns in that case either, so the two
+    // still agree.
+    const bare = buildRules({ ...config, pickups: [] }).find((b) => b.title === 'Заброшка');
+    const line = bare?.lines.find((l) => l.label.includes('табло'));
+    expect(line?.text).toContain('сколько времени внутри.');
+    expect(line?.text).not.toContain('собрал');
+  });
+
+  it('no longer claims that whoever walked in is visible', () => {
+    // The tail «кто зашёл, того и видно» was true for exactly one iteration. It
+    // is now the opposite of the rule, and a believed cheatsheet that is wrong
+    // is worse than no cheatsheet.
+    const text = buildRules(config)
+      .flatMap((b) => b.lines)
+      .map((l) => l.text)
+      .join(' ');
+    expect(text).not.toContain('кто зашёл, того и видно');
+  });
+
   it('no longer tells anybody to collect all the beer', () => {
     // The objective the game had until W1a. A cheatsheet that describes the
     // previous version of a game is worse than none, because it is believed.

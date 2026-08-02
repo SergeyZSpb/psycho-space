@@ -21,21 +21,33 @@
  * whole second of interpolation without waiting for one.
  */
 
-/** One peer as a snapshot describes it, already converted from the wire. */
+/**
+ * One peer as a snapshot describes it, already converted from the wire.
+ *
+ * IDENTIFIED BY A SLOT — a small integer naming a place in the building, not a
+ * person. The wire stopped carrying a pseudonym per peer per tick when the
+ * standings frame took over publishing who holds which place; see
+ * vanyadumRoster for the decode and for what a slot changing hands costs this
+ * buffer.
+ */
 export interface PeerState {
-  id: string;
+  slot: number;
   x: number;
   y: number;
+  /**
+   * Eye height, DERIVED from the sector the wire named rather than sent. See
+   * `decodePeers` — the wire carries the room, and the room's floor is
+   * something this client already holds.
+   */
   z: number;
   yaw: number;
-  state: number;
 }
 
 /** One received snapshot, placed on the server's own timeline. */
 interface Frame {
   /** The simulation tick this frame describes. The timeline — see `push`. */
   tick: number;
-  peers: Map<string, PeerState>;
+  peers: Map<number, PeerState>;
 }
 
 /**
@@ -195,8 +207,8 @@ export function createInterpolator(delayMs: number, tickMs: number) {
         offset = Math.max(offset + (seen - offset) * OFFSET_CREEP, seen - maxExcess);
       }
 
-      const m = new Map<string, PeerState>();
-      for (const p of peers) m.set(p.id, p);
+      const m = new Map<number, PeerState>();
+      for (const p of peers) m.set(p.slot, p);
       frames.push({ tick, peers: m });
       if (frames.length > BUFFER_FRAMES) frames = frames.slice(frames.length - BUFFER_FRAMES);
     },
@@ -204,6 +216,36 @@ export function createInterpolator(delayMs: number, tickMs: number) {
     /**
      * The world as it should be drawn at this instant: `now − delay` on the
      * server's timeline, interpolated between the two frames that bracket it.
+     *
+     * ONLY WHOEVER THE NEWER FRAME NAMES IS DRAWN, and that is load-bearing
+     * rather than incidental. A snapshot's peer array is idempotent full state
+     * AND it is filtered to what the reader could plausibly see, so a peer
+     * dropping out of it means one of two things — he left the building, or he
+     * walked two rooms away — and neither is announced. Keeping a figure alive
+     * because nothing said to remove it leaves a man standing in a doorway he
+     * left a minute ago.
+     *
+     * NOTHING HERE DEBOUNCES THAT, AND THE SERVER IS WHY IT DOES NOT HAVE TO.
+     * A sector is derived from a position, so somebody standing in a doorway
+     * belongs to whichever room the last sub-centimetre of movement put him in
+     * — and that flips at up to the tick rate without anybody walking anywhere.
+     * It flips for the READER too, and that is the worse half: his own room
+     * changing takes the whole visible set with it, so a peer in a third room
+     * adjacent to one of the two would appear and vanish twenty times a second.
+     *
+     * The server holds the set instead of publishing it raw: a peer is sent
+     * while he is visible now OR was visible within the last `visibleHold` (200
+     * ms — see gamevanyadum's constant), so a flip has to stay flipped for four
+     * consecutive ticks before anybody is dropped, and jitter at a boundary
+     * never removes anybody at all. Two hundred milliseconds is also short
+     * enough that a man who genuinely walked away is not left standing where he
+     * was.
+     *
+     * That belongs THERE rather than here, and deliberately: a client smoothing
+     * its own membership would be a second opinion about who is on screen, and
+     * the day something shoots, the server's rewind and this client's draw have
+     * to agree about exactly that. So this function keeps drawing whoever the
+     * newer frame names, and the frame is what has already been made stable.
      *
      * Three honest degradations, none of which invents a position:
      *
@@ -239,8 +281,8 @@ export function createInterpolator(delayMs: number, tickMs: number) {
       const t = span > 0 ? (target - timeOf(a)) / span : 1;
 
       const out: PeerState[] = [];
-      for (const [id, bs] of b.peers) {
-        const as = a.peers.get(id);
+      for (const [slot, bs] of b.peers) {
+        const as = a.peers.get(slot);
         if (!as) {
           // Present only in the later frame — it appeared during the gap, so
           // there is nothing to interpolate from and its later position is the
@@ -249,17 +291,37 @@ export function createInterpolator(delayMs: number, tickMs: number) {
           continue;
         }
         out.push({
-          id,
+          slot,
           x: as.x + (bs.x - as.x) * t,
           y: as.y + (bs.y - as.y) * t,
+          // Interpolated exactly as x and y are, which is why the height is
+          // derived at INGEST rather than at draw: a peer stepping through a
+          // doorway between two rooms at different heights then glides up the
+          // step instead of snapping to it.
           z: as.z + (bs.z - as.z) * t,
           yaw: as.yaw + shortestTurn(as.yaw, bs.yaw) * t,
-          // Discrete, so not interpolated: halfway between alive and dead is
-          // not a state anything can draw.
-          state: bs.state,
         });
       }
       return out;
+    },
+
+    /**
+     * Throws away one slot's history, leaving everybody else's alone.
+     *
+     * A SLOT IS A PLACE, NOT A PERSON: it is handed back when its holder leaves
+     * and given to the next arrival, so two people can occupy the same number
+     * within a second of each other. Blending across that hand-over draws one
+     * man sliding across the building into another man's position — the same
+     * defect as interpolating between two different buildings, at the scale of
+     * one figure.
+     *
+     * The caller is the standings frame, which is the only thing that ever says
+     * a place has changed hands (see `changedHands`). It cannot be `reset`,
+     * because that would pause every OTHER peer in the building every time
+     * anybody walked in or out.
+     */
+    forget(slot: number): void {
+      for (const f of frames) f.peers.delete(slot);
     },
 
     /** How many frames are buffered. For tests and for a diagnostic readout. */

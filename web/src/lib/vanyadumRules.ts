@@ -50,6 +50,19 @@ function num(v: number, digits = 1): string {
   return String(rounded).replace('.', ',');
 }
 
+/**
+ * What the standings show a column of, as a parenthetical — «(🍺 пиво)», or
+ * «(🍺 пиво, 💉 шприц)» the day a second thing is added to the catalogue.
+ *
+ * Answers with the empty string for a catalogue with nothing to pick up in it,
+ * so the sentence it is embedded in ends after «сколько времени внутри» rather
+ * than trailing an empty bracket.
+ */
+function carriedList(config: VanyadumConfig): string {
+  const named = config.pickups.map((p) => `${p.icon} ${p.title}`).join(', ');
+  return named ? ` и сколько собрал (${named})` : '';
+}
+
 /** «пиво» → «пиво (+1, максимум 9)» — the whole line derived from the entry. */
 export function pickupLine(p: VanyadumPickupKind): RuleLine {
   const parts = [`+${p.amount}`];
@@ -86,11 +99,27 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
         // more here than a prettier one that goes wrong the day somebody retunes
         // the capacity, which is the entire point of not typing the number out.
         label: '🏚 одна на всех',
-        text: `Заброшка одна, и все ходят по ней одновременно. Больше ${config.world.max_occupants} человек внутрь не пустят — кто зашёл, того и видно.`,
+        text: `Заброшка одна, и все ходят по ней одновременно. Больше ${config.world.max_occupants} человек внутрь не пустят.`,
       },
       {
         label: '🔁 всё возвращается',
         text: `Подобранное появляется на том же месте через ${num(config.world.respawn_seconds, 0)} с. Уносить нечего — заброшка не пустеет.`,
+      },
+      {
+        // DERIVED, because the board's columns are, and the two must say the
+        // same thing. A row renders one number per entry in `config.pickups`,
+        // so the sentence naming those columns is generated from that same
+        // list — the day a second pickup is added it appears on the board by
+        // itself, and this line follows it without anybody remembering to come
+        // back. «сколько пива» typed out here is the version that goes stale.
+        //
+        // It sits in the BUILDING's block rather than in the hand-written one
+        // because that is what it is a fact about: the standings are unfiltered
+        // and name everybody inside, which is a rule of the place and not a
+        // control. What cannot be derived — that a snapshot is cut to the rooms
+        // you can see at all — is prose, below.
+        label: '📋 табло',
+        text: `Справа сверху — все, кто сейчас на заброшке, даже те, кого не видно: сколько времени внутри${carriedList(config)}. Твоя строка со стрелкой.`,
       },
     ],
   });
@@ -133,19 +162,26 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
  * The part that cannot be derived, and the part a rules change must come back
  * and edit BY HAND.
  *
- * Three kinds of thing end up here, and none of them could honestly be
+ * Four kinds of thing end up here, and none of them could honestly be
  * generated. The CONTROLS, because the server has no opinion about thumbs and
  * publishes none. The ABSENCES — that there is no objective, that nothing ends,
  * that leaving is just leaving — which no catalogue can carry, because a
- * catalogue can only publish what exists. And the building's LIFECYCLE: the
- * config endpoint describes what a заброшка is made of and how many people fit
- * in it, and carries no field at all for the fact that this one is torn down and
- * generated again once it empties.
+ * catalogue can only publish what exists. The building's LIFECYCLE: the config
+ * endpoint describes what a заброшка is made of and how many people fit in it,
+ * and carries no field at all for the fact that this one is torn down and
+ * generated again once it empties. And the VISIBILITY FILTER — that a snapshot
+ * is cut to the room you are standing in and the rooms through its doorways, so
+ * a man who walked further off is genuinely not on your screen. That one is a
+ * property of how a frame is built rather than a field the catalogue could
+ * carry, which is why it is typed out here while the standings that answer it
+ * are derived in the block above.
  *
- * Those last two matter more than any number on this screen. A player who
- * assumes there is a win condition will spend the whole visit looking for it,
- * and a player who remembers the layout will decide the game is broken the first
- * time he comes back to a building he has never seen.
+ * The absences and the lifecycle matter more than any number on this screen. A
+ * player who assumes there is a win condition will spend the whole visit
+ * looking for it, and a player who remembers the layout will decide the game is
+ * broken the first time he comes back to a building he has never seen. The
+ * filter is the newest of the three and behaves the same way: unstated, a peer
+ * vanishing at a doorway reads as the game losing him.
  *
  * If you add a mechanic, ask first whether the catalogue could carry it. It
  * usually can, and then it belongs above rather than here.
@@ -156,6 +192,10 @@ export const VANYADUM_PROSE: RuleLine[] = [
   {
     label: '⌨️ на компьютере',
     text: 'WASD — идти. Клик по экрану захватывает мышь, дальше смотришь ей как в любом шутере. Esc — отпустить.',
+  },
+  {
+    label: '👀 видно не всех',
+    text: 'На экране только те, кто в твоей комнате или в соседней через проём. Ушёл человек дальше — пропадает, хотя он никуда не делся; вернулся — снова видно. Остальные — на табло.',
   },
   {
     label: '🎯 цели нет',

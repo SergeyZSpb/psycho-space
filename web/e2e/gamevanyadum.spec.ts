@@ -75,9 +75,17 @@ const CONFIG = {
     interp_delay_ms: 120,
     collision_passes: 3,
   },
-  // Also deliberately not production's six and thirty: the splash states the
+  // Also deliberately not production's five and thirty: the splash states the
   // building's own rules, and it must state THESE.
-  world: { max_occupants: 4, respawn_seconds: 45 },
+  //
+  // The capacity is load-bearing twice over, so it is read from here rather than
+  // typed out anywhere below. It proves the cheatsheet and the refusal notice
+  // are derived — a hand-written «5» would pass against production and fail
+  // here, which is the point of the number being wrong on purpose. And it is
+  // what «a full house» means to the layout test: seven rows of standings, two
+  // more than production ever shows, because a readout tuned to exactly one
+  // capacity is a readout that breaks the afternoon somebody retunes it.
+  world: { max_occupants: 7, respawn_seconds: 45 },
 };
 
 /** Two rooms and a doorway — enough geometry to be a level, small enough to read. */
@@ -159,15 +167,21 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<() => nu
  * so every assertion about the HUD is driven rather than waited for.
  */
 async function stubSocket(page: Page): Promise<{
-  ready: (worldID?: string) => Promise<void>;
+  ready: (worldID?: string, slot?: number) => Promise<void>;
   snapshot: (fields: Record<string, unknown>) => Promise<void>;
+  board: (rows: Record<string, unknown>[]) => Promise<void>;
   full: () => Promise<void>;
+  drop: () => void;
+  revoke: () => void;
   sent: () => Promise<string[]>;
 }> {
   const sent: string[] = [];
   let ws: WebSocketRoute | null = null;
 
   await page.routeWebSocket('**/api/realtime*', (route) => {
+    // Every connection, not only the first: a client that lost its socket opens
+    // another one, and the handle has to follow it there or the test would go on
+    // talking to a socket nobody is listening to.
     ws = route;
     route.onMessage((message) => {
       sent.push(typeof message === 'string' ? message : '');
@@ -175,15 +189,25 @@ async function stubSocket(page: Page): Promise<{
   });
 
   const send = async (payload: Record<string, unknown>) => {
-    await expect.poll(() => ws !== null).toBe(true);
+    // Waiting for a socket to exist is usually instant — but after a `drop` it
+    // is waiting out the client's reconnect backoff, which is a fully jittered
+    // draw from the first second and doubles if an attempt fails. A deadline
+    // rather than a count of tries, and generous, because what varies under a
+    // loaded runner is how long each step TAKES: the claim is "the client comes
+    // back", not "within a second".
+    await expect.poll(() => ws !== null, { timeout: 15_000 }).toBe(true);
     ws?.send(JSON.stringify(payload));
   };
 
   return {
-    // Which building this socket was let into. A id other than the one the
-    // client fetched means the заброшка emptied and was regenerated while it
-    // was away — the only invalidation signal this game has.
-    ready: (worldID = WORLD_ID) => send({ t: 'vanyadum_ready', world_id: worldID }),
+    // Which building this socket was let into, and which place in it the reader
+    // is holding. An id other than the one the client fetched means the заброшка
+    // emptied and was regenerated while it was away — the only invalidation
+    // signal this game has. The slot is the only thing that ever tells a client
+    // which standings row is its own, because a snapshot names everybody except
+    // its reader.
+    ready: (worldID = WORLD_ID, slot = 0) =>
+      send({ t: 'vanyadum_ready', world_id: worldID, slot }),
     // `pk` is a BITMASK over the index into the level's pickup list — bit i set
     // means the i-th is lying on the floor — so the resting frame is 0b11: both
     // of LEVEL's two bottles are there. Sending a list of ids here would still
@@ -192,11 +216,75 @@ async function stubSocket(page: Page): Promise<{
     // avoid. The mask moves in BOTH directions: things come back.
     snapshot: (fields) =>
       send({ t: 'vanyadum_snap', k: 1, ack: 1, x: 500, y: 500, z: 165, yaw: 0, s: 0, hp: 61, pk: 0b11, ...fields }),
+    // The standings: who is in the BUILDING, which is a different question from
+    // who is in the snapshot. Unfiltered, identical for every reader, and
+    // including the reader himself — so it is the only honest source for how
+    // many people are in here.
+    board: (rows) => send({ t: 'vanyadum_board', b: rows }),
     // The building is at capacity. It carries no fields — the number is in the
     // catalogue, and nothing here ends, so there is no honest "try again at T".
     full: () => send({ t: 'vanyadum_full' }),
+    // The link goes, and the client comes back for another one. An ordinary
+    // network drop: no `bye` frame, so the client cannot know why and treats it
+    // as one to retry. The handle is dropped first, so anything sent afterwards
+    // waits for the NEW socket rather than being written into the dead one.
+    drop: () => {
+      const dying = ws;
+      ws = null;
+      dying?.close();
+    },
+    // The link goes for good. A `bye` naming a revoked session is the one close
+    // the client must not retry — it settles on `terminal` and stays there,
+    // which is what makes the state stable enough to measure a layout in. (A
+    // plain drop is reconnected within a second, so anything on screen only
+    // while the link is down is gone before it can be looked at.)
+    revoke: () => {
+      const dying = ws;
+      ws = null;
+      dying?.send(JSON.stringify({ t: 'bye', code: 4001, reason: 'unauthorized' }));
+      dying?.close();
+    },
     sent: async () => sent,
   };
+}
+
+/**
+ * A board frame with the building as full as the served catalogue allows.
+ *
+ * A full-width pseudonym, an hour on the clock and a bag at its ceiling — the
+ * widest row this readout can ever be asked to draw, which is what makes it the
+ * layout case rather than a plausible one.
+ */
+function fullHouse(): Record<string, unknown>[] {
+  return Array.from({ length: CONFIG.world.max_occupants }, (_, n) => ({
+    n,
+    i: `Wwwwwwwwww${n}m`,
+    s: 3671 + n,
+    c: { beer: 9 },
+  }));
+}
+
+/**
+ * How much of the screen's width an overlay is drawn in, and how much it is
+ * ALLOWED to take.
+ *
+ * The second number is the one a layout budget is made of. Both of the top
+ * overlays are absolutely positioned and shrink to fit their text, so what they
+ * happen to draw today says nothing about whether a longer sentence would
+ * collide — `reserved` is the cap plus the inset it is pushed off its edge by,
+ * which is the width that is genuinely spoken for.
+ */
+async function reservation(
+  locator: ReturnType<Page['getByTestId']>,
+  edge: 'left' | 'right',
+): Promise<{ box: { x: number; width: number }; reserved: number }> {
+  const box = await locator.boundingBox();
+  expect(box).not.toBeNull();
+  const reserved = await locator.evaluate((el, side) => {
+    const style = getComputedStyle(el);
+    return parseFloat(style.maxWidth) + parseFloat(style[side as 'left' | 'right']);
+  }, edge);
+  return { box: { x: box!.x, width: box!.width }, reserved };
 }
 
 /** Phone width, where the primary pointer is a thumb rather than a mouse. */
@@ -280,13 +368,27 @@ test.describe('«ВАНЯДУМ» splash', () => {
     // assertions also prove that half is derived rather than typed.
     await openSplash(page);
     const rules = page.getByTestId('vanyadum-rules');
-    await expect(rules).toContainText('Больше 4 человек');
+    await expect(rules).toContainText('Больше 7 человек');
     await expect(rules).toContainText('45 с');
     await expect(rules).toContainText('Заброшка одна');
     await expect(rules).toContainText('цели нет');
     await expect(rules).toContainText('закрой вкладку');
     // And the objective it used to have is gone from the screen entirely.
     await expect(rules).not.toContainText('Собрать всё пиво');
+  });
+
+  test('and it says you cannot see everybody, and where the rest are listed', async ({ page }) => {
+    // W1b's rules change. A snapshot is now cut to the room you are in and the
+    // rooms through its doorways, so somebody two rooms away is genuinely not on
+    // your screen — and without being told, a player reads that as the game
+    // losing him. The standings are the answer, so the screen has to name them.
+    await openSplash(page);
+    const rules = page.getByTestId('vanyadum-rules');
+    await expect(rules).toContainText('в соседней через проём');
+    await expect(rules).toContainText('табло');
+    await expect(rules).toContainText('даже те, кого не видно');
+    // And the claim that replaced is gone: it was true for exactly one iteration.
+    await expect(rules).not.toContainText('кто зашёл, того и видно');
   });
 
   test('the controls are explained, because nothing else says how to move', async ({ page }) => {
@@ -416,25 +518,246 @@ test.describe('«ВАНЯДУМ» play', () => {
     await expect(page.getByTestId('vanyadum-floor')).toContainText('на полу 2');
   });
 
-  test('the building says how many people are in it, counting you', async ({ page }) => {
-    // Derived from the peer array rather than sent as its own field — it is the
-    // one thing on screen that makes "everybody is in the same заброшка" visible
-    // at all, and it costs nothing on a payload that repeats twenty times a
-    // second.
+  test('the standings say who is in the building, and what they have', async ({ page }) => {
+    // Real DOM and not the canvas (ADR-047), which is the whole reason any of it
+    // can be asserted on. Its numbers are the board frame's, and its icons come
+    // from the catalogue exactly as the HUD's do.
     const socket = await stubSocket(page);
     await openSplash(page);
     await walkIn(page);
 
-    await socket.snapshot({});
-    await expect(page.getByTestId('vanyadum-occupants')).toContainText('1');
+    await socket.board([
+      { n: 0, i: 'K3jf9sLm2QpZ', s: 137, c: { beer: 4 } },
+      { n: 1, i: 'Qq1Ww2Ee3Rr4', s: 7 },
+    ]);
 
-    await socket.snapshot({
-      p: [
-        { i: 'abcdef012345', x: 700, y: 500, z: 165, yaw: 0, s: 0 },
-        { i: '012345abcdef', x: 800, y: 500, z: 165, yaw: 0, s: 2 },
-      ],
-    });
-    await expect(page.getByTestId('vanyadum-occupants')).toContainText('3');
+    const board = page.getByTestId('vanyadum-board');
+    await expect(board).toBeVisible();
+    await expect(board).toContainText('K3jf9sLm2QpZ');
+    await expect(board).toContainText('2:17');
+    await expect(board).toContainText('🍺4');
+    // Somebody carrying nothing is a zero rather than a blank, so the columns
+    // stay aligned down the list.
+    await expect(board).toContainText('0:07');
+    await expect(board).toContainText('🍺0');
+  });
+
+  test('the count is of the building, not of what you can see', async ({ page }) => {
+    // THE CORRECTION W1b FORCED. The occupancy used to be the peer array's
+    // length plus one, and the peer array is now FILTERED to the room you are in
+    // and the rooms through its doorways — so counting it would report how many
+    // are visible and tick up and down as somebody walked through a door. The
+    // standings are unfiltered by design, and they are the only honest source.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    // Three in the building, and exactly one of them close enough to be drawn.
+    await socket.board([
+      { n: 0, i: 'K3jf9sLm2QpZ', s: 10 },
+      { n: 1, i: 'Qq1Ww2Ee3Rr4', s: 20 },
+      { n: 2, i: 'Zz9Xx8Cc7Vv6', s: 30 },
+    ]);
+    await socket.snapshot({ p: [{ n: 1, x: 700, y: 500, s: 0, yaw: 0 }] });
+
+    const board = page.getByTestId('vanyadum-board');
+    await expect(board).toContainText('👥 3');
+    await expect(page.getByTestId('vanyadum-board-row')).toHaveCount(3);
+    // Including the man nobody can see, named in full.
+    await expect(board).toContainText('Zz9Xx8Cc7Vv6');
+  });
+
+  test('you can find yourself in a list that names everybody', async ({ page }) => {
+    // A snapshot names everybody EXCEPT its own reader, so the ready frame's
+    // slot is the only thing that ever says which row is ours. Marked by an
+    // arrow in the text rather than by colour alone — a readout told apart by
+    // being a slightly different grey is one nobody can read.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.ready(WORLD_ID, 1);
+    await socket.board([
+      { n: 0, i: 'K3jf9sLm2QpZ', s: 10 },
+      { n: 1, i: 'Qq1Ww2Ee3Rr4', s: 20 },
+    ]);
+
+    const rows = page.getByTestId('vanyadum-board-row');
+    await expect(rows.nth(1)).toContainText('▸');
+    await expect(rows.nth(0)).not.toContainText('▸');
+  });
+
+  test('a peer the standings have not named yet is still drawn, not dropped', async ({ page }) => {
+    // The one ordering hazard: the server publishes the board ahead of the
+    // snapshot that first carries a new holder, so this only happens when that
+    // board frame was dropped for a slow consumer. Being unlabelled for a second
+    // is better than being invisible, and both are better than being given
+    // somebody else's name.
+    //
+    // The figure itself is inside the canvas and cannot be looked at — what is
+    // observable here is that the client did not fall over and the readout did
+    // not invent a row for him.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.snapshot({ hp: 42, p: [{ n: 3, x: 700, y: 500, s: 0, yaw: 0 }] });
+    await expect(page.getByTestId('vanyadum-hud')).toContainText('42');
+    // Full state, so it is short by a row rather than carrying an invented one.
+    await expect(page.getByTestId('vanyadum-board')).toHaveCount(0);
+
+    // And the board catching up a moment later is what puts him on the list.
+    await socket.board([{ n: 3, i: 'K3jf9sLm2QpZ', s: 1 }]);
+    await expect(page.getByTestId('vanyadum-board')).toContainText('K3jf9sLm2QpZ');
+  });
+
+  test('a socket that came back does not bring the old standings with it', async ({ page }) => {
+    // THE OUTAGE IS THE ONE WINDOW IN WHICH THE DIRECTORY CAN GO WRONG QUIETLY.
+    // A slot is a place, not a person: it is handed back when its holder leaves
+    // and given to the next arrival, and the only thing that ever announces that
+    // is a standings frame — which is exactly what a dead socket does not carry.
+    // So a client that kept its board across a reconnect can put the man who
+    // LEFT at the top of a list, with the newcomer's time in the building beside
+    // his name.
+    //
+    // Held out of the canvas on purpose (ADR-047), which is the only reason a
+    // test can read a mislabelled human being at all.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.ready(WORLD_ID, 1);
+    await socket.board([
+      { n: 0, i: 'K3jf9sLm2QpZ', s: 40 },
+      { n: 1, i: 'Qq1Ww2Ee3Rr4', s: 30 },
+    ]);
+    const rows = page.getByTestId('vanyadum-board-row');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(1)).toContainText('▸');
+
+    // The link goes. Everything on that list was true of a moment nothing is
+    // keeping true any more, so none of it survives.
+    socket.drop();
+    await expect(page.getByTestId('vanyadum-board')).toHaveCount(0);
+
+    // It comes back, and slot 1 changed hands while it was away — our own place
+    // among them, because an occupant only outlives his socket for the grace
+    // period. The readout is whatever the newest frame says and nothing else.
+    await socket.board([{ n: 1, i: 'Zz9Xx8Cc7Vv6', s: 3 }]);
+    await expect(rows).toHaveCount(1);
+    const board = page.getByTestId('vanyadum-board');
+    await expect(board).toContainText('Zz9Xx8Cc7Vv6');
+    await expect(board).not.toContainText('Qq1Ww2Ee3Rr4');
+    await expect(board).not.toContainText('K3jf9sLm2QpZ');
+    // And no arrow anywhere: which place is ours is a ready frame's answer, and
+    // the one we held before the outage is the one Zz9Xx8Cc7Vv6 is standing in.
+    await expect(rows.nth(0)).not.toContainText('▸');
+
+    // The ready frame the reconnect earns is what says where we are now.
+    await socket.ready(WORLD_ID, 4);
+    await socket.board([
+      { n: 1, i: 'Zz9Xx8Cc7Vv6', s: 4 },
+      { n: 4, i: 'Mm5Nn6Bb7Vv8', s: 1 },
+    ]);
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0)).not.toContainText('▸');
+    await expect(rows.nth(1)).toContainText('▸');
+  });
+
+  test('a full house of standings fits a 360 px phone', async ({ page }) => {
+    // A building's worth of twelve-character pseudonyms, each with a clock and a
+    // bag, on top of a game. The name column is what gives — it ellipsises
+    // rather than pushing the numbers off the side.
+    //
+    // The house is as full as the CATALOGUE says, not as full as production is:
+    // the stub deliberately serves a capacity nobody runs, and a layout that
+    // only fits five is a layout that breaks the day the number moves.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.board(fullHouse());
+    await expect(page.getByTestId('vanyadum-board-row')).toHaveCount(CONFIG.world.max_occupants);
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+
+    // And it stays inside the viewport rather than merely failing to scroll it.
+    const viewport = page.viewportSize()!;
+    const box = await page.getByTestId('vanyadum-board').boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+  });
+
+  test('the standings and the connection notice cannot reach each other', async ({ page }) => {
+    // TWO OVERLAYS, ONE STRIP OF SCREEN. The standings hug the right edge and
+    // the notice hugs the left, at nearly the same height, so their widths are
+    // one sum rather than two independent choices — and chosen by eye they came
+    // to 358.4 px of a 360 px phone, correct by a pixel and a half and by
+    // accident. The link's cap is now derived from what the board reserves, and
+    // this is what says so.
+    //
+    // MEASURED IN THE TWO STATES THEY ACTUALLY OCCUR IN, because they no longer
+    // occur together: the link leaving `open` empties the standings, since a
+    // directory nothing is refreshing stops being true. The budget still has to
+    // hold — the notice appears when something has already gone wrong, which is
+    // the last moment to depend on the other overlay being absent — so the
+    // boxes are taken one at a time and checked against each other.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.board(fullHouse());
+    await expect(page.getByTestId('vanyadum-board-row')).toHaveCount(CONFIG.world.max_occupants);
+    const board = await reservation(page.getByTestId('vanyadum-board'), 'right');
+
+    // A close the client will not retry, so the notice stays up long enough to
+    // be measured. An ordinary drop is reconnected inside a second.
+    socket.revoke();
+    const notice = page.getByTestId('vanyadum-link');
+    await expect(notice).toBeVisible();
+    const link = await reservation(notice, 'left');
+
+    // Neither runs off the phone as drawn...
+    const viewport = page.viewportSize()!;
+    expect(link.box.x).toBeGreaterThanOrEqual(0);
+    expect(link.box.x + link.box.width).toBeLessThanOrEqual(viewport.width);
+    expect(board.box.x).toBeGreaterThanOrEqual(0);
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+
+    // ...and the notice ends before the standings begin, as drawn.
+    expect(board.box.x).toBeGreaterThanOrEqual(link.box.x + link.box.width);
+
+    // THE ASSERTION THAT MATTERS, and the one the drawn boxes cannot make. Both
+    // overlays are shrink-to-fit, so today's short Russian sentence is narrower
+    // than its cap and would clear the standings even with a budget that does
+    // not add up. What has to hold is the CAP: the widest either is ALLOWED to
+    // become, plus its inset, plus the other's, has to leave the phone with room
+    // to spare — otherwise a longer message, a bigger font or a wider name
+    // silently reintroduces the collision. Chosen by eye these summed to 358.4
+    // of 360 px; the link's cap is now derived from what the board reserves.
+    const spare = viewport.width - (board.reserved + link.reserved);
+    expect(spare).toBeGreaterThanOrEqual(8);
+  });
+
+  test('the standings never swallow a tap meant for the game', async ({ page }) => {
+    // It is a readout sitting on top of the play surface. A touch that lands on
+    // it belongs to whatever is underneath — the pad that turns you round.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+    await socket.board([{ n: 0, i: 'K3jf9sLm2QpZ', s: 5 }]);
+
+    const events = await page
+      .getByTestId('vanyadum-board')
+      .evaluate((el) => getComputedStyle(el).pointerEvents);
+    expect(events).toBe('none');
   });
 
   test('the client says hello the moment the socket opens', async ({ page }) => {
@@ -533,7 +856,7 @@ test.describe('«ВАНЯДУМ» when the заброшка will not have you', 
     await expect(notice).toBeVisible();
     await expect(notice).toContainText('ЗАБРОШКА ПОЛНА');
     // The capacity comes from the catalogue, like every other number here.
-    await expect(notice).toContainText('4');
+    await expect(notice).toContainText('7');
     // Back on the splash, where the door is also the retry — a second button
     // saying "try again" would be a second path to one outcome.
     await expect(page.getByTestId('vanyadum-splash')).toBeVisible();
@@ -577,10 +900,11 @@ test.describe('«ВАНЯДУМ» when the building has been regenerated', () =>
     await walkIn(page);
     await expect.poll(worldFetches).toBe(1);
 
-    // Same building — nothing to do.
+    // Same building — nothing to do. A reconnect into it is answered with a
+    // ready frame and nothing else, and it carries back the SAME place.
     await socket.ready();
-    await socket.snapshot({});
-    await expect(page.getByTestId('vanyadum-occupants')).toContainText('1');
+    await socket.board([{ n: 0, i: 'K3jf9sLm2QpZ', s: 12 }]);
+    await expect(page.getByTestId('vanyadum-board-row')).toContainText('▸');
     expect(worldFetches()).toBe(1);
 
     // A different one. The level, the walls the predictor collides against and
@@ -589,6 +913,9 @@ test.describe('«ВАНЯДУМ» when the building has been regenerated', () =>
     await expect.poll(worldFetches).toBe(2);
     // And the player is still inside, not thrown back to the splash.
     await expect(page.getByTestId('vanyadum-play')).toBeVisible();
+    // The standings went with the building they described: everybody on that
+    // list was standing in a заброшка that no longer exists.
+    await expect(page.getByTestId('vanyadum-board')).toHaveCount(0);
   });
 });
 

@@ -731,11 +731,15 @@ func TestTwoPlayersReachingTheSameBeerAreResolvedDeterministically(t *testing.T)
 }
 
 func TestPeersArriveInAStableOrder(t *testing.T) {
-	// Same rule, cheaper consequence: the peers array is built by walking the
-	// occupants, so map order would reshuffle it between two renders of an
-	// unchanged world. That makes any golden test over the wire shape flap, and
-	// it asks a client to re-key its bookkeeping every frame for no reason at
-	// all.
+	// Same rule, cheaper consequence: a peers array built by ranging the occupant
+	// map would reshuffle between two renders of an unchanged world. That makes
+	// any golden test over the wire shape flap, and it asks a client to re-key its
+	// bookkeeping every frame for no reason at all.
+	//
+	// It is SLOT order, which is stable because a slot does not move while its
+	// holder is in the building — and it is the order the standings lists the same
+	// people in, so a client reading the two frames together never has to sort
+	// either.
 	w := NewWorld(uuid.Nil, 11)
 	for _, id := range []string{"account-a", "account-c", "account-b", "account-d"} {
 		if _, ok := w.Join(id, "pseudo-"+id, epoch); !ok {
@@ -744,16 +748,363 @@ func TestPeersArriveInAStableOrder(t *testing.T) {
 	}
 	w.Advance(SimStep.Seconds(), epoch)
 
-	// Account order, which is the world's own order and not the order they
-	// joined in.
-	want := []string{"pseudo-account-b", "pseudo-account-c", "pseudo-account-d"}
+	// The order they walked in, and not the order their accounts sort in: c took
+	// the second place because he arrived second.
+	want := []int{1, 2, 3}
 	for i := 0; i < 100; i++ {
-		got := make([]string, 0, len(want))
+		got := make([]int, 0, len(want))
 		for _, p := range mustSnapshot(t, w, "account-a").Peers {
-			got = append(got, p.ID)
+			got = append(got, p.Slot)
 		}
 		if !slices.Equal(got, want) {
-			t.Fatalf("render %d listed peers as %v, expected %v", i, got, want)
+			t.Fatalf("render %d listed peers in slots %v, expected %v", i, got, want)
+		}
+	}
+}
+
+func TestASlotIsStableWhileItsHolderIsHereAndReusedAfterHeLeaves(t *testing.T) {
+	// The two halves of what a slot is. It is small enough to put on a frame that
+	// repeats twenty times a second exactly BECAUSE it is a place in the building
+	// rather than a handle on a person — and the price of that is that a place is
+	// somebody else's the moment it is empty.
+	w := NewWorld(uuid.Nil, 11)
+	first, ok := w.Join("account-a", "pseudo-a", epoch)
+	if !ok {
+		t.Fatal("the first occupant was refused")
+	}
+	second, ok := w.Join("account-b", "pseudo-b", epoch)
+	if !ok {
+		t.Fatal("the second occupant was refused")
+	}
+	if first.Slot == second.Slot {
+		t.Fatalf("two people are standing in place %d", first.Slot)
+	}
+
+	// Stable while he is here: neither ticking nor reconnecting moves it.
+	for i := 0; i < 10; i++ {
+		w.Advance(SimStep.Seconds(), epoch)
+	}
+	if _, ok := w.Join("account-a", "pseudo-a", epoch.Add(time.Minute)); !ok {
+		t.Fatal("a reconnect was refused")
+	}
+	if got := w.Occupant("account-a").Slot; got != first.Slot {
+		t.Fatalf("ten ticks and a reconnect moved him from place %d to %d", first.Slot, got)
+	}
+
+	// And reused once he stops coming back. Recorded before the removal, because
+	// the occupant the world hands back afterwards is a different person.
+	freed := first.Slot
+	w.Advance(SimStep.Seconds(), epoch.Add(time.Minute+AbandonGrace+time.Second))
+	if w.Occupant("account-a") != nil {
+		t.Fatal("he outlived the grace")
+	}
+	third, ok := w.Join("account-c", "pseudo-c", epoch.Add(2*time.Minute))
+	if !ok {
+		t.Fatal("the next arrival was refused a place that had just been freed")
+	}
+	if third.Slot != freed {
+		t.Fatalf("the freed place %d was not reused; the newcomer got %d", freed, third.Slot)
+	}
+	// The roster version is what tells the service to publish a standings frame
+	// out of turn, and it is exactly this sequence — a place changing hands — that
+	// a client cannot survive being told about a second late.
+	if w.RosterVersion() <= 0 {
+		t.Fatal("a join, a leave and a join did not move the roster version")
+	}
+}
+
+func TestOnlyYourOwnRoomAndTheOnesThroughItsDoorwaysAreSent(t *testing.T) {
+	// INTEREST MANAGEMENT. The sector graph is already the potentially-visible
+	// set: a peer in your room or through one of its doorways is sent, and one
+	// standing two rooms away is not, because there is a solid wall in the way and
+	// the bytes buy nothing.
+	//
+	// Driven by placing people rather than by walking them, because what is under
+	// test is the filter and not the walk — and the level generator's graph is a
+	// tree, so every seed has a room two doorways from the spawn to use.
+	w := NewWorld(uuid.Nil, 11)
+	near, far := twoRoomsApart(t, w.Level)
+
+	me, ok := w.Join("account-me", "pseudo-me", epoch)
+	if !ok {
+		t.Fatal("the first occupant was refused")
+	}
+	me.State.Sector = w.Level.SpawnSector
+
+	// Somebody in the reader's own room.
+	roommate, _ := w.Join("account-roommate", "pseudo-roommate", epoch)
+	roommate.State.Sector = w.Level.SpawnSector
+	// Somebody through a doorway, which is what a neighbouring sector means.
+	neighbour, _ := w.Join("account-neighbour", "pseudo-neighbour", epoch)
+	neighbour.State.Sector = near
+	// And somebody two rooms away.
+	stranger, _ := w.Join("account-stranger", "pseudo-stranger", epoch)
+	stranger.State.Sector = far
+
+	sent := map[int]bool{}
+	for _, p := range mustSnapshot(t, w, "account-me").Peers {
+		sent[p.Slot] = true
+	}
+	if !sent[roommate.Slot] {
+		t.Fatal("somebody standing in the same room was filtered out")
+	}
+	if !sent[neighbour.Slot] {
+		t.Fatalf("somebody in sector %d, through a doorway from sector %d, was filtered out",
+			near, w.Level.SpawnSector)
+	}
+	if sent[stranger.Slot] {
+		t.Fatalf("somebody in sector %d, two rooms from sector %d, was sent anyway",
+			far, w.Level.SpawnSector)
+	}
+
+	// SYMMETRIC, because adjacency is: the man who cannot see you cannot be seen
+	// by you either. Once something shoots, that is what stops a player being hit
+	// by somebody his own client was never told about.
+	for _, p := range mustSnapshot(t, w, "account-stranger").Peers {
+		if p.Slot == me.Slot {
+			t.Fatalf("sector %d cannot see sector %d, but the reverse was sent", w.Level.SpawnSector, far)
+		}
+	}
+
+	// And walking back into view puts him back on the frame. Absence is full
+	// state and not an event, so nothing has to announce either direction.
+	stranger.State.Sector = near
+	for _, p := range mustSnapshot(t, w, "account-me").Peers {
+		if p.Slot == stranger.Slot {
+			return
+		}
+	}
+	t.Fatal("he stepped into the next room and was still not sent")
+}
+
+func TestAReaderJitteringInADoorwayDoesNotStrobeThePeopleAroundHim(t *testing.T) {
+	// THE DEFECT THIS HOLD EXISTS FOR. A sector is derived from a position, so a
+	// man standing in the doorway between two rooms belongs to whichever of them
+	// the last sub-centimetre of movement put him in — and he crosses back and
+	// forth without walking anywhere. The visible set is his room plus the rooms
+	// through its doorways, so it moves with him: somebody adjacent to one of the
+	// two rooms and not the other joins and leaves the frame at the tick rate, and
+	// in a shooter that is a figure you would be aiming at.
+	//
+	// Driven by placing the reader rather than by walking him into a real doorway,
+	// because what is under test is the filter's memory and not the geometry that
+	// provokes it: alternating the sector every tick IS the boundary case, exactly
+	// reproduced and without depending on where a seed happened to put a wall.
+	w := NewWorld(uuid.Nil, 11)
+	near, far := twoRoomsApart(t, w.Level)
+
+	me, ok := w.Join("account-me", "pseudo-me", epoch)
+	if !ok {
+		t.Fatal("the first occupant was refused")
+	}
+	me.State.Sector = w.Level.SpawnSector
+	peer, _ := w.Join("account-peer", "pseudo-peer", epoch)
+	peer.State.Sector = far
+
+	// From the spawn he cannot be seen at all, and nothing has been recorded yet.
+	if peers := mustSnapshot(t, w, "account-me").Peers; len(peers) != 0 {
+		t.Fatalf("a man two rooms away was sent before anybody moved: %+v", peers)
+	}
+
+	// Now the doorway between the spawn and `near`, flipped every tick. He is
+	// visible from one side and not from the other, and he must not blink.
+	for i := 0; i < 40; i++ {
+		if i%2 == 0 {
+			me.State.Sector = near
+		} else {
+			me.State.Sector = w.Level.SpawnSector
+		}
+		w.Advance(SimStep.Seconds(), epoch)
+		if len(mustSnapshot(t, w, "account-me").Peers) == 0 {
+			t.Fatalf("tick %d of standing in a doorway dropped him off the frame", i)
+		}
+		// SYMMETRIC, because the hold is written for both directions of a pair on
+		// the tick it is recorded. A man who can see you and cannot be seen by you
+		// is what a hit test may not be built on.
+		if len(mustSnapshot(t, w, "account-peer").Peers) == 0 {
+			t.Fatalf("tick %d: the reader dropped off the peer's own frame", i)
+		}
+	}
+
+	// And it is a hold rather than a licence: walk properly out of sight and he
+	// goes, a fifth of a second later. One tick on the visible side first, so the
+	// arithmetic is exact — the hold covers the tick it was recorded on and the
+	// visibleHoldTicks−1 after it, and the loop above ends on whichever side of
+	// the doorway its last iteration fell.
+	me.State.Sector = near
+	w.Advance(SimStep.Seconds(), epoch)
+	me.State.Sector = w.Level.SpawnSector
+	for i := int64(1); i < visibleHoldTicks; i++ {
+		w.Advance(SimStep.Seconds(), epoch)
+		if len(mustSnapshot(t, w, "account-me").Peers) == 0 {
+			t.Fatalf("he was dropped %d ticks after leaving the set, before the %d-tick hold was up",
+				i, visibleHoldTicks)
+		}
+	}
+	w.Advance(SimStep.Seconds(), epoch)
+	if peers := mustSnapshot(t, w, "account-me").Peers; len(peers) != 0 {
+		t.Fatalf("the hold never expired: %+v", peers)
+	}
+}
+
+func TestAFreedPlaceDoesNotInheritTheLastHoldersVisibility(t *testing.T) {
+	// A place is reused, so the memory that holds a peer on the frame has to go
+	// with its holder. Otherwise the first fifth of a second of somebody else's
+	// visit is spent being drawn in a room the reader cannot see into, because the
+	// man who used to stand in that place could be.
+	w := NewWorld(uuid.Nil, 11)
+	_, far := twoRoomsApart(t, w.Level)
+
+	me, _ := w.Join("account-me", "pseudo-me", epoch)
+	me.State.Sector = far
+	leaver, _ := w.Join("account-leaver", "pseudo-leaver", epoch)
+	leaver.State.Sector = far
+	freed := leaver.Slot
+
+	// One tick in the same room, which is what fills the memory.
+	w.Advance(SimStep.Seconds(), epoch)
+	if len(mustSnapshot(t, w, "account-me").Peers) != 1 {
+		t.Fatal("two people in one room could not see each other")
+	}
+
+	// The leaver stops coming back. The reader is still connected, so only one of
+	// them is taken out.
+	gone := epoch.Add(AbandonGrace + time.Second)
+	w.Seen("account-me", gone)
+	w.Advance(SimStep.Seconds(), gone)
+	if w.Occupant("account-leaver") != nil {
+		t.Fatal("he outlived the grace")
+	}
+
+	// And his place is handed to somebody standing where the reader cannot see.
+	newcomer, ok := w.Join("account-newcomer", "pseudo-newcomer", gone)
+	if !ok {
+		t.Fatal("the newcomer was refused a place that had just been freed")
+	}
+	if newcomer.Slot != freed {
+		t.Fatalf("the freed place %d was not reused; the newcomer got %d", freed, newcomer.Slot)
+	}
+	newcomer.State.Sector = w.Level.SpawnSector
+	if peers := mustSnapshot(t, w, "account-me").Peers; len(peers) != 0 {
+		t.Fatalf("the newcomer inherited the last holder's visibility: %+v", peers)
+	}
+}
+
+// twoRoomsApart returns a sector adjacent to the spawn and one exactly two
+// doorways from it, which is the pair every interest-management assertion needs.
+//
+// The portal graph is a tree (level.go), so "two away" is unambiguous: it is a
+// neighbour of a neighbour that is not itself a neighbour.
+func twoRoomsApart(t *testing.T, l *Level) (near, far int) {
+	t.Helper()
+	adjacent := func(a int) []int {
+		var out []int
+		for _, p := range l.Portals {
+			switch a {
+			case p.A:
+				out = append(out, p.B)
+			case p.B:
+				out = append(out, p.A)
+			}
+		}
+		return out
+	}
+	first := adjacent(l.SpawnSector)
+	for _, n := range first {
+		for _, f := range adjacent(n) {
+			if f == l.SpawnSector || slices.Contains(first, f) {
+				continue
+			}
+			return n, f
+		}
+	}
+	t.Fatalf("seed %d generated no room two doorways from the spawn", l.Seed)
+	return 0, 0
+}
+
+func TestTheStandingsAreOfTheBuildingAndNotOfWhatYouCanSee(t *testing.T) {
+	// The half of this that is deliberate: a snapshot is cut to what the reader
+	// could plausibly see, and the standings is not cut at all. It is a readout of
+	// the building — everybody in it, including the reader himself and including
+	// the man two rooms away he has no idea is there.
+	w := NewWorld(uuid.Nil, 11)
+	_, far := twoRoomsApart(t, w.Level)
+
+	me, _ := w.Join("account-me", "pseudo-me", epoch)
+	me.State.Sector = w.Level.SpawnSector
+	hidden, _ := w.Join("account-hidden", "pseudo-hidden", epoch)
+	hidden.State.Sector = far
+	hidden.State.Counters = map[string]int{"beer": 3}
+
+	if peers := mustSnapshot(t, w, "account-me").Peers; len(peers) != 0 {
+		t.Fatalf("the man two rooms away is on the snapshot: %+v", peers)
+	}
+
+	board := w.Standings(epoch.Add(90 * time.Second))
+	if len(board.Rows) != 2 {
+		t.Fatalf("the standings list %d of the 2 people in the building: %+v", len(board.Rows), board.Rows)
+	}
+	bySlot := map[int]StandingsRow{}
+	for _, r := range board.Rows {
+		bySlot[r.Slot] = r
+	}
+	// The reader is on his own board. There is nothing else to compare against.
+	mine, ok := bySlot[me.Slot]
+	if !ok {
+		t.Fatalf("the reader is not in his own standings: %+v", board.Rows)
+	}
+	if mine.Name != "pseudo-me" || mine.Seconds != 90 {
+		t.Fatalf("the reader's own row is %+v", mine)
+	}
+	theirs := bySlot[hidden.Slot]
+	if theirs.Name != "pseudo-hidden" || theirs.Bag["beer"] != 3 {
+		t.Fatalf("the hidden man's row is %+v", theirs)
+	}
+	// In slot order, which is the order the peers array uses, so nothing has to
+	// sort either of them.
+	if board.Rows[0].Slot >= board.Rows[1].Slot {
+		t.Fatalf("the standings are not in slot order: %+v", board.Rows)
+	}
+}
+
+func TestTheStandingsSlotsAreTheSnapshotsSlots(t *testing.T) {
+	// The correspondence the two frames exist to have. A snapshot addresses a peer
+	// by a number and says nothing else about him; the standings is where that
+	// number becomes a name. If they could disagree, a client would be labelling
+	// figures with the wrong people's handles.
+	w := NewWorld(uuid.Nil, 11)
+	for _, id := range []string{"account-a", "account-b", "account-c"} {
+		if _, ok := w.Join(id, "pseudo-"+id, epoch); !ok {
+			t.Fatalf("%s was refused", id)
+		}
+	}
+	w.Advance(SimStep.Seconds(), epoch)
+
+	named := map[int]string{}
+	for _, r := range w.Standings(epoch).Rows {
+		named[r.Slot] = r.Name
+	}
+	for _, reader := range []string{"account-a", "account-b", "account-c"} {
+		for _, p := range mustSnapshot(t, w, reader).Peers {
+			name, ok := named[p.Slot]
+			if !ok {
+				t.Fatalf("%s was sent a peer in slot %d that the standings do not name", reader, p.Slot)
+			}
+			if name == "pseudo-"+reader {
+				t.Fatalf("%s is looking at himself in slot %d", reader, p.Slot)
+			}
+		}
+	}
+	// And the mapping survives somebody leaving and his place being taken: the
+	// name against the slot is the newcomer's, which is the only thing that lets a
+	// client tell that the figure it was drawing there is gone.
+	w.Advance(SimStep.Seconds(), epoch.Add(AbandonGrace+time.Second))
+	if _, ok := w.Join("account-d", "pseudo-account-d", epoch.Add(2*AbandonGrace)); !ok {
+		t.Fatal("nobody could walk into a building everybody had left")
+	}
+	for _, r := range w.Standings(epoch.Add(2 * AbandonGrace)).Rows {
+		if r.Name != "pseudo-account-d" {
+			t.Fatalf("slot %d is still named %q after everybody left", r.Slot, r.Name)
 		}
 	}
 }

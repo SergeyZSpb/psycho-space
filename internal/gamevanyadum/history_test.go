@@ -1,7 +1,9 @@
 package gamevanyadum
 
 import (
+	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,12 +27,12 @@ func TestHistoryInterpolatesBetweenRecordedFrames(t *testing.T) {
 	// reconstruct a world nobody ever saw.
 	h := newHistory()
 	base := time.Unix(100, 0)
-	h.record(1, base, map[string]Spot{"a": spot(0, 0)})
-	h.record(2, base.Add(100*time.Millisecond), map[string]Spot{"a": spot(10, 20)})
+	h.record(1, base, map[int]Spot{0: spot(0, 0)})
+	h.record(2, base.Add(100*time.Millisecond), map[int]Spot{0: spot(10, 20)})
 
 	got := h.at(base.Add(50 * time.Millisecond))
-	if math.Abs(got["a"].Pos.X-5) > 1e-9 || math.Abs(got["a"].Pos.Y-10) > 1e-9 {
-		t.Fatalf("halfway between the two frames is %+v", got["a"].Pos)
+	if math.Abs(got[0].Pos.X-5) > 1e-9 || math.Abs(got[0].Pos.Y-10) > 1e-9 {
+		t.Fatalf("halfway between the two frames is %+v", got[0].Pos)
 	}
 }
 
@@ -40,14 +42,14 @@ func TestHistoryClampsRatherThanFabricating(t *testing.T) {
 	// something that was never there is worse than a hit that misses.
 	h := newHistory()
 	base := time.Unix(100, 0)
-	h.record(1, base, map[string]Spot{"a": spot(1, 1)})
-	h.record(2, base.Add(100*time.Millisecond), map[string]Spot{"a": spot(9, 9)})
+	h.record(1, base, map[int]Spot{0: spot(1, 1)})
+	h.record(2, base.Add(100*time.Millisecond), map[int]Spot{0: spot(9, 9)})
 
-	if got := h.at(base.Add(-time.Hour)); got["a"].Pos.X != 1 {
-		t.Fatalf("before the window should clamp to the oldest frame, got %+v", got["a"].Pos)
+	if got := h.at(base.Add(-time.Hour)); got[0].Pos.X != 1 {
+		t.Fatalf("before the window should clamp to the oldest frame, got %+v", got[0].Pos)
 	}
-	if got := h.at(base.Add(time.Hour)); got["a"].Pos.X != 9 {
-		t.Fatalf("after the window should clamp to the newest frame, got %+v", got["a"].Pos)
+	if got := h.at(base.Add(time.Hour)); got[0].Pos.X != 9 {
+		t.Fatalf("after the window should clamp to the newest frame, got %+v", got[0].Pos)
 	}
 }
 
@@ -65,7 +67,7 @@ func TestHistoryDoesNotGrow(t *testing.T) {
 	h := newHistory()
 	base := time.Unix(0, 0)
 	for i := 0; i < historyCapacity()*5; i++ {
-		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[string]Spot{"a": spot(float64(i), 0)})
+		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[int]Spot{0: spot(float64(i), 0)})
 	}
 	if len(h.frames) != historyCapacity() {
 		t.Fatalf("ring grew to %d frames", len(h.frames))
@@ -83,17 +85,17 @@ func TestHistoryKeepsWorkingAfterItWraps(t *testing.T) {
 	base := time.Unix(0, 0)
 	n := historyCapacity() + historyCapacity()/2
 	for i := 0; i < n; i++ {
-		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[string]Spot{"a": spot(float64(i), 0)})
+		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[int]Spot{0: spot(float64(i), 0)})
 	}
 	newest := h.at(base.Add(time.Duration(n) * SimStep))
-	if want := float64(n - 1); newest["a"].Pos.X != want {
-		t.Fatalf("newest frame is %v, expected %v", newest["a"].Pos.X, want)
+	if want := float64(n - 1); newest[0].Pos.X != want {
+		t.Fatalf("newest frame is %v, expected %v", newest[0].Pos.X, want)
 	}
 	// And a point midway through the surviving window is still interpolated
 	// rather than clamped.
 	mid := h.at(base.Add(time.Duration(n-3)*SimStep + SimStep/2))
-	if mid["a"].Pos.X <= float64(n-4) || mid["a"].Pos.X >= float64(n-2) {
-		t.Fatalf("midway lookup after wrap returned %v", mid["a"].Pos.X)
+	if mid[0].Pos.X <= float64(n-4) || mid[0].Pos.X >= float64(n-2) {
+		t.Fatalf("midway lookup after wrap returned %v", mid[0].Pos.X)
 	}
 }
 
@@ -102,9 +104,9 @@ func TestHistoryDoesNotResurrectTheDead(t *testing.T) {
 	// it is not interpolated — and a span in which somebody died counts as dead.
 	h := newHistory()
 	base := time.Unix(0, 0)
-	h.record(1, base, map[string]Spot{"a": {Pos: Vec2{}, Alive: true}})
-	h.record(2, base.Add(100*time.Millisecond), map[string]Spot{"a": {Pos: Vec2{}, Alive: false}})
-	if h.at(base.Add(50 * time.Millisecond))["a"].Alive {
+	h.record(1, base, map[int]Spot{0: {Pos: Vec2{}, Alive: true}})
+	h.record(2, base.Add(100*time.Millisecond), map[int]Spot{0: {Pos: Vec2{}, Alive: false}})
+	if h.at(base.Add(50 * time.Millisecond))[0].Alive {
 		t.Fatal("rewound into a span where the target died and found them alive")
 	}
 }
@@ -118,19 +120,21 @@ func TestTheWorldRecordsEveryTick(t *testing.T) {
 	if w.history.count != 10 {
 		t.Fatalf("ten ticks recorded %d frames", w.history.count)
 	}
-	// Keyed by PSEUDONYM, so a rewound world and a published one name the same
-	// things — which is what lets a future hit test take the id it was shot at
-	// straight from the client's aim.
+	// Keyed by SLOT, so a rewound world and a published one name the same things
+	// — which is what lets a future hit test take the id it was shot at straight
+	// from the client's aim, and a slot is the only name a client has for
+	// anybody.
 	got := w.history.at(base.Add(5 * SimStep))
-	if _, ok := got[w.Occupant(acc).Pseudonym]; !ok {
-		t.Fatalf("history is keyed by something other than the pseudonym: %+v", got)
+	if _, ok := got[w.Occupant(acc).Slot]; !ok {
+		t.Fatalf("history is keyed by something other than the slot: %+v", got)
 	}
 }
 
 // tickedHistory fills the world's buffer with `frames` recorded instants, one
-// per simulation step, in which "pseudo" stands at X == the frame's own index. A
-// rewound X therefore reads back directly as a tick number, which is what lets
-// the assertions below be hand-computed arithmetic rather than a tolerance.
+// per simulation step, in which the occupant in slot zero stands at X == the
+// frame's own index. A rewound X therefore reads back directly as a tick number,
+// which is what lets the assertions below be hand-computed arithmetic rather
+// than a tolerance.
 //
 // It returns the instant of the newest frame, which is the `now` a rewind is
 // measured back from.
@@ -139,17 +143,17 @@ func tickedHistory(t *testing.T, w *World, frames int) time.Time {
 	base := time.Unix(0, 0)
 	for i := 0; i < frames; i++ {
 		at := base.Add(time.Duration(i) * SimStep)
-		w.history.record(int64(i), at, map[string]Spot{"pseudo": spot(float64(i), 0)})
+		w.history.record(int64(i), at, map[int]Spot{0: spot(float64(i), 0)})
 	}
 	return base.Add(time.Duration(frames-1) * SimStep)
 }
 
-// rewoundTick is where "pseudo" was, in frame indices, for a player this far
+// rewoundTick is where slot zero was, in frame indices, for a player this far
 // behind.
 func rewoundTick(t *testing.T, w *World, now time.Time, rtt time.Duration) float64 {
 	t.Helper()
 	got := w.RewindTo(now, rtt)
-	s, ok := got["pseudo"]
+	s, ok := got[0]
 	if !ok {
 		t.Fatalf("rewind returned no spot for the only entity there is: %+v", got)
 	}
@@ -394,9 +398,11 @@ func TestSnapshotCarriesPeersAndATimeline(t *testing.T) {
 		t.Fatalf("a lone player has peers: %+v", s.Peers)
 	}
 
-	// And a second occupant appears as a peer to the first, with a pseudonym
-	// rather than an account id.
-	if _, joined := w.Join("other-account", "other-pseudonym", epoch); !joined {
+	// And a second occupant appears as a peer to the first, addressed by the slot
+	// he was given — the pseudonym is the standings frame's job and the account
+	// id is nobody's.
+	other, joined := w.Join("other-account", "other-pseudonym", epoch)
+	if !joined {
 		t.Fatal("the second occupant was refused")
 	}
 	w.Advance(SimStep.Seconds(), time.Unix(0, 0))
@@ -404,10 +410,18 @@ func TestSnapshotCarriesPeersAndATimeline(t *testing.T) {
 	if len(s.Peers) != 1 {
 		t.Fatalf("expected one peer, got %+v", s.Peers)
 	}
-	if s.Peers[0].ID != "other-pseudonym" {
-		t.Fatalf("peer is named %q", s.Peers[0].ID)
+	if s.Peers[0].Slot != other.Slot {
+		t.Fatalf("peer is in slot %d, he was given %d", s.Peers[0].Slot, other.Slot)
 	}
-	if s.Peers[0].ID == "other-account" {
-		t.Fatal("an account id reached the wire")
+	// Nothing on a peer is a name of any kind, which is the whole of what makes
+	// the entry 49 bytes rather than 71.
+	raw, err := json.Marshal(s.Peers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{"other-pseudonym", "other-account"} {
+		if strings.Contains(string(raw), leaked) {
+			t.Fatalf("a peer entry carries %q: %s", leaked, raw)
+		}
 	}
 }
