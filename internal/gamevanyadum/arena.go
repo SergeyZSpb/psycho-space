@@ -2,6 +2,7 @@ package gamevanyadum
 
 import (
 	"math"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -170,6 +171,66 @@ func (a *Arena) Occupants() int { return len(a.occupants) }
 // convenient handle for the single-occupant case the game has today.
 func (a *Arena) Owner() *Occupant { return a.occupants[a.AccountID] }
 
+// keys is every occupant, sorted by account id. It is the STABLE order — the one
+// the wire and the rewind buffer are filled from — and deliberately NOT the
+// order they are simulated in; see turnOrder.
+//
+// NOTHING IN THIS ARENA LETS MAP ORDER DECIDE ANYTHING. Go randomises map order
+// on every range, so an array built by ranging the occupants would come out
+// reshuffled between two renders of an unchanged arena: a golden test over the
+// wire shape that flaps for no reason, and a client asked to re-key its
+// bookkeeping every frame. The same coin flip inside the simulation would be
+// worse still, because the same seed and the same input transcript would stop
+// producing the same world — and that determinism is the property the whole
+// simulation is tested against, Step being pure precisely so it can be.
+//
+// Invisible today, because every arena holds exactly one occupant. Wrong from
+// the first frame of the first shared one, which is why it is here before there
+// is a second player rather than after.
+func (a *Arena) keys() []string {
+	out := make([]string, 0, len(a.occupants))
+	for k := range a.occupants {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// turnOrder is the same occupants as keys, ROTATED BY THE TICK. Advance's step
+// loop is its only caller, and the only thing in the package that sees an order
+// other than keys'.
+//
+// TWO ORDERS, BECAUSE THEY ANSWER DIFFERENT QUESTIONS, and collapsing them back
+// into one is the mistake this comment exists to prevent. The wire wants an
+// order that does not MOVE, for the reasons on keys. The simulation wants an
+// order that is not a PRIORITY: collect mutates arena-wide state, so whoever
+// steps first takes a contested bottle, and any one fixed order hands that to
+// the same account for the life of both accounts. Sorted, it is whoever drew the
+// lexicographically smaller UUID — every beer, and every hit test once something
+// shoots. That is not a coin flip landing badly, it is a coin that never gets
+// tossed.
+//
+// DETERMINISM DOES NOT REQUIRE A FIXED ORDER, only a derived one. The tick is
+// part of the arena's state, so rotating by it keeps the replay property intact
+// — the same seed and the same transcript still produce the same world, frame
+// for frame — while the advantage moves on by one occupant every 50 ms. Nothing
+// fairer is available without inventing a notion of who deserves the bottle,
+// which is a rule this game does not have.
+//
+// The single-occupant case, which is every arena today, returns the caller's own
+// slice: there is nothing to rotate and no reason to allocate for it.
+func (a *Arena) turnOrder(ids []string) []string {
+	if len(ids) < 2 {
+		return ids
+	}
+	off := int(a.Tick % int64(len(ids)))
+	out := make([]string, len(ids))
+	for i := range ids {
+		out[i] = ids[(i+off)%len(ids)]
+	}
+	return out
+}
+
 // Enqueue accepts input from one occupant. It runs on that connection's read
 // pump, so it does the least possible work: appending to a slice the tick will
 // drain.
@@ -203,13 +264,19 @@ func (a *Arena) Enqueue(accountID string, in *ParsedInput) {
 	// gap between the snapshot this client had drawn and where the simulation
 	// is now is the whole loop. Smoothed with a slow exponential average — one
 	// late frame is not a slower connection, and rewinding by a spike would
-	// resolve a shot against a world nobody was ever looking at. Deriving it
-	// also means a client cannot claim a latency it does not have, which
-	// matters precisely because lag compensation rewinds by this number.
+	// resolve a shot against a world nobody was ever looking at.
+	//
+	// Deriving it narrows the lie without ending it: a client cannot claim a
+	// latency out of thin air, but it chooses which tick to echo, so it can
+	// claim to be further behind than it is. Hence the ceiling, and hence
+	// RewindMax rather than the ring's capacity — the ring is merely how much
+	// past exists, where RewindMax is how much of it a shot may reach, and the
+	// smoothed value here is one of the two terms that composition is built from
+	// (history.go, RewindTo).
 	if in.Seen > 0 && in.Seen <= a.Tick {
 		sample := time.Duration(a.Tick-in.Seen) * SimStep
-		if sample > HistoryWindow {
-			sample = HistoryWindow
+		if sample > RewindMax {
+			sample = RewindMax
 		}
 		if o.rtt == 0 {
 			o.rtt = sample
@@ -302,7 +369,15 @@ func (a *Arena) Advance(dt float64, now time.Time) {
 	}
 	a.Tick++
 
-	for _, o := range a.occupants {
+	// The stable order, for the rewind buffer below, and the rotated one for the
+	// step loop — never map order for either. collect mutates arena-wide state,
+	// so which occupant steps first decides who takes a contested pickup, and
+	// that is exactly the decision that must not settle on one account for ever.
+	// See keys and turnOrder.
+	ids := a.keys()
+
+	for _, id := range a.turnOrder(ids) {
+		o := a.occupants[id]
 		o.budget = math.Min(o.budget+dt, TimeBudgetCap)
 		// A COMMAND IS SIMULATED WHOLE OR IT WAITS. It is never simulated in
 		// part, because there is no way to acknowledge a part: the ack is one
@@ -347,7 +422,7 @@ func (a *Arena) Advance(dt float64, now time.Time) {
 	// Recorded AFTER the step, so a frame describes the world as the snapshot
 	// about to go out describes it. Recording before would leave the rewind
 	// buffer a tick behind everything that reads it.
-	a.history.record(a.Tick, now, a.spots())
+	a.history.record(a.Tick, now, a.spots(ids))
 
 	// The objective of this iteration, and deliberately the smallest one that
 	// closes the loop: collect every beer in the заброшка. It exists so a run
@@ -410,9 +485,19 @@ func (a *Arena) remaining() int {
 // stores. Keyed by PSEUDONYM rather than by account, so a rewound world and a
 // published one name the same things — which is what lets a future hit test
 // take the id it was shot at straight from the client's aim.
-func (a *Arena) spots() map[string]Spot {
-	out := make(map[string]Spot, len(a.occupants))
-	for _, o := range a.occupants {
+//
+// The occupant list arrives as an argument rather than being derived here, and
+// it is keys' order rather than the rotated one — but neither choice changes the
+// ANSWER, because a map does not remember what order it was filled in. It takes
+// the caller's list so that the frame recorded for a tick is of exactly the
+// occupants that tick stepped, rather than of a second reading of the roster.
+// It saves a sort as well, and that was never the argument: SnapshotFor derives
+// the order again, once per occupant, so a tick still sorts a handful of strings
+// N+1 times.
+func (a *Arena) spots(ids []string) map[string]Spot {
+	out := make(map[string]Spot, len(ids))
+	for _, id := range ids {
+		o := a.occupants[id]
 		out[o.Pseudonym] = Spot{Pos: o.State.Pos, Sector: o.State.Sector, Alive: o.State.Health > 0}
 	}
 	return out
@@ -435,10 +520,14 @@ func (a *Arena) SnapshotFor(accountID string) (Snapshot, bool) {
 		return Snapshot{}, false
 	}
 
-	left := make([]int, 0, len(a.Level.Pickups))
-	for _, p := range a.Level.Pickups {
+	// Bit i is set when the pickup at INDEX i is still lying about. The index and
+	// not the id, because the mask's width is the level's length and an index is
+	// dense by construction where an id need not be — see Snapshot.Left for why
+	// the field is one 32-bit word rather than a list.
+	var left uint32
+	for i, p := range a.Level.Pickups {
 		if !a.Taken[p.ID] {
-			left = append(left, p.ID)
+			left |= 1 << uint(i)
 		}
 	}
 
@@ -461,10 +550,15 @@ func (a *Arena) SnapshotFor(accountID string) (Snapshot, bool) {
 			s.Bag[k] = v
 		}
 	}
-	for id, o := range a.occupants {
+	// In account order, so two renders of an unchanged arena produce the same
+	// array. Map order here would make the peers array shuffle between frames,
+	// which is a golden test that flaps and a client asked to re-key its
+	// bookkeeping for no reason. See keys.
+	for _, id := range a.keys() {
 		if id == accountID {
 			continue
 		}
+		o := a.occupants[id]
 		state := 0
 		if o.State.Health <= 0 {
 			state = 2

@@ -166,8 +166,14 @@ async function stubSocket(page: Page): Promise<{
   };
 
   return {
+    // `pk` is a BITMASK over the index into the level's pickup list — bit i set
+    // means the i-th is still on the floor — so the resting frame is 0b11: both
+    // of LEVEL's two pickups uncollected. Sending the old list of ids here would
+    // still be valid JSON and would decode as the number zero, which reads as
+    // every pickup taken and is exactly the kind of quiet wrongness this stub
+    // exists to avoid.
     snapshot: (fields) =>
-      send({ t: 'vanyadum_snap', k: 1, ack: 1, x: 500, y: 500, z: 165, yaw: 0, s: 0, hp: 61, pk: [0, 1], ...fields }),
+      send({ t: 'vanyadum_snap', k: 1, ack: 1, x: 500, y: 500, z: 165, yaw: 0, s: 0, hp: 61, pk: 0b11, ...fields }),
     over: (fields) => send({ t: 'vanyadum_over', success: true, secs: 42, c: { beer: 2 }, ...fields }),
     sent: async () => sent,
   };
@@ -325,7 +331,8 @@ test.describe('«ВАНЯДУМ» play', () => {
     await page.getByTestId('vanyadum-start').click();
     await expect(page.getByTestId('vanyadum-play')).toBeVisible();
 
-    await socket.snapshot({ hp: 37, c: { beer: 2 }, pk: [1] });
+    // One bit set: the pickup at index 0 is still there, the other was taken.
+    await socket.snapshot({ hp: 37, c: { beer: 2 }, pk: 0b01 });
 
     await expect(page.getByTestId('vanyadum-hud')).toContainText('37');
     await expect(page.getByTestId('vanyadum-count-beer')).toContainText('2');

@@ -121,7 +121,7 @@ func TestSnapshotOmitsWhatIsEmpty(t *testing.T) {
 	// Prefer omitting to sending empty (CLAUDE.md). At twenty frames a second
 	// the difference between an absent field and `"c":{}` is real money on
 	// somebody's mobile data.
-	raw, err := json.Marshal(Snapshot{T: TypeSnapshot, Left: []int{}})
+	raw, err := json.Marshal(Snapshot{T: TypeSnapshot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,27 +132,103 @@ func TestSnapshotOmitsWhatIsEmpty(t *testing.T) {
 	}
 }
 
+func TestTheRemainingPickupMaskRoundTrips(t *testing.T) {
+	// It is one word on the wire and it has to come back as the same word. The
+	// interesting values are the ends: an empty level, a full one, and the top
+	// bit, which is the one a signed or narrower field would mangle.
+	for _, want := range []uint32{0, 1, 0b1010, 1<<MaxWirePickups - 1, 1 << (MaxWirePickups - 1)} {
+		raw, err := json.Marshal(Snapshot{T: TypeSnapshot, Left: want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back Snapshot
+		if err := json.Unmarshal(raw, &back); err != nil {
+			t.Fatalf("mask %b did not survive its own encoding: %v (%s)", want, err, raw)
+		}
+		if back.Left != want {
+			t.Fatalf("mask %b came back as %b: %s", want, back.Left, raw)
+		}
+	}
+}
+
+func TestTheMaskIsNarrowEnoughForABrowserToParse(t *testing.T) {
+	// WHY THE FIELD IS 32 BITS AND NOT 64. A JSON number is an IEEE754 double on
+	// the other end, so a mask wider than a double's 53-bit mantissa loses its
+	// high bits in the PARSE — silently, and only on the levels large enough to
+	// reach them. This pins the reason rather than the choice: if it ever stops
+	// being true, the constant is worth revisiting.
+	var widest float64
+	if err := json.Unmarshal([]byte("4294967295"), &widest); err != nil {
+		t.Fatal(err)
+	}
+	if uint32(widest) != 1<<MaxWirePickups-1 {
+		t.Fatalf("the widest %d-bit mask does not survive a double: %v", MaxWirePickups, widest)
+	}
+
+	// And the counter-example that makes the width a real limit rather than a
+	// superstition: 2^53+1 does not survive, so a 64-bit mask genuinely could not
+	// be read back. A level that outgrows 32 pickups gets a second word.
+	var lost float64
+	if err := json.Unmarshal([]byte("9007199254740993"), &lost); err != nil {
+		t.Fatal(err)
+	}
+	if uint64(lost) == 9007199254740993 {
+		t.Fatal("a double now parses 2^53+1 exactly; the reason Left is not a uint64 has changed")
+	}
+}
+
+func TestNoGeneratedLevelOverflowsTheMask(t *testing.T) {
+	// The guard on the generator. Go evaluates a shift at or past a word's width
+	// as zero, so a level with more than MaxWirePickups pickups would publish the
+	// surplus as ALREADY TAKEN: the client would never draw them, nobody would
+	// ever walk to them, and the run's objective could never be met. A silently
+	// unwinnable game rather than an error — which is why the bound is asserted
+	// here and not discovered by a player.
+	//
+	// A guard against a future change rather than a regression test: the
+	// generator scatters two or three today, and this is where raising that past
+	// the wire's width gets caught.
+	for seed := int64(0); seed < 500; seed++ {
+		if n := len(Generate(seed).Pickups); n > MaxWirePickups {
+			t.Fatalf("seed %d generated %d pickups; the wire carries %d", seed, n, MaxWirePickups)
+		}
+	}
+}
+
 func TestSnapshotStaysSmall(t *testing.T) {
 	// The bandwidth budget, as a test rather than as a comment. A snapshot goes
 	// out twenty times a second forever, so its size is the game's recurring
 	// cost — and the design doc's mitigations (integers, short keys, the level
 	// never on a frame) are only worth anything if something notices when they
 	// stop being applied.
+	//
+	// THE BUDGET MOVED FROM 200 TO 160 WITH THE PICKUP MASK, and here is the
+	// arithmetic rather than a shrug. Measured: this frame was 139 bytes with the
+	// old six-id list (`"pk":[0,1,2,3,4,5]`, 18 of them) and is 136 with the mask
+	// at its widest (`"pk":4294967295`, 15) — three bytes, which on its own would
+	// not be worth a comment.
+	//
+	// What is worth it is WHY the old ceiling was 61 bytes above the measurement:
+	// the list grew with the level's contents, so the slack was standing in for a
+	// field nobody could bound. The mask cannot grow — it is one word whatever
+	// the заброшка holds, and the value below is the widest it can ever take — so
+	// that slack has nothing left to insure against and comes off. 160 leaves 24
+	// bytes for a field the next iteration adds, and 160 at 20 Hz is 3.2 KB/s per
+	// player against the 4 KB/s the design doc budgets.
 	s := Snapshot{
 		T: TypeSnapshot, Tick: 999999, Ack: 999999,
 		X: 123456, Y: -123456, Z: 12345, Yaw: 3142, Sector: 12, Health: 100,
-		Left: []int{0, 1, 2, 3, 4, 5},
+		Left: math.MaxUint32,
 		Bag:  map[string]int{"beer": 9},
 	}
 	raw, err := json.Marshal(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 200 bytes at 20 Hz is 4 KB/s, which is the figure the design doc budgets
-	// against. If a field is added that pushes past this, the right response is
-	// to measure and update the budget deliberately — not to raise the number
-	// until the test passes.
-	const budget = 200
+	// If a field is added that pushes past this, the right response is to measure
+	// and move the budget deliberately — with the arithmetic written down, as
+	// above — and never to raise the number until the test passes.
+	const budget = 160
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}

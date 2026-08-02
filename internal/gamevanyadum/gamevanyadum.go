@@ -110,24 +110,105 @@ const MaxCommandsPerFrame = 4
 // precisely the repeats of what is queued, which is most of the window.
 const RedundantCommands = 6
 
-// InterpolationDelay is how far in the past a peer is drawn.
+// InterpolationDelayPeriods is how far in the past a peer is drawn, as a
+// MULTIPLE OF THE SNAPSHOT PERIOD rather than as a duration.
+//
+// A multiple, because the number has to survive a change to the publish rate,
+// and SnapshotInterval's own comment above invites exactly that change. A delay
+// typed out in milliseconds does not follow it: halve the publish rate to 10 Hz
+// and a fixed 120 ms is suddenly 1.2 periods, under one period plus jitter, so
+// the client's interpolation buffer runs dry and every peer visibly stutters
+// between frames. Expressed as a ratio it moves with the rate, on both ends at
+// once — the server rewinds by exactly this and the client draws by exactly
+// this.
+//
+// Two snapshots' worth plus a little: enough that an ordinary late frame still
+// has a bracketing pair to interpolate between, small enough that a peer is not
+// visibly behind where they are.
+const InterpolationDelayPeriods = 2.4
+
+// InterpolationDelay is that delay as a duration.
 //
 // It is a CONSTANT BOTH ENDS AGREE ON, published in the catalogue rather than
 // reported by the client — a client-supplied render delay is a client-supplied
 // advantage, because it is exactly the number lag compensation rewinds by.
 //
-// Two snapshots' worth plus a little: enough that an ordinary late frame still
-// has a bracketing pair to interpolate between, small enough that a peer is not
-// visibly behind where they are.
-const InterpolationDelay = 120 * time.Millisecond
-
-// HistoryWindow is how far back the server can rewind the world.
+// The scaling goes through thousandths because Go will not convert a fractional
+// constant to a time.Duration: `SnapshotInterval * 2.4` does not compile at all,
+// and routing the ratio through a float64 variable would make the result depend
+// on which way a rounding error fell.
 //
-// It bounds lag compensation: a shot from a player whose round trip plus
-// interpolation delay exceeds this is resolved against the oldest frame there
-// is, rather than against a fabricated one. Generous enough for a bad mobile
-// connection, short enough that the ring costs nothing.
-const HistoryWindow = 1200 * time.Millisecond
+// WHAT MAKES THIS FORM EXACT IS NOT INTEGER ARITHMETIC. 2.4 is an untyped FLOAT
+// constant and 2.4 has no finite binary expansion — the exactness comes from the
+// compiler evaluating untyped constants as rationals, so it holds 2.4 as 12/5
+// and 12/5 × 1000 is precisely 2400 before anything becomes a Duration. The
+// conversion then demands a whole number, which is the property actually worth
+// having here: a ratio that does not scale cleanly by a thousand FAILS TO
+// COMPILE rather than quietly rounding. Three decimals of a period are available
+// to whoever retunes the ratio, and a fourth is a build error.
+const InterpolationDelay = SnapshotInterval * (InterpolationDelayPeriods * 1000) / 1000
+
+// RewindMax bounds how far back lag compensation will rewind, AND IT IS STATED
+// IN METRES, because metres are the only unit in which the question it answers
+// means anything: what does a client that lies about its latency actually buy?
+//
+// 0.5 s × WalkSpeed 5.0 m/s = 2.5 m, or about three and a half player diameters
+// (PlayerRadius 0.35). So the worst a liar gets is to be resolved against where
+// you stood three and a half body-widths ago — irritating, and not enough to
+// kill somebody who has already broken line of sight. It replaced a bound of
+// 1.2 s, which was 6 m and quite enough to shoot a man around a corner.
+//
+// IT CANNOT BE MUCH SMALLER, because it also has to clear the HONEST case or it
+// clips the players it was never aimed at — AND THE HONEST CASE IS NOT A NETWORK
+// ROUND TRIP. What RewindTo composes and clamps is Arena.Enqueue's sample plus
+// InterpolationDelay, and that sample is derived from the last snapshot tick the
+// client had received, so it carries three things and only one of them is the
+// network:
+//
+//   - InterpolationDelay, 120 ms, paid by every client on every connection by
+//     construction.
+//   - The client's send window. Input is batched onto a timer at InputHz, so a
+//     keypress waits up to 100 ms for the next frame to leave.
+//   - The network round trip itself.
+//
+// 500 − 120 − 100 therefore leaves 280 ms of genuine round trip inside the
+// ceiling, which clears RU mobile data with room to spare. At 400 ms the same
+// arithmetic left 180 ms, which does not: an ordinary phone would have been
+// silently under-compensated, and being under-compensated is the exact complaint
+// lag compensation exists to remove. ADR-059 does this arithmetic for
+// «СИМУЛЯТОР ФИНТЕХА» and counts the input window there too; the comment this
+// one replaced dropped it, and lost 100 ms of the budget by dropping it.
+//
+// Quantisation is the one term that can only help: the sample counts WHOLE
+// ticks, so it rounds the loop down by up to one SimStep and never up. A lost
+// snapshot does push it up — but honestly, because a client whose newest frame
+// went missing really is drawing from an older one.
+//
+// RE-DERIVE IT WHEN THE НЕЙРОСЛОП ARRIVES. The 2.5 m above is WalkSpeed's, and
+// walking is the fastest thing in the level today. The first enemy that moves
+// faster than a player makes that figure wrong, and this is the constant where
+// it has to be noticed.
+const RewindMax = 500 * time.Millisecond
+
+// HistoryWindow is the ring buffer's CAPACITY, and nothing else.
+//
+// It used to bound the rewind as well, which is two jobs for one number and the
+// wrong answer for both — a ring sized generously for a bad mobile connection
+// became a licence to rewind by all of it. RewindMax bounds the rewind now, so
+// this only has to be a little longer than RewindMax: no rewind can ever ask for
+// more.
+//
+// A LITTLE LONGER IS EXACTLY ONE STEP, and the arithmetic is spelled out because
+// it is a fencepost in both directions. The ring holds HistoryWindow/SimStep
+// frames, and the span between its oldest and its newest is one step SHORTER
+// than that — so the past actually reachable is HistoryWindow − SimStep, and
+// adding two steps here buys ONE step of margin past RewindMax rather than two.
+// That one step is what keeps the deepest legal rewind BRACKETED by two recorded
+// frames rather than clamped to the oldest one. Today: 600 ms of capacity, 12
+// frames, 550 ms of reachable past, a 500 ms ceiling.
+// TestTheRingIsLongEnoughToServeTheDeepestLegalRewind fails if a retune ever
+// closes that gap.
+const HistoryWindow = RewindMax + 2*SimStep
 
 // MaxStepSeconds bounds one command's dt. A client that claims a huge dt is
 // asking to teleport; a client whose tab was backgrounded produces the same

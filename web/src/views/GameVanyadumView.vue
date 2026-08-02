@@ -230,6 +230,14 @@ const rules = computed(() => buildRules(config.value));
 const health = ref(0);
 const bag = ref<Record<string, number>>({});
 const remaining = ref<number[]>([]);
+/**
+ * The last pickup bitmask a snapshot carried, or null before the first one.
+ *
+ * Null is a state rather than a default: zero is a real answer — the mask with
+ * every pickup collected — so "we have not been told yet" cannot be spelled `0`
+ * without the first empty floor being mistaken for it.
+ */
+let remainingMask: number | null = null;
 const over = ref<{ success: boolean; seconds: number; beer: number } | null>(null);
 const link = ref<'connecting' | 'open' | 'lost'>('connecting');
 
@@ -437,6 +445,7 @@ async function enterPlay(): Promise<void> {
   health.value = config.value.player.start_health;
   bag.value = {};
   remaining.value = run.level.pickups.map((p) => p.id);
+  remainingMask = null;
   aim.yaw = run.level.spawn_yaw;
   aim.pitch = 0;
   view.x = run.level.spawn.x;
@@ -506,7 +515,12 @@ async function enterPlay(): Promise<void> {
   // The delay is SERVED, not chosen here: lag compensation on the server
   // rewinds by exactly this number, so a client picking its own would be
   // picking its own advantage.
-  interp = createInterpolator(sim.interp_delay_ms);
+  //
+  // The second argument is one SIMULATION step, and it is what the interpolation
+  // buffer measures its timeline in — a snapshot's `k` counts simulation ticks
+  // rather than snapshots, so this stays right if the server ever publishes every
+  // second or third tick instead of the one-per-step it sends today.
+  interp = createInterpolator(sim.interp_delay_ms, 1000 / (sim.hz || 20));
   outbox = [];
   seenTick = 0;
 
@@ -541,6 +555,7 @@ function teardownPlay(): void {
   predictor = null;
   outbox = [];
   peers = [];
+  remainingMask = null;
   // Handing the mouse back is not optional: leaving a page with the pointer
   // still captured strands the cursor on a screen that no longer uses it.
   if (pointerLocked.value) document.exitPointerLock?.();
@@ -650,7 +665,8 @@ function onFrame(frame: RealtimeFrame): void {
 function applySnapshot(frame: RealtimeFrame): void {
   // Positions arrive as centimetres and angles as thousandths of a radian —
   // integers, because this frame repeats twenty times a second forever.
-  seenTick = num(frame.k);
+  const tick = num(frame.k);
+  seenTick = tick;
 
   // The authoritative position, folded in rather than assigned: the predictor
   // drops what this acknowledges, resets to it, and replays whatever is still
@@ -663,12 +679,16 @@ function applySnapshot(frame: RealtimeFrame): void {
     ack: num(frame.ack),
   });
 
-  // Peers go into the interpolation buffer stamped with the instant they
-  // arrived, and are read back a fixed delay later.
+  // Peers go into the interpolation buffer stamped with the SERVER'S TICK, and
+  // are read back a fixed delay later. The tick rather than `performance.now()`
+  // because the tick is a perfect fixed-rate timeline where an arrival time is
+  // the network's jitter wearing a clock's clothes — and because the server's lag
+  // compensation rewinds to exactly `serverTick − delay`, so keying on anything
+  // else has the two ends disagreeing about which instant was on screen. See
+  // vanyadumInterp.
   if (interp) {
     const raw = Array.isArray(frame.p) ? (frame.p as Record<string, number | string>[]) : [];
     interp.push(
-      performance.now(),
       raw.map((p) => ({
         id: String(p.i ?? ''),
         x: num(p.x) / 100,
@@ -677,16 +697,26 @@ function applySnapshot(frame: RealtimeFrame): void {
         yaw: num(p.yaw) / 1000,
         state: num(p.s),
       })),
+      tick,
+      performance.now(),
     );
   }
 
   health.value = num(frame.hp);
-  const left = Array.isArray(frame.pk) ? (frame.pk as number[]) : [];
+  // WHICH PICKUPS ARE LEFT, AS A BITMASK over the index into the level's own
+  // list: bit i set means the i-th pickup is still on the floor. One number
+  // rather than a list on a frame that repeats twenty times a second forever,
+  // and thirty-two bits rather than sixty-four because a JSON number is an
+  // IEEE754 double.
+  const mask = num(frame.pk) >>> 0;
   // Only touch reactivity when the set actually changed: at twenty frames a
-  // second an unconditional assignment is a re-render per frame for nothing.
-  if (left.length !== remaining.value.length) {
-    remaining.value = left;
-    scene.value?.setRemaining(left);
+  // second an unconditional assignment is a re-render per frame for nothing. The
+  // mask compares EXACTLY, where the previous list comparison could only afford
+  // to compare lengths — so a swap of one pickup for another now registers.
+  if (mask !== remainingMask) {
+    remainingMask = mask;
+    remaining.value = pickupIdsIn(mask);
+    scene.value?.setRemaining(remaining.value);
   }
   const c = frame.c as Record<string, number> | undefined;
   if (c) {
@@ -716,6 +746,24 @@ function onStatus(status: ConnectionStatus): void {
 
 function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * The pickup ids a `pk` bitmask leaves on the floor.
+ *
+ * The wire names an INDEX into the level's own list and the renderer names an
+ * ID, so this is the one place the two meet — which is also why it reads the id
+ * out rather than assuming the two are the same number, as today's generator
+ * happens to make them. Thirty-two is the width of the field rather than a limit
+ * chosen here; a level carries two or three pickups.
+ */
+function pickupIdsIn(mask: number): number[] {
+  const list = run?.level.pickups ?? [];
+  const out: number[] = [];
+  for (let i = 0; i < list.length && i < 32; i++) {
+    if ((mask >>> i) & 1) out.push(list[i].id);
+  }
+  return out;
 }
 
 // --- pointers --------------------------------------------------------------

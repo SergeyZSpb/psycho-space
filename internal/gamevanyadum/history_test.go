@@ -127,50 +127,171 @@ func TestArenaRecordsEveryTick(t *testing.T) {
 	}
 }
 
-func TestRewindGoesBackByLatencyPlusInterpolation(t *testing.T) {
-	// The formula that makes lag compensation correct: a shooter's picture is
-	// one-way latency behind the server, and their client deliberately draws
-	// peers InterpolationDelay behind that. Rewinding by only the round trip
-	// would still miss by the interpolation window.
-	a := NewArena(uuid.New(), "acct", "pseudo", 5, time.Unix(0, 0))
+// tickedHistory fills an arena's buffer with `frames` recorded instants, one per
+// simulation step, in which "pseudo" stands at X == the frame's own index. A
+// rewound X therefore reads back directly as a tick number, which is what lets
+// the assertions below be hand-computed arithmetic rather than a tolerance.
+//
+// It returns the instant of the newest frame, which is the `now` a rewind is
+// measured back from.
+func tickedHistory(t *testing.T, a *Arena, frames int) time.Time {
+	t.Helper()
 	base := time.Unix(0, 0)
-	for i := 0; i < historyCapacity()-1; i++ {
+	for i := 0; i < frames; i++ {
 		at := base.Add(time.Duration(i) * SimStep)
 		a.history.record(int64(i), at, map[string]Spot{"pseudo": spot(float64(i), 0)})
 	}
-	now := base.Add(time.Duration(historyCapacity()-2) * SimStep)
+	return base.Add(time.Duration(frames-1) * SimStep)
+}
+
+// rewoundTick is where "pseudo" was, in frame indices, for a player this far
+// behind.
+func rewoundTick(t *testing.T, a *Arena, now time.Time, rtt time.Duration) float64 {
+	t.Helper()
+	got := a.RewindTo(now, rtt)
+	s, ok := got["pseudo"]
+	if !ok {
+		t.Fatalf("rewind returned no spot for the only entity there is: %+v", got)
+	}
+	return s.Pos.X
+}
+
+func TestRewindLandsOnTheInstantTheShooterSaw(t *testing.T) {
+	// The whole formula, pinned against arithmetic done by hand. A shooter's
+	// picture is the WHOLE round trip behind the server — Enqueue derives that
+	// number from the snapshot tick he echoes back, so it already counts the trip
+	// out, his own frame and the trip home — and his client deliberately draws
+	// everything it does not predict InterpolationDelay behind that.
+	//
+	// 200 ms of loop plus 120 ms of render delay is 320 ms, and at a 50 ms step
+	// that is 6.4 frames. From frame 9 the answer is therefore 2.6, exactly.
+	// Halving the loop would answer 4.6 — a whole 100 ms, or half a metre at
+	// WalkSpeed, in the wrong place.
+	a := NewArena(uuid.New(), "acct", "pseudo", 5, time.Unix(0, 0))
+	now := tickedHistory(t, a, 10)
 
 	const rtt = 200 * time.Millisecond
-	got := a.RewindTo(now, rtt)
-	behind := rtt/2 + InterpolationDelay
-	wantX := float64(historyCapacity()-2) - behind.Seconds()/SimStep.Seconds()
-
-	if math.Abs(got["pseudo"].Pos.X-wantX) > 0.5 {
-		t.Fatalf("rewound to %v, expected about %v", got["pseudo"].Pos.X, wantX)
+	wantX := 9 - (rtt+InterpolationDelay).Seconds()/SimStep.Seconds()
+	if math.Abs(wantX-2.6) > 1e-9 {
+		t.Fatalf("the tuning moved: this test's hand-computed 2.6 is now %v", wantX)
 	}
-	// And it is genuinely in the past — the commonest way to get this wrong is
-	// to rewind by nothing at all and not notice.
-	if got["pseudo"].Pos.X >= float64(historyCapacity()-2) {
-		t.Fatal("rewind returned the present")
+	if got := rewoundTick(t, a, now, rtt); math.Abs(got-wantX) > 1e-9 {
+		t.Fatalf("rewound to frame %v, expected %v", got, wantX)
 	}
 }
 
-func TestRewindClampsAHostileLatency(t *testing.T) {
-	// The round trip is derived rather than reported for exactly this reason,
-	// but the clamp is here as well: a player who could claim a huge latency
-	// could shoot at a world seconds old, which is a way to kill somebody who
-	// has been behind cover the whole time.
+func TestTheRewindIsTheWholeRoundTripAndNotHalfOfIt(t *testing.T) {
+	// The same rule stated so that no arithmetic about the render delay can hide
+	// it: adding R to a player's round trip must move his rewind back by R, not
+	// by R/2. Measured as a difference, so the interpolation term cancels and the
+	// only thing under test is what the loop is worth.
 	a := NewArena(uuid.New(), "acct", "pseudo", 5, time.Unix(0, 0))
-	base := time.Unix(0, 0)
-	for i := 0; i < 10; i++ {
-		a.history.record(int64(i), base.Add(time.Duration(i)*SimStep), map[string]Spot{"pseudo": spot(float64(i), 0)})
+	now := tickedHistory(t, a, 10)
+
+	// Small enough that neither end of the comparison is anywhere near the
+	// ceiling, which would flatten the difference and pass for the wrong reason.
+	const r = 100 * time.Millisecond
+	at0 := rewoundTick(t, a, now, 0)
+	atR := rewoundTick(t, a, now, r)
+
+	want := r.Seconds() / SimStep.Seconds()
+	if got := at0 - atR; math.Abs(got-want) > 1e-9 {
+		t.Fatalf("%v of extra round trip moved the rewind %v frames back, expected %v (half of it is %v)",
+			r, got, want, want/2)
 	}
-	now := base.Add(9 * SimStep)
-	if got := a.RewindTo(now, time.Hour); got["pseudo"].Pos.X != 0 {
-		t.Fatalf("an hour of claimed latency should clamp to the oldest frame, got %v", got["pseudo"].Pos.X)
+}
+
+func TestTheRingIsLongEnoughToServeTheDeepestLegalRewind(t *testing.T) {
+	// HistoryWindow is the ring's CAPACITY and RewindMax is the bound on the
+	// rewind. They are two numbers now, and this is the relationship between
+	// them: the oldest frame a full ring holds is (capacity − 1) steps old, and a
+	// rewind of exactly RewindMax has to fall strictly INSIDE that span. Land on
+	// or past the oldest frame and `at` clamps, which quietly collapses every
+	// deep rewind onto the same answer and makes the ceiling look like it is
+	// working when it is the ring that ran out.
+	//
+	// A guard against a future retune rather than a regression test: shrink
+	// HistoryWindow or raise RewindMax past one another and nothing else in the
+	// package notices.
+	oldest := time.Duration(historyCapacity()-1) * SimStep
+	if oldest <= RewindMax {
+		t.Fatalf("the ring reaches %v into the past and the deepest legal rewind is %v", oldest, RewindMax)
 	}
-	if got := a.RewindTo(now, -time.Hour); len(got) == 0 {
-		t.Fatal("a negative latency should be treated as none, not panic or empty")
+}
+
+func TestRewindMaxStillClearsAnHonestPhone(t *testing.T) {
+	// The other side of the ceiling, and the one that is easy to lose sight of
+	// while arguing about what a liar buys: a bound that clips HONEST players is
+	// a bound that reintroduces the defect it was raised against, because a shot
+	// resolved short of where the shooter was aiming misses either way.
+	//
+	// WHAT HAS TO FIT UNDER IT IS NOT A NETWORK ROUND TRIP. Enqueue derives its
+	// sample from the last snapshot tick the client received, so the sample
+	// already contains the client's whole send window — input is batched onto a
+	// timer at InputHz — and RewindTo then adds InterpolationDelay on top before
+	// clamping. Only the remainder is the network.
+	window := time.Second / InputHz
+	allowance := RewindMax - InterpolationDelay - window
+
+	// RU mobile data is routinely 200 ms and worse outdoors. This is the figure
+	// ADR-059 costs the same budget against for «СИМУЛЯТОР ФИНТЕХА».
+	const badMobileRoundTrip = 250 * time.Millisecond
+	if allowance < badMobileRoundTrip {
+		t.Fatalf("a ceiling of %v leaves %v for the network once %v of render delay and %v of send window "+
+			"are paid; a bad mobile round trip is %v, so honest shots are being clipped",
+			RewindMax, allowance, InterpolationDelay, window, badMobileRoundTrip)
+	}
+}
+
+func TestRewindIsBoundedByRewindMax(t *testing.T) {
+	// The ceiling, and it is stated in metres for a reason: `rtt` is derived from
+	// the tick a client chooses to echo, so a client that echoes an ancient one
+	// claims to be arbitrarily far behind. RewindMax is 0.5 s, or 2.5 m at
+	// WalkSpeed — the worst a liar buys is being resolved against where you stood
+	// three and a half body-widths ago. Under the old bound of 1.2 s it was 6 m,
+	// which is enough to be shot around a corner by somebody who was nowhere near
+	// you.
+	a := NewArena(uuid.New(), "acct", "pseudo", 5, time.Unix(0, 0))
+	// Deep enough that the ceiling and not the ring's end is what answers.
+	frames := historyCapacity() + 2
+	now := tickedHistory(t, a, frames)
+
+	newest := float64(frames - 1)
+	wantX := newest - RewindMax.Seconds()/SimStep.Seconds()
+	if got := rewoundTick(t, a, now, time.Hour); math.Abs(got-wantX) > 1e-9 {
+		t.Fatalf("an hour of claimed latency rewound to frame %v; the ceiling is frame %v", got, wantX)
+	}
+
+	// And the floor: no latency at all still draws the render delay, because
+	// every client draws at least that far behind.
+	wantX = newest - InterpolationDelay.Seconds()/SimStep.Seconds()
+	if got := rewoundTick(t, a, now, -time.Hour); math.Abs(got-wantX) > 1e-9 {
+		t.Fatalf("a negative latency rewound to frame %v, expected the render delay alone at %v", got, wantX)
+	}
+}
+
+func TestAClientCannotEchoItsWayPastTheCeiling(t *testing.T) {
+	// The other half of the same ceiling. RewindTo clamps the COMPOSITION, and
+	// this clamps the SAMPLE the composition is built from — without it a client
+	// that simply echoed tick 1 forever would drive the smoothed round trip up to
+	// the ring's whole capacity, and the composition's clamp would then be doing
+	// all the work with no margin left for the render delay.
+	a := newTestArena(t, 5)
+	for i := 0; i < 200; i++ {
+		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	}
+	// Claims, repeatedly, to have last drawn the very first tick — ten seconds of
+	// staleness against a simulation that is 200 ticks in.
+	for i := 0; i < 50; i++ {
+		a.Enqueue(a.AccountID, &ParsedInput{Seen: 1})
+	}
+	if got := a.RTT(a.AccountID); got > RewindMax {
+		t.Fatalf("smoothed round trip settled at %v, the ceiling is %v", got, RewindMax)
+	}
+	// And it did converge on the ceiling rather than staying near zero, or the
+	// assertion above would pass over a clamp that never fired.
+	if got := a.RTT(a.AccountID); got < RewindMax/2 {
+		t.Fatalf("smoothed round trip is only %v, so this test never exercised the clamp", got)
 	}
 }
 

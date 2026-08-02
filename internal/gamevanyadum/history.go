@@ -5,8 +5,8 @@ import "time"
 // The rewind buffer — the server's memory of what the world used to look like.
 //
 // WHY IT EXISTS BEFORE ANYTHING SHOOTS. Lag compensation resolves a shot
-// against the world **as the shooter actually saw it**, which is roughly
-// `now − RTT/2 − InterpolationDelay` ago. That is the only way a player who
+// against the world **as the shooter actually saw it**, which is
+// `now − RTT − InterpolationDelay` ago. That is the only way a player who
 // aimed at a moving target and was right does not miss; without it everybody
 // learns to lead by a body width, which is a game teaching you to play around
 // its netcode.
@@ -44,11 +44,15 @@ type Spot struct {
 
 // history is a fixed-size ring of recent frames.
 //
-// A ring rather than a slice that grows: the window is bounded by wall-clock
-// (HistoryWindow) and the tick rate is fixed, so the capacity is known exactly
-// and the whole structure allocates once, at arena creation, and never again.
-// A simulation loop that allocates twenty times a second per arena is a
+// A ring rather than a slice that grows: the capacity is bounded by wall-clock
+// (HistoryWindow) and the tick rate is fixed, so it is known exactly and the
+// whole structure allocates once, at arena creation, and never again. A
+// simulation loop that allocates twenty times a second per arena is a
 // self-inflicted garbage problem.
+//
+// The past it can actually answer for is one step shorter than HistoryWindow,
+// because the frames are fenceposts; see that constant for why the margin over
+// RewindMax is sized the way it is.
 type history struct {
 	frames []historyFrame
 	// next is where the following record goes; the ring is full once it has
@@ -57,7 +61,7 @@ type history struct {
 	count int
 }
 
-// historyCapacity is how many frames the window holds at the simulation rate.
+// historyCapacity is how many frames the ring holds at the simulation rate.
 func historyCapacity() int {
 	n := int(HistoryWindow / SimStep)
 	if n < 2 {
@@ -165,16 +169,33 @@ func (h *history) at(instant time.Time) map[string]Spot {
 // RewindTo is the public face of the buffer: the world as a player with this
 // much latency saw it.
 //
-// `rtt` is that player's measured round trip. Half of it is the one-way trip
-// their view is behind by, and InterpolationDelay is how far behind that their
-// client deliberately draws peers — so together they are exactly how stale the
-// picture they aimed at was.
+// TWO TERMS, AND THEY ARE DIFFERENT THINGS. `rtt` is the WHOLE loop — how stale
+// the newest frame in that player's browser already is by the time their answer
+// reaches us — and InterpolationDelay is how much further into the past that
+// browser deliberately draws everything it does not predict. Add them and you
+// have the instant that was on their screen when they aimed.
+//
+// NEITHER IS HALVED, and the halving that used to be here was a real error
+// rather than a conservative choice. Arena.Enqueue derives `rtt` from the
+// snapshot tick the client echoes back, so it already counts the frame's journey
+// out, the client's own think time and the answer's journey back — it is not a
+// ping. Halving it rewound an honest shooter to a moment between what he saw and
+// what we see, a world nobody was ever looking at: at a 150 ms loop that is
+// 75 ms, or 0.37 m at WalkSpeed, about half a body width of "I hit that and it
+// did not count".
+//
+// Clamped to RewindMax last, because `rtt` is ultimately derived from a number
+// the client chooses, and that ceiling is what stops a liar being resolved
+// against a world seconds old. The clamp is on the composition and not only on
+// the sample: the two terms are added here, so this is the only place their sum
+// exists.
 func (a *Arena) RewindTo(now time.Time, rtt time.Duration) map[string]Spot {
 	if rtt < 0 {
 		rtt = 0
 	}
-	if rtt > HistoryWindow {
-		rtt = HistoryWindow
+	rewind := rtt + InterpolationDelay
+	if rewind > RewindMax {
+		rewind = RewindMax
 	}
-	return a.history.at(now.Add(-(rtt/2 + InterpolationDelay)))
+	return a.history.at(now.Add(-rewind))
 }

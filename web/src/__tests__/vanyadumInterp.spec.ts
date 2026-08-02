@@ -4,113 +4,451 @@ import { BUFFER_FRAMES, createInterpolator, shortestTurn } from '../lib/vanyadum
 /**
  * Entity interpolation — how everything that is not you is drawn.
  *
- * The three degradations at the bottom are the interesting half: what this does
- * when the buffer is empty, stale or dry decides whether a bad connection looks
- * like a pause or like a peer teleporting through a wall.
+ * Two halves. The first is the TIMELINE: the buffer is keyed on the server's own
+ * tick rather than on when a frame turned up here, and the jitter transcript
+ * below is the reason — on an arrival timeline the network's jitter is rendered
+ * as velocity, and in this game it also puts the client's draw and the server's
+ * lag-compensation rewind at different instants. The second is the three
+ * degradations, which decide whether a bad connection looks like a pause or like
+ * a peer teleporting through a wall.
  */
 
-const DELAY = 100;
+/** The served `sim.interp_delay_ms`. Never a number this side picks. */
+const DELAY = 120;
+/** One simulation step, `1000 / sim.hz`. The unit the timeline is counted in. */
+const TICK = 50;
 
 function peer(id: string, x: number, yaw = 0) {
   return { id, x, y: 0, z: 1.65, yaw, state: 0 };
 }
 
-describe('createInterpolator', () => {
+const build = () => createInterpolator(DELAY, TICK);
+
+// --- the jitter transcript --------------------------------------------------
+
+/** Where tick zero sits on the local clock in the transcripts below. */
+const ORIGIN = 1000;
+/** The first tick a transcript publishes. The server sends one per tick. */
+const FIRST_TICK = 200;
+/** Metres per tick. A constant walk, so the true velocity is known exactly. */
+const PER_TICK = 0.25;
+/** The true rendered velocity, in metres per millisecond — five metres a second. */
+const TRUE_V = PER_TICK / TICK;
+
+/** Where a constant walker is at a tick. */
+const walkX = (tick: number) => (tick - FIRST_TICK) * PER_TICK;
+
+/** When the server published a tick, on the local clock it is being compared to. */
+const emitted = (tick: number) => ORIGIN + tick * TICK;
+
+/**
+ * Recovers the interpolator's own estimate of where tick zero sits on this
+ * clock, by inverting a drawn position.
+ *
+ * It works because the transcripts walk at a constant speed, so a drawn `x` names
+ * the tick it was drawn at exactly: `now − delay` is that tick's local time, and
+ * the difference between the two is the estimate. It is the only honest way to
+ * see the estimator from outside — the offset is deliberately not exported, since
+ * nothing drawn depends on its absolute value.
+ *
+ * Only meaningful while the drawn instant is INTERIOR to the buffer; at either
+ * end the buffer holds rather than interpolates, and a held position names no
+ * particular tick.
+ */
+function impliedOffset(i: ReturnType<typeof build>, nowMs: number): number {
+  const x = i.sample(nowMs)[0].x;
+  const tick = FIRST_TICK + x / PER_TICK;
+  return nowMs - DELAY - tick * TICK;
+}
+
+describe('the timeline is the server tick, not the arrival', () => {
+  it('renders a constant walk at a constant speed through jitter, loss and a burst', () => {
+    // THE DEFECT THIS MODULE WAS RE-KEYED TO REMOVE, as one transcript.
+    //
+    // The server publishes every tick, at a perfectly fixed rate, while the peer
+    // walks at a constant speed. The network then does what a phone's network
+    // does: consecutive frames land 9 ms apart and then 104 ms apart, one is
+    // dropped outright, and two arrive together a millisecond apart.
+    //
+    // Keyed on ARRIVAL those gaps ARE the timeline, so the same ground covered in
+    // 9 ms as in 104 makes the peer walk at several times his speed and then at a
+    // fraction of it — on precisely the stretch where a dodge is being judged and
+    // a shot is being led — and the pair that arrives together is a step taken in
+    // a millisecond. Keyed on the TICK every one of those gaps is one step wide,
+    // and the drawn velocity is flat to within the creep.
+    //
+    // TWO PROPERTIES OF THE TRANSCRIPT ARE DELIBERATE, because both are about a
+    // claim this test is NOT making:
+    //
+    //   * The least-delayed frame is the FIRST. The minimum estimator re-anchors
+    //     the whole timeline the first time it sees a faster frame, which is a
+    //     one-off step rather than a velocity; the estimator's own tests below
+    //     are what pin that.
+    //   * Nothing is late by more than the served delay absorbs. A frame later
+    //     than that leaves the buffer with nothing to interpolate towards, and
+    //     then HOLDING is the correct answer rather than a speed — which is why a
+    //     burst here is two frames, and why the long burst is a separate test
+    //     about the buffer's span.
+    const i = build();
+    // One-way delay per tick, in arrival order; `null` is the frame the hub
+    // dropped, which it does on purpose because a snapshot is idempotent full
+    // state. The pair at the end arrives 1 ms apart.
+    const delays: (number | null)[] = [8, 20, 74, 33, 75, 40, null, 25, 60, 15, 70, 60, 11, 45, 22];
+
+    const arrivals: { tick: number; at: number }[] = [];
+    delays.forEach((d, n) => {
+      if (d === null) return;
+      const tick = FIRST_TICK + n;
+      arrivals.push({ tick, at: emitted(tick) + d });
+    });
+
+    // Interleaved exactly as the game runs it: frames land while the render loop
+    // is already drawing, rather than all being pushed up front — so the clock
+    // estimate is still moving under the samples being taken.
+    let next = 0;
+    const drawn: { at: number; x: number }[] = [];
+    const lastArrival = arrivals[arrivals.length - 1].at;
+    for (let now = arrivals[0].at; now <= lastArrival + 200; now += 16) {
+      while (next < arrivals.length && arrivals[next].at <= now) {
+        i.push([peer('a', walkX(arrivals[next].tick))], arrivals[next].tick, arrivals[next].at);
+        next++;
+      }
+      const out = i.sample(now);
+      if (out.length) drawn.push({ at: now, x: out[0].x });
+    }
+
+    // Measured over the INTERIOR only: before the first frame's own instant and
+    // after the last one's the buffer holds, and a hold is a velocity of zero
+    // that has nothing to say about jitter.
+    const maxX = walkX(FIRST_TICK + delays.length - 1);
+    const speeds: number[] = [];
+    for (let n = 1; n < drawn.length; n++) {
+      const a = drawn[n - 1];
+      const b = drawn[n];
+      if (a.x <= 0 || b.x >= maxX) continue;
+      speeds.push((b.x - a.x) / (b.at - a.at));
+    }
+
+    // Enough of the walk to be a claim about the walk rather than about one gap.
+    expect(speeds.length).toBeGreaterThan(20);
+    for (const v of speeds) {
+      // Within a few per cent, throughout. Measured against the arrival-keyed
+      // version of this module, the same transcript runs from 0.48× to 3.76× the
+      // true speed — which is what the player was watching before this change.
+      expect(v).toBeGreaterThan(TRUE_V * 0.95);
+      expect(v).toBeLessThan(TRUE_V * 1.05);
+    }
+  });
+
+  it('rides straight over a dropped frame', () => {
+    // On a tick timeline a gap is self-describing: the missing tick is simply not
+    // there, and the two frames either side are two steps apart.
+    const i = build();
+    i.push([peer('a', 0)], 100, 1000);
+    i.push([peer('a', 20)], 102, 1100); // tick 101 never arrived
+    // Half way between them in time is half way between them in space.
+    expect(i.sample(1050 + DELAY)[0].x).toBeCloseTo(10, 6);
+  });
+
+  it('keeps a burst of buffered frames spaced as the server sent them', () => {
+    // A phone coming out of a tunnel is handed everything the hub still had, in
+    // order, within a few milliseconds. On an ARRIVAL timeline that is a world
+    // where six ticks happened in six milliseconds and the buffer's whole span
+    // collapses to nothing; on the server's timeline they carry their own
+    // spacing, however long they spent queued.
+    const i = build();
+    i.push([peer('a', 0)], 200, 1000);
+    for (let n = 1; n <= 6; n++) i.push([peer('a', n * 10)], 200 + n, 1500 + n);
+    /** When the last of the burst landed — the six arrive a millisecond apart. */
+    const settled = 1506;
+
+    // WHERE THE TIMELINE ENDS UP ANCHORED, because the instants below are named
+    // from it. Each burst frame lands a millisecond after the one before while
+    // describing a tick fifty milliseconds later, so each looks less delayed than
+    // the last and the final one is the least-delayed frame the estimator has
+    // ever seen — its own arrival is therefore where that tick sits on this
+    // clock. (The frame from before the stall was better evidence still, but by
+    // half a second beyond the interpolation budget, so the ceiling let it go
+    // rather than hold every peer frozen against it; see `maxExcess`.)
+    //
+    // A hundred milliseconds of the server's timeline is then two ticks of
+    // walking, whether the two frames describing them arrived a hundred
+    // milliseconds apart or one.
+    const early = i.sample(settled + DELAY - 200)[0].x;
+    const later = i.sample(settled + DELAY - 100)[0].x;
+    expect(later - early).toBeCloseTo(20, 6);
+    // And past everything held it holds at the newest, which is the documented
+    // answer to a sender that has gone quiet.
+    expect(i.sample(4000)[0].x).toBeCloseTo(60, 6);
+  });
+});
+
+describe('the clock offset estimator', () => {
+  it('converges on the least-delayed frame it has seen', () => {
+    // The best evidence of the true offset is the frame that spent least time in
+    // the network, so the estimate is the minimum of `arrival − tick × period`
+    // and the drawn instant sits that one-way delay behind the server's.
+    const i = build();
+    const delays = [90, 40, 70, 25, 60, 80, 35, 55, 45, 75];
+    for (let n = 0; n < delays.length; n++) {
+      const tick = FIRST_TICK + n;
+      i.push([peer('a', walkX(tick))], tick, emitted(tick) + delays[n]);
+    }
+    // The middle of what is buffered, so the drawn instant is interpolated rather
+    // than held.
+    expect(impliedOffset(i, emitted(FIRST_TICK + 5) + DELAY)).toBeCloseTo(
+      ORIGIN + Math.min(...delays),
+      0,
+    );
+  });
+
+  it('is not pinned for ever by one unusually early frame', () => {
+    // A minimum is a ratchet, and without the creep a single lucky packet would
+    // hold the estimate for the rest of the run — after which any drift between
+    // the two machines' clocks pushes the drawn instant past the newest frame
+    // held, which shows as every peer pausing more and more often.
+    const i = build();
+    i.push([peer('a', walkX(FIRST_TICK))], FIRST_TICK, emitted(FIRST_TICK));
+    const settled = 100;
+    for (let n = 1; n <= 400; n++) {
+      const tick = FIRST_TICK + n;
+      i.push([peer('a', walkX(tick))], tick, emitted(tick) + settled);
+    }
+    const off = impliedOffset(i, emitted(FIRST_TICK + 390) + DELAY);
+    // It has moved a long way off the pin...
+    expect(off).toBeGreaterThan(ORIGIN + 10);
+    // ...towards the delay everything else actually arrived at, and never past
+    // it: creeping above the real minimum would draw peers in the future.
+    expect(off).toBeLessThan(ORIGIN + settled);
+  });
+
+  it('does not chase jitter that stays inside the budget', () => {
+    // The creep is a defence against a ratchet, not a second estimator. One
+    // frame's worth of it has to be far below the jitter it sits underneath, or
+    // the offset would chase the noise and take the drawn instant with it.
+    //
+    // EVERY DELAY HERE IS STILL DRAWABLE, which is the distinction the estimator
+    // makes and this test's whole point. The ceiling is `DELAY − TICK`, so a
+    // frame up to 70 ms behind the fastest one still has a bracketing pair and
+    // is left alone; the test below is what happens when one does not.
+    const i = build();
+    const delays = [20, 85, 60, 88, 55, 80, 62, 87];
+    for (let n = 0; n < delays.length; n++) {
+      const tick = FIRST_TICK + n;
+      i.push([peer('a', walkX(tick))], tick, emitted(tick) + delays[n]);
+    }
+    const off = impliedOffset(i, emitted(FIRST_TICK + 4) + DELAY);
+    // Eight frames of creep under sixty-odd milliseconds of jitter move the
+    // estimate by well under a millisecond, and only upwards.
+    expect(off).toBeGreaterThanOrEqual(ORIGIN + 20);
+    expect(off).toBeLessThan(ORIGIN + 21);
+  });
+
+  it('follows a persistent step in the delay at once rather than in fifty seconds', () => {
+    // A minimum is right about jitter and wrong about a SHIFT: one early packet
+    // is then the only evidence the estimator has, and everything after it is
+    // an excess the creep is far too slow to work off. The ceiling is what turns
+    // "the minimum I saw" into "the minimum I can still draw".
+    const i = build();
+    const lucky = 20;
+    const step = 200;
+    for (let n = 0; n < 10; n++) {
+      const tick = FIRST_TICK + n;
+      i.push([peer('a', walkX(tick))], tick, emitted(tick) + (n === 0 ? lucky : step));
+    }
+    const off = impliedOffset(i, emitted(FIRST_TICK + 6) + DELAY);
+
+    // Pulled up to `seen − maxExcess` by the FIRST frame that exceeded it —
+    // 200 − (120 − 50) — and creeping gently on from there.
+    const ceiling = ORIGIN + step - (DELAY - TICK);
+    expect(off).toBeGreaterThanOrEqual(ceiling);
+    expect(off).toBeLessThan(ceiling + 5);
+    // Never past the delay everything actually arrives at: creeping above the
+    // real minimum would draw peers in the future.
+    expect(off).toBeLessThan(ORIGIN + step);
+    // And the size of what the ceiling did. Creep alone moves 0.1 % of the error
+    // per frame, so after these ten it would still be within two milliseconds of
+    // the lucky packet, and would need something like a thousand frames — fifty
+    // seconds at twenty a second — to reach where this already is.
+    expect(off).toBeGreaterThan(ORIGIN + lucky + 100);
+  });
+
+  it('keeps peers moving after a lucky packet and a delay that never comes back down', () => {
+    // THE MEASUREMENT THE CEILING EXISTS FOR, and the one test in this file that
+    // a creep-only estimator fails. The two above look at the estimate; this one
+    // looks at what a player sees, by driving the module through a render loop
+    // exactly as the view does — frames landing while it is already drawing.
+    //
+    // One 20 ms packet, then a one-way delay of 200 ms that never improves: the
+    // sort of thing a phone does on handover. Against creep only, every single
+    // sample is HELD at the newest frame — the drawn instant has been left
+    // 180 ms behind a 120 ms budget — so peers move only when a snapshot lands
+    // and stand still between, and two of every three drawn pairs are the
+    // identical position. That is a minute of juddering bought by one lucky
+    // packet.
+    const i = build();
+    const arrivals: { tick: number; at: number }[] = [];
+    for (let n = 0; n < 60; n++) {
+      const tick = FIRST_TICK + n;
+      arrivals.push({ tick, at: emitted(tick) + (n === 0 ? 20 : 200) });
+    }
+
+    let next = 0;
+    const drawn: { x: number; newest: number }[] = [];
+    for (let now = arrivals[0].at; now <= arrivals[arrivals.length - 1].at; now += 16) {
+      while (next < arrivals.length && arrivals[next].at <= now) {
+        i.push([peer('a', walkX(arrivals[next].tick))], arrivals[next].tick, arrivals[next].at);
+        next++;
+      }
+      // The warm-up is skipped rather than measured. Until a few frames are in,
+      // the drawn instant is still BEFORE the oldest one buffered, and showing
+      // that oldest frame is a documented degradation rather than the defect
+      // under test — it just happens to look identical from outside.
+      if (next < 4) continue;
+      drawn.push({ x: i.sample(now)[0].x, newest: walkX(arrivals[next - 1].tick) });
+    }
+
+    // Enough draws to be a claim about the connection rather than about a frame.
+    expect(drawn.length).toBeGreaterThan(100);
+    // Not one of them is the newest frame's own position, which is what holding
+    // looks like from outside: every peer is genuinely being interpolated.
+    expect(drawn.filter((d) => d.x >= d.newest)).toHaveLength(0);
+    // And the walk never pauses — no two consecutive frames draw him in the same
+    // place, which is the thing the player was actually complaining about.
+    let frozen = 0;
+    for (let n = 1; n < drawn.length; n++) if (drawn[n].x === drawn[n - 1].x) frozen++;
+    expect(frozen).toBe(0);
+  });
+
+  it('starts a fresh timeline when the ticks restart under it', () => {
+    // A restarted process is a different arena whose clock begins again at
+    // nothing. Treated as late frames those would be dropped for ever and every
+    // peer would freeze for the rest of the run.
+    const i = build();
+    i.push([peer('a', 0)], 900, 1000);
+    i.push([peer('a', 10)], 902, 1100);
+    i.push([peer('a', 50)], 3, 1200);
+    i.push([peer('a', 99)], 5, 1300);
+    expect(i.size()).toBe(2);
+    expect(i.sample(1300 + DELAY)[0].x).toBeCloseTo(99, 6);
+  });
+
+  it('forgets the offset on reset, not merely the frames', () => {
+    // A new run is a new arena; an estimate made against the last one would put
+    // every frame minutes into the past.
+    const i = build();
+    i.push([peer('a', 5)], 900, 1000);
+    i.reset();
+    expect(i.size()).toBe(0);
+    expect(i.sample(2000)).toEqual([]);
+    i.push([peer('a', 1)], 2, 9000);
+    i.push([peer('a', 2)], 4, 9100);
+    expect(i.sample(9100 + DELAY)[0].x).toBeCloseTo(2, 6);
+  });
+});
+
+describe('what arrives out of order', () => {
+  it('ignores a late frame rather than sorting it in', () => {
+    const i = build();
+    i.push([peer('a', 0)], 20, 1000);
+    i.push([peer('a', 10)], 22, 1100);
+    i.push([peer('a', 999)], 21, 1050); // late, and a tick already passed
+    expect(i.size()).toBe(2);
+    expect(i.sample(1100 + DELAY)[0].x).toBeCloseTo(10, 6);
+    expect(i.sample(1050 + DELAY)[0].x).toBeCloseTo(5, 6);
+  });
+
+  it('ignores a duplicate tick, which would otherwise be a span of zero', () => {
+    const i = build();
+    i.push([peer('a', 0)], 20, 1000);
+    i.push([peer('a', 10)], 22, 1100);
+    i.push([peer('a', 999)], 22, 1110);
+    expect(i.size()).toBe(2);
+    expect(i.sample(1100 + DELAY)[0].x).toBeCloseTo(10, 6);
+  });
+});
+
+describe('drawing the past', () => {
   it('draws nothing before anything has arrived', () => {
     // A peer never heard of has no last known position to hold.
-    expect(createInterpolator(DELAY).sample(1000)).toEqual([]);
+    expect(build().sample(1000)).toEqual([]);
   });
 
   it('interpolates between the two frames bracketing the render instant', () => {
-    const i = createInterpolator(DELAY);
-    i.push(1000, [peer('a', 0)]);
-    i.push(1100, [peer('a', 10)]);
-    // Rendering at 1150 means showing 1050 — halfway between the two.
-    const [p] = i.sample(1150);
+    const i = build();
+    i.push([peer('a', 0)], 20, 1000);
+    i.push([peer('a', 10)], 22, 1100);
+    const [p] = i.sample(1050 + DELAY);
     expect(p.x).toBeCloseTo(5, 6);
   });
 
   it('draws the past, not the present — that is the whole idea', () => {
-    const i = createInterpolator(DELAY);
-    i.push(1000, [peer('a', 0)]);
-    i.push(1100, [peer('a', 10)]);
-    // At 1200 the newest frame says 10, but we are drawing 1100's world.
-    expect(i.sample(1200)[0].x).toBeCloseTo(10, 6);
+    const i = build();
+    i.push([peer('a', 0)], 20, 1000);
+    i.push([peer('a', 10)], 22, 1100);
+    // A whole delay after the newest frame, its world is the one on screen.
+    expect(i.sample(1100 + DELAY)[0].x).toBeCloseTo(10, 6);
     // ...and a moment earlier we are genuinely behind it.
-    expect(i.sample(1160)[0].x).toBeLessThan(10);
+    expect(i.sample(1060 + DELAY)[0].x).toBeLessThan(10);
   });
 
   it('holds the newest frame rather than extrapolating when the buffer runs dry', () => {
     // Extrapolation is what makes a peer walk through a wall and snap back.
     // Holding makes them pause: a worse-looking correct answer, and correct
     // wins.
-    const i = createInterpolator(DELAY);
-    i.push(1000, [peer('a', 0)]);
-    i.push(1100, [peer('a', 10)]);
-    const late = i.sample(5000);
-    expect(late[0].x).toBe(10);
+    const i = build();
+    i.push([peer('a', 0)], 20, 1000);
+    i.push([peer('a', 10)], 22, 1100);
+    expect(i.sample(5000)[0].x).toBe(10);
   });
 
   it('shows the oldest frame when asked about a time before it', () => {
     // Stale, and saying so by being visibly behind beats guessing.
-    const i = createInterpolator(DELAY);
-    i.push(1000, [peer('a', 7)]);
+    const i = build();
+    i.push([peer('a', 7)], 20, 1000);
     expect(i.sample(1000)[0].x).toBe(7);
   });
 
   it('shows a peer that appeared mid-gap at the position it appeared in', () => {
-    const i = createInterpolator(DELAY);
-    i.push(1000, [peer('a', 0)]);
-    i.push(1100, [peer('a', 10), peer('b', 42)]);
-    const out = i.sample(1150);
+    const i = build();
+    i.push([peer('a', 0)], 20, 1000);
+    i.push([peer('a', 10), peer('b', 42)], 22, 1100);
+    const out = i.sample(1050 + DELAY);
     expect(out.find((p) => p.id === 'b')?.x).toBe(42);
   });
 
   it('drops a peer that is no longer in the newer frame', () => {
-    const i = createInterpolator(DELAY);
-    i.push(1000, [peer('a', 0), peer('b', 1)]);
-    i.push(1100, [peer('a', 10)]);
-    expect(i.sample(1150).map((p) => p.id)).toEqual(['a']);
+    const i = build();
+    i.push([peer('a', 0), peer('b', 1)], 20, 1000);
+    i.push([peer('a', 10)], 22, 1100);
+    expect(i.sample(1050 + DELAY).map((p) => p.id)).toEqual(['a']);
   });
 
   it('takes the short way round when a peer turns through the wrap point', () => {
     // The single most visible bug in naive angle interpolation: without this a
     // peer turning from just under π to just over −π spins a full circle on the
     // spot.
-    const i = createInterpolator(DELAY);
-    i.push(1000, [peer('a', 0, Math.PI - 0.1)]);
-    i.push(1100, [peer('a', 0, -Math.PI + 0.1)]);
-    const yaw = i.sample(1150)[0].yaw;
+    const i = build();
+    i.push([peer('a', 0, Math.PI - 0.1)], 20, 1000);
+    i.push([peer('a', 0, -Math.PI + 0.1)], 22, 1100);
+    const yaw = i.sample(1050 + DELAY)[0].yaw;
     expect(Math.abs(yaw)).toBeGreaterThan(Math.PI - 0.2);
   });
 
   it('does not interpolate a discrete state', () => {
     // Halfway between alive and dead is not something anything can draw.
-    const i = createInterpolator(DELAY);
-    i.push(1000, [{ ...peer('a', 0), state: 0 }]);
-    i.push(1100, [{ ...peer('a', 10), state: 2 }]);
-    expect(i.sample(1150)[0].state).toBe(2);
-  });
-
-  it('tolerates frames arriving out of order', () => {
-    const i = createInterpolator(DELAY);
-    i.push(1100, [peer('a', 10)]);
-    i.push(1000, [peer('a', 0)]);
-    expect(i.sample(1150)[0].x).toBeCloseTo(5, 6);
+    const i = build();
+    i.push([{ ...peer('a', 0), state: 0 }], 20, 1000);
+    i.push([{ ...peer('a', 10), state: 2 }], 22, 1100);
+    expect(i.sample(1050 + DELAY)[0].state).toBe(2);
   });
 
   it('bounds the buffer, so a tab left open does not accumulate a world', () => {
-    const i = createInterpolator(DELAY);
-    for (let t = 0; t < 500; t += 50) i.push(t, [peer('a', t)]);
+    const i = build();
+    for (let n = 0; n < 500; n++) i.push([peer('a', n)], 100 + n, 1000 + n * TICK);
     expect(i.size()).toBeLessThanOrEqual(BUFFER_FRAMES);
-  });
-
-  it('forgets everything on reset', () => {
-    const i = createInterpolator(DELAY);
-    i.push(1000, [peer('a', 0)]);
-    i.reset();
-    expect(i.size()).toBe(0);
-    expect(i.sample(2000)).toEqual([]);
+    // And still draws correctly from what it kept.
+    expect(i.sample(1000 + 499 * TICK + DELAY)[0].x).toBeCloseTo(499, 6);
   });
 });
 

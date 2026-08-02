@@ -1,7 +1,9 @@
 package gamevanyadum
 
 import (
+	"encoding/json"
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -475,17 +477,245 @@ func TestSnapshotQuantisesAndClearsItsEvents(t *testing.T) {
 	}
 }
 
-func TestSnapshotListsWhatIsLeft(t *testing.T) {
+func TestSnapshotSaysWhatIsLeftAsABitmask(t *testing.T) {
+	// One word instead of the list of remaining ids. Bit i is the pickup at INDEX
+	// i, which is the whole contract the client draws from — an index is dense by
+	// construction where an id need not be.
 	a := newTestArena(t, 11)
-	if got := len(mustSnapshot(t, a).Left); got != len(a.Level.Pickups) {
-		t.Fatalf("fresh level lists %d remaining, has %d", got, len(a.Level.Pickups))
+	full := uint32(1)<<len(a.Level.Pickups) - 1
+	if got := mustSnapshot(t, a).Left; got != full {
+		t.Fatalf("a fresh level published %b, expected %b", got, full)
 	}
-	p := a.Level.Pickups[0]
+
+	// Collecting one clears exactly its own bit and nothing else.
+	const idx = 0
+	p := a.Level.Pickups[idx]
 	a.Owner().State.Pos, a.Owner().State.Sector = p.Pos, p.Sector
 	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
-	if got := len(mustSnapshot(t, a).Left); got != len(a.Level.Pickups)-1 {
-		t.Fatalf("after one pickup, %d remain of %d", got, len(a.Level.Pickups))
+
+	want := full &^ (1 << idx)
+	if got := mustSnapshot(t, a).Left; got != want {
+		t.Fatalf("after collecting index %d the mask is %b, expected %b", idx, got, want)
 	}
+	// Idempotent full state, exactly as the list was: the next frame restates the
+	// same world rather than reporting a change, so a dropped frame costs
+	// nothing.
+	if got := mustSnapshot(t, a).Left; got != want {
+		t.Fatalf("the following frame said %b, so the mask is not full state", got)
+	}
+}
+
+func TestTheRemainingMaskIsIndexedByPositionAndNeverByID(t *testing.T) {
+	// THE ONE THING THE TEST ABOVE CANNOT SEE. The generator numbers its pickups
+	// with their own index, so every assertion about the mask holds equally well
+	// for a mask built from `p.ID` — and building it from the id is exactly the
+	// mistake that looks right, because the id is the field the level, the Taken
+	// map and the pickup event all talk in.
+	//
+	// It is wrong because the mask's WIDTH is the level's length. An index is
+	// dense by construction and an id need not be, so the day something numbers a
+	// pickup 100 the client is quietly told that everything past bit 31 has
+	// already been collected (Go evaluates a shift at or past the word's width as
+	// zero) — an unwinnable run rather than an error.
+	//
+	// So the ids are renumbered out from under the mask. Nothing else in the
+	// arena reads them positionally: Taken is keyed by id and collect looks them
+	// up by id, so a level renumbered this way plays exactly as it did.
+	a := newTestArena(t, 11)
+	if len(a.Level.Pickups) < 2 {
+		t.Fatalf("seed 11 generated %d pickups; this test needs two to tell an index from an id", len(a.Level.Pickups))
+	}
+	for i := range a.Level.Pickups {
+		// Distinct, still narrow enough to fit the word — so a mask built from
+		// ids comes out WRONG rather than empty, and the failure is a real
+		// mismatch rather than an overflow that happens to be caught.
+		a.Level.Pickups[i].ID = 3 + i
+	}
+
+	full := uint32(1)<<len(a.Level.Pickups) - 1
+	if got := mustSnapshot(t, a).Left; got != full {
+		t.Fatalf("a fresh renumbered level published %b, expected %b", got, full)
+	}
+
+	// Take the SECOND one, whose id is now 4: an index-keyed mask clears bit 1,
+	// an id-keyed one clears bit 4.
+	const idx = 1
+	a.Taken[a.Level.Pickups[idx].ID] = true
+
+	want := full &^ (1 << idx)
+	if got := mustSnapshot(t, a).Left; got != want {
+		t.Fatalf("collecting index %d (id %d) published %b, expected %b — the mask is keyed by id",
+			idx, a.Level.Pickups[idx].ID, got, want)
+	}
+}
+
+func TestTwoPlayersReachingTheSameBeerAreResolvedDeterministically(t *testing.T) {
+	// The property this whole simulation is built to have: the same seed and the
+	// same input transcript produce the same world, byte for byte. Step is pure
+	// so that it can be, and the arena has to hold up its end.
+	//
+	// Go randomises map order on every range, so an arena that walked its
+	// occupants in map order would award a contested pickup by coin flip — and
+	// collect mutates world-wide state, so the flip is visible in everybody's
+	// counters and in the mask on everybody's frame. Invisible today, because
+	// every arena holds one occupant. Wrong from the first frame of the first
+	// shared one.
+	//
+	// Repeated inside one process rather than across several: the randomisation
+	// is per range, so a hundred iterations here see a hundred different orders.
+	ids := []string{"account-a", "account-b"}
+	build := func() *Arena {
+		a := NewArena(uuid.Nil, ids[0], "pseudo-a", 11, time.Unix(0, 0))
+		a.Join(ids[1], "pseudo-b")
+		p := a.Level.Pickups[0]
+		for _, id := range ids {
+			o := a.Occupant(id)
+			o.State.Pos, o.State.Sector = p.Pos, p.Sector
+			// The same transcript for both, so nothing except the arena's own
+			// ordering can separate them.
+			a.Enqueue(id, &ParsedInput{Cmds: []Command{{Seq: 1, Dt: subStep, MY: 1, Yaw: eastward}}})
+		}
+		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		return a
+	}
+
+	first := build()
+	// The contention has to actually happen, or every iteration below agrees
+	// about nothing in particular.
+	if !first.Taken[first.Level.Pickups[0].ID] {
+		t.Fatal("neither of them picked it up, so this test proves nothing")
+	}
+	if got := first.Occupant(ids[0]).State.Counters["beer"] + first.Occupant(ids[1]).State.Counters["beer"]; got != 1 {
+		t.Fatalf("%d beers awarded for one bottle; the contention this test needs did not happen", got)
+	}
+
+	want := arenaDigest(t, first, ids...)
+	for run := 1; run < 200; run++ {
+		if got := arenaDigest(t, build(), ids...); got != want {
+			t.Fatalf("run %d produced a different world:\n want %s\n  got %s", run, want, got)
+		}
+	}
+}
+
+func TestPeersArriveInAStableOrder(t *testing.T) {
+	// Same rule, cheaper consequence: the peers array is built by walking the
+	// occupants, so map order would reshuffle it between two renders of an
+	// unchanged arena. That makes any golden test over the wire shape flap, and
+	// it asks a client to re-key its bookkeeping every frame for no reason at
+	// all.
+	a := NewArena(uuid.Nil, "account-a", "pseudo-a", 11, time.Unix(0, 0))
+	for _, id := range []string{"account-c", "account-b", "account-d"} {
+		a.Join(id, "pseudo-"+id)
+	}
+	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+
+	// Account order, which is the arena's own order and not the order they
+	// joined in.
+	want := []string{"pseudo-account-b", "pseudo-account-c", "pseudo-account-d"}
+	for i := 0; i < 100; i++ {
+		got := make([]string, 0, len(want))
+		for _, p := range mustSnapshot(t, a).Peers {
+			got = append(got, p.ID)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("render %d listed peers as %v, expected %v", i, got, want)
+		}
+	}
+}
+
+func TestNobodyWinsEveryContestedPickup(t *testing.T) {
+	// DETERMINISM DOES NOT REQUIRE A FIXED ORDER, and the test above would pass
+	// just as happily if it did. Sorting the occupants makes a contested bottle
+	// go to whoever drew the lexicographically smaller UUID — the same account,
+	// every tick, for the life of both accounts, and every hit test too once
+	// something shoots. That is a permanent advantage dressed up as a tie-break.
+	//
+	// So Advance rotates the sorted order by the tick, and this is what that
+	// buys: the same bottle contested over and over goes to each of them in turn.
+	ids := []string{"account-a", "account-b"}
+	a := NewArena(uuid.Nil, ids[0], "pseudo-a", 11, time.Unix(0, 0))
+	a.Join(ids[1], "pseudo-b")
+	p := a.Level.Pickups[0]
+
+	wins := map[string]int{}
+	const contests = 40
+	for i := 0; i < contests; i++ {
+		// A fresh contest each tick: the bottle is put back and both of them are
+		// standing on it with nothing else to separate them. The counters go with
+		// it, because beer caps at PickupKind.Max and a capped counter would stop
+		// recording who won.
+		a.Taken = map[int]bool{}
+		for _, id := range ids {
+			o := a.Occupant(id)
+			o.State.Pos, o.State.Sector = p.Pos, p.Sector
+			o.State.Counters = nil
+		}
+		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+		if a.Ended {
+			t.Fatalf("the run ended after %d contests, so the rest of them never happened", i)
+		}
+
+		won := ""
+		for _, id := range ids {
+			if a.Occupant(id).State.Counters["beer"] > 0 {
+				if won != "" {
+					t.Fatalf("contest %d awarded the same bottle to both of them", i)
+				}
+				won = id
+			}
+		}
+		if won == "" {
+			t.Fatalf("contest %d awarded the bottle to nobody, so this test proves nothing", i)
+		}
+		wins[won]++
+	}
+
+	for _, id := range ids {
+		if wins[id] == 0 {
+			t.Fatalf("%s won none of %d contested pickups (%v); the turn order is a fixed priority",
+				id, contests, wins)
+		}
+	}
+}
+
+// arenaDigest is the whole of an arena's mutable state as bytes, so that two
+// worlds can be compared for being identical rather than merely similar.
+//
+// The occupant ids come in from the caller rather than from the arena, because a
+// digest that asked the arena for its own ordering would be agreeing with the
+// thing it exists to check.
+func arenaDigest(t *testing.T, a *Arena, ids ...string) string {
+	t.Helper()
+	type occupantState struct {
+		ID       string
+		Pos      Vec2
+		Sector   int
+		Health   int
+		LastSeq  int64
+		Counters map[string]int
+	}
+	out := struct {
+		Tick  int64
+		Taken map[int]bool
+		Occs  []occupantState
+	}{Tick: a.Tick, Taken: a.Taken}
+	for _, id := range ids {
+		o := a.Occupant(id)
+		if o == nil {
+			t.Fatalf("no occupant %q to digest", id)
+		}
+		out.Occs = append(out.Occs, occupantState{
+			ID: id, Pos: o.State.Pos, Sector: o.State.Sector,
+			Health: o.State.Health, LastSeq: o.State.LastSeq, Counters: o.State.Counters,
+		})
+	}
+	// encoding/json sorts map keys, so the two maps in here contribute the same
+	// bytes for the same contents whatever order they were filled in.
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func TestElapsedNeverGoesBackwards(t *testing.T) {

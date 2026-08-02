@@ -217,9 +217,30 @@ type Snapshot struct {
 	Yaw int `json:"yaw"`
 	// Sector index, so the client can pick the right light level without
 	// working out where it is standing.
-	Sector int            `json:"s"`
-	Health int            `json:"hp"`
-	Left   []int          `json:"pk"`
+	Sector int `json:"s"`
+	Health int `json:"hp"`
+	// Left is what is still lying about, as a BITMASK: bit i is set when the
+	// pickup at INDEX i of the level's Pickups has not been collected. The index
+	// and not the id — an index is dense by construction, an id need not be, and
+	// a mask can only be as wide as the thing it indexes.
+	//
+	// It was the list of remaining ids, recomputed and re-sent twenty times a
+	// second in order to say "nothing was taken". That was the one field on an
+	// otherwise disciplined frame whose size grew with the level's contents, and
+	// it would have grown again with keys and with anything that respawns. A word
+	// costs the same whatever it holds.
+	//
+	// UINT32 AND NOT UINT64, DELIBERATELY. A JSON number is an IEEE754 double in
+	// a browser, so a 64-bit mask would lose its high bits in the PARSE rather
+	// than in transit — silently, and only on the levels big enough to reach
+	// them. 32 is the widest word both ends read back exactly, and it is far more
+	// than any level has ever generated; MaxWirePickups is that bound, pinned by
+	// a test over the generator. If a level ever genuinely needs more, the answer
+	// is a SECOND WORD — an array of two — and never a wider integer.
+	//
+	// Still idempotent full state, exactly as the list was: a dropped frame costs
+	// nothing, because the next one restates the whole world.
+	Left   uint32         `json:"pk"`
 	Bag    map[string]int `json:"c,omitempty"`
 	Events []Event        `json:"ev,omitempty"`
 	// Peers is everything in the arena that is not you — other players today,
@@ -231,6 +252,19 @@ type Snapshot struct {
 	// because its intent cannot be predicted the way your own is.
 	Peers []Peer `json:"p,omitempty"`
 }
+
+// MaxWirePickups is how many pickups a level may contain, because it is the
+// width of Snapshot.Left.
+//
+// A generator that produced more would publish the surplus as ALREADY TAKEN —
+// Go evaluates a shift at or past a word's width as zero — so the client would
+// never draw them, nobody would ever walk to them, and the objective could never
+// be met. A silently unwinnable game rather than an error, which is exactly the
+// kind of thing that has to be caught by a test rather than by a player.
+//
+// Pinned over the GENERATOR and not checked on a frame: it is a property of what
+// levels are allowed to be, and a frame is far too late to discover it.
+const MaxWirePickups = 32
 
 // Peer is one entity that is not the player receiving this frame.
 //
