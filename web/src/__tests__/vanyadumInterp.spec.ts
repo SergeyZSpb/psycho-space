@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BUFFER_FRAMES, createInterpolator, shortestTurn } from '../lib/vanyadumInterp';
+import { PEER_DOWN, PEER_FIRED } from '../lib/vanyadumRoster';
 
 /**
  * Entity interpolation — how everything that is not you is drawn.
@@ -447,22 +448,34 @@ describe('drawing the past', () => {
     expect(Math.abs(yaw)).toBeGreaterThan(Math.PI - 0.2);
   });
 
-  it('carries a peer’s shot marker from the newer frame, undiluted', () => {
-    // A shot happened on one tick; it has no midpoint, so it is taken from the
-    // frame the drawn instant is moving TOWARDS rather than blended out of the
-    // one it has already passed. Which is also why it stays set for as long as
-    // that frame is the newer of the pair, and why whoever draws it has to mark
-    // the transition rather than the value — see vanyadumFlash.
+  it('carries a peer’s state from the newer frame, undiluted', () => {
+    // A shot happened on one tick; an enumeration has no midpoint, so it is
+    // taken from the frame the drawn instant is moving TOWARDS rather than
+    // blended out of the one it has already passed. Which is also why it stays
+    // set for as long as that frame is the newer of the pair, and why whoever
+    // draws an INSTANT has to mark the transition rather than the value — see
+    // vanyadumFlash.
     const i = build();
     i.push([peer(1, 0)], 20, 1000);
-    i.push([{ ...peer(1, 10), firing: true }], 22, 1100);
-    expect(i.sample(1050 + DELAY)[0].firing).toBe(true);
-    // And once that tick is behind the drawn instant it is over — the marker is
-    // on one frame, never smeared forward into the next one. Spelled out rather
-    // than left off, because that is what `decodePeers` produces: it sets the
-    // field on every peer so the object it builds has one shape.
-    i.push([{ ...peer(1, 20), firing: false }], 24, 1200);
-    expect(i.sample(1150 + DELAY)[0].firing).toBe(false);
+    i.push([{ ...peer(1, 10), st: PEER_FIRED }], 22, 1100);
+    expect(i.sample(1050 + DELAY)[0].st).toBe(PEER_FIRED);
+    // And once that tick is behind the drawn instant it is over — the value is
+    // on one frame, never smeared forward into the next one. Spelled out as a
+    // zero rather than left off, because that is what `decodePeers` produces: it
+    // sets the field on every peer so the object it builds has one shape.
+    i.push([{ ...peer(1, 20), st: 0 }], 24, 1200);
+    expect(i.sample(1150 + DELAY)[0].st).toBe(0);
+  });
+
+  it('carries a state that LASTS on every frame of it, so nothing has to hold it', () => {
+    // The other half of the same field, and the reason the two are drawn
+    // differently. Being down is true of every tick it lasts, so a viewer whose
+    // buffer skips a frame never loses a corpse the way he can lose a muzzle
+    // flash — there is nothing to mark and nothing to remember.
+    const i = build();
+    i.push([{ ...peer(1, 0), st: PEER_DOWN }], 20, 1000);
+    i.push([{ ...peer(1, 0), st: PEER_DOWN }], 22, 1100);
+    expect(i.sample(1050 + DELAY)[0].st).toBe(PEER_DOWN);
   });
 
   it('interpolates the height too, so a doorway is a step up and not a jump', () => {

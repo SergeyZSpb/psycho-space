@@ -10,8 +10,9 @@
  * the port. They are pinned together by golden vectors — the Go test emits a
  * level, an input transcript and the resulting position trace into
  * `internal/gamevanyadum/testdata/step_vectors.json`, and
- * `vanyadumStep.spec.ts` asserts this file reproduces it — the positions, and
- * since the обрез arrived the shell count, both timers and the ammunition too.
+ * `vanyadumStep.spec.ts` asserts this file reproduces it — the positions, the
+ * shell count, both of the gun's timers, the ammunition, and the spawn
+ * protection a man gets up with.
  * Change either on one side and the gate goes red on the other. **Do not edit
  * this file without regenerating the vectors and reading them.**
  *
@@ -66,13 +67,22 @@ export interface StepCommand {
 /**
  * The simulated player. Mirrors the server's Player, minus what we never predict.
  *
- * THE GUN IS PREDICTED AND THE HEALTH IS NOT, which looks inconsistent until you
- * ask ADR-058's question the way that record's own reasoning asks it: does the
- * CLIENT have to simulate this? Health is read off the snapshot and nothing the
- * player does changes it, so no. The gun has to be, for a reason movement never
- * raised — the muzzle flash is drawn the instant a thumb lands, and a flash can
- * only be honest if the browser has already run the same refusal the server is
- * about to run.
+ * EVERY FIELD HERE IS EITHER PREDICTED OR READ, and the two are worth telling
+ * apart. ADR-058's question decides which: must the CLIENT simulate this?
+ *
+ *   * PREDICTED — the position, and the gun's shell count, both timers and the
+ *     ammunition a reload spends. The gun has to be, for a reason movement never
+ *     raised: the muzzle flash is drawn the instant a thumb lands, and a flash
+ *     can only be honest if the browser has already run the same refusal the
+ *     server is about to run.
+ *   * READ — `health`. Nothing the player does moves it, so it is taken off the
+ *     snapshot on every reconcile and never changed here. It is on this type all
+ *     the same, because `step` READS it: a man on the floor does not walk, and a
+ *     client that went on walking him would have his corpse dragged down the
+ *     corridor and corrected twenty times a second.
+ *   * BOTH — `protectedLeft`. It is SET by the server (a respawn grants it) and
+ *     COUNTED DOWN here, because a protected man cannot pull the trigger and
+ *     that refusal has to run in the same frame as the thumb.
  *
  * `ammo` IS ONE NUMBER WHERE THE SERVER KEEPS A WHOLE BAG. `Step` reads exactly
  * one key of `Player.Counters` — the one a reload spends — and the golden vectors
@@ -91,6 +101,19 @@ export interface StepPlayer {
   yaw: number;
   pitch: number;
   sector: number;
+  /**
+   * What is left of him. ZERO IS THE WHOLE OF BEING DEAD — there is no separate
+   * flag, on the wire or here.
+   */
+  health: number;
+  /**
+   * Seconds of spawn protection left: he cannot be hurt and he cannot fire.
+   *
+   * Counted down by the command's own dt rather than held as a deadline, because
+   * `step` is pure, reads no clock and knows no tick — seconds are the only
+   * representation both ends can agree on.
+   */
+  protectedLeft: number;
   /** Barrels ready to fire, 0..barrels. */
   loaded: number;
   /** Seconds until the gun fires again. */
@@ -256,6 +279,26 @@ export function step(
 ): StepPlayer {
   const c = sanitise(cmd, k);
   const out: StepPlayer = { ...p, yaw: c.yaw, pitch: c.pitch };
+
+  // A MAN ON THE FLOOR DOES NOTHING BUT LOOK AROUND. He does not walk, he does
+  // not shoot, and neither of his timers runs — what gets him up again is the
+  // server's own deadline rather than anything he sends.
+  //
+  // IT IS A RULE OF `step` AND NOT OF THE WORLD, deliberately, and this port is
+  // exactly why: a server that quietly ignored a dead player's commands while
+  // the browser went on applying them would drag his corpse down the corridor
+  // and correct it twenty times a second. Here, both ends refuse the same input
+  // and there is nothing to reconcile.
+  //
+  // The angles are still assigned, above, because the camera belongs to the
+  // client — a death you cannot look around from is a black screen with a timer
+  // on it.
+  if (out.health <= 0) return out;
+
+  // Spawn protection runs on the command's own dt, exactly as the gun's timers
+  // do, and it is what stops the trigger below.
+  out.protectedLeft = Math.max(0, out.protectedLeft - c.dt);
+
   // BEFORE the standing-still return below, and that ordering is the whole of
   // whether the gun works: firing while standing perfectly still is not an edge
   // case, it is how anybody shoots at anything. A gun folded in after that
@@ -304,9 +347,12 @@ export function step(
  * itself, so pulling on an empty gun is always answered: with a shot, or with a
  * reload, or with nothing at all when there is no beer.
  *
- * NOTHING HERE HITS ANYTHING. A granted shot spends a barrel and starts a
- * cooldown, and that is the complete list — the ray and the damage are the next
- * iteration on both ends of the port.
+ * NOTHING HERE HITS ANYTHING, AND THAT IS PERMANENT RATHER THAN UNFINISHED. A
+ * granted shot spends a barrel and starts a cooldown, and that is the complete
+ * list. Where the ray went and who it landed on is the SERVER's — it needs every
+ * other body in the building and a rewind buffer of where they used to be — and
+ * the browser learns the answer a round trip later, as a mark on the man who was
+ * shot. A client is never allowed to predict a question about somebody else.
  *
  * WRITES INTO ITS ARGUMENT, unlike everything else in this file, because `step`
  * has already made the copy: `out` is a fresh object nobody else holds, so a
@@ -321,7 +367,10 @@ function stepGun(p: StepPlayer, c: StepCommand, k: StepConstants): void {
   }
   p.cooldown = Math.max(0, p.cooldown - c.dt);
 
-  if (!c.fire || p.cooldown > 0 || p.reload > 0) return;
+  // PROTECTION IS PART OF THE REFUSAL AND NOT A SEPARATE CHECK, so a protected
+  // man cannot start a reload either — otherwise the window would be spent
+  // filling the gun he is about to be untouchable with.
+  if (!c.fire || p.cooldown > 0 || p.reload > 0 || p.protectedLeft > 0) return;
   if (p.loaded > 0) {
     p.loaded -= 1;
     p.cooldown = k.fireCooldownSeconds;

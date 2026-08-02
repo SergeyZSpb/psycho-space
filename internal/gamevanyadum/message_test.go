@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -175,10 +176,20 @@ func TestSnapshotOmitsWhatIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"c"`, `"ev"`, `"p"`, `"d"`, `"r"`} {
+	for _, key := range []string{`"c"`, `"ev"`, `"p"`, `"d"`, `"r"`, `"dn"`, `"pr"`} {
 		if strings.Contains(string(raw), key) {
 			t.Fatalf("empty field %s was serialised: %s", key, raw)
 		}
+	}
+	// And the peer's state, which is absent for a man who is alive, unprotected
+	// and did nothing on this tick — that being almost every peer on almost every
+	// frame, and the whole reason the field can afford to exist at all.
+	quiet, err := json.Marshal(Peer{Slot: 1, X: 100, Y: 200, Sector: 3, Yaw: 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(quiet), `"st"`) {
+		t.Fatalf("a peer doing nothing carries a state: %s", quiet)
 	}
 	// The barrel count is the exception, and deliberately: an empty gun is
 	// exactly the state a player most needs to see, and a resting one is FULL
@@ -269,9 +280,9 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// the list grew with the level's contents, so the slack was standing in for a
 	// field nobody could bound. The mask cannot grow — it is one word whatever
 	// the заброшка holds, and the value below is the widest it can ever take — so
-	// that slack has nothing left to insure against and comes off. 160 leaves 24
-	// bytes for a field the next iteration adds, and 160 at 20 Hz is 3.2 KB/s per
-	// player against the 4 KB/s the design doc budgets.
+	// that slack has nothing left to insure against and comes off. 180 at 20 Hz is
+	// 3.6 KB/s per player against the 4 KB/s the design doc budgets for a solo
+	// frame — and the peers are budgeted separately, against the ceiling.
 	//
 	// THE GUN SPENT MOST OF THOSE 24, and the arithmetic is here rather than in a
 	// commit message because this is where the next person will look. Measured on
@@ -280,11 +291,18 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// game can ACTUALLY send, which is the barrels and one timer — the two timers
 	// cannot both be running (sim.go, Player, and the test named there).
 	//
-	// The fixture below sets both anyway, at 159, because a budget that leaned on
-	// an invariant proved in another file would be a budget one refactor away from
-	// being wrong. 9 bytes of real slack, 1 byte of paranoid slack, and the next
-	// field of this size is one that has to be measured against the CEILING as
-	// well — see wireCeiling, where the gun cost half the headroom.
+	// The fixture below sets both anyway, because a budget that leaned on an
+	// invariant proved in another file would be a budget one refactor away from
+	// being wrong.
+	//
+	// AND DYING ADDED TWO MORE TIMERS, `dn` and `pr`, on the same terms. They
+	// cannot both be set either — protection begins exactly when the down window
+	// ends — and neither can be set alongside the gun's two, since death clears
+	// the gun and a protected man may not pull the trigger (sim.go, stepGun). So
+	// the widest frame this game can really send carries the barrels and ONE
+	// timer, and the fixture carries all four: 19 bytes of deliberate pessimism,
+	// bought for the same reason as before. The budget moves from 160 to 180 to
+	// hold it.
 	s := Snapshot{
 		T: TypeSnapshot, Tick: 999999, Ack: 999999,
 		X: 123456, Y: -123456, Z: 12345, Yaw: 3142, Sector: 12, Health: 100,
@@ -292,6 +310,8 @@ func TestSnapshotStaysSmall(t *testing.T) {
 		Loaded:   Barrels,
 		Cooldown: ms(FireCooldownSeconds),
 		Reload:   ms(ReloadSeconds),
+		Down:     int(DownTime / time.Millisecond),
+		Protect:  ms(SpawnProtectSeconds),
 		Bag:      map[string]int{"beer": 9},
 	}
 	raw, err := json.Marshal(s)
@@ -301,7 +321,7 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// If a field is added that pushes past this, the right response is to measure
 	// and move the budget deliberately — with the arithmetic written down, as
 	// above — and never to raise the number until the test passes.
-	const budget = 160
+	const budget = 180
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}
@@ -360,15 +380,20 @@ const wireCeiling = 8000
 // 20 Hz = 160 B/s of headroom against a state that cannot occur, and the honest
 // figure is in the test below.
 //
-// PEER.FIRED IS THE ONE THING DELIBERATELY LEFT OFF, and leaving it off is not
-// the same kind of choice as the pessimism above. Everything on this frame is
-// multiplied by SnapshotHz, which is correct for a field that rides every tick
-// and wrong by a factor of seven for one that rides the tick a trigger was
-// pulled — a gun cannot fire faster than FireCooldownSeconds allows, so a peer
-// flagged on all twenty ticks of a second is not a pessimistic reading of the
-// wire, it is a reading of a simulation that does not exist. Its real rate is
-// counted separately and added to the same total: see firedPerSecond, and
-// Peer.Fired for why the field is shaped so that it can be.
+// EVERY PEER CARRIES A STATE, and that is the field that took a place out of the
+// building. `st` is priced at SnapshotHz like the position beside it, because
+// two of its four values are DURATIONS: a man is down for DownTime and protected
+// for SpawnProtectSeconds, and both are true on every tick they last. There is
+// no honest duty cycle to discount by either — he cannot be hurt while down or
+// protected, so a player killed the instant his protection expires is flagged
+// essentially all the time, and a capacity derived from anything softer would
+// fail the first time somebody was being spawn-camped.
+//
+// That is exactly the shape Peer.Fired's predecessor priced at 640 B/s and
+// refused. It is bought this time because there is no cheaper one: a hit and a
+// death move nobody, so neither can be derived from a value the frame already
+// carries, and the alternative to spending the bytes is a game where being shot
+// is invisible.
 func worstSnapshot(n int) Snapshot {
 	s := Snapshot{
 		T: TypeSnapshot, Tick: 999999, Ack: 999999,
@@ -377,62 +402,29 @@ func worstSnapshot(n int) Snapshot {
 		Loaded:   Barrels,
 		Cooldown: ms(FireCooldownSeconds),
 		Reload:   ms(ReloadSeconds),
+		Down:     int(DownTime / time.Millisecond),
+		Protect:  ms(SpawnProtectSeconds),
 		Bag:      map[string]int{"beer": 9},
 	}
 	// Everybody else, and NOT a peer fewer because some of them were filtered
 	// out: interest management makes the typical frame smaller and does nothing
 	// at all for the worst case, which is everybody standing in one room.
 	for i := 0; i < n-1; i++ {
-		s.Peers = append(s.Peers, Peer{Slot: 9, X: 123456, Y: -123456, Sector: 12, Yaw: -6283})
+		s.Peers = append(s.Peers, Peer{Slot: 9, X: 123456, Y: -123456, Sector: 12, Yaw: -6283, St: PeerProtected})
 	}
 	return s
 }
 
-// firedPerSecond is what Peer.Fired costs one viewer of a building of n, in
-// bytes a second, and it is the one term here measured at its OWN rate rather
-// than at the snapshot's.
-//
-// THAT IS NOT A RELAXATION OF THE WORST CASE, IT IS THE WORST CASE. Every other
-// field on a peer is on every frame, so its cost is bytes × SnapshotHz and
-// worstSnapshot carries it. This one is present only on the tick a gun went off,
-// and the gun's own cadence is what bounds how often that can be: a barrel
-// cannot be spent twice inside FireCooldownSeconds, so three shots a second is
-// already rounded up from 1/0.35. Charging it at twenty would be budgeting
-// 720 B/s for a state the simulation forbids — and then deriving MaxOccupants
-// from it, which is how a building loses a place to arithmetic rather than to
-// bytes.
-//
-// THE FLAG'S WIDTH IS MEASURED AND NOT TYPED OUT, so a rename of the json key or
-// a change of type is priced here instead of going unnoticed.
-//
-// WHAT KEEPS THIS HONEST IS ELSEWHERE: TestAPeersShotIsOnTheFrameForOneTickOnly
-// pins that the field really is per-action. If it ever became a duration or a
-// level — anything non-zero for the whole time a cooldown runs — the rate below
-// is twenty and this arithmetic is wrong by a factor of seven. See Peer.Fired,
-// where that shape was measured at 640 B/s against 387 of headroom and rejected.
-func firedPerSecond(t *testing.T, n int) int {
-	t.Helper()
-	base := Peer{Slot: 9, X: 123456, Y: -123456, Sector: 12, Yaw: -6283}
-	quiet, err := json.Marshal(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	base.Fired = true
-	loud, err := json.Marshal(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	shotsPerSecond := int(math.Ceil(1 / FireCooldownSeconds))
-	return (len(loud) - len(quiet)) * shotsPerSecond * (n - 1)
-}
-
 // worstStandings is the widest standings frame for a building of n people: a
-// twelve-character pseudonym each, a bag, and a stay of eleven days.
+// twelve-character pseudonym each, a bag, a stay of eleven days, and the two
+// counters this iteration added — a career of deaths and a career of friends
+// shot, both at six figures.
 func worstStandings(n int) Standings {
 	b := Standings{T: TypeStandings}
 	for i := 0; i < n; i++ {
 		b.Rows = append(b.Rows, StandingsRow{
 			Slot: 9, Name: "K3jf9sLm2QpZ", Seconds: 999999, Bag: map[string]int{"beer": 9},
+			Deaths: 999999, Betrayals: 999999,
 		})
 	}
 	return b
@@ -447,36 +439,26 @@ func TestEverythingAFullBuildingSendsAViewerFitsTheCeiling(t *testing.T) {
 	// it — which is how the constant came to be six before anybody measured a
 	// peer.
 	//
-	// Measured at the widest quantisation the wire can carry: 160 bytes of self,
-	// +56 for the first peer (the entry plus the `p` array around it), +50 for
-	// each one after; a standings frame is 81 bytes with one row and +53 a row
-	// after that. So a full house of five is 366 × 20 + 293 = 7613 B/s, where six
-	// would be 416 × 20 + 346 = 8666 and over. That is the whole derivation of
+	// Measured at the widest quantisation the wire can carry: 180 bytes of self,
+	// +63 for the first peer (the entry plus the `p` array around it), +57 for
+	// each one after; a standings frame is 104 bytes with one row and +76 a row
+	// after that. So a full house of four is 357 × 20 + 332 = 7472 B/s, where five
+	// would be 414 × 20 + 408 = 8688 and over. That is the whole derivation of
 	// MaxOccupants, and this is what turns it into a gate: raising the constant,
 	// or growing either frame, fails here rather than on somebody's mobile data.
 	//
-	// THE GUN COST HALF THE HEADROOM, which is worth saying plainly rather than
-	// leaving in the difference between two numbers: self was 137 bytes and the
-	// spare was ~850 B/s, and the barrels and the two timers took it to 160 and
-	// 387. The capacity survives, and the next field of that size does not fit —
-	// at which point the honest answers are a smaller building or the binary
-	// codec the design earmarked, and never a bigger ceiling.
+	// SHOOTING PEOPLE COST THE FIFTH PLACE, which the previous version of this
+	// comment named as the price of the next field of that size. The peer state is
+	// 7 bytes on every peer on every tick — 420 B/s at four — because two of its
+	// four values are durations rather than instants and there is no honest duty
+	// cycle to discount by (worstSnapshot). The two self timers and the two
+	// standings counters are the rest of it. The arithmetic above is what says
+	// four rather than five; the answer to wanting five back is the binary codec.
 	//
-	// 160 of that 366 assumes a gun that is reloading AND on its firing cadence at
-	// the same time, which cannot happen; the frame this game can really send is
-	// 152, and the real cost at five people is 7453 B/s. The pessimism is on
-	// purpose (see worstSnapshot) and it is only 160 B/s of it.
-	//
-	// THE THIRD TERM IS THE PEER MUZZLE FLASH, AND IT IS COUNTED AT ITS OWN RATE.
-	// A shot is visible to the whole building, which cost Peer a field that rides
-	// the tick a trigger was pulled and no other: 9 bytes × 3 shots a second × 4
-	// peers = 108 B/s at MaxOccupants, taking the full house to 7721 and leaving
-	// 279 B/s. It is inside this arithmetic rather than beside it, unlike the two
-	// terms on wireCeiling, precisely because it fires per PLAYER ACTION at a rate
-	// the gun's cadence bounds — which is the line that record draws. See
-	// firedPerSecond for why multiplying it by SnapshotHz would be a worse number
-	// rather than a safer one, and Peer.Fired for the duration-shaped alternative
-	// that was measured at 640 B/s and did not fit.
+	// 19 of that 180 assumes a gun reloading AND on its firing cadence while its
+	// owner is simultaneously dead and freshly protected, which is four states at
+	// once and none of them compatible. The pessimism is on purpose (see
+	// worstSnapshot) and it is worth about 380 B/s of the headroom below.
 	//
 	// WHAT IS NOT COUNTED, AND WHY IT DOES NOT HAVE TO BE, is on wireCeiling: the
 	// out-of-turn standings frames and a snapshot's events, both bounded and both
@@ -492,11 +474,12 @@ func TestEverythingAFullBuildingSendsAViewerFitsTheCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shots := firedPerSecond(t, MaxOccupants)
-	perSecond := len(snap)*SimHz + len(board)*int(time.Second/StandingsInterval) + shots
+	perSecond := len(snap)*SimHz + len(board)*int(time.Second/StandingsInterval)
+	t.Logf("MaxOccupants=%d: snapshot %d B × %d Hz + standings %d B = %d B/s, ceiling %d",
+		MaxOccupants, len(snap), SimHz, len(board), perSecond, wireCeiling)
 	if perSecond > wireCeiling {
-		t.Fatalf("a full building costs a viewer %d B/s, the ceiling is %d — %d-byte snapshot × %d Hz plus a %d-byte standings plus %d B/s of muzzle flashes\nsnapshot: %s\nstandings: %s",
-			perSecond, wireCeiling, len(snap), SimHz, len(board), shots, snap, board)
+		t.Fatalf("a full building costs a viewer %d B/s, the ceiling is %d — %d-byte snapshot × %d Hz plus a %d-byte standings\nsnapshot: %s\nstandings: %s",
+			perSecond, wireCeiling, len(snap), SimHz, len(board), snap, board)
 	}
 
 	// And the step this constant is one below really is over the line, so the
@@ -509,7 +492,8 @@ func TestEverythingAFullBuildingSendsAViewerFitsTheCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	over := len(next)*SimHz + len(nextBoard)*int(time.Second/StandingsInterval) + firedPerSecond(t, MaxOccupants+1)
+	over := len(next)*SimHz + len(nextBoard)*int(time.Second/StandingsInterval)
+	t.Logf("MaxOccupants+1=%d would be %d B/s", MaxOccupants+1, over)
 	if over <= wireCeiling {
 		t.Fatalf("%d people would cost %d B/s, inside the %d ceiling — MaxOccupants is a place too low",
 			MaxOccupants+1, over, wireCeiling)
@@ -544,18 +528,30 @@ func TestNoNameAndNoScoreRidesTheRepeatingFrame(t *testing.T) {
 	}
 	// Five numbers on a RESTING peer and nothing else — where, which room, which
 	// way round, and which place in the building. A sixth field that rides every
-	// tick is not forbidden for ever (the pose enum comes back with whatever
-	// first does damage) but it costs SnapshotHz × N × V bytes a second, so it
-	// fails here first and gets argued for in the commit.
+	// tick is not forbidden (`st` is one, and it is argued for on Peer.St and
+	// priced in the ceiling test) but it costs SnapshotHz × N × V bytes a second,
+	// so it fails here first and gets argued for in the commit.
 	//
-	// AND THIS IS WHERE THE MUZZLE FLASH IS HELD TO BEING PER-ACTION. Peer.Fired
-	// is a sixth field, and it is absent from every entry here because nobody in
-	// worstSnapshot pulled a trigger. Made unconditional — or turned into a
-	// duration, which is non-zero for the whole 0.35 s a cadence runs — it would
-	// appear on all four of these and this assertion would fail, which is the
-	// point: the ceiling test prices it at three a second, and the two must not
-	// come to disagree silently.
-	for _, p := range back.Peers {
+	// READ OFF A RESTING FRAME AND NOT OFF worstSnapshot, because that fixture is
+	// now deliberately the worst case: every peer in it is flagged, since the
+	// state field's two expensive values are durations that really can be true on
+	// every tick. What is being pinned here is the OTHER end — that a man who is
+	// alive, unhurt and doing nothing costs five numbers.
+	var resting struct {
+		Peers []map[string]any `json:"p"`
+	}
+	calm := worstSnapshot(MaxOccupants)
+	for i := range calm.Peers {
+		calm.Peers[i].St = 0
+	}
+	quiet, err := json.Marshal(calm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(quiet, &resting); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range resting.Peers {
 		if len(p) != 5 {
 			t.Fatalf("a peer entry carries %d fields, not the five a resting one is budgeted for: %v", len(p), p)
 		}
@@ -566,14 +562,21 @@ func TestNoNameAndNoScoreRidesTheRepeatingFrame(t *testing.T) {
 		}
 	}
 
-	// And the flag really is on the entry when it is set, so the assertion above
-	// is proving that it was omitted rather than that it does not exist.
-	fired, err := json.Marshal(Peer{Slot: 9, X: 123456, Y: -123456, Sector: 12, Yaw: -6283, Fired: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(fired), `"f":true`) {
-		t.Fatalf("a peer that fired says nothing about it: %s", fired)
+	// And the state really is on the entry when it is set, so the assertion above
+	// is proving that it was omitted rather than that it does not exist. One
+	// digit, whichever of the four it is: a value that needed two would be a
+	// different field's arithmetic.
+	for _, st := range []int{PeerFired, PeerHit, PeerDown, PeerProtected} {
+		marked, err := json.Marshal(Peer{Slot: 9, X: 123456, Y: -123456, Sector: 12, Yaw: -6283, St: st})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := `"st":` + strconv.Itoa(st); !strings.Contains(string(marked), want) {
+			t.Fatalf("a peer in state %d says nothing about it: %s", st, marked)
+		}
+		if st > 9 {
+			t.Fatalf("state %d is two digits; the wire budget is priced on one", st)
+		}
 	}
 }
 

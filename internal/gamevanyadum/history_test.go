@@ -99,6 +99,37 @@ func TestHistoryKeepsWorkingAfterItWraps(t *testing.T) {
 	}
 }
 
+func TestForgettingAPlaceTakesItOutOfTheWholeRing(t *testing.T) {
+	// The ring is keyed by slot, and a slot outlives its holder — so freeing one
+	// has to erase its past as well as its present, or the next man to stand in
+	// it inherits somebody else's positions for the whole window (history.forget,
+	// and world.go, release). Every frame, including the ones the ring has not
+	// wrapped past yet, and only the place being freed.
+	h := newHistory()
+	base := time.Unix(0, 0)
+	for i := 0; i < historyCapacity(); i++ {
+		h.record(int64(i), base.Add(time.Duration(i)*SimStep), map[int]Spot{
+			0: spot(float64(i), 0),
+			1: spot(0, float64(i)),
+		})
+	}
+	h.forget(0)
+
+	for i := range h.frames {
+		if _, still := h.frames[i].spots[0]; still {
+			t.Fatalf("frame %d still remembers the place that was freed", i)
+		}
+		if _, gone := h.frames[i].spots[1]; !gone {
+			t.Fatalf("frame %d lost the place nobody freed", i)
+		}
+	}
+	// And a lookup answers about the man who is still here, rather than nothing
+	// at all: forgetting one place does not empty the buffer.
+	if got := h.at(base.Add(time.Duration(historyCapacity()) * SimStep)); len(got) != 1 {
+		t.Fatalf("a rewind after one place was freed returned %d entries, expected the one man left", len(got))
+	}
+}
+
 func TestHistoryDoesNotResurrectTheDead(t *testing.T) {
 	// A rewind must not make a corpse shootable again. Liveness is discrete, so
 	// it is not interpolated — and a span in which somebody died counts as dead.

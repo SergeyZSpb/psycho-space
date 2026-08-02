@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createInterpolator } from '../lib/vanyadumInterp';
 import type { VanyadumLevel } from '../lib/vanyadumLevel';
-import { changedHands, clock, decodeBoard, decodePeers } from '../lib/vanyadumRoster';
+import {
+  PEER_DOWN,
+  PEER_FIRED,
+  PEER_HIT,
+  PEER_PROTECTED,
+  changedHands,
+  clock,
+  decodeBoard,
+  decodePeers,
+} from '../lib/vanyadumRoster';
 
 /**
  * The slot directory — the half of «ВАНЯДУМ»'s wire that says WHO, as opposed
@@ -9,10 +18,10 @@ import { changedHands, clock, decodeBoard, decodePeers } from '../lib/vanyadumRo
  *
  * A peer is addressed by a small integer naming a place in the building, and the
  * standings frame publishes who is holding each place. That split is what took a
- * peer entry from 71 bytes to 49 and bought the fifth occupant, and it brings
- * exactly one hazard with it: a slot is REUSED, so the same number can mean two
- * people a second apart. Everything below is about decoding it and about being
- * safe when the two frames arrive in the wrong order.
+ * peer entry from 71 bytes to 49, and it brings exactly one hazard with it: a
+ * slot is REUSED, so the same number can mean two people a second apart.
+ * Everything below is about decoding it and about being safe when the two frames
+ * arrive in the wrong order.
  */
 
 /** Two rooms at different heights, which is what makes the derived eye interesting. */
@@ -79,27 +88,39 @@ describe('decodePeers', () => {
     expect(p.y).toBe(0);
   });
 
-  it('reads the shot marker, and reads its absence as no shot', () => {
+  it('reads the peer state, and reads its absence as nothing happening', () => {
     // The one field on a peer that is not geometry. Your own gun needs no such
     // marker — a barrel count falling by one IS the shot — but another man's gun
-    // has nothing on the wire to fall, so this is the only thing that says a
-    // обрез went off two metres away. Omitted on every tick it did not, which is
-    // almost every tick of almost every peer.
+    // has nothing on the wire to fall, and being SHOT moves nobody at all, so
+    // this is the only thing that says either happened two metres away. Omitted
+    // on every tick nothing did, which is almost every tick of almost every peer.
     const peers = decodePeers(
       [
-        { n: 0, x: 0, y: 0, s: 0, yaw: 0, f: true },
-        { n: 1, x: 0, y: 0, s: 0, yaw: 0 },
+        { n: 0, x: 0, y: 0, s: 0, yaw: 0, st: PEER_FIRED },
+        { n: 1, x: 0, y: 0, s: 0, yaw: 0, st: PEER_HIT },
+        { n: 2, x: 0, y: 0, s: 0, yaw: 0, st: PEER_DOWN },
+        { n: 3, x: 0, y: 0, s: 0, yaw: 0, st: PEER_PROTECTED },
+        { n: 4, x: 0, y: 0, s: 0, yaw: 0 },
       ],
       LEVEL,
       EYE,
     );
-    expect(peers[0].firing).toBe(true);
-    expect(peers[1].firing).toBe(false);
+    expect(peers.map((p) => p.st)).toEqual([PEER_FIRED, PEER_HIT, PEER_DOWN, PEER_PROTECTED, 0]);
+  });
+
+  it('reads a state it has never heard of as nothing rather than as something', () => {
+    // Either end may learn a value without a coordinated deploy, so a client one
+    // deploy behind must not draw a fifth state as one of the four it knows.
+    // Zero is the resting value, so an unknown one being drawn as "nothing
+    // happened" is the safe direction: a missing mark, never an invented one.
+    const [p] = decodePeers([{ n: 0, x: 0, y: 0, s: 0, yaw: 0, st: 'нет' }], LEVEL, EYE);
+    expect(p.st).toBe(0);
   });
 
   it('answers with nothing when the array is absent, which is the common case', () => {
     // Omitted entirely when there is nobody else in view — and that is most
-    // frames, in a building that holds five.
+    // frames, in a building this size with the peers cut to the rooms you can
+    // see into.
     expect(decodePeers(undefined, LEVEL, EYE)).toEqual([]);
     expect(decodePeers([], LEVEL, EYE)).toEqual([]);
     expect(decodePeers('nonsense', LEVEL, EYE)).toEqual([]);
@@ -113,16 +134,27 @@ describe('decodePeers', () => {
 });
 
 describe('decodeBoard', () => {
-  it('reads a row and the bag it is carrying', () => {
-    const [row] = decodeBoard([{ n: 1, i: 'K3jf9sLm2QpZ', s: 137, c: { beer: 4 } }]);
-    expect(row).toEqual({ slot: 1, name: 'K3jf9sLm2QpZ', seconds: 137, bag: { beer: 4 } });
+  it('reads a row, the bag it is carrying, and what it has done', () => {
+    const [row] = decodeBoard([{ n: 1, i: 'K3jf9sLm2QpZ', s: 137, c: { beer: 4 }, d: 2, br: 5 }]);
+    expect(row).toEqual({
+      slot: 1,
+      name: 'K3jf9sLm2QpZ',
+      seconds: 137,
+      bag: { beer: 4 },
+      deaths: 2,
+      betrayals: 5,
+    });
   });
 
   it('reads somebody carrying nothing as carrying nothing, not as a missing field', () => {
     // The bag is omitted rather than sent as an empty object, which is everybody
-    // for their first minute.
+    // for their first minute — and so are the two counters, which is everybody in
+    // a building where nobody has shot anybody yet. Absent means none, not
+    // unknown, so the readout draws a zero and the columns stay aligned.
     const [row] = decodeBoard([{ n: 0, i: 'aaaaaaaaaaaa', s: 3 }]);
     expect(row.bag).toEqual({});
+    expect(row.deaths).toBe(0);
+    expect(row.betrayals).toBe(0);
   });
 
   it('answers with nothing when the frame carried no rows', () => {
@@ -132,7 +164,14 @@ describe('decodeBoard', () => {
 });
 
 describe('changedHands', () => {
-  const row = (slot: number, name: string) => ({ slot, name, seconds: 0, bag: {} });
+  const row = (slot: number, name: string) => ({
+    slot,
+    name,
+    seconds: 0,
+    bag: {},
+    deaths: 0,
+    betrayals: 0,
+  });
 
   it('says nothing when the same people are standing in the same places', () => {
     const before = [row(0, 'aaa'), row(1, 'bbb')];
@@ -230,7 +269,7 @@ describe('a snapshot that arrives before the standings that explain it', () => {
   it('leaves everybody else alone when one place changes hands', () => {
     // Why this is `forget` and not `reset`: resetting would pause every other
     // peer in the building every time anybody walked in or out, and in a
-    // заброшка of five that is often.
+    // заброшка this small that is often.
     const i = createInterpolator(DELAY, TICK);
     const at = (x3: number, x4: number) =>
       decodePeers(

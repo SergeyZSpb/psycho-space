@@ -800,6 +800,13 @@ export interface VanyadumSurfaceKind {
 export interface VanyadumPlayerConfig {
   radius: number;
   eye_height: number;
+  /**
+   * How tall a man is for the purpose of being SHOT at, which is also how tall
+   * the figure drawn for a peer has to be: the server stands a cylinder of
+   * `radius` on the floor of his room and gives it this height, so a client that
+   * drew him shorter would be drawing a hitbox nobody can see.
+   */
+  body_height: number;
   walk_speed: number;
   max_step: number;
   max_pitch: number;
@@ -833,13 +840,31 @@ export interface VanyadumSimConfig {
 /**
  * The rules of the building itself, as opposed to the rules of the player.
  *
- * Both numbers are things a player has to be told — how many people fit, and how
- * long a bottle takes to come back — so both are derived onto the splash screen
+ * Every field here is something a player has to be told — how many people fit,
+ * how long a bottle takes to come back, how long a death costs and how long you
+ * are untouchable afterwards — so all of them are derived onto the splash screen
  * rather than typed out beside the server's constants.
  */
 export interface VanyadumWorldConfig {
   max_occupants: number;
   respawn_seconds: number;
+  /** How long a dead man lies on the floor before the заброшка gives him back. */
+  down_seconds: number;
+  /**
+   * How long somebody who has just got up cannot be hurt AND cannot shoot. Both
+   * halves matter: the client runs the same refusal, because it decides whether
+   * to draw a muzzle flash the instant a thumb lands.
+   */
+  protect_seconds: number;
+  /**
+   * What to call the standings column counting the friends you have shot.
+   *
+   * Friendly fire is on and there is nothing else in the building to kill, so
+   * every kill here is a friend's — the word is served rather than typed out
+   * because the cheatsheet is generated from what the catalogue carries, and
+   * this is the one place the joke is written down.
+   */
+  betrayals_title: string;
 }
 
 /**
@@ -859,6 +884,12 @@ export interface VanyadumGunConfig {
   reload_cost: number;
   /** The counter a reload spends — matches some pickup's `grants`. */
   ammo: string;
+  /**
+   * What one barrel takes off whoever it lands on, against `player.max_health`.
+   * The two together are how the cheatsheet says how many hits a man survives
+   * without either number being typed out on the client.
+   */
+  damage: number;
 }
 
 export interface VanyadumConfig {

@@ -25,6 +25,7 @@
 import { createFlash, createPeerFlashes } from '../lib/vanyadumFlash';
 import type { LevelMeshes, VanyadumLevel } from '../lib/vanyadumLevel';
 import { buildLevelMeshes, levelBounds } from '../lib/vanyadumLevel';
+import { PEER_DOWN, PEER_PROTECTED } from '../lib/vanyadumRoster';
 import type { VanyadumSurface } from '../lib/vanyadumTexture';
 import { TEXTURE_SIZE, generateTexture, surfaceTint } from '../lib/vanyadumTexture';
 
@@ -44,13 +45,26 @@ export interface SceneOptions {
   level: VanyadumLevel;
   surfaces: VanyadumSurface[];
   /**
+   * The figure a peer is drawn as, straight from the catalogue.
+   *
+   * IT IS THE HITBOX, which is why none of it is a number typed in here. The
+   * server stands a cylinder of `radius`, `bodyHeight` tall, on the floor of the
+   * room a man is in and shoots at THAT — so a client drawing him shorter or
+   * thinner would be drawing a target that does not match the one being hit, and
+   * every near miss would look like a bug in the game rather than in the aim.
+   * `eyeHeight` is here because the wire sends a peer's EYE and a body hangs
+   * below it.
+   */
+  player: { radius: number; bodyHeight: number; eyeHeight: number };
+  /**
    * Honoured by damping the view bob and the recoil; never by hiding anything
-   * informative. BOTH muzzle flashes stay — your own and the one on whoever
-   * else in the building just fired — because a flash is what says a shot
-   * happened, and somebody who asked for less movement still has to be told.
-   * Neither is animated in any case: a mark is in a frame or it is not, and it
-   * is cleared by a count of frames rather than by an animation ending, which
-   * is the shape this project requires of an acknowledgement precisely so that
+   * informative. EVERY MARK STAYS — both muzzle flashes, the blow on whoever was
+   * hit, the grey of a man on the floor and the blue of one who cannot be
+   * touched — because each of them is what says something happened, and somebody
+   * who asked for less movement still has to be told. None of them is animated
+   * in any case: a mark is in a frame or it is not and is cleared by a count of
+   * frames rather than by an animation ending, and a state is a colour. That is
+   * the shape this project requires of an acknowledgement precisely so that
    * turning motion off cannot silence it.
    */
   reducedMotion: boolean;
@@ -310,7 +324,7 @@ export async function createScene(opts: SceneOptions) {
   // people arriving and leaving holds four capsules rather than a hundred. A slot
   // changing hands reuses the same capsule, which is right — nothing about the
   // figure is per-person.
-  /** A body and the flash at the end of his gun. */
+  /** A body, the flash at the end of his gun, and the blow that landed on him. */
   interface PeerFigure {
     body: InstanceType<typeof THREE.Mesh>;
     /**
@@ -319,9 +333,29 @@ export async function createScene(opts: SceneOptions) {
      * out of the snapshot has to do to an unfinished mark.
      */
     muzzle: InstanceType<typeof THREE.Mesh>;
+    /** The blow: a red halo for the frames after a shot landed on him. */
+    blow: InstanceType<typeof THREE.Mesh>;
+    /**
+     * The `st` this figure was last drawn in.
+     *
+     * The pose and the tint are rewritten only when it changes, because they are
+     * STATES: a man is down for three seconds and protected for two, which is
+     * sixty and forty frames of setting a colour to the colour it already is.
+     * −1 rather than 0, so the first frame always writes.
+     */
+    drawnState: number;
   }
   const peerFigures = new Map<number, PeerFigure>();
-  const peerGeometry = new THREE.CapsuleGeometry(0.35, 1.1, 4, 8);
+  // The catalogue's own dimensions, so the figure is exactly the cylinder the
+  // server shoots at: a capsule of `radius` whose ends are hemispheres of the
+  // same, which comes to `bodyHeight` overall.
+  const peerRadius = opts.player.radius;
+  const peerGeometry = new THREE.CapsuleGeometry(
+    peerRadius,
+    Math.max(0, opts.player.bodyHeight - 2 * peerRadius),
+    4,
+    8,
+  );
   /**
    * A blob rather than the disc the player's own muzzle uses.
    *
@@ -333,12 +367,39 @@ export async function createScene(opts: SceneOptions) {
    */
   const peerMuzzleGeometry = new THREE.SphereGeometry(0.13, 6, 4);
   /**
-   * WHOSE MUZZLES ARE LIT IN THE FRAME BEING DRAWN.
+   * The blow, and it is a HALO ROUND THE MAN rather than a spot on him.
    *
-   * The wire marks the tick a shot happened, which is a LEVEL lasting several
-   * drawn frames; this converts it into an event by marking the transition, per
-   * slot. It also counts the mark in frames rather than seconds, for the same
-   * reason the player's own does — see vanyadumFlash.
+   * A small blob would be the obvious shape and it cannot work: it would sit
+   * INSIDE a capsule of `peerRadius` and be hidden by it from every angle. So the
+   * mark is wider than the body and translucent, which is also the right thing to
+   * look at — it says WHERE somebody was hit and nothing else, it is
+   * unmistakably not the small warm blob at a muzzle, and it is over in three
+   * frames.
+   */
+  const peerBlowGeometry = new THREE.SphereGeometry(peerRadius + 0.14, 8, 6);
+  /**
+   * The three colours a figure is drawn in, and each is a RULE rather than a
+   * preference.
+   *
+   * Somebody who cannot be hurt has to LOOK like somebody who cannot be hurt, or
+   * a player will empty both barrels into him and conclude the game is broken —
+   * so protection is a property of the figure for the whole two seconds it lasts,
+   * exactly as this project requires of a buff. A man on the floor goes grey and
+   * stays grey for as long as he is lying there, for the same reason.
+   */
+  const PEER_TINT_ALIVE = 0xd05a4a;
+  const PEER_TINT_DOWN = 0x4c4f52;
+  const PEER_TINT_PROTECTED = 0x6ec6ff;
+  /**
+   * WHICH PEERS ARE MARKED IN THE FRAME BEING DRAWN — his gun going off, and a
+   * shot landing on him.
+   *
+   * The wire marks the tick each happened on, which is a LEVEL lasting several
+   * drawn frames; this converts them into events by marking the transition, per
+   * slot and per kind. It also counts each mark in frames rather than seconds,
+   * for the same reason the player's own does — see vanyadumFlash. The other two
+   * states are not in there at all: they last, so they are drawn straight off
+   * `st` below.
    */
   const peerFlashes = createPeerFlashes();
 
@@ -361,18 +422,18 @@ export async function createScene(opts: SceneOptions) {
    * somebody about to come back is work done to make the world worse.
    */
   function setPeers(
-    peers: { slot: number; x: number; y: number; z: number; yaw: number; firing?: boolean }[],
+    peers: { slot: number; x: number; y: number; z: number; yaw: number; st?: number }[],
   ): void {
     if (disposed) return;
-    // Before the loop, so every peer's mark is decided against the same frame.
-    const firing = peerFlashes.frame(peers);
+    // Before the loop, so every peer's marks are decided against the same frame.
+    const marks = peerFlashes.frame(peers);
     for (const figure of peerFigures.values()) figure.body.visible = false;
     for (const p of peers) {
       let figure = peerFigures.get(p.slot);
       if (!figure) {
         const body = new THREE.Mesh(
           peerGeometry,
-          new THREE.MeshBasicMaterial({ color: 0xd05a4a, fog: true }),
+          new THREE.MeshBasicMaterial({ color: PEER_TINT_ALIVE, fog: true }),
         );
         const muzzle = new THREE.Mesh(
           peerMuzzleGeometry,
@@ -385,20 +446,62 @@ export async function createScene(opts: SceneOptions) {
         );
         // Half a metre in front of him, a little to one side, at about the
         // height a двустволка is held: local −Z is the way the capsule faces,
-        // and the body's own centre hangs 0.85 below the eye.
+        // and the body's own centre is half its height above the floor.
         muzzle.position.set(0.12, 0.4, -0.5);
         muzzle.visible = false;
-        body.add(muzzle);
+        const blow = new THREE.Mesh(
+          peerBlowGeometry,
+          // Unfogged for the reason the muzzle is, and translucent because it is
+          // WIDER than the man it marks: opaque, it would replace him for three
+          // frames at exactly the moment a player is watching what happens to
+          // him. `depthWrite` off so it cannot sort itself in front of the
+          // things it is drawn over.
+          new THREE.MeshBasicMaterial({
+            color: 0xff3b30,
+            fog: false,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+          }),
+        );
+        blow.visible = false;
+        body.add(muzzle, blow);
         scene.add(body);
-        figure = { body, muzzle };
+        figure = { body, muzzle, blow, drawnState: -1 };
         peerFigures.set(p.slot, figure);
       }
+
+      const st = p.st ?? 0;
+      const down = st === PEER_DOWN;
       // `z` is an EYE height — derived by the client from the sector the wire
-      // named, since the wire stopped carrying it — so the body hangs below it.
-      figure.body.position.set(p.x, p.z - 0.85, -p.y);
+      // named, since the wire stopped carrying it — so the floor he is standing
+      // on is that much below it, and the body sits on the floor.
+      const floorZ = p.z - opts.player.eyeHeight;
+      figure.body.position.set(
+        p.x,
+        floorZ + (down ? peerRadius : opts.player.bodyHeight / 2),
+        -p.y,
+      );
       figure.body.rotation.y = -p.yaw;
+      if (st !== figure.drawnState) {
+        figure.drawnState = st;
+        // Tipped over onto the floor. WHICH WAY HE FELL IS NOT MODELLED — the X
+        // rotation is applied after the yaw, so every corpse lies along the same
+        // world axis. It reads as a body on the ground from any angle, which is
+        // the whole of what it has to say.
+        figure.body.rotation.x = down ? Math.PI / 2 : 0;
+        const material = figure.body.material as InstanceType<typeof THREE.MeshBasicMaterial>;
+        material.color.setHex(
+          down
+            ? PEER_TINT_DOWN
+            : st === PEER_PROTECTED
+              ? PEER_TINT_PROTECTED
+              : PEER_TINT_ALIVE,
+        );
+      }
       figure.body.visible = true;
-      figure.muzzle.visible = firing.has(p.slot);
+      figure.muzzle.visible = marks.fired.has(p.slot);
+      figure.blow.visible = marks.hit.has(p.slot);
     }
   }
 

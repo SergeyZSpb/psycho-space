@@ -36,6 +36,15 @@ interface GoldenPoint {
   cd?: number;
   rl?: number;
   ammo?: number;
+  /**
+   * Seconds of spawn protection left, omitted at zero — which is every step of
+   * every case except the one that is about it.
+   *
+   * It is on the point rather than left to be inferred from a refused trigger so
+   * that a port whose arithmetic drifts reports "your protection is wrong"
+   * instead of "your gun is wrong".
+   */
+  pr?: number;
 }
 
 interface GoldenCase {
@@ -45,6 +54,17 @@ interface GoldenCase {
   sector: number;
   /** How much ammunition the player begins with; absent means none. */
   start_ammo?: number;
+  /**
+   * `down` starts the case with the player on the floor, and `start_protect`
+   * with that many seconds of spawn protection.
+   *
+   * A BOOL RATHER THAN A HEALTH VALUE, because zero is the interesting state and
+   * an omitted number would have to mean the opposite of what it says. What the
+   * port does with it is set health to nothing; what happens next is the whole
+   * of the case.
+   */
+  down?: boolean;
+  start_protect?: number;
   commands: {
     dt: number;
     mx?: number;
@@ -163,6 +183,21 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
     expect(points.some((p) => (p.cd ?? 0) > 0)).toBe(true);
   });
 
+  it('has a case about being dead and a case about being untouchable', () => {
+    // THE SAME GUARD, FOR THE TWO RULES C1b ADDED. Both are refusals — a dead
+    // man does not move, a protected one does not fire — so a vector file that
+    // exercised neither would let a port ship without either and still reproduce
+    // every trace in it. The transcripts have to REACH the states, not merely
+    // declare them: a protection that never runs down is a countdown nobody
+    // ported.
+    expect(golden.cases.some((c) => c.down)).toBe(true);
+    const protectedCase = golden.cases.find((c) => (c.start_protect ?? 0) > 0);
+    expect(protectedCase).toBeDefined();
+    const protection = protectedCase!.trace.map((p) => p.pr ?? 0);
+    expect(protection[0]).toBeGreaterThan(0);
+    expect(protection[protection.length - 1]).toBe(0);
+  });
+
   for (const c of golden.cases) {
     it(`reproduces the trace: ${c.name} (${c.trace.length} steps)`, () => {
       let p: StepPlayer = {
@@ -171,6 +206,11 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
         yaw: 0,
         pitch: 0,
         sector: c.sector,
+        // Alive unless the case is about being dead, and the health value itself
+        // does not matter beyond that: `step` only ever asks whether it is at or
+        // below zero, so the vectors carry no health column at all.
+        health: c.down ? 0 : 100,
+        protectedLeft: c.start_protect ?? 0,
         // The gun always starts full, exactly as the server's NewPlayer leaves
         // it, and the ammunition is the case's own — a reload cannot be
         // exercised by somebody with empty pockets.
@@ -213,6 +253,10 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
         expect(
           Math.abs(p.reload - (want.rl ?? 0)),
           `${c.name} step ${i}: reload got ${p.reload} want ${want.rl ?? 0}`,
+        ).toBeLessThanOrEqual(EXACT);
+        expect(
+          Math.abs(p.protectedLeft - (want.pr ?? 0)),
+          `${c.name} step ${i}: protection got ${p.protectedLeft} want ${want.pr ?? 0}`,
         ).toBeLessThanOrEqual(EXACT);
       }
     });
@@ -263,6 +307,8 @@ describe('the gun, where the vectors cannot reach', () => {
     yaw: 0,
     pitch: 0,
     sector: 0,
+    health: 100,
+    protectedLeft: 0,
     loaded: K.barrels,
     cooldown: 0,
     reload: 0,
@@ -287,6 +333,47 @@ describe('the gun, where the vectors cannot reach', () => {
     // again until he moved.
     const hot: StepPlayer = { ...still(), cooldown: 0.1 };
     expect(step(level, hot, standing, K).cooldown).toBeCloseTo(0.075, 12);
+  });
+
+  it('refuses the trigger while spawn protection is running', () => {
+    // BOTH HALVES OR IT IS A WEAPON. Protection that you can fire from hands the
+    // spawn to whoever died last, which is worse than the grief it was fixing —
+    // so the browser runs the same refusal, and it has to, because it is what
+    // decides whether a muzzle flash is drawn the instant a thumb lands.
+    const guarded: StepPlayer = { ...still(), protectedLeft: 1 };
+    const after = step(level, guarded, { ...standing, fire: true }, K);
+    expect(after.loaded).toBe(K.barrels);
+    expect(after.cooldown).toBe(0);
+    // And it counts down while he stands perfectly still, which is the state
+    // somebody who has just got up and is looking around is in.
+    expect(after.protectedLeft).toBeCloseTo(1 - standing.dt, 12);
+  });
+
+  it('refuses the reload too, so the window is not spent filling the gun', () => {
+    // A protected man who could reload would come out of the window with a full
+    // обрез he never had to walk for.
+    const guarded: StepPlayer = { ...still(), protectedLeft: 1, loaded: 0, ammo: 2 };
+    const after = step(level, guarded, { ...standing, fire: true }, K);
+    expect(after.reload).toBe(0);
+    expect(after.ammo).toBe(2);
+  });
+
+  it('lets a man on the floor look around and do nothing else', () => {
+    // THE RULE LIVES IN `step` AND NOT IN THE WORLD, and this port is why: a
+    // server that quietly ignored a dead player's commands while the browser
+    // went on applying them would drag his corpse down the corridor and correct
+    // it twenty times a second. The angles are still his, because a death you
+    // cannot look around from is a black screen with a timer on it.
+    const dead: StepPlayer = { ...still(), health: 0, cooldown: 0.2, protectedLeft: 0.4 };
+    const after = step(level, dead, { dt: 0.025, mx: 0, my: 1, yaw: 1.2, pitch: -0.3, fire: true }, K);
+    expect(after.x).toBe(dead.x);
+    expect(after.y).toBe(dead.y);
+    expect(after.yaw).toBeCloseTo(1.2, 12);
+    expect(after.pitch).toBeCloseTo(-0.3, 12);
+    // Nothing ran: not the cadence, not the protection, not the trigger.
+    expect(after.loaded).toBe(K.barrels);
+    expect(after.cooldown).toBe(0.2);
+    expect(after.protectedLeft).toBe(0.4);
   });
 
   it('leaves the player it was given alone', () => {

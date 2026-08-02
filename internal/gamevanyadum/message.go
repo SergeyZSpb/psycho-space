@@ -260,7 +260,31 @@ type Snapshot struct {
 	// Sector index, so the client can pick the right light level without
 	// working out where it is standing.
 	Sector int `json:"s"`
+	// Health is what is left of you, and ZERO IS THE WHOLE OF BEING DEAD. There
+	// is no "down" flag for yourself: your own health is already on every frame,
+	// and hp falling IS the acknowledgement that you were hit — the same
+	// per-frame comparison the client already makes for the barrel count and the
+	// pickup mask. A field to say "you were shot" would be bytes on a payload
+	// that repeats twenty times a second to restate something the payload
+	// carries.
 	Health int `json:"hp"`
+	// Down is milliseconds until you get up, and Protect is milliseconds of
+	// spawn protection left. Both are omitted at rest, which for a player who is
+	// alive and unprotected is every frame.
+	//
+	// DURATIONS RATHER THAN FLAGS, which is the shape this project asks for: a
+	// mark that flashes once says nothing about the seconds that follow, and the
+	// two things a man on the floor wants to know are how long and how long
+	// after that. They cannot both be set — protection begins when the down
+	// window ends — so the widest frame carries one.
+	//
+	// PROTECTION MUST BE A NUMBER THE CLIENT CAN SIMULATE, not merely one it can
+	// draw: it is on Player and the browser counts it down through the same Step
+	// (sim.go), because the trigger is refused while it runs and prediction has
+	// to know that before it draws a muzzle flash. It is therefore also the
+	// reconcile base for that timer, exactly as `d` and `r` are for the gun's.
+	Down    int `json:"dn,omitempty"`
+	Protect int `json:"pr,omitempty"`
 	// Left is what is lying on the floor right now, as a BITMASK: bit i is set
 	// when the pickup at INDEX i of the level's Pickups is there to be walked
 	// over. The index and not the id — an index is dense by construction, an id
@@ -319,9 +343,9 @@ type Snapshot struct {
 	// almost every time it was sent.
 	//
 	// A PEER'S SHOT IS THE CASE THIS DOES NOT COVER, because a peer carries
-	// neither of these two fields and giving it one would cost more than the flag
-	// that replaced them: see Peer.Fired for the measurement and for why the
-	// cheap derivation available here is not available there.
+	// neither of these two fields and giving it one would cost more than the
+	// small integer that replaced them: see Peer.St for the measurement and for
+	// why the cheap derivation available here is not available there.
 	Cooldown int            `json:"d,omitempty"`
 	Reload   int            `json:"r,omitempty"`
 	Bag      map[string]int `json:"c,omitempty"`
@@ -348,10 +372,10 @@ type Snapshot struct {
 	//
 	// THIS IS WHAT BOUNDS MaxOccupants. The array is per viewer and holds
 	// everybody else, so its cost is (occupants − 1) × a peer × the snapshot
-	// rate, per viewer — and a peer is a MEASURED 49 bytes at the widest
-	// quantisation the wire can carry. See that constant for the arithmetic, for
-	// the 8 kB/s ceiling it is derived from, and for why the answer today is
-	// five.
+	// rate, per viewer — and a peer is a MEASURED 56 bytes at the widest
+	// quantisation the wire can carry, of which 7 are the state field this
+	// iteration added. See that constant for the arithmetic, for the 8 kB/s
+	// ceiling it is derived from, and for why the answer today is four.
 	//
 	// A peer is drawn INTERPOLATED, about a hundred milliseconds in the past,
 	// because its intent cannot be predicted the way your own is.
@@ -392,10 +416,11 @@ const MaxWirePickups = 32
 //	the eye height, for the sector    −3   `"z":12345` → `"s":12`
 //	the pose enum                     −6   it was 0 in every frame ever sent
 //
-// 71 bytes to 49, which is the whole of what took MaxOccupants from four to
-// five. The pose enum went because nothing in this game can yet reduce anybody's
-// health, so it was a field describing a state the simulation cannot reach; it
-// comes back with whatever first does damage.
+// 71 bytes to 49, which took MaxOccupants from four to five — and the state
+// field below has since given the place back, which is what a peer costing 56
+// again means. The pose enum went because nothing could yet reduce anybody's
+// health, so it described a state the simulation could not reach; `St` is that
+// field returning, with the four states the обрез actually produces.
 //
 // THE SECTOR RATHER THAN THE HEIGHT, and being smaller is the lesser reason. The
 // client holds the level, so a sector index is a floor height it can look up and
@@ -410,7 +435,7 @@ const MaxWirePickups = 32
 // every building — so omitting at zero would make the reader responsible for
 // remembering the default on four separate fields. It would not help the case
 // that matters in any event: the capacity is derived from the worst frame, and
-// nothing is zero in that one. `Fired` is the exception and the reason is on it.
+// nothing is zero in that one. `St` is the exception and the reason is on it.
 type Peer struct {
 	// Slot is the place in the building this entity holds. The standings frame
 	// says whose it currently is.
@@ -422,49 +447,66 @@ type Peer struct {
 	// is in should make him.
 	Sector int `json:"s"`
 	Yaw    int `json:"yaw"`
-	// Fired says this peer's gun went off ON THIS TICK, and it is omitted on
-	// every tick it did not. It exists so that a shot is visible to the whole
-	// building rather than only to the man who fired it — an action nobody else
-	// can see is an unfinished action (CLAUDE.md), and a обрез going off two
-	// metres away is the action in this game that matters most to everybody
-	// except its author.
+	// St is everything a viewer has to be told about this peer beyond where he is
+	// standing: PeerFired, PeerHit, PeerDown or PeerProtected. Omitted for a man
+	// who is alive, unprotected and did nothing on this tick, which is almost
+	// every peer on almost every frame.
 	//
-	// THIS IS THE "DEDICATED EVENT FIELD" THAT RULE CALLS A LAST RESORT, and it
-	// is here having lost the argument against every cheaper shape rather than
-	// instead of trying them. What the rule asks for first is a value the frame
-	// ALREADY CARRIES, and for your own player there is one: `b` falling by one
-	// between two frames IS the shot, which is exactly how the HUD draws your own
-	// muzzle flash without a byte being spent. A peer carries no barrel count and
-	// cannot be given one for less: `,"b":2` is 6 bytes on EVERY tick, which at
-	// four peers is 480 B/s, against the 108 the flag costs at the rates below.
+	// ONE FIELD FOR FOUR STATES, because the rules make them mutually exclusive
+	// and a field that can only hold one value at a time is one field. A man on
+	// the floor cannot fire and cannot be hit again; a protected man can do
+	// neither either (content.go, SpawnProtectSeconds). The single genuine
+	// collision is firing and being shot on the same tick, and being shot wins —
+	// the viewer is told the thing that changed the building.
 	//
-	// AND THE SHAPE THIS PROJECT PREFERS — A DURATION — WAS MEASURED AND DOES NOT
-	// FIT. The natural one is the peer's own cooldown, which would let a viewer
-	// draw a smoke trail for as long as it ran. But a cooldown is NON-ZERO FOR
-	// THE WHOLE 0.35 s IT RUNS, so on a peer firing as fast as the gun allows it
-	// is present on all twenty ticks of every second: `,"d":350` is 8 bytes ×
-	// 20 Hz × 4 peers = 640 B/s, against the 387 B/s this frame has left under
-	// wireCeiling at MaxOccupants. It does not fit, and the answer to that is not
-	// a bigger ceiling.
+	// IT SAYS WHERE, NOT WHAT (CLAUDE.md). Four values the client tells apart by
+	// colour and shape; no numbers, no names, no damage. It is the acknowledgement
+	// half of every verb this iteration adds, and it is the SAME field for
+	// everybody watching — an effect only its author can see is a bug rather than
+	// a smaller feature.
 	//
-	// THE FLAG DOES FIT, and the arithmetic is the whole justification for
-	// spending the bytes: `,"f":true` is 9 bytes, a gun fires at most once per
-	// FireCooldownSeconds — three times a second, rounded up — and a viewer in a
-	// full building sees four peers. 9 × 3 × 4 = 108 B/s, which is a quarter of
-	// what the duration cost and leaves 279 B/s of headroom.
-	// TestEverythingAFullBuildingSendsAViewerFitsTheCeiling counts it at that own
-	// rate rather than at the snapshot rate, because charging a per-action field
-	// twenty times a second would be budgeting a state the cadence forbids —
-	// and TestAPeersShotIsOnTheFrameForOneTickOnly is what stops it quietly
-	// becoming a per-tick field, at which point the arithmetic above is wrong and
-	// the 640 B/s one applies.
-	//
-	// A BOOL AND NOT A COUNT. Two shots cannot land in one tick — the cadence is
-	// 0.35 s against a 0.05 s tick — so a count would be a field with one value,
-	// which is not a field (CLAUDE.md). It says WHERE a shot happened and never
-	// what it hit, which is all this iteration has: nothing is hit yet.
-	Fired bool `json:"f,omitempty"`
+	// WHAT IT REPLACED, AND WHAT THAT COST. This was `,"f":true`, a bool that rode
+	// the tick a trigger was pulled: 9 bytes at the gun's own cadence, 108 B/s at
+	// the old capacity. Two of the four values above are DURATIONS rather than
+	// actions — a man is down for DownTime and protected for SpawnProtectSeconds,
+	// and both are non-zero on every tick they run, so they are priced at the
+	// snapshot rate exactly as the peer's position is. That is the shape this
+	// field's predecessor rejected at 640 B/s, and the reason the answer is
+	// different now is that there is no cheaper one: a hit and a death cannot be
+	// derived from any value the frame already carries, because neither moves the
+	// man they happen to. `,"st":1` is 7 bytes — the floor for a JSON field — and
+	// at 20 Hz on every peer it is what took MaxOccupants from five to four. See
+	// that constant for the arithmetic, and note which way the trade went: a
+	// smaller building, never a bigger ceiling.
+	St int `json:"st,omitempty"`
 }
+
+// The values St takes. They are wire constants rather than catalogue entries:
+// the client switches on them to choose a colour, which is a rendering decision
+// and not a rule a player is told.
+//
+// PeerHit AND PeerFired ARE INSTANTS and are true for exactly the tick they
+// happened on. PeerDown and PeerProtected are STATES and are true for every tick
+// they last, which is what makes them the expensive half of this field.
+const (
+	// PeerFired is his gun going off. The man who fired needs no telling — his
+	// own barrel count is on his own frame — so this is how everybody else finds
+	// out, which is the whole reason it exists.
+	PeerFired = 1
+	// PeerHit is a shot landing on him. It is what tells the ROOM that somebody
+	// was hit, and it is also how the SHOOTER learns he connected: he knows he
+	// fired this tick, because his own `b` fell, and the man he was pointing at
+	// is marked on the same frame. That derivation is why there is no separate
+	// "you hit him" field addressed to the shooter.
+	PeerHit = 2
+	// PeerDown is a man on the floor, waiting out DownTime.
+	PeerDown = 3
+	// PeerProtected is a man who has just got up: he cannot be hurt and cannot
+	// shoot. Shown for as long as it lasts, because a state with a duration is
+	// not an event — and because somebody whose shots are bouncing off needs to
+	// be told why rather than left to conclude the game is broken.
+	PeerProtected = 4
+)
 
 // Standings is who is in the building, how long they have each been in it, and
 // what they are carrying.
@@ -473,9 +515,11 @@ type Peer struct {
 // ends. A match with no result has nothing to show at the end of it, so what it
 // needs instead is something to look at in the middle: a readout that says how
 // everybody is doing, updated while you play. The metric is deliberately what
-// the game actually has today — time in the building and what everybody is
-// carrying — rather than a shape with empty columns in it. Kills and streaks are
-// fields this frame grows on the day something can be killed, and not before.
+// the game actually has today — time in the building, what everybody is
+// carrying, how often they have been put on the floor and how many friends they
+// have put there — rather than a shape with empty columns in it. It grew the
+// last two on the iteration that made a player killable, which is the rule: a
+// column appears with the thing it counts.
 //
 // WHAT IS CARRIED RATHER THAN WHAT WAS FOUND, and since the gun started spending
 // beer the two are different numbers. Carried is the one worth publishing: it
@@ -532,6 +576,23 @@ type StandingsRow struct {
 	// which is everybody for their first minute — and everybody again once the
 	// gun has drunk what they found.
 	Bag map[string]int `json:"c,omitempty"`
+	// Deaths is how many times the building has put them on the floor, and
+	// Betrayals is how many friends they have put there.
+	//
+	// THERE IS NO KILL COLUMN, AND THAT IS THE JOKE RATHER THAN AN OMISSION.
+	// Friendly fire is on and the нейрослопы have not arrived, so every kill in
+	// this заброшка is a friend's — it scores nothing, it is not added to any
+	// total, and it is published on its own line under the name the catalogue
+	// gives it (content.go, BetrayalsTitle). A kill total appears on the day
+	// there is something here worth killing.
+	//
+	// ON THIS FRAME AND NOT ON THE SNAPSHOT, which is the rule that made this
+	// frame exist: both numbers move a few times a MINUTE, and restating them
+	// twenty times a second per viewer is exactly what a once-a-second readout is
+	// for. Omitted at zero, so a building where nobody has shot anybody carries
+	// neither.
+	Deaths    int `json:"d,omitempty"`
+	Betrayals int `json:"br,omitempty"`
 }
 
 // cm quantises metres to centimetres for the wire.

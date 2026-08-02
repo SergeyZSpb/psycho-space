@@ -226,7 +226,7 @@ func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 		Pickups  []map[string]any   `json:"pickups"`
 		Surfaces []map[string]any   `json:"surfaces"`
 		Sim      map[string]float64 `json:"sim"`
-		World    map[string]float64 `json:"world"`
+		World    map[string]any     `json:"world"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
 		t.Fatal(err)
@@ -243,15 +243,45 @@ func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 	if cfg.Sim["input_hz"] <= 0 || cfg.Sim["max_commands"] <= 0 {
 		t.Fatalf("the client is not told the rates it has to match: %+v", cfg.Sim)
 	}
-	// And the building's own two rules, both of which a player has to know before
-	// walking in: how many people fit, and how long a thing takes to come back.
-	if cfg.World["max_occupants"] != gamevanyadum.MaxOccupants {
+	// And the building's own rules, every one of which a player has to know
+	// before walking in: how many people fit, how long a thing takes to come
+	// back, how long a death costs him and how long he is untouchable
+	// afterwards.
+	if got, _ := cfg.World["max_occupants"].(float64); int(got) != gamevanyadum.MaxOccupants {
 		t.Fatalf("the catalogue says %v people fit, the building holds %d",
 			cfg.World["max_occupants"], gamevanyadum.MaxOccupants)
 	}
-	if cfg.World["respawn_seconds"] != gamevanyadum.PickupRespawn.Seconds() {
+	if got, _ := cfg.World["respawn_seconds"].(float64); got != gamevanyadum.PickupRespawn.Seconds() {
 		t.Fatalf("the catalogue says things come back after %vs, the world says %v",
 			cfg.World["respawn_seconds"], gamevanyadum.PickupRespawn)
+	}
+	if got, _ := cfg.World["down_seconds"].(float64); got != gamevanyadum.DownTime.Seconds() {
+		t.Fatalf("the catalogue says a death lasts %vs, the world says %v",
+			cfg.World["down_seconds"], gamevanyadum.DownTime)
+	}
+	if got, _ := cfg.World["protect_seconds"].(float64); got != gamevanyadum.SpawnProtectSeconds {
+		t.Fatalf("the catalogue says protection lasts %vs, the world says %v",
+			cfg.World["protect_seconds"], gamevanyadum.SpawnProtectSeconds)
+	}
+	// The standings column that counts the friends you have shot is named HERE,
+	// in Russian, so the splash screen and the board say the same word as the
+	// rules do without either typing it out.
+	if got, _ := cfg.World["betrayals_title"].(string); got != gamevanyadum.BetrayalsTitle {
+		t.Fatalf("the catalogue calls the column %q, the game calls it %q", got, gamevanyadum.BetrayalsTitle)
+	}
+	// How tall a man is to be shot at, which is also how tall he should be drawn:
+	// a figure shorter than the server shoots at is a hitbox nobody can see.
+	if cfg.Player["body_height"] <= cfg.Player["eye_height"] {
+		t.Fatalf("a body is %v tall and its eyes are at %v", cfg.Player["body_height"], cfg.Player["eye_height"])
+	}
+	// And what a barrel does, against the health published beside it — the two
+	// numbers the cheatsheet turns into "two in the chest and he is done".
+	if got, _ := cfg.Gun["damage"].(float64); int(got) != gamevanyadum.BarrelDamage {
+		t.Fatalf("the catalogue says a barrel does %v, the gun does %d", cfg.Gun["damage"], gamevanyadum.BarrelDamage)
+	}
+	if float64(gamevanyadum.Barrels)*cfg.Gun["damage"].(float64) < cfg.Player["max_health"] {
+		t.Fatalf("a full gun of %v barrels at %v damage cannot empty %v health — the cheatsheet's arithmetic is a lie",
+			cfg.Gun["barrels"], cfg.Gun["damage"], cfg.Player["max_health"])
 	}
 	// And the gun, which is the part of the cheatsheet a player most needs before
 	// he walks in: how many shots he has, how fast they come, what a reload costs
@@ -632,10 +662,18 @@ func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
 		t.Fatalf("a crossed the заброшка and b saw him move %.2f m", moved)
 	}
 
-	// And the bottle he walked over is gone from BOTH their worlds. The mask is
-	// idempotent full state — bit i is the pickup at index i of the level — so
-	// this is the same field for everybody rather than a per-player view of it.
+	// And the bottle he walked over is gone from the world, which B is shown by
+	// walking into the same room and finding an empty floor.
+	//
+	// THE MASK IS PER VIEWER NOW, and B has to be standing somewhere he can see
+	// that room for it to say anything at all: it carries what is on the floor of
+	// the reader's own room and the rooms through its doorways, and nothing else
+	// (world.go, SnapshotFor). It used to be the whole building for everybody,
+	// which handed a clearing bit and the next standings frame to anybody who
+	// cared to work out where a man he had never been sent was standing — free
+	// while nothing here could shoot, and a target the day something could.
 	const bit = uint32(1) << 0
+	dumWalkTo(t, tick, clk, room, b, dumRouteTo(t, level, level.SpawnSector, target.Sector, dumCornerAwayFrom(t, level, target)))
 	dumWaitFor(t, tick, clk, room, "the beer to be gone for both of them",
 		func() bool { return a.last.Left&bit == 0 && b.last.Left&bit == 0 })
 
@@ -644,10 +682,12 @@ func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
 	// the frame already says so twenty times a second.
 	//
 	// A walks away first, or he would take it again on the very tick it returned
-	// and the bit would never be seen set.
+	// and the bit would never be seen set. B stays in the room — in the corner,
+	// well out of reach of it — which is what makes him the one who is shown it
+	// coming back.
 	dumWalkTo(t, tick, clk, room, a, dumRouteTo(t, level, target.Sector, level.SpawnSector, level.Spawn))
-	dumWaitFor(t, tick, clk, room, "the beer to come back for both of them",
-		func() bool { return a.last.Left&bit != 0 && b.last.Left&bit != 0 })
+	dumWaitFor(t, tick, clk, room, "the beer to come back for the man standing in the room with it",
+		func() bool { return b.last.Left&bit != 0 })
 
 	// And then everybody goes home. Closing the socket is the only way out of the
 	// building — there is no quit button, because nothing here ends — so what
@@ -941,6 +981,10 @@ type dumCommand struct {
 	MY    float64 `json:"my"`
 	Yaw   float64 `json:"yaw"`
 	Pitch float64 `json:"pitch"`
+	// Fire is the trigger, omitted when it was not pulled exactly as the browser
+	// omits it — a client emits forty sub-steps a second and pulls perhaps three
+	// times in a busy one.
+	Fire bool `json:"f,omitempty"`
 }
 
 // dumInput is one client→server input frame.
@@ -958,6 +1002,9 @@ type dumPeer struct {
 	X      int `json:"x"`
 	Y      int `json:"y"`
 	Sector int `json:"s"`
+	// St is what he is doing or having done to him: fired, hit, down or
+	// protected, and absent for a man who is simply standing there.
+	St int `json:"st"`
 }
 
 // dumRow is one line of the standings, and dumBoard is the frame it arrives on.
@@ -966,6 +1013,11 @@ type dumRow struct {
 	Name    string         `json:"i"`
 	Seconds int            `json:"s"`
 	Bag     map[string]int `json:"c"`
+	// Deaths is how often the building has put him on the floor and Betrayals is
+	// how many friends he has put there. There is no kill column: every kill in
+	// this заброшка is a friend's, which is the joke.
+	Deaths    int `json:"d"`
+	Betrayals int `json:"br"`
 }
 
 type dumBoard struct {
@@ -977,13 +1029,20 @@ type dumBoard struct {
 // the map[string]any the assertions above use, because every field of it is
 // something this file does arithmetic or comparisons on.
 type dumSnapshot struct {
-	T     string    `json:"t"`
-	Tick  int64     `json:"k"`
-	Ack   int64     `json:"ack"`
-	X     int       `json:"x"`
-	Y     int       `json:"y"`
-	Left  uint32    `json:"pk"`
-	Peers []dumPeer `json:"p"`
+	T    string `json:"t"`
+	Tick int64  `json:"k"`
+	Ack  int64  `json:"ack"`
+	X    int    `json:"x"`
+	Y    int    `json:"y"`
+	Left uint32 `json:"pk"`
+	// Health is what is left of the reader, and zero is the whole of being down;
+	// Down is milliseconds until he gets up and Protect is milliseconds of spawn
+	// protection left. Loaded is the barrel count.
+	Health  int       `json:"hp"`
+	Loaded  int       `json:"b"`
+	Down    int       `json:"dn"`
+	Protect int       `json:"pr"`
+	Peers   []dumPeer `json:"p"`
 }
 
 // dumWire is the browser's send loop, reduced to the part the world can tell
@@ -1537,6 +1596,15 @@ func TestVanyadumTheTriggerReachesTheWorldAndTheShellCountComesBack(t *testing.T
 		}
 	}
 
+	// HE WALKS IN PROTECTED, and a protected man's trigger is refused as firmly as
+	// a shot at him is (content.go, SpawnProtectSeconds), so the window is waited
+	// out before anything is asked of the gun. It runs down with nothing being
+	// sent, by the same idle fill the cadence below relies on.
+	waitForSnap(t, frames, tick, clk, "let the walk-in protection expire", func(f map[string]any) bool {
+		_, protected := f["pr"]
+		return !protected
+	})
+
 	// The first barrel. The shell count that comes back is the SERVER's.
 	pullTrigger(t, conn, 1)
 	fired := waitForSnap(t, frames, tick, clk, "reported a spent barrel", func(f map[string]any) bool {
@@ -1583,4 +1651,198 @@ func TestVanyadumTheTriggerReachesTheWorldAndTheShellCountComesBack(t *testing.T
 	if _, reloading := dry["r"]; reloading {
 		t.Fatalf("a reload started with nothing in the bag: %v", dry)
 	}
+}
+
+// peerStateOf is what one socket's newest frame says about the man in a slot:
+// PeerFired, PeerHit, PeerDown, PeerProtected, or zero for somebody simply
+// standing there. It reports false when that slot is not on the frame at all,
+// which is ordinary — interest management sends the reader's own room and the
+// rooms through its doorways, and nothing else.
+func peerStateOf(w *dumWire, slot int) (int, bool) {
+	for _, p := range w.last.Peers {
+		if p.Slot == slot {
+			return p.St, true
+		}
+	}
+	return 0, false
+}
+
+// rowOf is one socket's newest standings row for a slot.
+func rowOf(w *dumWire, slot int) (dumRow, bool) {
+	for _, r := range w.board.Rows {
+		if r.Slot == slot {
+			return r, true
+		}
+	}
+	return dumRow{}, false
+}
+
+func TestVanyadumOneFriendShootsAnotherAndTheWholeBuildingSeesIt(t *testing.T) {
+	// FIRST BLOOD, END TO END, and it is a friend's. Two accounts, two real
+	// sockets, one заброшка, over a real Postgres: one of them empties both
+	// barrels into the other, both are shown it happening, the man who was shot
+	// goes down and comes back at the spawn, and the standings publish the
+	// death and the betrayal — because friendly fire is on and there is nothing
+	// else in this building to shoot yet.
+	//
+	// THEY ARE STANDING ON EACH OTHER, deliberately. Everybody spawns at the
+	// level's one spawn point and neither of them sends a step, so the range is
+	// zero and the shot cannot be lost to aim — which is what makes this a test
+	// of the wire and the world rather than of the trigonometry. Where the ray
+	// goes is settled in hit_test.go, against geometry a reader can check.
+	app, tick, _ := buildAppVanyadum(t, dumVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cliA := loginAs(t, srv.URL, "910015", "user")
+	cliB := loginAs(t, srv.URL, "910016", "user")
+	clk := newDumClock()
+
+	connA, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cliA, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial a: %v", err)
+	}
+	defer connA.CloseNow()
+	connB, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cliB, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial b: %v", err)
+	}
+	defer connB.CloseNow()
+
+	a := newDumWire(connA, readFrames(t, connA))
+	b := newDumWire(connB, readFrames(t, connB))
+	room := []*dumWire{a, b}
+	for _, w := range room {
+		w.attach(t)
+	}
+	dumWaitFor(t, tick, clk, room, "each of them to see the other", func() bool {
+		return len(a.last.Peers) > 0 && len(b.last.Peers) > 0
+	})
+	if a.last.Health != gamevanyadum.StartHealth || b.last.Health != gamevanyadum.StartHealth {
+		t.Fatalf("they walked in on %d and %d health", a.last.Health, b.last.Health)
+	}
+
+	// AND THEY BOTH WALK IN PROTECTED — everybody who appears at the one spawn
+	// does, whether he got up there or arrived there (content.go,
+	// SpawnProtectSeconds) — so the window is waited out before the first barrel.
+	// Neither of them is sending anything, so it runs down on the world's own
+	// clock.
+	dumWaitFor(t, tick, clk, room, "their walk-in protection to expire", func() bool {
+		return a.last.Protect == 0 && b.last.Protect == 0
+	})
+
+	// THE FIRST BARREL. What comes back is the victim's own health — the server's
+	// number, not a claim anybody made — and the mark on the frame everybody
+	// else is sent. The mark is the shooter's acknowledgement too: he knows he
+	// fired because his own barrel count fell, and the man he was pointing at is
+	// flagged on the very same frame.
+	a.send(t, 1, dumCommand{Dt: 0.025, Fire: true})
+	sawHit := false
+	dumWaitFor(t, tick, clk, room, "b to lose half of himself", func() bool {
+		if st, ok := peerStateOf(a, b.slot); ok && st == gamevanyadum.PeerHit {
+			sawHit = true
+		}
+		return b.last.Health == gamevanyadum.StartHealth-gamevanyadum.BarrelDamage
+	})
+	if !sawHit {
+		t.Fatal("a shot landed and no frame ever marked the man it landed on")
+	}
+	if a.last.Loaded != gamevanyadum.Barrels-1 {
+		t.Fatalf("the shooter's own frame says %d barrels after one shot", a.last.Loaded)
+	}
+
+	// THE SECOND, once the cadence has run out — and that is the whole gun: a
+	// full обрез is exactly one kill.
+	dumWaitFor(t, tick, clk, room, "the cadence to run out", func() bool { return a.last.Loaded == 1 })
+	for i := 0; i < int(gamevanyadum.FireCooldownSeconds/gamevanyadum.SimStep.Seconds())+2; i++ {
+		dumPump(t, tick, clk, room...)
+	}
+	a.send(t, 1, dumCommand{Dt: 0.025, Fire: true})
+
+	sawDown := false
+	dumWaitFor(t, tick, clk, room, "b to go down", func() bool {
+		if st, ok := peerStateOf(a, b.slot); ok && st == gamevanyadum.PeerDown {
+			sawDown = true
+		}
+		return b.last.Health == 0 && sawDown
+	})
+	if b.last.Down <= 0 {
+		t.Fatalf("a man on the floor is told he gets up in %d ms", b.last.Down)
+	}
+	if b.last.Protect != 0 {
+		t.Fatalf("a man on the floor is published as protected for %d ms", b.last.Protect)
+	}
+
+	// THE STANDINGS SAY WHOSE FAULT IT WAS. One death on him, one betrayal on the
+	// man who did it, and nothing added to any kill total anywhere — the frame
+	// has no such column.
+	dumWaitFor(t, tick, clk, room, "the standings to publish the death and the betrayal", func() bool {
+		victim, ok := rowOf(a, b.slot)
+		killer, ok2 := rowOf(a, a.slot)
+		return ok && ok2 && victim.Deaths == 1 && killer.Betrayals == 1
+	})
+	if row, _ := rowOf(b, b.slot); row.Betrayals != 0 {
+		t.Fatalf("the man who was shot is credited with %d betrayals of his own", row.Betrayals)
+	}
+	if row, _ := rowOf(b, a.slot); row.Deaths != 0 {
+		t.Fatalf("the man who did the shooting is recorded as having died %d times", row.Deaths)
+	}
+
+	// AND HE COMES BACK. Nothing here ends, so a death is three seconds and a
+	// walk: he stands up at the spawn on full health, with a full gun and a
+	// window in which he can neither be shot nor shoot — which is what makes one
+	// shared spawn survivable at all.
+	sawProtected := false
+	dumWaitFor(t, tick, clk, room, "b to get back up", func() bool {
+		if st, ok := peerStateOf(a, b.slot); ok && st == gamevanyadum.PeerProtected {
+			sawProtected = true
+		}
+		return b.last.Health == gamevanyadum.StartHealth
+	})
+	if !sawProtected {
+		t.Fatal("he got up and no frame ever showed anybody that he was protected")
+	}
+	if b.last.Protect <= 0 {
+		t.Fatalf("he got up with %d ms of protection", b.last.Protect)
+	}
+	if b.last.Down != 0 {
+		t.Fatalf("a man back on his feet is still told he gets up in %d ms", b.last.Down)
+	}
+	if b.last.Loaded != gamevanyadum.Barrels {
+		t.Fatalf("he got up holding %d barrels", b.last.Loaded)
+	}
+	// And the building is exactly as full as it was: one man being killed ends
+	// nothing for anybody, least of all for the two of them.
+	if len(a.board.Rows) != 2 {
+		t.Fatalf("the building holds %d people after a death", len(a.board.Rows))
+	}
+}
+
+// dumCornerAwayFrom is a place in the pickup's own room to stand and WATCH it:
+// the corner of that room furthest from it, kept a clear player-radius off the
+// walls exactly as the generator keeps the pickups themselves.
+//
+// FAR ENOUGH NOT TO DRINK IT, which is the whole job. Somebody waiting for a
+// respawn while standing on the spot collects it on the tick it returns and the
+// bit is never seen set — and PickupReach is generous by design, because there
+// is no use button. A room is at least RoomMin across, so its furthest corner is
+// several metres from anything inside it; the assertion below says so rather
+// than trusting it.
+func dumCornerAwayFrom(t *testing.T, l *gamevanyadum.Level, p gamevanyadum.Pickup) gamevanyadum.Vec2 {
+	t.Helper()
+	s := l.Sectors[p.Sector]
+	inset := gamevanyadum.PlayerRadius * 2
+	corner := gamevanyadum.Vec2{X: s.MinX + inset, Y: s.MinY + inset}
+	for _, c := range []gamevanyadum.Vec2{
+		{X: s.MaxX - inset, Y: s.MinY + inset},
+		{X: s.MinX + inset, Y: s.MaxY - inset},
+		{X: s.MaxX - inset, Y: s.MaxY - inset},
+	} {
+		if math.Hypot(c.X-p.Pos.X, c.Y-p.Pos.Y) > math.Hypot(corner.X-p.Pos.X, corner.Y-p.Pos.Y) {
+			corner = c
+		}
+	}
+	if d := math.Hypot(corner.X-p.Pos.X, corner.Y-p.Pos.Y); d < gamevanyadum.PickupReach+1 {
+		t.Fatalf("the furthest corner of room %d is %.2f m from the bottle in it, which is close enough to drink it", p.Sector, d)
+	}
+	return corner
 }

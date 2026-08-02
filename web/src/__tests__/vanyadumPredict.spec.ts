@@ -39,7 +39,18 @@ const K: StepConstants = {
  * about the gun name only the field they are making a claim about.
  */
 function snap(over: Partial<Authoritative> & { ack: number }): Authoritative {
-  return { x: 50, y: 50, sector: 0, loaded: K.barrels, cooldown: 0, reload: 0, ammo: 0, ...over };
+  return {
+    x: 50,
+    y: 50,
+    sector: 0,
+    health: 100,
+    loaded: K.barrels,
+    cooldown: 0,
+    reload: 0,
+    protect: 0,
+    ammo: 0,
+    ...over,
+  };
 }
 
 /** One big empty room, so nothing below is about collision. */
@@ -61,7 +72,7 @@ function predictor() {
     level: ROOM,
     constants: K,
     eyeHeight: 1.65,
-    start: { x: 50, y: 50, sector: 0, yaw: 0 },
+    start: { x: 50, y: 50, sector: 0, yaw: 0, health: 100 },
   });
 }
 
@@ -288,6 +299,91 @@ describe('the gun, which is the first thing here that is decremented rather than
     expect(p.raw().loaded).toBe(K.barrels - 1);
     p.reconcile(snap({ ack: 1, loaded: K.barrels }));
     expect(p.raw().loaded).toBe(K.barrels);
+  });
+});
+
+describe('being killed, and coming back', () => {
+  const shoot = { ...walk, fire: true };
+
+  it('stops walking a man the snapshot says is on the floor', () => {
+    // HEALTH IS NOT PREDICTED AND IS STILL ON THE REPLAY BASE, and this is what
+    // that buys. A player is shot while walking; the pending commands are
+    // replayed on top of the frame that says so, and `step` refuses every one of
+    // them — so the browser stops him in the same frame the server did, instead
+    // of walking his corpse down the corridor for a round trip and then snapping
+    // it back.
+    const p = predictor();
+    for (let i = 0; i < 4; i++) p.apply(walk);
+    const where = p.raw();
+    p.reconcile(snap({ x: where.x, y: where.y, ack: 0, health: 0, loaded: 0 }));
+    // Four commands still pending, every one of them a step forward, and he has
+    // not moved a centimetre.
+    expect(p.pendingCount()).toBe(4);
+    expect(p.raw().y).toBeCloseTo(where.y, 9);
+  });
+
+  it('refuses the trigger while he is down, so no flash is drawn for a corpse', () => {
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, health: 0 }));
+    p.apply(shoot);
+    expect(p.raw().loaded).toBe(K.barrels);
+    expect(p.raw().cooldown).toBe(0);
+  });
+
+  it('refuses it through spawn protection too, and counts the protection down', () => {
+    // The muzzle flash is drawn from this prediction, so a client that did not
+    // run the refusal would light the barrels for every shot the server threw
+    // away — during exactly the two seconds a player is most likely to be
+    // holding the trigger, having just been killed.
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, protect: 2 }));
+    p.apply(shoot);
+    expect(p.raw().loaded).toBe(K.barrels);
+    expect(p.raw().protectedLeft).toBeCloseTo(2 - walk.dt, 12);
+  });
+
+  it('fires the moment the protection has run out', () => {
+    // And it must not run out LATE, or the first shot of a fight is eaten. The
+    // predictor counts it down through its own commands, exactly as it does the
+    // cadence.
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, protect: 2 * walk.dt }));
+    p.apply(shoot);
+    p.apply(shoot);
+    expect(p.raw().protectedLeft).toBe(0);
+    p.apply(shoot);
+    expect(p.raw().loaded).toBe(K.barrels - 1);
+  });
+
+  it('does not decrement the protection twice when a snapshot lands', () => {
+    // ADR-058'S SHARP EDGE, FOR THE THIRD COUNTDOWN ON THIS TYPE. Take the base
+    // from the client's own predicted player and every pending command takes its
+    // dt off the clock a second time — so a walking player would come out of his
+    // protection at twice real speed, and be killable while his own screen still
+    // said he was safe.
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, protect: 2 }));
+    for (let i = 0; i < 3; i++) p.apply(walk);
+    // The server has folded in the first of those three and says so.
+    p.reconcile(snap({ y: p.raw().y, ack: 1, protect: 2 - walk.dt }));
+    // Two still pending, so exactly three commands' worth is off the clock.
+    expect(p.raw().protectedLeft).toBeCloseTo(2 - 3 * walk.dt, 12);
+  });
+
+  it('takes the server’s word for coming back, including where', () => {
+    // A respawn is a teleport to the building's spawn with a full gun, and
+    // nothing about it is the client's to predict — it is simply the next
+    // snapshot, and it wins.
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, health: 0, loaded: 0 }));
+    p.reconcile(snap({ x: 50, y: 50, ack: 0, health: 100, loaded: K.barrels, protect: 2 }));
+    const back = p.raw();
+    expect(back.health).toBe(100);
+    expect(back.loaded).toBe(K.barrels);
+    expect(back.protectedLeft).toBe(2);
+    // And he can walk again, on the very next command.
+    p.apply(walk);
+    expect(p.raw().y).toBeGreaterThan(50);
   });
 });
 

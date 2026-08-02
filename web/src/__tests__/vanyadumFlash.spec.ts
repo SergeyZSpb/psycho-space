@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { FLASH_FRAMES, createFlash, createPeerFlashes } from '../lib/vanyadumFlash';
+import { PEER_DOWN, PEER_FIRED, PEER_HIT, PEER_PROTECTED } from '../lib/vanyadumRoster';
 
 /**
- * «ВАНЯДУМ» — the muzzle flash, which is the acknowledgement a shot gets.
+ * «ВАНЯДУМ» — the marks a shot leaves: the flash at the muzzle that fired it,
+ * and the blow on whoever it landed on.
  *
  * THE REGRESSION THIS FILE EXISTS FOR. The flash used to be a number of seconds
  * decremented by the render loop's own `dt`, in the same statement that decided
@@ -71,43 +73,89 @@ describe('createFlash', () => {
 });
 
 describe('createPeerFlashes', () => {
-  it('flashes once for a marker that is set on consecutive frames', () => {
+  it('flashes once for a state that is set on consecutive frames', () => {
     // THE LEVEL-VERSUS-TRANSITION RULE, and it is the whole reason this is not
-    // `if (peer.firing) draw()`. The marker rides the snapshot for the tick a
-    // shot happened, and a tick is three frames at sixty hertz — more while the
-    // interpolation buffer is holding its newest frame — so drawing the level
-    // would light the peer for as long as that frame was the newest one, and a
-    // peer firing every tick would simply glow.
+    // `if (peer.st === PEER_FIRED) draw()`. The value rides the snapshot for the
+    // tick a shot happened, and a tick is three frames at sixty hertz — more
+    // while the interpolation buffer is holding its newest frame — so drawing the
+    // level would light the peer for as long as that frame was the newest one,
+    // and a peer firing every tick would simply glow.
     const flashes = createPeerFlashes();
     const lit: boolean[] = [];
-    for (let i = 0; i < 10; i++) lit.push(flashes.frame([{ slot: 1, firing: true }]).has(1));
+    for (let i = 0; i < 10; i++) lit.push(flashes.frame([{ slot: 1, st: PEER_FIRED }]).fired.has(1));
     expect(lit.slice(0, FLASH_FRAMES).every(Boolean)).toBe(true);
     expect(lit.slice(FLASH_FRAMES).some(Boolean)).toBe(false);
   });
 
-  it('flashes again the next time the marker arrives', () => {
-    // Once the marker has gone back down, the next one is a new shot and a new
-    // mark. Without this the peer would fire once per session.
+  it('marks a hit once too, however long the wire holds it', () => {
+    // Two shooters landing on the same man on consecutive ticks leave `st` at
+    // PEER_HIT throughout, so the same rule has to hold for the second kind —
+    // and it is the kind that matters most, because a hit is the only thing that
+    // tells a shooter he connected.
     const flashes = createPeerFlashes();
-    expect(flashes.frame([{ slot: 2, firing: true }]).has(2)).toBe(true);
-    for (let i = 0; i < 6; i++) flashes.frame([{ slot: 2 }]);
-    expect(flashes.frame([{ slot: 2, firing: true }]).has(2)).toBe(true);
+    const lit: boolean[] = [];
+    for (let i = 0; i < 10; i++) lit.push(flashes.frame([{ slot: 1, st: PEER_HIT }]).hit.has(1));
+    expect(lit.slice(0, FLASH_FRAMES).every(Boolean)).toBe(true);
+    expect(lit.slice(FLASH_FRAMES).some(Boolean)).toBe(false);
   });
 
-  it('never marks a peer whose frame carries no marker', () => {
+  it('tells the two kinds apart when one follows the other', () => {
+    // A man who fires and is shot for it goes 1 → 2 on consecutive ticks. A rule
+    // that only asked "did `st` change" would light the muzzle again, because
+    // the value moved and the man is not resting — so each kind is compared
+    // against its own previous value.
+    const flashes = createPeerFlashes();
+    const first = flashes.frame([{ slot: 4, st: PEER_FIRED }]);
+    expect(first.fired.has(4)).toBe(true);
+    expect(first.hit.has(4)).toBe(false);
+    const second = flashes.frame([{ slot: 4, st: PEER_HIT }]);
+    expect(second.hit.has(4)).toBe(true);
+    // The muzzle is still burning off its own three frames, which is correct:
+    // he did fire, and that mark has not expired yet.
+    expect(second.fired.has(4)).toBe(true);
+  });
+
+  it('marks nothing at all for a man who is merely down or protected', () => {
+    // The two STATES are not events and are not in here: they last three seconds
+    // and two, and are drawn as properties of the figure for the whole of it. Run
+    // through a mark that expires after three frames, a corpse would be
+    // acknowledged for a twentieth of the time it is lying there.
+    const flashes = createPeerFlashes();
+    for (let i = 0; i < 8; i++) {
+      const marks = flashes.frame([
+        { slot: 0, st: PEER_DOWN },
+        { slot: 1, st: PEER_PROTECTED },
+      ]);
+      expect(marks.fired.size).toBe(0);
+      expect(marks.hit.size).toBe(0);
+    }
+  });
+
+  it('flashes again the next time the value arrives', () => {
+    // Once it has gone back to nothing, the next one is a new shot and a new
+    // mark. Without this the peer would fire once per session.
+    const flashes = createPeerFlashes();
+    expect(flashes.frame([{ slot: 2, st: PEER_FIRED }]).fired.has(2)).toBe(true);
+    for (let i = 0; i < 6; i++) flashes.frame([{ slot: 2 }]);
+    expect(flashes.frame([{ slot: 2, st: PEER_FIRED }]).fired.has(2)).toBe(true);
+  });
+
+  it('never marks a peer whose frame says nothing happened', () => {
     const flashes = createPeerFlashes();
     for (let i = 0; i < 5; i++) {
-      expect(flashes.frame([{ slot: 0 }, { slot: 1, firing: false }]).size).toBe(0);
+      const marks = flashes.frame([{ slot: 0 }, { slot: 1, st: 0 }]);
+      expect(marks.fired.size).toBe(0);
+      expect(marks.hit.size).toBe(0);
     }
   });
 
   it('is per slot, so one man firing does not light the man beside him', () => {
     const flashes = createPeerFlashes();
-    const marked = flashes.frame([
-      { slot: 0, firing: true },
+    const marks = flashes.frame([
+      { slot: 0, st: PEER_FIRED },
       { slot: 1 },
     ]);
-    expect([...marked]).toEqual([0]);
+    expect([...marks.fired]).toEqual([0]);
   });
 
   it('holds an unfinished mark across frames the peer is missing from', () => {
@@ -116,8 +164,8 @@ describe('createPeerFlashes', () => {
     // to be shown on, and spending it on those frames would mean a shot fired at
     // a doorway was invisible by the time its author was back in view.
     const flashes = createPeerFlashes();
-    expect(flashes.frame([{ slot: 3, firing: true }]).has(3)).toBe(true);
-    for (let i = 0; i < 4; i++) expect(flashes.frame([]).size).toBe(0);
-    expect(flashes.frame([{ slot: 3 }]).has(3)).toBe(true);
+    expect(flashes.frame([{ slot: 3, st: PEER_FIRED }]).fired.has(3)).toBe(true);
+    for (let i = 0; i < 4; i++) expect(flashes.frame([]).fired.size).toBe(0);
+    expect(flashes.frame([{ slot: 3 }]).fired.has(3)).toBe(true);
   });
 });

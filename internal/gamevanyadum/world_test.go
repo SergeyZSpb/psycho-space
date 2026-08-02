@@ -2,6 +2,7 @@ package gamevanyadum
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"slices"
 	"strconv"
@@ -26,7 +27,29 @@ func newTestWorld(t *testing.T, seed int64) (*World, string) {
 	if _, ok := w.Join(acc, "pseudo-"+acc[:8], epoch); !ok {
 		t.Fatal("a fresh заброшка refused its first occupant")
 	}
+	settled(w, acc)
 	return w, acc
+}
+
+// settled ends somebody's walk-in protection, which is the state almost every
+// test below wants him in: a man who has been in the building a while.
+//
+// WITHOUT IT EVERY FIXTURE OPENS WITH TWO SECONDS OF NOBODY BEING ABLE TO SHOOT
+// ANYBODY. Join grants the same window a respawn does (world.go, protect), and
+// while it is running a trigger is refused and a target is not a target — so a
+// duel written to start immediately would be asserting the protection rule
+// rather than the one it is about. The grant has its own tests
+// (TestAManWhoHasJustWalkedInIsProtectedTooAndCannotShootEither), which is where
+// it belongs.
+//
+// BOTH HALVES OF IT, because the world's deadline is the authority and the
+// countdown is only a prediction of it: clearing the seconds alone would leave
+// him untouchable by the rule targetsFor actually reads.
+func settled(w *World, accs ...string) {
+	for _, acc := range accs {
+		o := w.Occupant(acc)
+		o.State.ProtectedLeft, o.protectedUntil = 0, 0
+	}
 }
 
 // subStep is the dt a real command carries. The client emits
@@ -664,15 +687,20 @@ func TestSnapshotSaysWhatIsOnTheFloorAsABitmask(t *testing.T) {
 	// One word instead of the list of remaining ids. Bit i is the pickup at INDEX
 	// i, which is the whole contract the client draws from — an index is dense by
 	// construction where an id need not be.
+	//
+	// READ FROM THE ROOM THE PICKUP IS IN, because the mask is now cut to what
+	// the reader can see into (world.go, SnapshotFor). Standing on the thing is
+	// the simplest way to be somewhere it is visible from, and it is where the
+	// second half of this test needs him anyway.
 	w, acc := newTestWorld(t, 11)
-	full := uint32(1)<<len(w.Level.Pickups) - 1
-	if got := mustSnapshot(t, w, acc).Left; got != full {
-		t.Fatalf("a fresh level published %b, expected %b", got, full)
+	const idx = 0
+	standOn(w, acc, idx)
+	full := mustSnapshot(t, w, acc).Left
+	if full&(1<<idx) == 0 {
+		t.Fatalf("standing on index %d, the mask %b does not say it is there", idx, full)
 	}
 
 	// Collecting one clears exactly its own bit and nothing else.
-	const idx = 0
-	standOn(w, acc, idx)
 	w.Advance(SimStep.Seconds(), epoch)
 
 	want := full &^ (1 << idx)
@@ -1451,25 +1479,32 @@ func watching(t *testing.T, n int) (*World, string, []string) {
 		if _, ok := w.Join(acc, "pseudo-"+acc[:8], epoch); !ok {
 			t.Fatalf("watcher %d was refused", i)
 		}
+		settled(w, acc)
 		standAtSpawn(w, acc)
 		watchers = append(watchers, acc)
 	}
 	return w, shooter, watchers
 }
 
-// firedPeer reads one peer's muzzle flash out of the frame a viewer is actually
+// peerStateSeen reads one peer's state out of the frame a viewer is actually
 // sent, rather than off the occupant — what is being checked is what crosses the
 // wire, and a field with the wrong json tag would satisfy any assertion made
 // against the struct.
-func firedPeer(t *testing.T, w *World, viewer string, slot int) bool {
+func peerStateSeen(t *testing.T, w *World, viewer string, slot int) int {
 	t.Helper()
 	for _, p := range mustSnapshot(t, w, viewer).Peers {
 		if p.Slot == slot {
-			return p.Fired
+			return p.St
 		}
 	}
 	t.Fatalf("slot %d is not on the frame sent to %s at all", slot, viewer)
-	return false
+	return 0
+}
+
+// firedPeer is that state read as the one question most of these tests ask.
+func firedPeer(t *testing.T, w *World, viewer string, slot int) bool {
+	t.Helper()
+	return peerStateSeen(t, w, viewer, slot) == PeerFired
 }
 
 func TestAPeersShotIsOnTheFrameForOneTickOnly(t *testing.T) {
@@ -1480,15 +1515,13 @@ func TestAPeersShotIsOnTheFrameForOneTickOnly(t *testing.T) {
 	// count falling by one IS the shot. A peer carries no barrel count, so this
 	// is the field that says so.
 	//
-	// AND THE WHOLE BUDGET FOR IT RESTS ON IT BEING PER-ACTION. It is priced at
-	// the gun's cadence — three a second — rather than at the twenty a second
-	// every other peer field costs (message.go, Peer.Fired; message_test.go,
-	// firedPerSecond). A flag that stayed up for the whole cooldown, which is the
-	// natural way to write it and the shape a duration would have had, rides
-	// every tick instead of three: 9 bytes × 20 Hz × 4 peers = 720 B/s, where the
-	// frame had 387 B/s of headroom before this field existed at all. So this
-	// test is not about a flash looking right, it is what holds the ceiling
-	// arithmetic true.
+	// AND IT IS AN INSTANT RATHER THAN A STATE, which is what this test holds it
+	// to. `st` carries four values (message.go, Peer.St) and two of them are
+	// DURATIONS a man is in for seconds at a time — which is why the field is now
+	// priced at the full snapshot rate and why it cost the building a place. The
+	// muzzle flash must not quietly join them: a flash that stayed up for the
+	// whole cooldown would be seven times the traffic it is budgeted for, on a
+	// field that is already the most expensive thing on a peer.
 	w, shooter, watchers := watching(t, 1)
 	watcher := watchers[0]
 	slot := w.Occupant(shooter).Slot
@@ -1586,5 +1619,922 @@ func TestTheVisitRecordsWhatWasFoundAndNotWhatWasLeftOver(t *testing.T) {
 	}
 	if got := o.collected["beer"]; got != found {
 		t.Fatalf("spending beer changed what was collected from %d to %d", found, got)
+	}
+}
+
+// --- being shot -------------------------------------------------------------
+//
+// The hit test's own geometry is in hit_test.go, against no world at all. What
+// is asserted here is everything the world adds to it: which instant a shot is
+// resolved in, who is allowed to be a target, what a hit costs, and what the
+// frame says about all of it.
+
+// worldIn builds a заброшка around a HAND-BUILT level, the way the simulation
+// tests build one, so a duel can be fought in a room whose dimensions a reader
+// can hold in his head. A generated building is right for the rules that are
+// about every building; a shot resolved to the centimetre is not one of those.
+func worldIn(t *testing.T, l *Level) *World {
+	t.Helper()
+	w := NewWorld(uuid.New(), 1)
+	w.Level = l
+	w.ready = make([]int64, len(l.Pickups))
+	w.visible = buildVisibility(l)
+	return w
+}
+
+// threeRooms is a corridor of rooms whose doorways LINE UP: a shot along Y = 5
+// from the first passes through both openings and reaches the third.
+//
+// That is exactly the case the visibility approximation gets wrong on purpose
+// (level.go, buildVisibility): rooms 0 and 2 share no portal, so neither man is
+// ever on the other's frame, while the geometry would happily carry a shot
+// between them. It is the fixture for the rule that you can only hit what you
+// were sent.
+func threeRooms() *Level {
+	l := &Level{
+		Sectors: []Sector{
+			{ID: 0, MinX: 0, MinY: 0, MaxX: 10, MaxY: 10, FloorZ: 0, CeilZ: CeilingHeight},
+			{ID: 1, MinX: 10, MinY: 0, MaxX: 20, MaxY: 10, FloorZ: 0, CeilZ: CeilingHeight},
+			{ID: 2, MinX: 20, MinY: 0, MaxX: 30, MaxY: 10, FloorZ: 0, CeilZ: CeilingHeight},
+		},
+		Portals: []Portal{
+			{A: 0, B: 1, Vertical: true, At: 10, Lo: 4, Hi: 6},
+			{A: 1, B: 2, Vertical: true, At: 20, Lo: 4, Hi: 6},
+		},
+	}
+	l.Walls = buildWalls(l)
+	l.Spawn, l.SpawnSector = Vec2{X: 5, Y: 5}, 0
+	return l
+}
+
+// stopwatch is a clock that MOVES, and every test below drives the world with
+// one.
+//
+// IT IS NOT A STYLE CHOICE. The rewind buffer is indexed by wall-clock instants
+// (history.go), so a world advanced a hundred times at one fixed instant has a
+// hundred frames stamped identically — and every rewind then clamps to the
+// oldest of them, which is a world nobody was ever in. The tests above can use a
+// fixed epoch because nothing they assert reads the buffer. Nothing below can.
+type stopwatch struct{ now time.Time }
+
+func newStopwatch() *stopwatch { return &stopwatch{now: epoch} }
+
+func (s *stopwatch) tick(w *World) {
+	s.now = s.now.Add(SimStep)
+	w.Advance(SimStep.Seconds(), s.now)
+}
+
+func (s *stopwatch) run(w *World, ticks int) {
+	for i := 0; i < ticks; i++ {
+		s.tick(w)
+	}
+}
+
+// walkIn puts somebody in the building exactly as a connection does — with the
+// walk-in protection Join grants him — and stands him where the test wants him.
+// Only the tests about that grant want this; everything else wants joinTo.
+func walkIn(t *testing.T, w *World, at Vec2, yaw float64) string {
+	t.Helper()
+	acc := uuid.New().String()
+	if _, ok := w.Join(acc, "pseudo-"+acc[:8], epoch); !ok {
+		t.Fatal("the building refused an occupant this test needs")
+	}
+	stand(t, w, acc, at, yaw)
+	return acc
+}
+
+// joinTo walks somebody into the building, stands him where the test wants him,
+// and settles him in — see settled for why almost every test wants that.
+func joinTo(t *testing.T, w *World, at Vec2, yaw float64) string {
+	t.Helper()
+	acc := walkIn(t, w, at, yaw)
+	settled(w, acc)
+	return acc
+}
+
+// stand puts an occupant somewhere, deriving the room from the position exactly
+// as the resolver would.
+func stand(t *testing.T, w *World, acc string, at Vec2, yaw float64) {
+	t.Helper()
+	sector := w.Level.SectorAt(at)
+	if sector < 0 {
+		t.Fatalf("this test wants somebody standing at %v, which is outside the building", at)
+	}
+	o := w.Occupant(acc)
+	o.State.Pos, o.State.Sector, o.State.Yaw = at, sector, yaw
+}
+
+// duel is the fixture almost every test below wants: one open room, two men four
+// metres apart on the same line, the first looking straight at the second.
+func duel(t *testing.T) (*World, *stopwatch, string, string) {
+	t.Helper()
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	victim := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
+	return w, newStopwatch(), shooter, victim
+}
+
+// shot pulls the trigger once, through the queue, and advances the world one
+// step — which is where the trigger is read, the barrel is spent and the ray is
+// cast.
+func shot(w *World, sw *stopwatch, acc string, seq int64) {
+	fireOnTheWire(w, acc, seq)
+	sw.tick(w)
+}
+
+func TestOneBarrelTakesHalfOfHim(t *testing.T) {
+	w, sw, shooter, victim := duel(t)
+	sw.run(w, 3) // a little history, so the shot is resolved against a real one
+
+	shot(w, sw, shooter, 1)
+
+	if got := w.Occupant(victim).State.Health; got != StartHealth-BarrelDamage {
+		t.Fatalf("one barrel left him on %d of %d", got, StartHealth)
+	}
+	if got := w.Occupant(shooter).State.Health; got != StartHealth {
+		t.Fatalf("the man who fired is on %d health himself", got)
+	}
+	if got := w.Occupant(shooter).State.Loaded; got != Barrels-1 {
+		t.Fatalf("the shot that landed spent %d barrels", Barrels-got)
+	}
+}
+
+func TestAFullGunIsExactlyOneKillAndNothingElseEnds(t *testing.T) {
+	// Two barrels, one man down — the whole of BarrelDamage being half of
+	// MaxHealth. And the заброшка does not notice: nothing here ends, so the
+	// bystander is untouched, still standing, and the building still holds
+	// everybody.
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	victim := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
+	bystander := joinTo(t, w, Vec2{X: 5, Y: 16}, 0)
+	sw.run(w, 3)
+
+	shot(w, sw, shooter, 1)
+	// The cadence has to expire before the second barrel, exactly as it does for
+	// a player mashing the glass.
+	sw.run(w, int(FireCooldownSeconds/SimStep.Seconds())+1)
+	shot(w, sw, shooter, 2)
+
+	v := w.Occupant(victim)
+	if v.State.Health != 0 {
+		t.Fatalf("two barrels left him on %d health", v.State.Health)
+	}
+	if v.deaths != 1 {
+		t.Fatalf("he died once and his counter says %d", v.deaths)
+	}
+	if got := w.Occupant(shooter).betrayals; got != 1 {
+		t.Fatalf("the man who did it has %d betrayals", got)
+	}
+	if got := w.Occupant(shooter).deaths; got != 0 {
+		t.Fatalf("killing somebody cost the shooter %d deaths of his own", got)
+	}
+	// NOTHING ELSE IS TOUCHED. There is no round, no result and no interruption:
+	// one occupant is on the floor and everybody else is still walking about.
+	b := w.Occupant(bystander)
+	if b.State.Health != StartHealth || b.deaths != 0 {
+		t.Fatalf("a man in the corner is on %d health with %d deaths", b.State.Health, b.deaths)
+	}
+	if w.Occupants() != 3 {
+		t.Fatalf("a death emptied the building down to %d", w.Occupants())
+	}
+}
+
+func TestHeGetsUpAtTheSpawnWhenTheTimeIsUpAndNotBefore(t *testing.T) {
+	w, sw, shooter, victim := duel(t)
+	sw.run(w, 3)
+	killedOn := kill(t, w, sw, shooter, victim)
+
+	v := w.Occupant(victim)
+	// The deadline is an integer tick rather than a float being decremented
+	// (world.go, downUntil), so "not before" is exact and worth asserting to the
+	// tick: he is still on the floor on the last one before it.
+	deadline := v.downUntil
+	if deadline != killedOn+downTicks {
+		t.Fatalf("shot on tick %d, he is down until %d, expected %d", killedOn, deadline, killedOn+downTicks)
+	}
+	for w.Tick < deadline-1 {
+		sw.tick(w)
+	}
+	if v.State.Health != 0 {
+		t.Fatalf("he stood up on tick %d, one before the deadline at %d", w.Tick, deadline)
+	}
+	sw.tick(w)
+
+	if v.State.Health != StartHealth {
+		t.Fatalf("he came back on %d health", v.State.Health)
+	}
+	if v.State.Pos != w.Level.Spawn || v.State.Sector != w.Level.SpawnSector {
+		t.Fatalf("he came back at %v in room %d, the spawn is %v in room %d",
+			v.State.Pos, v.State.Sector, w.Level.Spawn, w.Level.SpawnSector)
+	}
+	if v.State.Loaded != Barrels {
+		t.Fatalf("he came back holding %d barrels", v.State.Loaded)
+	}
+	if v.State.ProtectedLeft <= 0 {
+		t.Fatal("he came back with no protection at all, which is the spawn camp this rule exists to remove")
+	}
+	if v.downUntil != 0 {
+		t.Fatalf("the deadline he got up on is still set to %d", v.downUntil)
+	}
+}
+
+func TestADeathCostsTheDeadManNothingHeWasCarrying(t *testing.T) {
+	// Stated as a test because it is a decision rather than an oversight
+	// (content.go, DownTime): dying costs the three seconds and the walk back,
+	// and never the bottles somebody toured the building for.
+	w, sw, shooter, victim := duel(t)
+	w.Occupant(victim).State.Counters[AmmoCounter] = 4
+	sw.run(w, 3)
+	kill(t, w, sw, shooter, victim)
+	sw.run(w, int(downTicks)+1)
+
+	if got := w.Occupant(victim).State.Counters[AmmoCounter]; got != 4 {
+		t.Fatalf("he walked in with 4 bottles, died, and got up with %d", got)
+	}
+}
+
+func TestAManOnTheFloorPicksNothingUp(t *testing.T) {
+	// collect runs from Advance rather than from Step, so the rule Step already
+	// applies to everything else a dead man might do — he does not walk and does
+	// not shoot — has to be stated separately for the one thing he can still be
+	// standing on. Killed on a bottle, the respawn elapsing during his three
+	// seconds down, and he drinks it lying there.
+	l := room(0, 0, 20, 20, 0)
+	l.Pickups = []Pickup{{ID: 0, Kind: "beer", Sector: 0, Pos: Vec2{X: 9, Y: 10}}}
+	w := worldIn(t, l)
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	victim := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
+
+	// He takes it while he is alive, which is what leaves him standing on an empty
+	// spot with the respawn running.
+	sw.run(w, 3)
+	carrying := w.Occupant(victim).State.Counters[AmmoCounter]
+	if carrying == 0 {
+		t.Fatal("he did not pick up the bottle he is standing on, so this fixture proves nothing")
+	}
+	kill(t, w, sw, shooter, victim)
+
+	// The bottle comes back while he is still on the floor on top of it. Set
+	// rather than waited out: PickupRespawn is ten times DownTime, and what is
+	// being tested is the guard rather than the arithmetic of the two constants.
+	w.ready[0] = w.Tick
+	sw.run(w, 3)
+
+	v := w.Occupant(victim)
+	if v.State.Health != 0 {
+		t.Fatal("he got up before the part of the test that needs him down")
+	}
+	if got := v.State.Counters[AmmoCounter]; got != carrying {
+		t.Fatalf("a corpse drank one: he went down with %d bottles and is lying there with %d", carrying, got)
+	}
+	if !w.available(0) {
+		t.Fatal("the bottle standing next to a corpse was taken by him")
+	}
+	if got := v.collected[AmmoCounter]; got != carrying {
+		t.Fatalf("his visit records %d bottles found, and he found %d before he died", got, carrying)
+	}
+
+	// And the control: on his feet, on the same bottle, he takes it — so the
+	// refusal above is being dead rather than a spot nothing can be collected
+	// from.
+	sw.run(w, int(downTicks)+1)
+	stand(t, w, victim, Vec2{X: 9, Y: 10}, 0)
+	sw.tick(w)
+	if got := v.State.Counters[AmmoCounter]; got != carrying+1 {
+		t.Fatalf("back on his feet on the same bottle he is carrying %d, expected %d", got, carrying+1)
+	}
+}
+
+// kill empties both barrels into somebody, waiting out the cadence between them,
+// and fails the test if he is still standing. It returns the tick the fatal
+// barrel landed on — the cadence is waited out BEFORE each shot rather than
+// after, so the world is left standing exactly on that tick and a test can say
+// what should happen a known number of them later.
+func kill(t *testing.T, w *World, sw *stopwatch, shooter, victim string) int64 {
+	t.Helper()
+	seq := w.Occupant(shooter).State.LastSeq
+	for i := 0; i < Barrels; i++ {
+		if i > 0 {
+			sw.run(w, int(FireCooldownSeconds/SimStep.Seconds())+1)
+		}
+		seq++
+		shot(w, sw, shooter, seq)
+	}
+	if got := w.Occupant(victim).State.Health; got != 0 {
+		t.Fatalf("%d barrels left him on %d health", Barrels, got)
+	}
+	return w.Tick
+}
+
+func TestAManOnTheFloorIsNotATargetAndCannotShootBack(t *testing.T) {
+	w, sw, shooter, victim := duel(t)
+	// Face him back, so the only thing keeping his own shot from landing is
+	// being dead.
+	stand(t, w, victim, Vec2{X: 9, Y: 10}, eastward+math.Pi)
+	w.Occupant(victim).State.Loaded = Barrels
+	sw.run(w, 3)
+	kill(t, w, sw, shooter, victim)
+
+	deaths := w.Occupant(victim).deaths
+	before := w.Occupant(shooter).State.Health
+
+	// A third barrel into the corpse changes nothing at all.
+	sw.run(w, int(FireCooldownSeconds/SimStep.Seconds())+1)
+	w.Occupant(shooter).State.Loaded = Barrels
+	shot(w, sw, shooter, 99)
+	if got := w.Occupant(victim).deaths; got != deaths {
+		t.Fatalf("shooting a man who was already down killed him again: %d deaths", got)
+	}
+
+	// And his own trigger does nothing while he is on it: no barrel spent, and
+	// certainly nobody hurt.
+	loaded := w.Occupant(victim).State.Loaded
+	fireOnTheWire(w, victim, 1)
+	sw.tick(w)
+	if got := w.Occupant(victim).State.Loaded; got != loaded {
+		t.Fatalf("a dead man fired: %d barrels became %d", loaded, got)
+	}
+	if got := w.Occupant(shooter).State.Health; got != before {
+		t.Fatalf("a dead man shot the shooter down to %d health", got)
+	}
+}
+
+func TestADeadManIsStillAcknowledgedSoHisClientDoesNotChoke(t *testing.T) {
+	// He is refused, not ignored. The commands he sends while on the floor are
+	// still drained and still acknowledged, because the client drops everything
+	// at or below the ack from its pending list — a server that stopped
+	// acknowledging would leave a browser replaying a growing list of input the
+	// simulation has already decided does nothing.
+	w, sw, shooter, victim := duel(t)
+	sw.run(w, 3)
+	kill(t, w, sw, shooter, victim)
+
+	w.Enqueue(victim, &ParsedInput{Cmds: []Command{
+		{Seq: 41, Dt: subStep, MY: 1}, {Seq: 42, Dt: subStep, MY: 1},
+	}})
+	sw.run(w, 4)
+
+	v := w.Occupant(victim)
+	if v.State.LastSeq != 42 {
+		t.Fatalf("a dead man's input was acknowledged up to %d of 42", v.State.LastSeq)
+	}
+	if len(v.pending) != 0 {
+		t.Fatalf("%d of his commands are still queued", len(v.pending))
+	}
+	if v.State.Pos.X != 9 || v.State.Pos.Y != 10 {
+		t.Fatalf("his own input walked his corpse to %v", v.State.Pos)
+	}
+}
+
+func TestProtectionStopsBothTheShotAndTheTrigger(t *testing.T) {
+	// BOTH HALVES, OR IT IS A WEAPON (content.go, SpawnProtectSeconds). The man
+	// who has just got up is standing on the one spawn everybody knows about, so
+	// he cannot be shot there — and he cannot shoot from there either, which is
+	// the half that stops the rule from handing the spawn to whoever died last.
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	sw := newStopwatch()
+	// Both of them at the spawn, which is where the camp would happen.
+	shooter := joinTo(t, w, w.Level.Spawn, eastward)
+	victim := joinTo(t, w, Vec2{X: w.Level.Spawn.X + 4, Y: w.Level.Spawn.Y}, eastward+math.Pi)
+	sw.run(w, 3)
+	kill(t, w, sw, shooter, victim)
+	sw.run(w, int(downTicks)+1)
+
+	// He is up, at the spawn, and the man who killed him is standing there with
+	// a full gun.
+	//
+	// A FEW TICKS OF BEING ALIVE FIRST, and they are load-bearing rather than
+	// tidy: the rewind reaches about two and a half ticks into the past, so a
+	// shot fired the instant he stood up would be resolved against the corpse he
+	// was — and would miss for a reason that has nothing to do with protection.
+	// This waits until the world the shooter is rewound into holds a living,
+	// protected man, which is the only thing being tested here.
+	v := w.Occupant(victim)
+	sw.run(w, 5)
+	stand(t, w, shooter, Vec2{X: w.Level.Spawn.X - 3, Y: w.Level.Spawn.Y}, eastward)
+	sw.run(w, 3)
+	w.Occupant(shooter).State.Loaded = Barrels
+	shot(w, sw, shooter, 50)
+	if v.State.Health != StartHealth {
+		t.Fatalf("a protected man was shot down to %d", v.State.Health)
+	}
+
+	// And his own trigger is refused, so protection is not a licence.
+	fireOnTheWire(w, victim, 1)
+	sw.tick(w)
+	if v.State.Loaded != Barrels {
+		t.Fatalf("a protected man fired: %d barrels left", v.State.Loaded)
+	}
+
+	// It expires on its own, WITHOUT HIM SENDING ANYTHING — a man who respawns
+	// and stands perfectly still emits no commands at all, and a protection that
+	// only ran down while he walked would be permanent for anybody hiding
+	// (world.go, the idle fill, and Player.ticking).
+	sw.run(w, int(SpawnProtectSeconds/SimStep.Seconds())+2)
+	if v.State.ProtectedLeft != 0 {
+		t.Fatalf("protection has %.2fs left after standing still through the whole window", v.State.ProtectedLeft)
+	}
+	fireOnTheWire(w, victim, 2)
+	sw.tick(w)
+	if v.State.Loaded != Barrels-1 {
+		t.Fatalf("the trigger is still refused after the window: %d barrels", v.State.Loaded)
+	}
+	w.Occupant(shooter).State.Loaded = Barrels
+	shot(w, sw, shooter, 51)
+	if v.State.Health == StartHealth {
+		t.Fatal("he is still untouchable after the window expired")
+	}
+}
+
+func TestProtectionExpiresOnRealTimeAndNotOnWhatTheClientSends(t *testing.T) {
+	// THE WINDOW IS AN EXPIRY, so something the client does not control has to end
+	// it (Occupant.protectedUntil). The countdown on his Player cannot: it is
+	// drained by the dt of the commands he sends, and the idle fill that would
+	// advance it for a silent player is suppressed by a client claiming any part
+	// of the tick at all (world.go, Advance). One millisecond of command per tick
+	// therefore runs a two-second window at two percent of real time — before the
+	// deadline existed, 1.8 s of it was still left after ten seconds of wall
+	// clock, and the man holding it could not be shot.
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	camper := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
+	w.protect(w.Occupant(camper))
+
+	// A sliver of a command every tick, for three times the window — the smallest
+	// claim that still suppresses the fill, which is the whole of the exploit.
+	const sliver = 0.001
+	for tick := 0; tick < 3*int(protectTicks); tick++ {
+		o := w.Occupant(camper)
+		w.Enqueue(camper, &ParsedInput{Cmds: []Command{
+			{Seq: int64(tick) + 1, Dt: sliver, Yaw: o.State.Yaw, Pitch: o.State.Pitch},
+		}})
+		sw.tick(w)
+		// Halfway in he is genuinely still protected, or everything below would
+		// pass against a world that never granted him anything.
+		if tick == int(protectTicks)/2 && !w.protected(o) {
+			t.Fatal("the window this test is about had already gone halfway into it")
+		}
+	}
+
+	v := w.Occupant(camper)
+	if v.State.ProtectedLeft != 0 {
+		t.Fatalf("after %.1f s of wall clock his own countdown still holds %.2f s",
+			3*float64(protectTicks)*SimStep.Seconds(), v.State.ProtectedLeft)
+	}
+	if w.protected(v) {
+		t.Fatal("the world still holds him protected long after the deadline it set")
+	}
+	// And the consequence, which is the only part a player would notice: he is an
+	// ordinary target again.
+	w.Occupant(shooter).State.Loaded = Barrels
+	shot(w, sw, shooter, 1)
+	if v.State.Health != StartHealth-BarrelDamage {
+		t.Fatalf("a man who has drip-fed commands for %.1f s is on %d health",
+			3*float64(protectTicks)*SimStep.Seconds(), v.State.Health)
+	}
+}
+
+func TestAManWhoHasJustWalkedInIsProtectedTooAndCannotShootEither(t *testing.T) {
+	// RISE'S ARGUMENT, APPLIED TO THE OTHER WAY OF APPEARING AT THE SPAWN. One
+	// spawn point, friendly fire on, and a man materialising where everybody knows
+	// he will — the newcomer is if anything the easier of the two to camp, because
+	// his browser is still loading the building (content.go, SpawnProtectSeconds).
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	newcomer := walkIn(t, w, Vec2{X: 9, Y: 10}, eastward+math.Pi)
+	sw.run(w, 3) // a little history, so the shot is resolved against a real one
+
+	shot(w, sw, shooter, 1)
+	n := w.Occupant(newcomer)
+	if n.State.Health != StartHealth {
+		t.Fatalf("a man who had just walked in was shot down to %d", n.State.Health)
+	}
+
+	// And his own trigger is refused, which is the half of the rule that stops
+	// protection from being a weapon: he is looking straight back at the shooter.
+	fireOnTheWire(w, newcomer, 1)
+	sw.tick(w)
+	if n.State.Loaded != Barrels {
+		t.Fatalf("a protected newcomer fired: %d barrels left", n.State.Loaded)
+	}
+	if got := w.Occupant(shooter).State.Health; got != StartHealth {
+		t.Fatalf("his refused shot took the shooter down to %d", got)
+	}
+
+	// It runs out on its own with him sending nothing further, and then he is an
+	// ordinary man in a building.
+	sw.run(w, int(protectTicks)+2)
+	if n.State.ProtectedLeft != 0 {
+		t.Fatalf("his protection has %.2fs left after the whole window passed", n.State.ProtectedLeft)
+	}
+
+	// AND RELOADING THE PAGE DOES NOT BUY ANOTHER ONE. A second hello is a
+	// reconnect rather than a second visit (world.go, Join), so it hands back the
+	// occupant he already is — otherwise being permanently untouchable would be a
+	// matter of refreshing every two seconds.
+	if _, ok := w.Join(newcomer, "pseudo", epoch); !ok {
+		t.Fatal("the building refused a reconnect")
+	}
+	if n.State.ProtectedLeft != 0 || w.protected(n) {
+		t.Fatalf("a reload refreshed his protection: %.2fs left, deadline %d against tick %d",
+			n.State.ProtectedLeft, n.protectedUntil, w.Tick)
+	}
+	w.Occupant(shooter).State.Loaded = Barrels
+	shot(w, sw, shooter, 2)
+	if n.State.Health != StartHealth-BarrelDamage {
+		t.Fatalf("he is on %d health after the window expired, so it never ended", n.State.Health)
+	}
+}
+
+func TestAShotIsResolvedWhereTheShooterSawHimAndNotWhereHeIsNow(t *testing.T) {
+	// THE FOURTH RUNG, and the case it exists for. What is on the shooter's
+	// screen is a peer interpolated into the past by his own latency plus the
+	// served interpolation delay (history.go, RewindTo), so a man who aimed at
+	// what he could see and was right must not be told he missed.
+	//
+	// Both directions in one test, because either alone would pass on a server
+	// that resolved in the wrong timeframe:
+	//
+	//   - a target who has since MOVED OUT of the line is still hit, and
+	//   - a target who has since moved INTO it is not.
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	onTheLine := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
+	offTheLine := joinTo(t, w, Vec2{X: 9, Y: 16}, 0)
+	sw.run(w, 6) // enough recorded past to rewind into
+
+	// They swap places, and the shot goes off before a single frame of the new
+	// world has been drawn on anybody's screen.
+	stand(t, w, onTheLine, Vec2{X: 9, Y: 16}, 0)
+	stand(t, w, offTheLine, Vec2{X: 9, Y: 10}, 0)
+	shot(w, sw, shooter, 1)
+
+	if got := w.Occupant(onTheLine).State.Health; got != StartHealth-BarrelDamage {
+		t.Fatalf("the man the shooter was actually looking at is on %d health", got)
+	}
+	if got := w.Occupant(offTheLine).State.Health; got != StartHealth {
+		t.Fatalf("the man who had just stepped into the line — and was drawn nowhere near it — is on %d", got)
+	}
+}
+
+func TestAClientCannotBeResolvedAgainstWhereYouStoodASecondAgo(t *testing.T) {
+	// The ceiling, from the shot's end. RewindMax is stated in metres because
+	// what a liar buys is a distance (gamevanyadum.go), and this is that bound
+	// being enforced on the thing it exists for: the rewind is composed and
+	// clamped in one place, so a client echoing a tick from the far past is
+	// resolved against half a second ago and no further.
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	victim := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
+	sw.run(w, 4)
+
+	// He steps out of the line and stays there for comfortably longer than the
+	// ceiling allows anybody to reach back.
+	stand(t, w, victim, Vec2{X: 9, Y: 16}, 0)
+	sw.run(w, int(RewindMax/SimStep)+1)
+
+	// And the shooter claims to have been watching a frame from the very
+	// beginning of the building, which is the widest lie the protocol can carry.
+	w.Enqueue(shooter, &ParsedInput{Seen: 1})
+	if got := w.RTT(shooter); got != RewindMax {
+		t.Fatalf("an absurd echo produced a round trip of %v, not the %v ceiling", got, RewindMax)
+	}
+	shot(w, sw, shooter, 1)
+
+	if got := w.Occupant(victim).State.Health; got != StartHealth {
+		t.Fatalf("a client claiming seconds of latency shot a man who left the line long ago: %d health", got)
+	}
+}
+
+func TestANewcomerIsNotShotWhereTheLastHolderOfHisPlaceStood(t *testing.T) {
+	// THE ONE FAILURE LAG COMPENSATION MUST NEVER PRODUCE. The rewind buffer is
+	// keyed by SLOT (history.go, spots), because the rewind and the wire have to
+	// name the same things — and a slot is handed to somebody else the moment its
+	// holder leaves. Everything recorded while the last man stood in it therefore
+	// describes the next one, for the whole of RewindMax, unless the ring is
+	// purged when the place is freed (history.forget).
+	//
+	// It is reachable on the ordinary path rather than by contrivance: Advance
+	// records the frame and THEN releases whoever has been abandoned, so the last
+	// thing the ring learns about a place is where the departed man was standing
+	// on the tick he left it.
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	leaver := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
+	freed := w.Occupant(leaver).Slot
+	sw.run(w, 4) // the ring fills with him standing squarely on the line
+
+	// He drops his connection, and the next tick takes him out of the building.
+	w.Occupant(leaver).LastSeen = sw.now.Add(-2 * AbandonGrace)
+	sw.tick(w)
+	if w.Occupant(leaver) != nil {
+		t.Fatal("the man this test needs out of the building is still in it")
+	}
+
+	// Somebody else walks in and takes the place he was holding — the lowest free
+	// one, which is his — and stands nowhere near the line of fire. He is settled
+	// in deliberately: a protected newcomer would be untouchable for a reason that
+	// has nothing to do with the ring, and would hide exactly the bug being
+	// probed.
+	newcomer := joinTo(t, w, Vec2{X: 9, Y: 17}, 0)
+	if got := w.Occupant(newcomer).Slot; got != freed {
+		t.Fatalf("the newcomer took place %d, not the freed %d, so this test proves nothing", got, freed)
+	}
+
+	// And the shot goes down the line the departed man was on. The rewind reaches
+	// about two and a half ticks back, so this is fired well inside the window in
+	// which the ring still remembers him.
+	sw.tick(w)
+	shot(w, sw, shooter, 1)
+
+	n := w.Occupant(newcomer)
+	if n.State.Health != StartHealth {
+		t.Fatalf("a man seven metres off the line was shot down to %d, standing in somebody else's past", n.State.Health)
+	}
+	if got := w.Occupant(shooter).betrayals; got != 0 {
+		t.Fatalf("the shot that hit nobody was recorded as %d betrayals", got)
+	}
+
+	// The control: the same shooter, the same gun, and the newcomer standing
+	// where the line actually is. If this missed too, the miss above would be a
+	// broken fixture rather than the purge.
+	stand(t, w, newcomer, Vec2{X: 9, Y: 10}, 0)
+	sw.run(w, int(FireCooldownSeconds/SimStep.Seconds())+1)
+	shot(w, sw, shooter, 2)
+	if n.State.Health != StartHealth-BarrelDamage {
+		t.Fatalf("standing on the line himself he is on %d health, so the fixture cannot hit anybody", n.State.Health)
+	}
+}
+
+func TestYouCannotShootSomebodyYouWereNeverSent(t *testing.T) {
+	// The visibility filter is load-bearing now rather than merely economical.
+	// Rooms 0 and 2 share no doorway, so neither man is ever on the other's
+	// frame — and the two openings line up, so the geometry alone would carry the
+	// shot straight through. A kill nobody could see coming, landed by a shooter
+	// whose screen was empty, is the one thing interest management may not permit.
+	w := worldIn(t, threeRooms())
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 2, Y: 5}, eastward)
+	nextDoor := joinTo(t, w, Vec2{X: 15, Y: 5}, 0)
+	twoRoomsOver := joinTo(t, w, Vec2{X: 25, Y: 5}, 0)
+	sw.run(w, 3)
+
+	// He really is invisible, which is what makes the miss below meaningful.
+	for _, p := range mustSnapshot(t, w, shooter).Peers {
+		if p.Slot == w.Occupant(twoRoomsOver).Slot {
+			t.Fatal("the man two rooms away is on the frame; this fixture proves nothing")
+		}
+	}
+
+	// The near man is taken out of the line so that the only thing the ray can
+	// reach is the one the frame never mentioned.
+	stand(t, w, nextDoor, Vec2{X: 15, Y: 9}, 0)
+	sw.run(w, 3)
+	shot(w, sw, shooter, 1)
+
+	if got := w.Occupant(twoRoomsOver).State.Health; got != StartHealth {
+		t.Fatalf("a man who was never on the shooter's frame is on %d health", got)
+	}
+	// And the control: the same shot with somebody VISIBLE in the line lands, so
+	// the miss above is the filter rather than the geometry.
+	stand(t, w, nextDoor, Vec2{X: 15, Y: 5}, 0)
+	sw.run(w, int(FireCooldownSeconds/SimStep.Seconds())+1)
+	shot(w, sw, shooter, 2)
+	if got := w.Occupant(nextDoor).State.Health; got != StartHealth-BarrelDamage {
+		t.Fatalf("a shot through the doorway at a peer he could see left him on %d", got)
+	}
+}
+
+func TestTheFrameSaysWhoIsDownAndWhoIsProtected(t *testing.T) {
+	// What crosses the wire, read off the frame a viewer is actually sent. A
+	// state a peer carries and nobody can see is the same as no state at all.
+	w, sw, shooter, victim := duel(t)
+	sw.run(w, 3)
+	slot := w.Occupant(victim).Slot
+
+	if got := peerStateSeen(t, w, shooter, slot); got != 0 {
+		t.Fatalf("a man standing about unharmed is published as state %d", got)
+	}
+	kill(t, w, sw, shooter, victim)
+
+	if got := peerStateSeen(t, w, shooter, slot); got != PeerDown {
+		t.Fatalf("a man on the floor is published as state %d, expected %d", got, PeerDown)
+	}
+	// His own frame says how long, in the milliseconds the wire carries.
+	mine := mustSnapshot(t, w, victim)
+	if mine.Health != 0 {
+		t.Fatalf("his own frame says %d health", mine.Health)
+	}
+	if mine.Down <= 0 || mine.Down > int(DownTime/time.Millisecond) {
+		t.Fatalf("his own frame says %d ms to get up, of a window of %v", mine.Down, DownTime)
+	}
+	if mine.Protect != 0 {
+		t.Fatalf("a man on the floor is published as protected for %d ms", mine.Protect)
+	}
+
+	sw.run(w, int(downTicks)+1)
+	if got := peerStateSeen(t, w, shooter, slot); got != PeerProtected {
+		t.Fatalf("a man who has just got up is published as state %d, expected %d", got, PeerProtected)
+	}
+	up := mustSnapshot(t, w, victim)
+	if up.Down != 0 {
+		t.Fatalf("a man on his feet is published as %d ms from getting up", up.Down)
+	}
+	if up.Protect <= 0 || up.Protect > ms(SpawnProtectSeconds) {
+		t.Fatalf("his protection is published as %d ms of a window of %v s", up.Protect, SpawnProtectSeconds)
+	}
+
+	// And it goes away by itself, leaving a peer that costs nothing again.
+	sw.run(w, int(SpawnProtectSeconds/SimStep.Seconds())+2)
+	if got := peerStateSeen(t, w, shooter, slot); got != 0 {
+		t.Fatalf("a man who is simply standing there is published as state %d", got)
+	}
+	if got := mustSnapshot(t, w, victim).Protect; got != 0 {
+		t.Fatalf("expired protection is still published as %d ms", got)
+	}
+}
+
+func TestEverybodyIsToldSomebodyWasHitAndOnlyOnTheTickItHappened(t *testing.T) {
+	// The project's rule, applied to the loudest thing this game does: an action
+	// nobody else can see is an unfinished action. A hit moves nobody, so there
+	// is nothing on the frame to derive it from — which is why the mark exists at
+	// all — and it belongs to the whole room rather than to the man who fired.
+	//
+	// IT IS ALSO THE SHOOTER'S OWN ACKNOWLEDGEMENT. He knows he fired, because
+	// his own barrel count fell; the man he was pointing at is marked on the very
+	// same frame; and that is the whole of "I connected", with no field addressed
+	// to him.
+	w := worldIn(t, room(0, 0, 20, 20, 0))
+	sw := newStopwatch()
+	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
+	victim := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
+	watcher := joinTo(t, w, Vec2{X: 5, Y: 16}, 0)
+	sw.run(w, 3)
+	slot := w.Occupant(victim).Slot
+
+	shot(w, sw, shooter, 1)
+
+	for who, viewer := range map[string]string{"the shooter": shooter, "a bystander": watcher} {
+		if got := peerStateSeen(t, w, viewer, slot); got != PeerHit {
+			t.Fatalf("%s sees the man who was just shot as state %d, expected %d", who, got, PeerHit)
+		}
+	}
+	// Rendering the same tick again does not un-tell anybody: the mark is read
+	// against the world's tick rather than consumed by whoever looks first.
+	if got := peerStateSeen(t, w, watcher, slot); got != PeerHit {
+		t.Fatal("the second viewer of the same tick lost the hit")
+	}
+	// And the victim's own frame needs no mark: his health fell, which is the
+	// same per-frame comparison the client already makes for the barrel count.
+	if got := mustSnapshot(t, w, victim).Health; got != StartHealth-BarrelDamage {
+		t.Fatalf("the man who was shot is published as %d health", got)
+	}
+
+	// One tick, exactly. A mark that stayed up would be a duration rather than an
+	// instant, and the wire budget is measured on the difference.
+	sw.tick(w)
+	if got := peerStateSeen(t, w, watcher, slot); got != 0 {
+		t.Fatalf("the hit mark is still on the frame a tick later, as state %d", got)
+	}
+}
+
+func TestTheStandingsCountTheDeathsAndTheBetrayalsAndNoKills(t *testing.T) {
+	// The joke, as a frame. Every kill in this building is a friend's, so it goes
+	// on its own line and adds to no total anywhere — there is no kill column,
+	// because there is nothing here to kill but each other.
+	w, sw, shooter, victim := duel(t)
+	sw.run(w, 3)
+	kill(t, w, sw, shooter, victim)
+
+	board := w.Standings(epoch)
+	rows := map[int]StandingsRow{}
+	for _, r := range board.Rows {
+		rows[r.Slot] = r
+	}
+	if got := rows[w.Occupant(shooter).Slot]; got.Betrayals != 1 || got.Deaths != 0 {
+		t.Fatalf("the shooter's row says %d betrayals and %d deaths", got.Betrayals, got.Deaths)
+	}
+	if got := rows[w.Occupant(victim).Slot]; got.Deaths != 1 || got.Betrayals != 0 {
+		t.Fatalf("the victim's row says %d deaths and %d betrayals", got.Deaths, got.Betrayals)
+	}
+
+	// On the standings and NOT on the snapshot: both numbers move a few times a
+	// minute, and the snapshot repeats twenty times a second.
+	raw, err := json.Marshal(mustSnapshot(t, w, shooter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"br"`, `"d":1`} {
+		if strings.Contains(string(raw), key) {
+			t.Fatalf("a score is riding the repeating frame (%s): %s", key, raw)
+		}
+	}
+}
+
+func TestTheSameShotsKillTheSamePeopleEveryTime(t *testing.T) {
+	// The property the whole simulation is built to have, extended to the thing
+	// that now depends on the order occupants are stepped in. Two men firing at
+	// each other on the same tick is a contest, and the step order decides it —
+	// so it must be decided by the WORLD's own state (the tick, via turnOrder)
+	// rather than by Go's map iteration, which is randomised on every range.
+	digest := func() string {
+		w := worldIn(t, room(0, 0, 20, 20, 0))
+		sw := newStopwatch()
+		// Fixed account ids, because the order they sort in is part of what is
+		// being pinned — generated ones would make each run a different world.
+		accs := []string{
+			"00000000-0000-0000-0000-0000000000a1",
+			"00000000-0000-0000-0000-0000000000b2",
+			"00000000-0000-0000-0000-0000000000c3",
+		}
+		for i, acc := range accs {
+			if _, ok := w.Join(acc, "pseudo", epoch); !ok {
+				t.Fatal("the building refused an occupant")
+			}
+			settled(w, acc)
+			// A triangle, each man looking at the next one round it.
+			stand(t, w, acc, Vec2{X: 8 + float64(i)*2, Y: 10}, eastward)
+			w.Occupant(acc).State.Counters[AmmoCounter] = 3
+		}
+		// The one facing the others is turned round, so the fire goes both ways.
+		stand(t, w, accs[2], Vec2{X: 12, Y: 10}, eastward+math.Pi)
+
+		// The protection is part of the digest, because it decides who is a target
+		// — a window granted or expired one tick out of step is a different
+		// massacre. SAMPLED AS THE RUN GOES rather than read off the end of it:
+		// every window either expires or is cleared by a death (world.go, wound),
+		// so by the last tick a final reading of it is zero for everybody and a
+		// drift in the middle would leave no trace in it at all.
+		protected := map[string]float64{}
+
+		var seq int64
+		for round := 0; round < 40; round++ {
+			seq++
+			for _, acc := range accs {
+				fireOnTheWire(w, acc, seq)
+			}
+			sw.run(w, 4)
+			for _, acc := range accs {
+				protected[acc] += w.Occupant(acc).State.ProtectedLeft
+			}
+		}
+
+		var b strings.Builder
+		for _, acc := range accs {
+			o := w.Occupant(acc)
+			fmt.Fprintf(&b, "%s hp=%d down=%d prot=%d/%.4f deaths=%d betrayals=%d pos=%.4f,%.4f loaded=%d|",
+				acc[len(acc)-2:], o.State.Health, o.downUntil,
+				o.protectedUntil, protected[acc], o.deaths, o.betrayals,
+				o.State.Pos.X, o.State.Pos.Y, o.State.Loaded)
+		}
+		return b.String()
+	}
+
+	want := digest()
+	if !strings.Contains(want, "deaths=1") && !strings.Contains(want, "deaths=2") {
+		t.Fatalf("nobody died in a transcript that is supposed to be a massacre: %s", want)
+	}
+	for i := 0; i < 8; i++ {
+		if got := digest(); got != want {
+			t.Fatalf("run %d produced a different massacre:\n got %s\nwant %s", i, got, want)
+		}
+	}
+}
+
+func TestTheFloorMaskIsCutToTheRoomsYouCanSee(t *testing.T) {
+	// THE PRIVACY RESIDUAL, closed. The mask names the position of everything on
+	// the floor, and a bit clearing plus the next standings frame reconstructs
+	// where a player the reader was never sent was standing when he took it. That
+	// was tolerable while nothing in this game could shoot; the обрез is what
+	// ended the exemption.
+	l := threeRooms()
+	l.Pickups = []Pickup{
+		{ID: 0, Kind: "beer", Sector: 1, Pos: Vec2{X: 15, Y: 8}},
+		{ID: 1, Kind: "beer", Sector: 2, Pos: Vec2{X: 25, Y: 8}},
+	}
+	w := worldIn(t, l)
+	reader := joinTo(t, w, Vec2{X: 2, Y: 5}, eastward)
+
+	got := mustSnapshot(t, w, reader).Left
+	if got&1 == 0 {
+		t.Fatalf("the bottle in the room through his own doorway is missing from %b", got)
+	}
+	if got&2 != 0 {
+		t.Fatalf("the mask %b names a bottle two rooms away, which is a position he was never sent", got)
+	}
+
+	// And walking into that room puts it back, so the field is still idempotent
+	// full state of what he can see rather than a memory of what he has seen.
+	stand(t, w, reader, Vec2{X: 15, Y: 5}, eastward)
+	if got := mustSnapshot(t, w, reader).Left; got&2 == 0 {
+		t.Fatalf("standing next door to it, the mask %b still says it is not there", got)
 	}
 }

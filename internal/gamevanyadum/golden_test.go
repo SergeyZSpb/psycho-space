@@ -80,9 +80,18 @@ type goldenCase struct {
 	// StartAmmo is how much of AmmoCounter the player begins with, because a
 	// reload cannot be exercised by somebody with empty pockets. The gun itself
 	// always begins loaded, exactly as NewPlayer leaves it.
-	StartAmmo int           `json:"start_ammo,omitempty"`
-	Commands  []goldenCmd   `json:"commands"`
-	Trace     []goldenPoint `json:"trace"`
+	StartAmmo int `json:"start_ammo,omitempty"`
+	// Down starts the case with the player on the floor — health at zero — and
+	// StartProtect starts him with that many seconds of spawn protection.
+	//
+	// A BOOL RATHER THAN A HEALTH VALUE, because zero is the interesting state
+	// and an omitted number would have to mean the opposite of what it says. The
+	// port reads this as "set health to nothing"; what happens next is the whole
+	// of the case.
+	Down         bool          `json:"down,omitempty"`
+	StartProtect float64       `json:"start_protect,omitempty"`
+	Commands     []goldenCmd   `json:"commands"`
+	Trace        []goldenPoint `json:"trace"`
 }
 
 type goldenCmd struct {
@@ -116,14 +125,27 @@ type goldenPoint struct {
 	Cooldown float64 `json:"cd,omitempty"`
 	Reload   float64 `json:"rl,omitempty"`
 	Ammo     int     `json:"ammo,omitempty"`
+	// Protected is seconds of spawn protection left, and it is omitted at zero —
+	// which is every step of every case except the one that is about it. The
+	// countdown is on the point rather than left to be inferred from a refused
+	// trigger so that a port whose arithmetic drifts reports "your protection is
+	// wrong" instead of "your gun is wrong".
+	Protected float64 `json:"pr,omitempty"`
 }
 
 // pointOf records everything the port has to reproduce about one step.
+//
+// HEALTH IS NOT HERE, deliberately. Step never changes it — damage belongs to
+// the world, which the browser does not run — so a field carried on nine hundred
+// points would be nine hundred copies of the number the case started with. What
+// the port has to prove about a dead man is that he does NOTHING, and the
+// position and the gun on every point below are exactly that assertion.
 func pointOf(p Player) goldenPoint {
 	return goldenPoint{
 		X: p.Pos.X, Y: p.Pos.Y, Sector: p.Sector,
 		Loaded: p.Loaded, Cooldown: p.CooldownLeft, Reload: p.ReloadLeft,
-		Ammo: p.Counters[AmmoCounter],
+		Ammo:      p.Counters[AmmoCounter],
+		Protected: p.ProtectedLeft,
 	}
 }
 
@@ -290,6 +312,64 @@ func buildGolden() goldenFile {
 		step(4, 0.05, true)    // the barrels are back: two shots and their cadences
 		step(20, 0.05, true)
 		step(10, 0.025, true) // and a dry gun with no bottle left to load
+		f.Cases = append(f.Cases, c)
+	}
+
+	// A man on the floor, sent everything at once: full stick, the trigger held
+	// down, and a look angle changing under him. NOTHING in the trace may move —
+	// not the position, not the sector, not a barrel, not a timer.
+	//
+	// IT IS THE PORT'S HALF OF DYING. The world decides when he gets up (world.go,
+	// rise) and the client has no business predicting that; what the client must
+	// predict is that his own input does nothing until it happens. A port that
+	// went on applying it would walk his corpse down the corridor and have it
+	// snapped back twenty times a second.
+	{
+		l := &Level{Sectors: []Sector{{ID: 0, MinX: 0, MinY: 0, MaxX: 20, MaxY: 20, FloorZ: 0, CeilZ: CeilingHeight}}}
+		l.Walls = buildWalls(l)
+		p := NewPlayer(l)
+		p.Pos, p.Sector = Vec2{X: 10, Y: 10}, 0
+		p.Health = 0
+		c := goldenCase{Name: "down", Level: l, Start: p.Pos, Sector: p.Sector, Down: true}
+		for i := 0; i < 20; i++ {
+			cmd := goldenCmd{Dt: dt, MX: 1, MY: 1, Yaw: float64(i) * 0.3, Pitch: 0.2, Fire: true}
+			c.Commands = append(c.Commands, cmd)
+			p = Step(l, p, Command{
+				Dt: cmd.Dt, MX: cmd.MX, MY: cmd.MY, Yaw: cmd.Yaw, Pitch: cmd.Pitch, Fire: cmd.Fire,
+			})
+			c.Trace = append(c.Trace, pointOf(p))
+		}
+		f.Cases = append(f.Cases, c)
+	}
+
+	// Spawn protection: a man who has just got up, walking away from the spawn
+	// with the trigger held down the whole time.
+	//
+	// TWO RULES IN ONE TRANSCRIPT, and they pull in opposite directions on
+	// purpose. He MOVES — protection is not paralysis, and running is the whole
+	// point of it — while every one of those trigger pulls is refused, so the
+	// barrel count sits at Barrels until the countdown reaches zero and the very
+	// next pull fires. The sub-step is 0.03 rather than the client's own 0.025, so
+	// the window expires in the middle of a step and a port that only ever
+	// compared against clean boundaries is caught.
+	{
+		l := &Level{Sectors: []Sector{{ID: 0, MinX: 0, MinY: 0, MaxX: 40, MaxY: 40, FloorZ: 0, CeilZ: CeilingHeight}}}
+		l.Walls = buildWalls(l)
+		p := NewPlayer(l)
+		p.Pos, p.Sector = Vec2{X: 20, Y: 20}, 0
+		p.ProtectedLeft = SpawnProtectSeconds
+		c := goldenCase{
+			Name: "spawn-protection", Level: l, Start: p.Pos, Sector: p.Sector,
+			StartProtect: SpawnProtectSeconds,
+		}
+		for i := 0; i < 90; i++ {
+			cmd := goldenCmd{Dt: 0.03, MY: 1, Yaw: 0.4, Fire: true}
+			c.Commands = append(c.Commands, cmd)
+			p = Step(l, p, Command{
+				Dt: cmd.Dt, MX: cmd.MX, MY: cmd.MY, Yaw: cmd.Yaw, Pitch: cmd.Pitch, Fire: cmd.Fire,
+			})
+			c.Trace = append(c.Trace, pointOf(p))
+		}
 		f.Cases = append(f.Cases, c)
 	}
 

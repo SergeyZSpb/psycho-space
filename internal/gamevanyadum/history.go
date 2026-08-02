@@ -11,11 +11,12 @@ import "time"
 // learns to lead by a body width, which is a game teaching you to play around
 // its netcode.
 //
-// The consumer — hitscan — arrives with the shotgun. **The recorder cannot**,
-// and that asymmetry is the whole reason this file is here now: a ring buffer
-// of the past is the one piece of a netcode stack that genuinely cannot be
-// retrofitted, because on the day you want it the past has already happened.
-// See ADR-052.
+// THE CONSUMER IS NOW HERE: World.resolveShot rewinds by RewindTo on every
+// barrel that goes off. The buffer was built and left unwired for two
+// iterations, deliberately — the recorder CANNOT arrive with the shotgun,
+// because a ring buffer of the past is the one piece of a netcode stack that
+// genuinely cannot be retrofitted: on the day you want it the past has already
+// happened. See ADR-052.
 //
 // It is memory-only and belongs to the one world, like everything else the
 // simulation owns, so it neither persists nor ticks anything durable.
@@ -91,6 +92,37 @@ func (h *history) record(tick int64, at time.Time, spots map[int]Spot) {
 	h.next = (h.next + 1) % len(h.frames)
 	if h.count < len(h.frames) {
 		h.count++
+	}
+}
+
+// forget takes one slot out of every frame in the ring, so nothing recorded
+// while its last holder stood there can be read back for whoever holds it next.
+//
+// IT IS THE PRICE OF KEYING BY SLOT, and it is worth paying rather than
+// avoiding. `spots` is keyed by slot deliberately — the rewind and the wire then
+// name the same things, which is what lets the hit test hand the slot it landed
+// on straight back to the world (world.go, resolveShot) — but a slot is REUSED
+// the moment its holder leaves, and the ring does not expire for RewindMax after
+// that. Without this purge a newcomer taking a freed place is placed, for the
+// whole of that window, wherever the departed man was standing: he is shot on a
+// line he was never on, at the far end of a building he has just walked into.
+//
+// It is reachable on the ordinary path rather than in theory. Advance records
+// the frame and THEN releases whoever has been abandoned, so the last thing the
+// ring learns about a slot is where its previous holder stood on the tick he
+// left it.
+//
+// A DELETION FROM EVERY FRAME RATHER THAN A RE-KEYING OF THE RING. Keying the
+// past by account would survive reuse by itself, and would cost the whole
+// correspondence between the rewound world and the published one — every read
+// would have to translate an account back into the slot the wire names. This is
+// one pass over a fixed-size ring, on the rare tick somebody leaves.
+func (h *history) forget(slot int) {
+	for i := range h.frames {
+		// A frame the ring has not reached yet has no map at all, and deleting
+		// from a nil map is a no-op rather than a panic, so there is nothing to
+		// guard.
+		delete(h.frames[i].spots, slot)
 	}
 }
 

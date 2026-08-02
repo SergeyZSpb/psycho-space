@@ -16,13 +16,19 @@
  * frame rate, and the server still decides everything.
  *
  * WHAT IS PREDICTED, AND WHY THE GUN IS. Position, and — since the обрез — the
- * shell count, both of its timers and the ammunition the reload spends. The
- * health is not: nothing the player does moves it, so it is read off the
- * snapshot. ADR-058's question is the one that decides each of them, asked the
- * way that record's reasoning asks it rather than the way its one-line test does:
- * must the CLIENT simulate this? The gun must, because the muzzle flash is drawn
- * the instant a thumb lands and a flash is only honest if the browser has already
+ * shell count, both of its timers and the ammunition the reload spends.
+ * ADR-058's question is the one that decides each of them, asked the way that
+ * record's reasoning asks it rather than the way its one-line test does: must
+ * the CLIENT simulate this? The gun must, because the muzzle flash is drawn the
+ * instant a thumb lands and a flash is only honest if the browser has already
  * run the same refusal the server is about to run.
+ *
+ * HEALTH IS NOT PREDICTED, AND IS STILL REPLAYED AGAINST. Nothing the player
+ * does moves it, so it is only ever read off the snapshot — but `step` consults
+ * it, because a man on the floor does not walk. Spawn protection is the pair of
+ * that: granted by the server, counted down here, and part of the same trigger
+ * refusal the gun's timers are. Both are on the replay base below, which is what
+ * makes a death and a respawn cost nothing to reconcile.
  *
  * WHAT THIS IS NOT. It is not authority. A prediction is a guess that is usually
  * right; when the server disagrees, the server wins, without negotiation and
@@ -49,6 +55,26 @@ export interface Authoritative {
   sector: number;
   /** The last command sequence the server folded in. */
   ack: number;
+  /**
+   * What is left of the player, and ZERO IS THE WHOLE OF BEING DEAD.
+   *
+   * NOT PREDICTED, BUT READ ON EVERY REPLAY. Nothing the player does moves it,
+   * so it is never guessed — but `step` consults it, because a man on the floor
+   * neither walks nor shoots. Replaying a pending command against a stale
+   * `health` would walk a corpse for a round trip and then snap it back to the
+   * spawn.
+   */
+  health: number;
+  /**
+   * Seconds of spawn protection left; the caller converts the wire's `pr` ms.
+   *
+   * THE SAME RECONCILE BASE THE GUN'S TIMERS GET, and for the same reason: it is
+   * decremented rather than replaced, so a base taken from this client's own
+   * memory would take each pending command's dt off it twice. The server also
+   * advances it through ticks the client sent nothing for, which is exactly the
+   * state a man standing still on a spawn is in.
+   */
+  protect: number;
   /** Barrels ready to fire — the server's count, never the client's guess. */
   loaded: number;
   /** Seconds until the gun fires again; the caller converts the wire's `d` ms. */
@@ -113,8 +139,16 @@ export interface PredictorOptions {
   level: VanyadumLevel;
   constants: StepConstants;
   eyeHeight: number;
-  /** Starting position, from the level's spawn. */
-  start: { x: number; y: number; sector: number; yaw: number };
+  /**
+   * Where the player starts, and with how much of him left.
+   *
+   * `health` is here rather than assumed because `step` refuses to move a dead
+   * man, so a predictor built with a zero would be frozen for the fraction of a
+   * second before the first snapshot arrives — the one moment nothing is
+   * correcting it. It is the catalogue's own starting health, which is what the
+   * server's `NewPlayer` gives somebody walking in.
+   */
+  start: { x: number; y: number; sector: number; yaw: number; health: number };
 }
 
 /**
@@ -135,9 +169,12 @@ export function createPredictor(opts: PredictorOptions) {
     yaw: opts.start.yaw,
     pitch: 0,
     sector: opts.start.sector,
-    // Loaded and dry, which is how the server's NewPlayer leaves somebody: two
-    // free shots and then a walk to a bottle. Guessed here only for the fraction
-    // of a second before the first snapshot, which overwrites all four.
+    // Alive and unprotected, loaded and dry — which is how the server's
+    // NewPlayer leaves somebody: two free shots and then a walk to a bottle.
+    // Guessed here only for the fraction of a second before the first snapshot,
+    // which overwrites every one of them.
+    health: opts.start.health,
+    protectedLeft: 0,
     loaded: constants.barrels,
     cooldown: 0,
     reload: 0,
@@ -275,6 +312,8 @@ export function createPredictor(opts: PredictorOptions) {
         yaw: predicted.yaw,
         pitch: predicted.pitch,
         sector: a.sector,
+        health: a.health,
+        protectedLeft: a.protect,
         loaded: a.loaded,
         cooldown: a.cooldown,
         reload: a.reload,

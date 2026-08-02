@@ -67,7 +67,16 @@
       <canvas ref="canvasEl" class="dum-canvas" data-testid="vanyadum-canvas" />
 
       <div class="dum-hud" data-testid="vanyadum-hud">
-        <span class="dum-hud-cell">♥ {{ health }}</span>
+        <!-- THE MARK FOR BEING SHOT, and it is here rather than across the
+             screen because that is where being shot is legible: the number that
+             changed. A full-plane flash is what this project's acknowledgement
+             rule forbids, and it would also take the eye off the only thing
+             worth watching, which is whoever is still pointing a gun at you. -->
+        <span
+          class="dum-hud-cell"
+          :class="{ 'is-hurt': hurt }"
+          data-testid="vanyadum-health"
+        >♥ {{ health }}</span>
         <!-- THE SERVER'S SHELL COUNT, never the prediction's. The browser
              predicts the gun so that a muzzle flash can be drawn with no round
              trip, but what is WRITTEN DOWN is what the snapshot says — so a
@@ -130,12 +139,54 @@
             >
               {{ p.icon }}{{ row.bag[p.grants] ?? 0 }}
             </span>
+            <!-- HOW OFTEN HE HAS BEEN PUT ON THE FLOOR, AND HOW MANY FRIENDS HE
+                 HAS PUT THERE. There is no kill column and there is not going to
+                 be one until there is something here worth killing: friendly
+                 fire is on and everybody in the building is a friend, so every
+                 kill is the second number and nothing else. Both are drawn as a
+                 zero rather than a blank, so the columns stay aligned down the
+                 list — the wire omits them, the readout does not. The word for
+                 the second one is on the splash screen, from the catalogue. -->
+            <span class="dum-board-num" data-testid="vanyadum-board-deaths">
+              {{ DEATHS_ICON }}{{ row.deaths }}
+            </span>
+            <span class="dum-board-num" data-testid="vanyadum-board-betrayals">
+              {{ BETRAYALS_ICON }}{{ row.betrayals }}
+            </span>
           </li>
         </ol>
       </div>
 
       <p v-if="link !== 'open'" class="dum-link" data-testid="vanyadum-link">
         {{ link === 'connecting' ? 'связь…' : 'связь потеряна, ждём…' }}
+      </p>
+
+      <!-- YOU ARE ON THE FLOOR, AND YOU ARE COMING BACK. Real DOM over the
+           canvas (ADR-047), so both halves of it can be read by a test and by a
+           screen reader: how long you are down for, and that it ends by itself.
+           A player told neither reads three seconds of refused input as the game
+           having crashed.
+
+           It does not cover the world, deliberately — the camera still turns
+           while you are down, so you can watch whoever did it walk away.
+
+           Driven by `dn`, which the server omits for anybody standing up: a
+           countdown that exists IS the whole of being down, and the health it
+           agrees with is zero on the same frame. -->
+      <div v-if="downLeft > 0" class="dum-down" data-testid="vanyadum-down">
+        <p class="dum-down-title">ТЕБЯ ПОЛОЖИЛИ</p>
+        <p class="dum-down-timer">встанешь через {{ downLeft }}</p>
+        <p class="dum-down-sub">Оглядеться можно. Идти и стрелять — нет.</p>
+      </div>
+
+      <!-- AND THEN YOU ARE UNTOUCHABLE, FOR AS LONG AS IT LASTS. A buff is a
+           property shown for its whole duration rather than a flash, because a
+           mark that appears once says nothing about the two seconds that follow
+           — and this one has a second half a player would otherwise discover by
+           pulling a trigger that does nothing. Peers get the same rule in the
+           scene, where a protected man is drawn blue. -->
+      <p v-if="protectTenths > 0" class="dum-protect" data-testid="vanyadum-protect">
+        🛡 тебя не убить — и ты не стреляешь · {{ protectLeft }}
       </p>
 
       <p v-if="sceneFailed" class="dum-blind" data-testid="vanyadum-blind">
@@ -286,12 +337,27 @@
  * count is something a player reads and a guess that is taken back a frame later
  * is worse than a number that is fifty milliseconds old.
  *
- * SOMEBODY ELSE'S SHOT IS THE ONE THING HERE THAT NEEDS TELLING. Your own is
- * derived — a predicted barrel count falling by one IS the shot — but a peer
- * carries no barrel count, so his gun going off rides the snapshot as a marker
- * on the tick it happened, and the заброшка's other four see a flash at him. It
- * arrives as a LEVEL lasting a tick and is drawn as an EVENT lasting three
- * frames; the conversion is vanyadumFlash's, and the drawing is the scene's.
+ * WHAT HAPPENS TO SOMEBODY ELSE IS WHAT NEEDS TELLING. Your own shot is derived
+ * — a predicted barrel count falling by one IS the shot — and so is being hit,
+ * because your own `hp` falling is on every frame. Nothing about another man is:
+ * he carries no barrel count, and being shot MOVES NOBODY, so there is no value
+ * on the frame that could imply it. That is the whole of why a peer carries one
+ * small integer saying which of four things is true of him — his gun went off, a
+ * shot landed on him, he is on the floor, he cannot be touched — and why the
+ * budget for it cost the building a place.
+ *
+ * TWO OF THE FOUR ARE INSTANTS AND TWO ARE STATES, and they are drawn
+ * differently on purpose. The instants arrive as a LEVEL lasting a tick and are
+ * drawn as EVENTS lasting three frames (vanyadumFlash converts, the scene
+ * draws). The states last their whole duration and are drawn as properties of
+ * the figure for all of it — grey on the floor, blue while untouchable —
+ * because a mark that flashes once says nothing about the three seconds that
+ * follow, and because somebody you cannot hurt has to LOOK like somebody you
+ * cannot hurt.
+ *
+ * YOUR OWN DEATH AND YOUR OWN PROTECTION ARE DOM, not the canvas (ADR-047). They
+ * are readouts a player reads — a countdown and a state with a duration — and
+ * nothing painted into a canvas can be asserted on without pixel comparison.
  */
 
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
@@ -314,7 +380,15 @@ import {
 import { createPredictor, type Predictor } from '../lib/vanyadumPredict';
 import { createGunAudio, type GunAudio } from '../lib/vanyadumSound';
 import { createInterpolator, type Interpolator, type PeerState } from '../lib/vanyadumInterp';
-import { changedHands, clock, decodeBoard, decodePeers, type BoardRow } from '../lib/vanyadumRoster';
+import {
+  BETRAYALS_ICON,
+  DEATHS_ICON,
+  changedHands,
+  clock,
+  decodeBoard,
+  decodePeers,
+  type BoardRow,
+} from '../lib/vanyadumRoster';
 import type { VanyadumScene } from '../render/vanyadumScene';
 import { realtimeClient, type ConnectionStatus, type RealtimeFrame } from '../realtime/socket';
 
@@ -336,6 +410,32 @@ const rules = computed(() => buildRules(config.value));
 
 // --- what the server last told us -----------------------------------------
 const health = ref(0);
+/**
+ * Whether the health readout is wearing its "that just went down" mark.
+ *
+ * DERIVED FROM A VALUE THE FRAME ALREADY CARRIES, which is this project's rule
+ * for an acknowledgement: `hp` falling between two snapshots IS being shot, so
+ * nothing has to be published to say so — the server makes the same argument for
+ * not putting a "you were hit" field on a payload that repeats twenty times a
+ * second. Compared BEFORE `health` is overwritten, because a value overwritten
+ * first is a transition nobody can see.
+ */
+const hurt = ref(false);
+/** Clears that mark on a timer. Held so leaving the building can cancel it. */
+let hurtTimer: number | undefined;
+/**
+ * Seconds until you get up, and tenths of a second of protection left.
+ *
+ * QUANTISED HERE RATHER THAN RENDERED RAW, and assigned only when the number
+ * a player can actually read changes. Both fields arrive twenty times a second;
+ * writing them through Vue's reactivity at that rate would buy a scheduler pass
+ * and a vdom patch per snapshot to redraw a digit that moved every twentieth
+ * time. Same rule the camera follows, one altitude up.
+ */
+const downLeft = ref(0);
+const protectTenths = ref(0);
+/** «1,4» — the Russian decimal comma, from the tenths above. */
+const protectLeft = computed(() => String(protectTenths.value / 10).replace('.', ','));
 const bag = ref<Record<string, number>>({});
 /**
  * The gun, as the newest snapshot describes it.
@@ -566,8 +666,13 @@ function toggleSound(): void {
  */
 function triggerWanted(): boolean {
   if (!triggerHeld || !predictor) return false;
-  const gun = predictor.raw();
-  return gun.cooldown <= 0 && gun.reload <= 0;
+  const me = predictor.raw();
+  // Being dead and being protected are refusals this client can run for itself,
+  // exactly as the cadence is: both are on the predicted player, both come from
+  // the snapshot on every reconcile, and the server would answer a pull sent
+  // during either with silence. Suppressing them costs nothing — the trigger is
+  // still held, so the first command after either ends carries the pull.
+  return me.health > 0 && me.protectedLeft <= 0 && me.cooldown <= 0 && me.reload <= 0;
 }
 
 /**
@@ -590,16 +695,77 @@ function triggerWanted(): boolean {
  * up; this client cannot produce that command, because `triggerWanted` withholds
  * the pull for as long as its own prediction is still reloading. Anything that
  * changes there has to come back and look at this.
+ *
+ * AND THE CADENCE HAS TO BE RUNNING, because a granted shot sets the cooldown in
+ * the same step it spends the barrel, and nothing else in the game lowers the
+ * count at all. Neither half of dying does: the server's `wound` clears the
+ * cooldown, the reload and the protection and leaves the barrels exactly where
+ * the last shot left them, and `rise` only ever refills them, to a full gun
+ * (internal/gamevanyadum/world.go). So a count that falls with no cadence behind
+ * it is not a shot — it is the server's gun arriving under a prediction that was
+ * holding a fuller one, which is precisely what a predictor rebuilt beneath a
+ * living occupant does: `drawnLoaded` is seeded from a fresh prediction, a fresh
+ * prediction starts loaded, and a page reload inside the abandon grace or a
+ * socket that came back hands this client the man it left standing there — with
+ * the gun he had and his cooldown long over. Without the guard, walking back in
+ * would open with a muzzle flash and a bang for a shot fired before this
+ * predictor existed.
+ *
+ * WHAT THE GUARD COSTS IS SILENCE, and it is worth a reader knowing rather than
+ * rediscovering. A shot is predicted in the same frame this comparison runs, so
+ * an ordinary one is never missed — but a frame the browser drops for longer than
+ * the cadence arrives with a whole wake of commands to apply at once, and a shot
+ * taken early in such a wake can have its cooldown run out again before the last
+ * of them. It then reaches this comparison as a bare fall, and is drawn and heard
+ * as nothing. That is the right way round to be wrong: the alternative is a bang
+ * for a shot nobody fired.
  */
-function markGun(gun: { loaded: number; reload: number }): void {
+function markGun(gun: { loaded: number; reload: number; cooldown: number }): void {
   const reloadingNow = gun.reload > 0;
-  if (gun.loaded < drawnLoaded) {
+  if (gun.loaded < drawnLoaded && gun.cooldown > 0) {
     scene.value?.fire();
     audio.shot();
   }
   if (reloadingNow && !drawnReloading) audio.reload();
   drawnLoaded = gun.loaded;
   drawnReloading = reloadingNow;
+}
+
+/**
+ * How long the health readout wears its mark.
+ *
+ * Comfortably under the half second this project caps an acknowledgement at, and
+ * comfortably over a snapshot interval, so a hit is still visible on the frame
+ * after the one that carried it.
+ */
+const HURT_MARK_MS = 320;
+
+/**
+ * Marks the health readout as having just gone down.
+ *
+ * CLEARED ON A TIMER AND NEVER ON `animationend`, which is the difference
+ * between an acknowledgement and a decoration: under
+ * `prefers-reduced-motion` the animation is switched off, that event never
+ * fires, and a mark waiting for it would stay on screen for the rest of the
+ * visit. The style under that media query is a flat colour rather than nothing,
+ * so somebody who asked for less movement is still told he was shot.
+ *
+ * Restarting rather than extending, so two hits in quick succession are two
+ * marks of the same length.
+ */
+function markHurt(): void {
+  hurt.value = true;
+  if (hurtTimer !== undefined) window.clearTimeout(hurtTimer);
+  hurtTimer = window.setTimeout(() => {
+    hurt.value = false;
+    hurtTimer = undefined;
+  }, HURT_MARK_MS);
+}
+
+function clearHurt(): void {
+  if (hurtTimer !== undefined) window.clearTimeout(hurtTimer);
+  hurtTimer = undefined;
+  hurt.value = false;
 }
 
 // --- lifecycle -------------------------------------------------------------
@@ -734,6 +900,11 @@ async function buildWorld(): Promise<void> {
   if (!world || !config.value) return;
   const level = world.level;
   health.value = config.value.player.start_health;
+  // Alive and unprotected, exactly as the server's NewPlayer leaves somebody, so
+  // that neither overlay is on screen for the frame before the first snapshot.
+  downLeft.value = 0;
+  protectTenths.value = 0;
+  clearHurt();
   // Loaded and dry, exactly as the server's NewPlayer leaves somebody — and
   // overwritten by the first snapshot, which is a twentieth of a second away.
   loaded.value = config.value.gun.barrels;
@@ -766,6 +937,13 @@ async function buildWorld(): Promise<void> {
       canvas,
       level,
       surfaces: config.value.surfaces,
+      // The figure a peer is drawn as IS the cylinder the server shoots at, so
+      // all three come from the catalogue rather than from the renderer.
+      player: {
+        radius: config.value.player.radius,
+        bodyHeight: config.value.player.body_height,
+        eyeHeight: config.value.player.eye_height,
+      },
       reducedMotion: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false,
     });
     scene.value.setOnFloor(onFloor.value);
@@ -809,6 +987,9 @@ async function buildWorld(): Promise<void> {
       y: level.spawn.y,
       sector: level.spawn_sector,
       yaw: level.spawn_yaw,
+      // Alive, or `step` would refuse to move him for the fraction of a second
+      // before the first snapshot — the one moment nothing is correcting him.
+      health: config.value.player.start_health,
     },
   });
   // Seeded from the prediction rather than from zero, or the first frame reads
@@ -872,6 +1053,11 @@ function teardownPlay(): void {
   // The place we were holding is given back the moment the socket goes, so it
   // is no longer ours to point an arrow at.
   mySlot.value = -1;
+  // Nothing is counting these down any more, and a frozen countdown on the
+  // splash screen is worse than none. The timer behind the mark goes with them.
+  downLeft.value = 0;
+  protectTenths.value = 0;
+  clearHurt();
   // Handing the mouse back is not optional: leaving a page with the pointer
   // still captured strands the cursor on a screen that no longer uses it.
   if (pointerLocked.value) document.exitPointerLock?.();
@@ -1077,11 +1263,16 @@ function applySnapshot(frame: RealtimeFrame): void {
     y: num(frame.y) / 100,
     sector: num(frame.s),
     ack: num(frame.ack),
+    // NOT PREDICTED, AND STILL ON THE REPLAY BASE. Nothing the player does moves
+    // his health, but `step` reads it — a man on the floor does not walk — so a
+    // replay against a stale value would keep walking a corpse for a round trip.
+    health: num(frame.hp),
     loaded: num(frame.b),
-    // Milliseconds on the wire, seconds in the simulation. Both are absent at
-    // rest, which is nearly always, and absent means zero.
+    // Milliseconds on the wire, seconds in the simulation. All three are absent
+    // at rest, which is nearly always, and absent means zero.
     cooldown: num(frame.d) / 1000,
     reload: num(frame.r) / 1000,
+    protect: num(frame.pr) / 1000,
     ammo: config.value ? num(carried[config.value.gun.ammo]) : 0,
   });
 
@@ -1112,7 +1303,22 @@ function applySnapshot(frame: RealtimeFrame): void {
     );
   }
 
-  health.value = num(frame.hp);
+  // BEING SHOT IS DERIVED RATHER THAN SENT: `hp` falling between two frames IS
+  // the hit, so the comparison happens HERE, before the assignment on the next
+  // line overwrites the value being compared against. A rise is a respawn and
+  // marks nothing.
+  const hp = num(frame.hp);
+  if (hp < health.value) markHurt();
+  health.value = hp;
+
+  // Whole seconds on the floor, and tenths of a second of protection. Rounded UP
+  // so neither reads zero while it is still running: a countdown that shows «0»
+  // for the last half second is a countdown a player stops believing.
+  const down = Math.ceil(num(frame.dn) / 1000);
+  if (down !== downLeft.value) downLeft.value = down;
+  const protect = Math.ceil(num(frame.pr) / 100);
+  if (protect !== protectTenths.value) protectTenths.value = protect;
+
   // The readouts, which are the SERVER'S and never the prediction's — a shell
   // count is a number somebody reads, and a number somebody reads must not be a
   // guess that is taken back a frame later. `b` is always sent, because a
@@ -1545,6 +1751,24 @@ watch(
   pointer-events: none;
 }
 
+/* THE MARK FOR BEING SHOT. Small, on the readout that changed, and over in a
+   third of a second — this project caps an acknowledgement at half of one,
+   because a mark big enough to watch is a mark that takes your eye off whoever
+   is still shooting at you. */
+.dum-hud-cell.is-hurt {
+  color: #ff6b5e;
+  animation: dum-hurt 0.32s steps(2, end) 1;
+}
+
+@keyframes dum-hurt {
+  from {
+    color: #ffffff;
+  }
+  to {
+    color: #ff6b5e;
+  }
+}
+
 /* Pushed to the far end, so what is true of the BUILDING sits away from what is
    true of you. */
 .dum-hud-right {
@@ -1613,9 +1837,83 @@ watch(
 }
 
 .dum-board-time,
-.dum-board-bag {
+.dum-board-bag,
+.dum-board-num {
   flex: 0 0 auto;
   white-space: nowrap;
+}
+
+/* The name is the only column that gives, so two more numeric columns cost the
+   pseudonym a few characters of ellipsis and nothing else. */
+.dum-board-num {
+  opacity: 0.85;
+}
+
+/* THE DEATH CARD. Above the middle rather than over it, so it clears the
+   desktop's pointer-lock prompt — and narrow, because the world behind it is
+   still worth watching: the camera turns while you are down. `pointer-events`
+   off, or three seconds of being dead would also be three seconds of a dead
+   control swallowing the thumb that is looking around. */
+.dum-down {
+  position: absolute;
+  left: 50%;
+  top: 30%;
+  transform: translate(-50%, -50%);
+  width: min(18rem, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 2px solid #e2574c;
+  border-radius: 12px;
+  background: rgba(20, 6, 6, 0.82);
+  color: #ffd0c9;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+}
+
+.dum-down-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.dum-down-timer {
+  margin: 4px 0 0;
+  font-size: 1.6rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #ffffff;
+}
+
+.dum-down-sub {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  opacity: 0.8;
+}
+
+/* THE PROTECTION BADGE, shown for the whole two seconds it lasts rather than
+   flashed once — a state with a duration is not an event. Bottom-centre, which
+   is clear of the trigger and the mute on the right and of wherever a left thumb
+   drops the stick. Blue, and the peers who are protected are drawn blue too, so
+   the colour means one thing on both sides of the screen. */
+.dum-protect {
+  position: absolute;
+  left: 50%;
+  bottom: 104px;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 24px);
+  margin: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(110, 198, 255, 0.5);
+  background: rgba(0, 20, 34, 0.6);
+  color: #b6e4ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
 }
 
 .dum-blind {
@@ -1754,6 +2052,15 @@ watch(
 @media (prefers-reduced-motion: reduce) {
   .dum-stick-knob {
     transition: none;
+  }
+
+  /* THE MARK SURVIVES, UNANIMATED. Somebody who asked for less movement still
+     has to be told he was shot, so what goes is the flicker and not the
+     acknowledgement — the colour stays for the whole of the same third of a
+     second, cleared by the view's own timer rather than by an `animationend`
+     that would now never fire. */
+  .dum-hud-cell.is-hurt {
+    animation: none;
   }
 }
 </style>

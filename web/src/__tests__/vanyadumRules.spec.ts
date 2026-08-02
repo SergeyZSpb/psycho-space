@@ -16,6 +16,7 @@ const config: VanyadumConfig = {
   player: {
     radius: 0.35,
     eye_height: 1.65,
+    body_height: 1.8,
     walk_speed: 5,
     max_step: 0.6,
     max_pitch: 1.5,
@@ -28,6 +29,7 @@ const config: VanyadumConfig = {
     reload_seconds: 1.5,
     reload_cost: 1,
     ammo: 'beer',
+    damage: 50,
   },
   pickups: [
     {
@@ -52,7 +54,13 @@ const config: VanyadumConfig = {
     interp_delay_ms: 120,
     collision_passes: 3,
   },
-  world: { max_occupants: 6, respawn_seconds: 30 },
+  world: {
+    max_occupants: 6,
+    respawn_seconds: 30,
+    down_seconds: 3,
+    protect_seconds: 2,
+    betrayals_title: 'предательства',
+  },
 };
 
 describe('buildRules', () => {
@@ -81,7 +89,7 @@ describe('buildRules', () => {
     // both are derived — retune either on the server and this screen follows.
     const retuned = {
       ...config,
-      world: { max_occupants: 12, respawn_seconds: 45 },
+      world: { ...config.world, max_occupants: 12, respawn_seconds: 45 },
     };
     const block = buildRules(retuned).find((b) => b.title === 'Заброшка');
     const text = block?.lines.map((l) => l.text).join(' ') ?? '';
@@ -255,13 +263,111 @@ describe('buildRules', () => {
     expect(text).toContain('пробел');
   });
 
-  it('admits the обрез has nothing to hit yet', () => {
-    // An ABSENCE, so it cannot be derived: a catalogue can only publish what
-    // exists. Without it a player empties the gun into a corridor and decides
-    // the game is broken, which is a worse first impression than being told.
+  it('no longer says the обрез has nothing to hit', () => {
+    // It said so for exactly one iteration, and its own comment predicted this:
+    // an absence can never be derived, so the change that gave the ray something
+    // to damage had to come back and delete the line. Believed, it would now be
+    // a lie about the central rule of the game — a player told the building is a
+    // shooting range with no targets will not think to look behind him.
+    const text = buildRules(config)
+      .flatMap((b) => b.lines)
+      .map((l) => `${l.label} ${l.text}`)
+      .join(' ');
+    expect(text).not.toContain('нейрослопов');
+    expect(text).not.toContain('тир без мишеней');
+  });
+
+  it('says what a hit looks like, which no catalogue could have told it', () => {
+    // A RENDERING DECISION rather than a rule: the server sends a small integer
+    // saying somebody was shot, and drawing that as red spreading over him is
+    // this client's own choice — so it is prose. It is also the sharpest line on
+    // the screen, because it is the ONLY thing that distinguishes a shot that
+    // connected from one that missed.
     const prose = buildRules(config).find((b) => b.prose);
     const text = prose?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
-    expect(text).toContain('нейрослопов');
+    expect(text).toContain('красным');
+    expect(text).toContain('Промазал');
+  });
+
+  it("takes death's own numbers from the catalogue", () => {
+    // C1b's rules change, and the reason the splash is a gate: a player who does
+    // not know he gets up by himself will reload the page, and one who does not
+    // know he is untouchable for two seconds afterwards will spend them standing
+    // still. Both numbers are the RETUNED ones here rather than production's, so
+    // a hand-typed «3 с» fails.
+    const retuned = {
+      ...config,
+      world: { ...config.world, down_seconds: 7, protect_seconds: 4 },
+    };
+    const block = buildRules(retuned).find((b) => b.title === 'Смерть');
+    const text = block?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
+    expect(text).toContain('7 с');
+    expect(text).toContain('4 с');
+    // Not marked as prose, because none of it was typed out.
+    expect(block?.prose).toBeFalsy();
+  });
+
+  it('says the spawn shield covers walking in as well as getting up', () => {
+    // The window is opened in two places on the server — `rise` grants it to a
+    // man who has just got up, and `Join` grants the same one to a man who has
+    // just walked in. A cheatsheet naming only the respawn is a cheatsheet a
+    // newcomer disproves in his first two seconds, pulling a trigger the shield
+    // is refusing with nothing on screen to say why.
+    const block = buildRules(config).find((b) => b.title === 'Смерть');
+    const text = block?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
+    expect(text).toContain('когда только зашёл');
+    expect(text).toContain('когда встал после смерти');
+    // And both halves of what the shield does, because the second one is the
+    // surprising half: it takes your обрез away for as long as it protects you.
+    expect(text).toContain('не стреляешь');
+  });
+
+  it('says friends are killable and that killing them scores nothing', () => {
+    // THE RULE THE WHOLE ITERATION TURNS ON. Every other shooter has trained a
+    // player to expect that the man beside him is safe from him; here he is not,
+    // and the only thing a kill produces is a line on the board under a name the
+    // SERVER chose — so the word is derived too, and a second copy of the joke
+    // typed in here would be the one thing on the screen a retune could not fix.
+    const renamed = {
+      ...config,
+      world: { ...config.world, betrayals_title: 'подставы' },
+    };
+    const text = buildRules(renamed)
+      .flatMap((b) => b.lines)
+      .map((l) => `${l.label} ${l.text}`)
+      .join(' ');
+    expect(text).toContain('Огонь по своим включён');
+    expect(text).toContain('подставы');
+    expect(text).not.toContain('предательства');
+  });
+
+  it('states how much a barrel takes off, by joining the gun to the player', () => {
+    // Two halves of the catalogue meeting: the damage is on the gun and the
+    // health is on the player, and the only thing anybody wants to know about
+    // either is how they meet. Both retuned here, so a hand-typed «50» fails.
+    const retuned = {
+      ...config,
+      player: { ...config.player, max_health: 60, start_health: 60 },
+      gun: { ...config.gun, damage: 20 },
+    };
+    const block = buildRules(retuned).find((b) => b.title === 'Ваня');
+    const text = block?.lines.map((l) => l.text).join(' ') ?? '';
+    expect(text).toContain('60 из 60');
+    expect(text).toContain('20');
+    // And the claim it replaced is gone: there was nobody to take health off,
+    // for exactly one iteration.
+    expect(text).not.toContain('отнять его некому');
+  });
+
+  it('names the two new standings columns from the catalogue', () => {
+    // The board grew 💀 and 🔪 with the thing they count, and the line describing
+    // the board has to grow with it — a cheatsheet that lists two of a row's four
+    // numbers is a cheatsheet a player stops reading.
+    const block = buildRules(config).find((b) => b.title === 'Заброшка');
+    const line = block?.lines.find((l) => l.label.includes('табло'));
+    expect(line?.text).toContain('💀');
+    expect(line?.text).toContain('🔪');
+    expect(line?.text).toContain(config.world.betrayals_title);
   });
 
   it('describes every pickup the catalogue carries, and only those', () => {

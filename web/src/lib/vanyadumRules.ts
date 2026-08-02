@@ -23,6 +23,7 @@
  */
 
 import type { VanyadumConfig, VanyadumPickupKind } from '../api/types';
+import { BETRAYALS_ICON, DEATHS_ICON } from './vanyadumRoster';
 
 /**
  * The catalogue entry the gun's ammunition comes from, or null.
@@ -138,7 +139,7 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
         // control. What cannot be derived — that a snapshot is cut to the rooms
         // you can see at all — is prose, below.
         label: '📋 табло',
-        text: `Справа сверху — все, кто сейчас на заброшке, даже те, кого не видно: сколько времени внутри${carriedList(config)}. Твоя строка со стрелкой.`,
+        text: `Справа сверху — все, кто сейчас на заброшке, даже те, кого не видно: сколько времени внутри${carriedList(config)}. Там же ${DEATHS_ICON} сколько раз лёг и ${BETRAYALS_ICON} ${config.world.betrayals_title}. Твоя строка со стрелкой.`,
       },
     ],
   });
@@ -155,8 +156,12 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
         text: `Заходит на ${num(config.player.max_step * 100, 0)} см без прыжка. Выше — стена.`,
       },
       {
+        // DERIVED FROM TWO PLACES AT ONCE — the player's health and the gun's
+        // damage — because the only thing anybody wants to know about either is
+        // how they meet. The catalogue publishes both, so the day somebody
+        // retunes the обрез this sentence follows it.
         label: '♥ здоровье',
-        text: `${config.player.start_health} из ${config.player.max_health}. Пока отнять его некому.`,
+        text: `${config.player.start_health} из ${config.player.max_health}. Одно попадание из обреза снимает ${config.gun.damage}.`,
       },
     ],
   });
@@ -192,6 +197,42 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
     blocks.push({ title: 'Обрез', lines });
   }
 
+  // WHAT HAPPENS WHEN SOMEBODY HITS YOU, and it is its own block because it is
+  // the newest and most surprising set of rules in the game: the обрез now
+  // reaches people, the people it reaches are your friends, and none of it
+  // scores anything. Every number is served, including the word for the
+  // standings column — the joke is written down in the catalogue, not here.
+  blocks.push({
+    title: 'Смерть',
+    lines: [
+      {
+        label: '💀 лёг',
+        text: `Здоровье кончилось — валяешься ${num(config.world.down_seconds, 0)} с. Смотреть по сторонам можно, идти и стрелять нельзя. Потом сам встаёшь на спавне с полным обрезом, а собранное остаётся при тебе.`,
+      },
+      {
+        // BOTH WAYS OF ARRIVING AT THE SPAWN, because the window now opens for
+        // both: the world grants it to a man who has just got up and to a man who
+        // has just walked in through the door (world.go — `Join` calls the same
+        // `protect` that `rise` does). It sits in this block anyway, because the
+        // rule is about the spawn and this is where the player is told he wakes
+        // up on one; but a cheatsheet naming only the respawn leaves a newcomer
+        // pulling a dead trigger for his first two seconds in the building with
+        // nothing on the screen to explain it, which reads as a broken обрез.
+        //
+        // The number stays derived, which is the part that goes stale. WHAT opens
+        // the window is typed out — the catalogue publishes how long it lasts and
+        // carries no field for what starts one — so a third way of becoming
+        // untouchable would have to come back and edit this sentence.
+        label: '🛡 щит на спавне',
+        text: `Первые ${num(config.world.protect_seconds, 0)} с на спавне — и когда только зашёл, и когда встал после смерти — пули тебя не берут, но и сам не стреляешь и не перезаряжаешься. Кто светится синим, того трогать бесполезно.`,
+      },
+      {
+        label: `${BETRAYALS_ICON} ${config.world.betrayals_title}`,
+        text: `Огонь по своим включён, а чужих тут нет — значит все убийства свои. За них не дают ничего, только строчку «${config.world.betrayals_title}» на табло рядом с ${DEATHS_ICON}.`,
+      },
+    ],
+  });
+
   if (config.pickups.length > 0) {
     blocks.push({
       title: 'Что валяется',
@@ -212,31 +253,35 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
  * The part that cannot be derived, and the part a rules change must come back
  * and edit BY HAND.
  *
- * Four kinds of thing end up here, and none of them could honestly be
+ * Five kinds of thing end up here, and none of them could honestly be
  * generated. The CONTROLS, because the server has no opinion about thumbs and
  * publishes none. The ABSENCES — that there is no objective, that nothing ends,
- * that leaving is just leaving, and that the обрез has nothing to hit yet —
- * which no catalogue can carry, because a catalogue can only publish what
- * exists. That last one is the newest and the one most likely to go stale: the
- * iteration that gives the ray something to damage has to come back and delete
- * it, and a cheatsheet still promising a shooting range with no targets in it
- * would be believed.
- * The building's LIFECYCLE: the config
+ * and that leaving is just leaving — which no catalogue can carry, because a
+ * catalogue can only publish what exists. The building's LIFECYCLE: the config
  * endpoint describes what a заброшка is made of and how many people fit in it,
  * and carries no field at all for the fact that this one is torn down and
- * generated again once it empties. And the VISIBILITY FILTER — that a snapshot
- * is cut to the room you are standing in and the rooms through its doorways, so
- * a man who walked further off is genuinely not on your screen. That one is a
- * property of how a frame is built rather than a field the catalogue could
- * carry, which is why it is typed out here while the standings that answer it
- * are derived in the block above.
+ * generated again once it empties. The VISIBILITY FILTER — that a snapshot is
+ * cut to the room you are standing in and the rooms through its doorways, so a
+ * man who walked further off is genuinely not on your screen. And what a HIT
+ * LOOKS LIKE, which is a rendering decision rather than a rule: the server sends
+ * a small integer saying somebody was shot, and the choice to draw that as red
+ * spreading over him belongs to this client alone.
  *
  * The absences and the lifecycle matter more than any number on this screen. A
  * player who assumes there is a win condition will spend the whole visit
  * looking for it, and a player who remembers the layout will decide the game is
  * broken the first time he comes back to a building he has never seen. The
- * filter is the newest of the three and behaves the same way: unstated, a peer
- * vanishing at a doorway reads as the game losing him.
+ * filter behaves the same way: unstated, a peer vanishing at a doorway reads as
+ * the game losing him. And the hit mark is the sharpest of the lot — it is the
+ * only thing that distinguishes a shot that connected from one that missed, so a
+ * player who does not know what he is looking for will conclude the обрез does
+ * nothing.
+ *
+ * THE LINE THAT USED TO SAY THE ОБРЕЗ HAD NOTHING TO HIT IS GONE, and its own
+ * comment predicted exactly this: it was true for one iteration, it could never
+ * be derived, and the change that gave the ray something to damage had to come
+ * back and delete it. Believed, it would now be a lie about the central rule of
+ * the game.
  *
  * If you add a mechanic, ask first whether the catalogue could carry it. It
  * usually can, and then it belongs above rather than here.
@@ -249,8 +294,8 @@ export const VANYADUM_PROSE: RuleLine[] = [
     text: 'Круглая кнопка справа снизу. Держи — обрез стреляет так часто, как умеет. Рядом 🔇 — выключить звук.',
   },
   {
-    label: '💥 попасть не в кого',
-    text: 'Обрез стреляет, гильзы тратятся, но нейрослопов на заброшке ещё нет. Пока это тир без мишеней.',
+    label: '💥 попал или нет',
+    text: 'Попал — по нему разойдётся красным. Промазал — не будет ничего. Больше тебе об этом никто не скажет.',
   },
   {
     label: '⌨️ на компьютере',

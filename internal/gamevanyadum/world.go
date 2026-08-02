@@ -149,12 +149,12 @@ type Occupant struct {
 	events []Event
 
 	// firedOn is the tick on which this occupant's gun last went off, and it is
-	// what puts Peer.Fired on everybody else's frame for exactly that tick.
+	// what puts PeerFired on everybody else's frame for exactly that tick.
 	//
 	// A TICK NUMBER RATHER THAN A FLAG THAT IS CLEARED WHEN READ, and the
 	// difference is the whole correctness of it: SnapshotFor runs once per
 	// VIEWER, so a flag consumed by the first reader would show the shot to one
-	// of the four people watching and hide it from the other three. Events get
+	// of the three people watching and hide it from the other two. Events get
 	// away with being consumed because an event belongs to one person; this
 	// belongs to the building. Comparing against World.Tick is idempotent for
 	// every viewer and needs no reset — the tick moves on by itself.
@@ -164,6 +164,84 @@ type Occupant struct {
 	// spread. The client draws its OWN muzzle flash from the barrel count falling
 	// (web/src/lib/vanyadumPredict.ts, `raw`), which is a value it already has.
 	firedOn int64
+
+	// hitOn is the tick on which a shot last landed on this occupant, and it is
+	// the same mechanism firedOn is for the same reason: read per viewer against
+	// World.Tick rather than consumed, so all three people watching a man get
+	// shot are told about it and not merely whichever one was rendered first.
+	//
+	// IT IS THE ONLY ACKNOWLEDGEMENT A HIT GETS, and it does two jobs at once.
+	// The room learns somebody was hit, which is a thing nothing else on the
+	// frame can say — a shot moves nobody, so there is no value already there to
+	// derive it from. And the SHOOTER learns he connected, because he knows he
+	// fired on this tick (his own barrel count fell) and the man he was aiming at
+	// is marked on the very same frame. That is why there is no second field
+	// addressed to the shooter.
+	//
+	// The one case that derivation misses is a victim who has walked out of the
+	// shooter's visible set in the time being rewound over: he was hit where the
+	// shooter saw him and is no longer on the shooter's frame to be marked. It
+	// costs a hit marker and never a hit, the hold keeps it rare (visibleHold),
+	// and the alternative is a field on a payload that repeats twenty times a
+	// second to say nothing almost every time.
+	hitOn int64
+
+	// downUntil is the tick this occupant gets up on, and it is meaningful only
+	// while his health is zero.
+	//
+	// A TICK DEADLINE RATHER THAN A COUNTDOWN IN SECONDS, and deliberately the
+	// opposite choice from the gun's timers a few fields up. This one is the
+	// WORLD's: the world owns the tick, an integer tick is exact where
+	// subtracting dt from a float accumulates the error of SimStep's binary
+	// expansion, and no client has to reproduce it — a dead man is dead in Step
+	// because his health is zero, and nothing about when he gets up is his to
+	// predict. It is the same argument, and the same shape, as the pickup respawn
+	// (World.ready).
+	downUntil int64
+
+	// protectedUntil is the tick this occupant's spawn protection expires on, and
+	// it is the WORLD's authority on that window.
+	//
+	// THERE ARE TWO OF THESE AND BOTH ARE NECESSARY — this and
+	// Player.ProtectedLeft — so before deleting either, the two reasons:
+	//
+	//   - THE CLIENT NEEDS SECONDS, which is why the countdown is on Player. The
+	//     browser decides whether to draw a muzzle flash the instant a thumb
+	//     lands, so it has to run the same trigger refusal the server is about to
+	//     (sim.go, stepGun). A rule it cannot predict is a rule it renders wrong
+	//     for a round trip, every time.
+	//   - THE WORLD NEEDS A DEADLINE, which is why this exists as well.
+	//     ProtectedLeft is drained by the command's own dt, and the idle fill that
+	//     would advance it for a silent player is gated on the client having
+	//     claimed none of the tick (Advance) — so a client sending one sliver of a
+	//     command per tick suppresses the fill and runs its own protection at a
+	//     few percent of real time. Measured with this field taken out: a client
+	//     claiming one millisecond of every tick still held 1.88s of a 2s window
+	//     after six seconds of wall clock, and could not be shot for any of it
+	//     (world_test.go, TestProtectionExpiresOnRealTimeAndNotOnWhatTheClientSends).
+	//     The catalogue states protection as an expiry, so something the client
+	//     does not touch has to enforce one.
+	//
+	// The deadline is therefore the authority and the countdown is a prediction of
+	// it: Advance clamps ProtectedLeft to whatever this still allows, so the two
+	// cannot drift apart in the direction that matters. It is the same shape, and
+	// the same argument, as downUntil.
+	protectedUntil int64
+
+	// deaths is how often this occupant has been put on the floor, and betrayals
+	// is how many friends he has put there. Both ride the standings frame at 1 Hz
+	// (message.go, StandingsRow) and neither goes anywhere near a snapshot.
+	//
+	// EVERY KILL IN THIS BUILDING IS A BETRAYAL, because friendly fire is on and
+	// there is nothing else here to shoot yet. So there is no kill counter beside
+	// this one — a total that would be identical to it is not a second number.
+	//
+	// NOT PERSISTED. The visit row records what somebody found (migrations/015,
+	// immutable), and adding a column for this is a migration this iteration does
+	// not need: the standings is a readout of the building rather than a career,
+	// and nothing here ends.
+	deaths    int
+	betrayals int
 
 	// collected is everything this occupant has picked up during this visit,
 	// keyed exactly as the bag is, and it is what the visit row records.
@@ -214,6 +292,13 @@ func (o *Occupant) Stayed() int {
 // anybody, so a real firedOn is always at least 1.
 func (o *Occupant) firedThisTick(tick int64) bool {
 	return o.firedOn != 0 && o.firedOn == tick
+}
+
+// hitThisTick reports whether a shot landed on this occupant on the tick the
+// world is currently standing on. Zero is "never", for exactly the reason it is
+// on firedThisTick.
+func (o *Occupant) hitThisTick(tick int64) bool {
+	return o.hitOn != 0 && o.hitOn == tick
 }
 
 // World is the one заброшка everybody is standing in.
@@ -277,8 +362,9 @@ type World struct {
 	//
 	// SYMMETRIC BY CONSTRUCTION, because canSee is and both entries of a pair are
 	// written on the same tick. That is what stops the hold from creating a man
-	// who can see somebody who cannot see him — the property a hit test will rest
-	// on the day something shoots.
+	// who can see somebody who cannot see him — and the hit test now rests on
+	// exactly that property (targetsFor): you may shoot what you were sent, so an
+	// asymmetric hold would be a man shot by somebody his own client never drew.
 	//
 	// CLEARED WHEN A PLACE IS FREED (release), so a newcomer never inherits the
 	// last holder's memory. Keyed by slot for the same reason the wire is: it is
@@ -363,8 +449,40 @@ func (w *World) Join(accountID, pseudonym string, now time.Time) (*Occupant, boo
 	}
 	w.occupants[accountID] = o
 	w.slots[slot] = accountID
+	// He materialises at the one spawn everybody in the building knows about, so
+	// he arrives protected for exactly as long as a man who has just got up does
+	// (content.go, SpawnProtectSeconds). NewPlayer does not grant it, deliberately:
+	// Step is pure and knows no tick, so the world is the only thing that can open
+	// a window it will also be held to.
+	//
+	// A RECONNECT CANNOT REFRESH IT, because a second hello returned above without
+	// reaching this line. Otherwise the way to be permanently untouchable would be
+	// to reload the page every two seconds.
+	w.protect(o)
 	w.roster++
 	return o, true
+}
+
+// protect opens one spawn-protection window, in both of the places it is kept:
+// the seconds the client predicts and the tick deadline the world holds him to.
+// Occupant.protectedUntil is where the two are argued.
+func (w *World) protect(o *Occupant) {
+	o.State.ProtectedLeft = SpawnProtectSeconds
+	o.protectedUntil = w.Tick + protectTicks
+}
+
+// protected reports whether this occupant is inside his window, BY THE WORLD'S
+// DEADLINE and never by the countdown a client can slow down.
+func (w *World) protected(o *Occupant) bool { return w.Tick < o.protectedUntil }
+
+// protectLeft is how much of the window the deadline still allows, in the
+// seconds Player.ProtectedLeft is expressed in. It is the ceiling Advance clamps
+// the predicted countdown to.
+func (w *World) protectLeft(o *Occupant) float64 {
+	if !w.protected(o) {
+		return 0
+	}
+	return float64(o.protectedUntil-w.Tick) * SimStep.Seconds()
 }
 
 // release takes somebody out of the building and frees the place they were
@@ -381,6 +499,11 @@ func (w *World) release(o *Occupant) {
 		w.lastVisible[o.Slot][i] = 0
 		w.lastVisible[i][o.Slot] = 0
 	}
+	// And this place's PAST, for the same reason one step further back: the
+	// rewind buffer is keyed by slot too, so a shot resolved in the next
+	// RewindMax would otherwise place the next holder of this place wherever the
+	// man who has just left it was standing. See history.forget.
+	w.history.forget(o.Slot)
 	w.roster++
 }
 
@@ -697,6 +820,10 @@ func (w *World) Advance(dt float64, now time.Time) []*Occupant {
 
 	for _, id := range w.turnOrder(ids) {
 		o := w.occupants[id]
+		// BEFORE HIS COMMANDS AND NOT AFTER THEM, so that the tick a man gets up
+		// on is a tick he can move in. The other way round he would spend one step
+		// standing at the spawn with his own input already spent on a corpse.
+		w.rise(o)
 		o.budget = math.Min(o.budget+dt, TimeBudgetCap)
 		// A COMMAND IS SIMULATED WHOLE OR IT WAITS. It is never simulated in
 		// part, because there is no way to acknowledge a part: the ack is one
@@ -740,6 +867,12 @@ func (w *World) Advance(dt float64, now time.Time) []*Occupant {
 			o.State = Step(w.Level, o.State, c)
 			if o.State.Loaded < loaded {
 				o.firedOn = w.Tick
+				// RESOLVED HERE, ON THE SUB-STEP THAT FIRED IT, rather than once
+				// at the end of the tick: a frame can carry four sub-steps, so the
+				// player who pulls the trigger on the first of them and walks
+				// through the other three aimed somewhere the tick's final
+				// position is not.
+				w.resolveShot(o, now)
 			}
 			// The queue is strictly ascending in Seq — Enqueue drops everything
 			// at or below highSeq and the overflow trim takes from the front —
@@ -808,6 +941,24 @@ func (w *World) Advance(dt float64, now time.Time) []*Occupant {
 			})
 			o.budget = math.Max(0, o.budget-idle)
 		}
+
+		// THE DEADLINE HAS THE LAST WORD ON THE PROTECTION, after everything above
+		// has had its say about it. The drain and the idle fill both run the
+		// countdown down by a dt the CLIENT chooses the shape of, and a client that
+		// claims a sliver of every tick suppresses the fill and advances its own
+		// protection at a fraction of real time. Clamping here, once, to what the
+		// world's own tick deadline still allows costs an honest client nothing —
+		// he has been draining at real time, so the two agree to the float's last
+		// digit — and ends the window on time for everybody else.
+		//
+		// A CLAMP RATHER THAN AN ASSIGNMENT, because the countdown is allowed to be
+		// SHORTER than the deadline and never longer. Anything that ends a window
+		// early ends it in both places at once — being shot clears the countdown and
+		// the deadline together (wound) — and an assignment here would make this a
+		// second thing deciding how much protection a man has, rather than a ceiling
+		// on what he already has.
+		o.State.ProtectedLeft = math.Min(o.State.ProtectedLeft, w.protectLeft(o))
+
 		w.collect(o)
 	}
 
@@ -843,7 +994,17 @@ func (w *World) available(i int) bool { return w.Tick >= w.ready[i] }
 // Taking something does not remove it — it sets the tick it comes back on. In an
 // infinite match with no objective, a заброшка that empties permanently is a
 // building with nothing left to walk to.
+//
+// A MAN ON THE FLOOR PICKS UP NOTHING, which is the same rule Step already
+// applies to everything else he might do (sim.go: a dead man does not walk and
+// does not shoot). It needs saying separately because this runs from Advance and
+// not from Step: he is killed standing on a bottle, the respawn comes back
+// during his three seconds down, and without this he drinks it lying there and
+// is sent the event for it.
 func (w *World) collect(o *Occupant) {
+	if o.State.Health <= 0 {
+		return
+	}
 	pf, ok := w.Level.FloorAt(o.State.Pos)
 	if !ok {
 		return
@@ -888,11 +1049,154 @@ func (w *World) collect(o *Occupant) {
 	}
 }
 
+// rise puts somebody who has been on the floor long enough back on his feet, at
+// the spawn, with a full bar and a full gun.
+//
+// ONE SPAWN POINT, WHICH IS THE ONLY ONE THE LEVEL HAS. A set of them scattered
+// through the building would be better play and is a generator change; what
+// makes one survivable today is the protection it comes with — a man appearing
+// where everybody knows he will appear is only a problem if he can be shot
+// standing there, and for SpawnProtectSeconds he cannot. If that stops being
+// enough, spawn points are the thing to add and this is where they would be
+// read from.
+//
+// THE WINDOW IS NOT THIS FUNCTION'S IDEA and is not granted only here: Join
+// hands out the same one, because walking in and getting up put a man in exactly
+// the same place with exactly the same problem.
+//
+// HE KEEPS HIS BAG AND HIS ANGLES. The beer because a death already costs
+// DownTime and the walk back, and taking the building's beer off him as well
+// would compound whoever is winning (content.go). The angles because the camera
+// belongs to the client, and snapping his view somewhere he did not point it is
+// the one thing a first-person game may never do to somebody.
+func (w *World) rise(o *Occupant) {
+	if o.State.Health > 0 || w.Tick < o.downUntil {
+		return
+	}
+	o.State.Pos = w.Level.Spawn
+	o.State.Sector = w.Level.SpawnSector
+	o.State.Health = StartHealth
+	o.State.Loaded = Barrels
+	o.State.CooldownLeft, o.State.ReloadLeft = 0, 0
+	w.protect(o)
+	o.downUntil = 0
+}
+
+// resolveShot fires one barrel: the ray, the rewind, and whatever it lands on.
+//
+// THE SHOOTER IS NOT REWOUND AND NEITHER IS HIS AIM. His position is the one his
+// own client predicted and has just been acknowledged, and his yaw and pitch are
+// client-owned inputs that arrived with this very command — both are already
+// current, and rewinding either would resolve the shot from a place he was not
+// standing, pointing somewhere he was not looking. Everybody ELSE is drawn
+// interpolated in the past, so everybody else is where the rewind puts them.
+// ADR-059 makes the same split for the sibling game's catch and gives the
+// reasoning; it transfers whole even though none of its code does.
+//
+// The composition of the rewind — this occupant's smoothed round trip plus the
+// served interpolation delay, clamped to RewindMax — belongs to history.go and
+// is not re-derived here.
+func (w *World) resolveShot(o *Occupant, now time.Time) {
+	past := w.RewindTo(now, o.rtt)
+	targets := w.targetsFor(o, past)
+	if len(targets) == 0 {
+		return
+	}
+	slot, ok := shoot(w.Level, o.State.Pos, EyeZ(w.Level, o.State), o.State.Yaw, o.State.Pitch, targets)
+	if !ok {
+		return
+	}
+	w.wound(o, w.occupants[w.slots[slot]])
+}
+
+// targetsFor is everybody this shot is allowed to land on, standing where the
+// shooter saw them.
+//
+// YOU CAN HIT EXACTLY WHAT YOU WERE SENT, which is the rule that makes the
+// visibility filter load-bearing rather than merely economical. The geometry
+// would happily carry a shot through two lined-up doorways into a room the
+// approximation does not consider visible (level.go, buildVisibility) — and the
+// man standing there was never on the shooter's screen, so it would be a kill
+// nobody could see coming and nobody could see happen. The filter is symmetric,
+// so this is also what stops anybody being killed by somebody his own client was
+// never told about.
+//
+// THE PAST DECIDES WHERE, THE PRESENT DECIDES WHETHER. A target is placed by the
+// rewound frame and disqualified by the world as it is NOW: somebody who has
+// since died is not killed twice, and somebody who has since got up is untouchable
+// for as long as his protection lasts. history.go states that division for the
+// buffer; this is the one place it is applied.
+func (w *World) targetsFor(shooter *Occupant, past map[int]Spot) []body {
+	var out []body
+	for slot, id := range w.slots {
+		if id == "" || slot == shooter.Slot {
+			continue
+		}
+		t := w.occupants[id]
+		// Protection is read from the WORLD's deadline rather than from the
+		// countdown on his Player, because the countdown is drained by commands he
+		// sends and this is the half of the rule he must not be able to extend
+		// (Occupant.protectedUntil).
+		if t.State.Health <= 0 || w.protected(t) {
+			continue
+		}
+		pos, sector := t.State.Pos, t.State.Sector
+		if spot, ok := past[slot]; ok {
+			if !spot.Alive {
+				// He was a corpse at the instant being shot at. Where he is
+				// standing now is not where the shooter was aiming.
+				continue
+			}
+			pos, sector = spot.Pos, spot.Sector
+		}
+		if !w.canSee(shooter.State.Sector, sector) && !w.heldVisible(shooter.Slot, slot) {
+			continue
+		}
+		floorZ := 0.0
+		if sector >= 0 && sector < len(w.Level.Sectors) {
+			floorZ = w.Level.Sectors[sector].FloorZ
+		}
+		out = append(out, body{slot: slot, pos: pos, floorZ: floorZ})
+	}
+	return out
+}
+
+// wound applies one barrel to whoever it landed on, and puts him on the floor if
+// that was the last of him.
+//
+// THE KILL IS A BETRAYAL AND SCORES NOTHING. There is nothing else in this
+// заброшка to shoot, so every kill is a friend's: it goes on its own counter,
+// everybody can read it on the standings, and no total anywhere is increased by
+// it. The day the нейрослопы arrive is the day there is a kill worth counting.
+//
+// WHICH OF TWO MEN WHO SHOT EACH OTHER ON THE SAME TICK DIES is decided by the
+// step order, and that order rotates by the tick (turnOrder) precisely so it is
+// not the same account every time. The loser's own trigger is then refused by
+// Step, because a man with no health does nothing at all.
+func (w *World) wound(shooter, victim *Occupant) {
+	victim.State.Health -= BarrelDamage
+	victim.hitOn = w.Tick
+	if victim.State.Health > 0 {
+		return
+	}
+	victim.State.Health = 0
+	// The gun stops with him. Leaving a reload running would finish it under a
+	// corpse, and a man who got up mid-cadence would be holding a weapon that was
+	// busy for something he did three seconds and one death ago.
+	victim.State.CooldownLeft, victim.State.ReloadLeft, victim.State.ProtectedLeft = 0, 0, 0
+	// And the deadline behind the protection, or the clamp in Advance would put
+	// the seconds cleared on the line above straight back on him.
+	victim.protectedUntil = 0
+	victim.downUntil = w.Tick + downTicks
+	victim.deaths++
+	shooter.betrayals++
+}
+
 // spots is every entity's position this instant, in the shape the rewind buffer
 // stores. Keyed by SLOT rather than by account, so a rewound world and a
-// published one name the same things — which is what lets a future hit test take
-// the id it was shot at straight from the client's aim, and the client's aim has
-// nothing but a slot to name it with.
+// published one name the same things — which is what lets the hit test take the
+// slot it shot at straight back to the wire (resolveShot), and a snapshot has
+// nothing but a slot to name anybody with.
 //
 // It was keyed by pseudonym, which was the same argument against the identity
 // the wire published at the time. The key follows the wire; it is not an
@@ -943,7 +1247,10 @@ func (w *World) Standings(now time.Time) Standings {
 			// a negative score either.
 			secs = 0
 		}
-		row := StandingsRow{Slot: slot, Name: o.Pseudonym, Seconds: secs}
+		row := StandingsRow{
+			Slot: slot, Name: o.Pseudonym, Seconds: secs,
+			Deaths: o.deaths, Betrayals: o.betrayals,
+		}
 		if len(o.State.Counters) > 0 {
 			row.Bag = make(map[string]int, len(o.State.Counters))
 			for k, v := range o.State.Counters {
@@ -986,22 +1293,36 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 	// that repeats twenty times a second, per viewer, to say nothing at all
 	// almost every time it was sent.
 	//
-	// IT IS OF THE WHOLE BUILDING AND IS NOT FILTERED, and that leaks a position
-	// interest management otherwise withholds. A bit clearing names the position
-	// of the thing that was taken — the client holds the level, so an index is a
-	// place — and the next standings frame says whose bag grew, so the two
-	// together put a man the reader was never sent at a known spot at a known
-	// instant. It is left as it is on purpose: nothing in this game shoots yet, so
-	// what is being reconstructed is a stranger drinking a beer in another room,
-	// and both frames earn their shape elsewhere (this one is one word rather than
-	// a per-viewer list; the standings is one marshalling for everybody). THE DAY
-	// SOMETHING SHOOTS THIS BECOMES A REAL CONCERN — knowing where somebody is
-	// standing is exactly what the filter exists to deny — and closing it starts
-	// with cutting the mask to the reader's own visible sectors, which is a
-	// per-viewer computation this deliberately does not pay today.
+	// IT IS CUT TO THE ROOMS THE READER CAN SEE INTO, and that is not a rendering
+	// nicety — it closes a position leak that was accepted only while nothing in
+	// this game could shoot.
+	//
+	// THE LEAK, because the fix only makes sense next to it: a bit clearing names
+	// the POSITION of the thing that was taken, since the client holds the level
+	// and an index is a place; the next standings frame says whose bag grew; and
+	// the two together put a man the reader was never sent at a known spot at a
+	// known instant. That was a stranger drinking a beer in another room while
+	// nothing could be done about it. It is now a target, which is exactly what
+	// interest management exists to deny, and the exemption expired the day the
+	// обрез started landing.
+	//
+	// The same filter the peers get, minus the hold: canSee against the reader's
+	// own sector, which is a table lookup per pickup per viewer per tick against
+	// a mask that can hold MaxWirePickups of them. No hold, because a place does
+	// not walk — the hysteresis on visibleHold exists for a man jittering between
+	// two rooms in a doorway, and a bottle stays where it was put. The cost of
+	// leaving it out is that the reader's own jitter flickers the bits of a third
+	// room, which is a mesh appearing and disappearing behind a wall he cannot see
+	// through.
+	//
+	// WHAT IT COSTS THE CLIENT is that the mask no longer means "what is on the
+	// floor of the building" but "what is on the floor NEAR YOU": a bit going
+	// clear→set is still how a respawn travels, and it is now also how walking
+	// into a room travels. Anything the client marks on that transition has to
+	// know the difference — it has the level and its own sector, so it can.
 	var left uint32
-	for i := range w.Level.Pickups {
-		if w.available(i) {
+	for i, p := range w.Level.Pickups {
+		if w.available(i) && w.canSee(me.State.Sector, p.Sector) {
 			left |= 1 << uint(i)
 		}
 	}
@@ -1020,6 +1341,8 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 		Loaded:   me.State.Loaded,
 		Cooldown: ms(me.State.CooldownLeft),
 		Reload:   ms(me.State.ReloadLeft),
+		Down:     w.downMS(me),
+		Protect:  ms(me.State.ProtectedLeft),
 		Events:   me.events,
 	}
 	if len(me.State.Counters) > 0 {
@@ -1057,12 +1380,49 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 			Y:      cm(o.State.Pos.Y),
 			Sector: o.State.Sector,
 			Yaw:    mrad(o.State.Yaw),
-			// On the tick it happened and on no other. Read rather than
-			// consumed, so all four viewers of a full building are told about
-			// the same shot — see Occupant.firedOn.
-			Fired: o.firedThisTick(w.Tick),
+			St:     w.peerState(o),
 		})
 	}
 	me.events = nil
 	return s, true
+}
+
+// downMS is how long this occupant has left on the floor, in the milliseconds
+// the wire carries, or zero for anybody standing up.
+//
+// A deadline in ticks turned into a duration at the edge, which is the same
+// direction of travel every other quantity on this frame makes: exact where it
+// is simulated, small where it is sent.
+func (w *World) downMS(o *Occupant) int {
+	if o.State.Health > 0 || o.downUntil <= w.Tick {
+		return 0
+	}
+	return int(time.Duration(o.downUntil-w.Tick) * SimStep / time.Millisecond)
+}
+
+// peerState is what one peer's frame says about him beyond where he is standing.
+// See Peer.St for the four values and why they are one field.
+//
+// THE ORDER IS THE PRECEDENCE, and it is a precedence rather than a sequence of
+// independent checks because the field holds one value. The two STATES come
+// first because they last, and because a viewer whose shots are bouncing off a
+// protected man needs telling that more than he needs a muzzle flash. Between
+// the two INSTANTS, being hit beats firing: a man who pulled the trigger and was
+// shot on the same tick has had the more interesting fifty milliseconds, and it
+// is the thing that changed the building.
+func (w *World) peerState(o *Occupant) int {
+	switch {
+	case o.State.Health <= 0:
+		return PeerDown
+	// The world's deadline again, and not his own countdown: what a viewer is
+	// told about a peer has to be the rule his shots will actually be resolved
+	// against (targetsFor).
+	case w.protected(o):
+		return PeerProtected
+	case o.hitThisTick(w.Tick):
+		return PeerHit
+	case o.firedThisTick(w.Tick):
+		return PeerFired
+	}
+	return 0
 }

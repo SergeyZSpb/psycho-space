@@ -32,6 +32,19 @@ const (
 	// player is standing in.
 	EyeHeight = 1.65
 
+	// BodyHeight is how tall a man is for the purpose of being shot: the hit
+	// test stands a cylinder of PlayerRadius on the floor of his sector and
+	// gives it this height (hit.go).
+	//
+	// THE SAME DISC THE COLLISION RESOLVER USES, deliberately, because a body
+	// that is fatter to shoot at than it is to walk with is a body you can hit
+	// through a doorway you could not fit through. One radius, one meaning.
+	//
+	// Taller than EyeHeight so that a man's head is above his own eyes — aim
+	// level at somebody the same height as you and the shot lands, which is the
+	// only property of this number anybody will ever notice.
+	BodyHeight = 1.8
+
 	// WalkSpeed is metres per second on the flat. Doom ran about twice this and
 	// Quake faster still; this is deliberately nearer a fast walk, because the
 	// levels are small and a phone screen in portrait shows very little of them.
@@ -48,13 +61,89 @@ const (
 	MaxPitch = 1.5
 )
 
-// Health. A player starts full and, in this iteration, has nothing that can
-// hurt him — the numbers exist so the HUD is real rather than a placeholder,
-// and so the shape is already right when the slop arrives.
+// Health, and what a barrel takes off it.
 const (
 	MaxHealth   = 100
 	StartHealth = 100
+
+	// BarrelDamage is what one barrel does to whoever it lands on.
+	//
+	// A FULL GUN IS EXACTLY ONE KILL, which is the whole of why this number is
+	// half of MaxHealth rather than a third or a fifth. The обрез holds Barrels
+	// and takes ReloadSeconds to fill, so a fight is decided by whether the two
+	// shots you already have land — not by who walked over more bottles. It also
+	// makes the arithmetic something a player works out in one go and never
+	// thinks about again: two in the chest, наглухо.
+	//
+	// There is no falloff and no spread. A single hitscan ray is the simplest
+	// thing that satisfies "the shot went where you aimed it" (hit.go), and a
+	// range at which the gun stops working is a rule nobody has asked for —
+	// interest management already stops a shot at the rooms you can see into,
+	// which is a shorter leash than any number typed here would be.
+	BarrelDamage = 50
 )
+
+// DownTime is how long you lie on the floor before the заброшка gives you back.
+//
+// THREE SECONDS IS LONG ENOUGH TO BE A PUNISHMENT AND SHORT ENOUGH TO BE A JOKE.
+// Nothing here ends, so a death costs exactly this and the walk back — there is
+// no round to sit out and no score to lose, because the only score is the one
+// this iteration adds and it belongs to whoever shot you. Longer and a phone
+// screen shows a corpse for the length of a loading screen; shorter and the man
+// who killed you is still standing there when you get up, which is what the
+// spawn protection below is for.
+//
+// A DEATH COSTS NOTHING ELSE, and that is a decision rather than an omission.
+// The bag survives, so the beer somebody toured the building for is not taken
+// off him by one unlucky corner — losing it would make dying cost a second walk
+// as well as the three seconds, and would compound whoever is already winning.
+const DownTime = 3 * time.Second
+
+// downTicks is that interval as a whole number of simulation steps, which is the
+// unit World.downUntil is expressed in. Derived rather than typed out, so the two
+// can never disagree.
+const downTicks = int64(DownTime / SimStep)
+
+// SpawnProtectSeconds is how long a man standing on the spawn cannot be hurt AND
+// cannot shoot.
+//
+// BOTH HALVES, OR IT IS A WEAPON. One заброшка, one spawn point and killable
+// friends make standing on the spawn with a loaded обрез the obvious grief, and
+// this is the two-line rule that removes it. Protection you can fire from does
+// not remove it — it hands it to whoever died last, which is worse than the
+// thing it was fixing.
+//
+// EVERYBODY WHO APPEARS AT THE SPAWN GETS IT, which is a man who has just got up
+// (world.go, rise) and equally a man who has just walked in (world.go, Join).
+// The argument does not distinguish them: both materialise at the one place
+// everybody in the building knows about, and friendly fire is on. A newcomer who
+// arrived unprotected would be the easier of the two to camp, because he is the
+// one whose browser is still loading the building.
+//
+// TWO SECONDS IS TEN METRES AT WalkSpeed, which is across a room and out of the
+// doorway: enough to leave, not enough to cross the building and arrive
+// somewhere untouchable. It is a float64 of seconds ON THE PLAYER because the
+// browser counts it down too — the client has to run the same refusal to know
+// whether to draw a muzzle flash, exactly as it does for the gun's own timers
+// (sim.go) — and a tick deadline in the WORLD because seconds counted down by a
+// client's own commands are seconds that client controls (world.go, protect).
+const SpawnProtectSeconds = 2.0
+
+// protectTicks is that window as a whole number of simulation steps, which is
+// the unit World.protectedUntil is expressed in. Derived rather than typed out,
+// so the two can never disagree — the same relationship downTicks has to
+// DownTime, and stated in this shape because SpawnProtectSeconds is seconds
+// where DownTime is a duration.
+const protectTicks = int64(SpawnProtectSeconds * float64(time.Second) / float64(SimStep))
+
+// BetrayalsTitle is what the standings column is called, in Russian.
+//
+// Friendly fire is on and the нейрослопы have not arrived, so every kill in this
+// building is a friend's — the counter is not a score, it is a confession. It is
+// published in the catalogue rather than typed into the client for the reason
+// every other word here is: the splash screen's rules cheatsheet is generated
+// from what is served, so this is the one place the joke is written down.
+const BetrayalsTitle = "предательства"
 
 // The gun: a double-barrelled обрез, and пиво is what goes in it. The bottles
 // the building has been scattering since the first iteration finally spend on
@@ -167,7 +256,7 @@ const pickupRespawnTicks = int64(PickupRespawn / SimStep)
 
 // MaxOccupants is how many people may be in the заброшка at once.
 //
-// FIVE IS A MEASURED LIMIT AND NOT A PREFERENCE. What a viewer is sent is two
+// FOUR IS A MEASURED LIMIT AND NOT A PREFERENCE. What a viewer is sent is two
 // things: a snapshot built for them twenty times a second which carries
 // everybody else, and the standings frame once a second which carries everybody
 // including them. The ceiling is 8 kB/s PER VIEWER — the number this game's
@@ -178,52 +267,48 @@ const pickupRespawnTicks = int64(PickupRespawn / SimStep)
 // wrapped rather than normalised, so it reaches five characters; positions are
 // far beyond anything a generated level produces):
 //
-//	solo snapshot             160 bytes
-//	the first peer            +56  (the entry, plus the `p` array around it)
-//	each further peer         +50
-//	standings with one row     81
-//	each further row          +53
+//	solo snapshot             180 bytes
+//	the first peer            +63  (the entry, plus the `p` array around it)
+//	each further peer         +57
+//	standings with one row    104
+//	each further row          +76
 //
-// So a viewer pays 20 × (160 + 56 + (N−2)×50) + (81 + (N−1)×53) a second:
+// So a viewer pays 20 × (180 + 63 + (N−2)×57) + (104 + (N−1)×76) a second:
 //
-//	N = 4    316 × 20 + 240 = 6560 B/s
-//	N = 5    366 × 20 + 293 = 7613 B/s
-//	N = 6    416 × 20 + 346 = 8666 B/s — over
+//	N = 3    300 × 20 + 256 = 6256 B/s
+//	N = 4    357 × 20 + 332 = 7472 B/s
+//	N = 5    414 × 20 + 408 = 8688 B/s — over
 //
-// PLUS A THIRD TERM THAT IS NOT ON EVERY FRAME. A peer's muzzle flash rides the
-// tick its owner pulled the trigger and no other (message.go, Peer.Fired), so it
-// is priced at the gun's cadence rather than at the snapshot rate: 9 bytes × 3
-// shots a second × (N−1) peers, which is 108 B/s at five and 135 at six. That
-// takes the two rows that matter to 7721 and 8801.
-//
-// Five, with 279 B/s of headroom. Pinned by
+// Four, with 528 B/s of headroom. Pinned by
 // TestEverythingAFullBuildingSendsAViewerFitsTheCeiling, which fails when this
 // constant is raised or when either frame grows a field.
 //
-// THE GUN TOOK THE SOLO FRAME FROM 137 TO 160 AND HALVED THAT HEADROOM. The
-// barrel count rides every frame (6 bytes) and the two timers ride the frames
-// where the gun is busy (8 and 9); the measurement above pessimistically counts
-// both at once, which cannot happen. Five still fits and six still does not, so
-// the capacity is unmoved — but the next field of that size is the one that costs
-// a place, and the answer then is a smaller building or the binary codec, not a
-// larger ceiling.
+// IT WAS FIVE, AND SHOOTING PEOPLE IS WHAT COST THE FIFTH PLACE. That is the
+// trade the previous version of this comment named in advance — "the next field
+// of that size is the one that costs a place, and the answer then is a smaller
+// building or the binary codec, not a larger ceiling" — and this is it being
+// paid rather than argued out of. Where it went:
 //
-// MAKING THE SHOT VISIBLE TO EVERYBODY ELSE TOOK ANOTHER 108 OF WHAT WAS LEFT,
-// and it is worth saying which shape it did NOT take: a per-peer cooldown would
-// have been the duration this project prefers, and at 8 bytes on every one of
-// twenty ticks a second it is 640 B/s — comfortably past what there was. The
-// flag fits because the cadence bounds how often it can be sent, which is
-// exactly the property that keeps it out of the twenty-times-a-second column.
+//   - THE PEER STATE, +7 bytes on EVERY peer on EVERY tick (message.go,
+//     Peer.St). That is 560 B/s at the old capacity, and it is the shape the
+//     muzzle flash's own comment measured at 640 B/s and refused. It is bought
+//     now because two of its four values are DURATIONS — a man is down for
+//     DownTime and protected for SpawnProtectSeconds — and neither can be
+//     derived from anything the frame already carries, because being shot moves
+//     nobody. There is no honest duty cycle to discount by: a player killed the
+//     instant his protection expires is flagged essentially always. The flag it
+//     replaced was 9 bytes at three a second, so this is a 7-byte field costing
+//     seven times what a 9-byte one did — the rate is everything.
+//   - THE TWO SELF TIMERS, `dn` and `pr`, +20 bytes on the solo frame at the
+//     pessimism this budget is measured with (they cannot both be set, and
+//     neither can be set beside the gun's two).
+//   - THE TWO STANDINGS COUNTERS, +23 bytes a row at six figures each, on a
+//     frame that goes out once a second.
 //
 // THE STANDINGS FRAME IS INSIDE THE CEILING AND NOT BESIDE IT. It is traffic to
 // the same viewer, so leaving it out would be moving the line rather than
 // meeting it — which is how this constant came to be six before anybody measured
 // a peer.
-//
-// FOUR WAS THE SAME ARITHMETIC OVER A FATTER PEER. The entry lost its 19-byte
-// pseudonym for a slot index, its eye height for a sector index, and a pose enum
-// that nothing has ever set — 71 bytes to 49 (message.go, Peer) — and that is
-// the whole of what bought the fifth place.
 //
 // INTEREST MANAGEMENT BOUGHT NONE OF IT, which is worth stating plainly rather
 // than letting the two changes be credited together. Filtering peers to the
@@ -232,21 +317,21 @@ const pickupRespawnTicks = int64(PickupRespawn / SimStep)
 // on mobile data actually experiences and is why it is worth having. But the
 // budget is taken on the WORST case, and the worst case is everybody standing in
 // one room — where the filter removes nothing at all. A capacity derived from
-// the typical frame would be a capacity that fails the first time five people
+// the typical frame would be a capacity that fails the first time four people
 // crowd into one doorway. The same argument covers the hold that keeps a peer on
 // the frame for a moment after he leaves the set (visibleHold): it can only ADD
 // to a filtered set, and the unfiltered set is what is budgeted here.
 //
-// THE NEXT STEP UP NEEDS THE BINARY CODEC. There is no further byte worth
-// finding in JSON: a peer is five integers behind keys of one and three
+// GETTING THE PLACE BACK NEEDS THE BINARY CODEC. There is no further byte worth
+// finding in JSON: a peer is six integers behind keys of one to three
 // characters, and what is left of the entry is punctuation. The design doc
 // earmarked a binary codec as an iteration of its own, and that — rather than
-// another round of trimming — is what a sixth place costs.
+// another round of trimming — is what the fifth place now costs.
 //
 // A refusal is a refusal and never a queue: somebody who arrives at a full
 // заброшка is told so (the `vanyadum_full` frame) rather than being put on hold,
 // because there is nothing to hold them for — nothing here ends.
-const MaxOccupants = 5
+const MaxOccupants = 4
 
 // Pickups is every kind that can be generated into a level.
 //
@@ -367,6 +452,11 @@ type GunConfig struct {
 	ReloadSeconds       float64 `json:"reload_seconds"`
 	ReloadCost          int     `json:"reload_cost"`
 	Ammo                string  `json:"ammo"`
+	// Damage is what one barrel takes off whoever it lands on, against the
+	// player's own MaxHealth published below — the two together are how the
+	// cheatsheet says "two in the chest and he is done" without either number
+	// being typed out on the client.
+	Damage int `json:"damage"`
 }
 
 // WorldConfig is what the client needs to describe the building itself: how many
@@ -376,12 +466,28 @@ type GunConfig struct {
 type WorldConfig struct {
 	MaxOccupants   int     `json:"max_occupants"`
 	RespawnSeconds float64 `json:"respawn_seconds"`
+	// DownSeconds is how long a dead man lies there and ProtectSeconds is how
+	// long he is untouchable — and unable to shoot — after he appears at the
+	// spawn, which is every time he gets up there AND the moment he first walks
+	// in (world.go, protect). Both are rules a player has to be told before he
+	// walks in, and both are also DURATIONS THE CLIENT RUNS: the HUD counts the
+	// first down and the second is what stops a muzzle flash being drawn for a
+	// trigger the server refused.
+	DownSeconds    float64 `json:"down_seconds"`
+	ProtectSeconds float64 `json:"protect_seconds"`
+	// BetrayalsTitle is what to call the standings column that counts the
+	// friends you have shot. See the constant.
+	BetrayalsTitle string `json:"betrayals_title"`
 }
 
 // PlayerConfig is what the client needs to draw and describe the player.
 type PlayerConfig struct {
-	Radius      float64 `json:"radius"`
-	EyeHeight   float64 `json:"eye_height"`
+	Radius    float64 `json:"radius"`
+	EyeHeight float64 `json:"eye_height"`
+	// BodyHeight is how tall a man is to be shot at, and therefore how tall the
+	// figure drawn for a peer ought to be: a client that drew him shorter than
+	// the server shoots at would be drawing a hitbox nobody can see.
+	BodyHeight  float64 `json:"body_height"`
 	WalkSpeed   float64 `json:"walk_speed"`
 	MaxStep     float64 `json:"max_step"`
 	MaxPitch    float64 `json:"max_pitch"`
@@ -424,6 +530,7 @@ func BuildConfig() Config {
 		Player: PlayerConfig{
 			Radius:      PlayerRadius,
 			EyeHeight:   EyeHeight,
+			BodyHeight:  BodyHeight,
 			WalkSpeed:   WalkSpeed,
 			MaxStep:     MaxStep,
 			MaxPitch:    MaxPitch,
@@ -436,6 +543,7 @@ func BuildConfig() Config {
 			ReloadSeconds:       ReloadSeconds,
 			ReloadCost:          ReloadCost,
 			Ammo:                AmmoCounter,
+			Damage:              BarrelDamage,
 		},
 		Pickups:  Pickups,
 		Surfaces: Surfaces,
@@ -452,6 +560,9 @@ func BuildConfig() Config {
 		World: WorldConfig{
 			MaxOccupants:   MaxOccupants,
 			RespawnSeconds: PickupRespawn.Seconds(),
+			DownSeconds:    DownTime.Seconds(),
+			ProtectSeconds: SpawnProtectSeconds,
+			BetrayalsTitle: BetrayalsTitle,
 		},
 	}
 }

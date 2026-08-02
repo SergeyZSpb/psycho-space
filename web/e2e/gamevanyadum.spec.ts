@@ -32,6 +32,7 @@ const CONFIG = {
   player: {
     radius: 0.35,
     eye_height: 1.65,
+    body_height: 1.8,
     // Deliberately NOT the production numbers. If the cheatsheet were
     // hand-written rather than derived from the catalogue, these would not show
     // up on screen and the assertion below would fail.
@@ -51,6 +52,7 @@ const CONFIG = {
     reload_seconds: 2.5,
     reload_cost: 2,
     ammo: 'beer',
+    damage: 40,
   },
   pickups: [
     {
@@ -86,17 +88,29 @@ const CONFIG = {
     interp_delay_ms: 120,
     collision_passes: 3,
   },
-  // Also deliberately not production's five and thirty: the splash states the
-  // building's own rules, and it must state THESE.
+  // Also deliberately none of production's numbers: the splash states the
+  // building's own rules, and it must state THESE. Production's values are not
+  // named here on purpose — the capacity has already moved once, and a comment
+  // that quotes it is a comment that goes stale the next time it does.
   //
   // The capacity is load-bearing twice over, so it is read from here rather than
   // typed out anywhere below. It proves the cheatsheet and the refusal notice
-  // are derived — a hand-written «5» would pass against production and fail
+  // are derived — a hand-written capacity would pass against production and fail
   // here, which is the point of the number being wrong on purpose. And it is
-  // what «a full house» means to the layout test: seven rows of standings, two
-  // more than production ever shows, because a readout tuned to exactly one
-  // capacity is a readout that breaks the afternoon somebody retunes it.
-  world: { max_occupants: 7, respawn_seconds: 45 },
+  // what «a full house» means to the layout test: seven rows of standings, more
+  // than production ever shows, because a readout tuned to exactly one capacity
+  // is a readout that breaks the afternoon somebody retunes it.
+  //
+  // The death rules are wrong on purpose for the same reason: how long you lie
+  // there, how long you are untouchable afterwards, and what the standings call
+  // a friendly kill are all a player has to be told, and all three are served.
+  world: {
+    max_occupants: 7,
+    respawn_seconds: 45,
+    down_seconds: 6,
+    protect_seconds: 5,
+    betrayals_title: 'подставы',
+  },
 };
 
 /** Two rooms and a doorway — enough geometry to be a level, small enough to read. */
@@ -289,6 +303,11 @@ function fullHouse(): Record<string, unknown>[] {
     i: `Wwwwwwwwww${n}m`,
     s: 3671 + n,
     c: { beer: 9 },
+    // Two digits of each, which is wider than a заброшка of this size will ever
+    // really produce — the layout case is the widest row that can be asked for,
+    // not a plausible one.
+    d: 12,
+    br: 34,
   }));
 }
 
@@ -419,10 +438,42 @@ test.describe('«ВАНЯДУМ» splash', () => {
     // pickup that grants it carries the word — so this is also what says the two
     // agree.
     await expect(rules).toContainText('🍺 пиво');
-    // And the honest admission that C1a's gun hits nothing, which no catalogue
-    // could carry: it is an absence, and a player firing into a corridor with no
-    // explanation reads it as a broken game.
-    await expect(rules).toContainText('нейрослопов');
+  });
+
+  test('and it states what a barrel does, and what happens when one lands', async ({ page }) => {
+    // C1b's rules change, and the biggest one this game has had: the обрез
+    // finally reaches people, the people it reaches are friends, and nothing
+    // about killing one is worth anything. Every number is the stub's rather
+    // than production's, so a hand-typed cheatsheet fails — including the WORD
+    // for the standings column, which the server chooses.
+    await openSplash(page);
+    const rules = page.getByTestId('vanyadum-rules');
+    // Damage against the player's own health, joined from two halves of the
+    // catalogue.
+    await expect(rules).toContainText('61 из 80');
+    await expect(rules).toContainText('40');
+    // How long you lie there, and how long the shield lasts — the shield's own
+    // number, the stub's rather than production's.
+    await expect(rules).toContainText('6 с');
+    await expect(rules).toContainText('5 с');
+    // And that the shield covers BOTH ways of standing on the spawn. The server
+    // grants the same window to a man who has just got up and to one who has
+    // just walked in, so a splash naming only the respawn sends a newcomer into
+    // the building to discover a dead trigger on his own.
+    await expect(rules).toContainText('когда только зашёл');
+    await expect(rules).toContainText('когда встал после смерти');
+    // That your friends are the targets, and that it scores nothing.
+    await expect(rules).toContainText('Огонь по своим включён');
+    await expect(rules).toContainText('подставы');
+    // What a hit looks like — a rendering decision, so it is prose, and the only
+    // thing on screen that distinguishes a shot that connected from a miss.
+    await expect(rules).toContainText('красным');
+
+    // And the claim that replaced is gone. It was true for exactly one
+    // iteration, its own comment predicted this, and believed it would now be a
+    // lie about the central rule of the game.
+    await expect(rules).not.toContainText('нейрослопов');
+    await expect(rules).not.toContainText('Пока отнять его некому');
   });
 
   test('and it says you cannot see everybody, and where the rest are listed', async ({ page }) => {
@@ -946,6 +997,152 @@ test.describe('«ВАНЯДУМ» play', () => {
     await expect(page.getByTestId('vanyadum-shells')).toContainText(
       `${CONFIG.gun.barrels}/${CONFIG.gun.barrels}`,
     );
+  });
+
+  test('being shot is marked on the readout that changed, and only for a moment', async ({
+    page,
+  }) => {
+    // DERIVED RATHER THAN SENT: `hp` falling between two frames IS the hit, so
+    // nothing on the wire says one happened. The mark is on the health cell
+    // because that is where being shot is legible, and it is over well inside
+    // the half second this project caps an acknowledgement at — a mark big
+    // enough to watch takes the eye off whoever is still shooting at you.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    const hp = page.getByTestId('vanyadum-health');
+    await socket.snapshot({ hp: 61 });
+    await expect(hp).not.toHaveClass(/is-hurt/);
+
+    await socket.snapshot({ hp: 21 });
+    await expect(hp).toHaveClass(/is-hurt/);
+    await expect(hp).toContainText('21');
+    // Cleared on a timer rather than on `animationend`, which never fires when
+    // the animation is switched off — so this holds under reduced motion too.
+    await expect(hp).not.toHaveClass(/is-hurt/, { timeout: 2000 });
+
+    // Coming back is a RISE, and a rise marks nothing: a respawn is not a hit.
+    await socket.snapshot({ hp: 80 });
+    await expect(hp).toContainText('80');
+    await expect(hp).not.toHaveClass(/is-hurt/);
+  });
+
+  test('being killed says so in DOM, with the countdown that ends it', async ({ page }) => {
+    // Real DOM over the canvas (ADR-047), which is the only reason either half
+    // of this can be read at all. A player who is told neither that he is down
+    // nor that it ends by itself reads several seconds of refused input as the
+    // game having crashed.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    // Alive: nothing on screen.
+    await socket.snapshot({ hp: 61 });
+    await expect(page.getByTestId('vanyadum-down')).toHaveCount(0);
+
+    // Zero health, and the milliseconds until he gets up.
+    await socket.snapshot({ hp: 0, dn: 2400 });
+    const card = page.getByTestId('vanyadum-down');
+    await expect(card).toBeVisible();
+    await expect(card).toContainText('ТЕБЯ ПОЛОЖИЛИ');
+    // Rounded UP, so it never reads zero while it is still running.
+    await expect(card).toContainText('3');
+    await socket.snapshot({ hp: 0, dn: 1200 });
+    await expect(card).toContainText('2');
+
+    // Up again — the server simply stops sending the countdown.
+    await socket.snapshot({ hp: 80 });
+    await expect(page.getByTestId('vanyadum-down')).toHaveCount(0);
+  });
+
+  test('the death card never swallows the gesture that looks around', async ({ page }) => {
+    // The camera still turns while you are down, so you can watch whoever did it
+    // walk away — which a card sitting on the play surface would take away.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+    await socket.snapshot({ hp: 0, dn: 3000 });
+
+    const events = await page
+      .getByTestId('vanyadum-down')
+      .evaluate((el) => getComputedStyle(el).pointerEvents);
+    expect(events).toBe('none');
+  });
+
+  test('spawn protection is shown for the whole time it lasts, not flashed', async ({ page }) => {
+    // A BUFF IS A PROPERTY, NOT AN EVENT. A mark that appears once says nothing
+    // about the seconds that follow — and this one has a second half a player
+    // would otherwise discover by pulling a trigger that does nothing, which
+    // reads as the game being broken rather than as a rule.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.snapshot({ hp: 80 });
+    await expect(page.getByTestId('vanyadum-protect')).toHaveCount(0);
+
+    await socket.snapshot({ hp: 80, pr: 1400 });
+    const badge = page.getByTestId('vanyadum-protect');
+    await expect(badge).toBeVisible();
+    await expect(badge).toContainText('1,4');
+    // Both halves of the rule, because only one of them is discoverable.
+    await expect(badge).toContainText('не убить');
+    await expect(badge).toContainText('не стреляешь');
+
+    await socket.snapshot({ hp: 80, pr: 300 });
+    await expect(badge).toContainText('0,3');
+    await socket.snapshot({ hp: 80 });
+    await expect(page.getByTestId('vanyadum-protect')).toHaveCount(0);
+  });
+
+  test('neither overlay runs off a 360 px phone', async ({ page }) => {
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+    const viewport = page.viewportSize()!;
+
+    await socket.snapshot({ hp: 0, dn: 6000 });
+    const card = (await page.getByTestId('vanyadum-down').boundingBox())!;
+    expect(card.x).toBeGreaterThanOrEqual(0);
+    expect(card.x + card.width).toBeLessThanOrEqual(viewport.width);
+
+    await socket.snapshot({ hp: 80, pr: 5000 });
+    const badge = (await page.getByTestId('vanyadum-protect').boundingBox())!;
+    expect(badge.x).toBeGreaterThanOrEqual(0);
+    expect(badge.x + badge.width).toBeLessThanOrEqual(viewport.width);
+    // And clear of the two controls at the bottom, so neither is covered by a
+    // notice that appears while somebody is trying to press one.
+    const fire = (await page.getByTestId('vanyadum-fire').boundingBox())!;
+    const mute = (await page.getByTestId('vanyadum-mute').boundingBox())!;
+    expect(badge.y + badge.height).toBeLessThanOrEqual(fire.y);
+    expect(badge.y + badge.height).toBeLessThanOrEqual(mute.y);
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  test('the standings count deaths and betrayals, and nothing else', async ({ page }) => {
+    // THERE IS NO KILL COLUMN, and that is the joke rather than an omission:
+    // friendly fire is on and everybody in the building is a friend, so every
+    // kill is the second number. Both are omitted at zero on the wire and drawn
+    // as a zero here, so the columns stay aligned down the list.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    await socket.board([
+      { n: 0, i: 'K3jf9sLm2QpZ', s: 137, c: { beer: 4 }, d: 2, br: 3 },
+      { n: 1, i: 'Qq1Ww2Ee3Rr4', s: 7 },
+    ]);
+
+    const rows = page.getByTestId('vanyadum-board-row');
+    await expect(rows.nth(0)).toContainText('💀2');
+    await expect(rows.nth(0)).toContainText('🔪3');
+    await expect(rows.nth(1)).toContainText('💀0');
+    await expect(rows.nth(1)).toContainText('🔪0');
   });
 
   test('holding the trigger reaches the server', async ({ page }) => {

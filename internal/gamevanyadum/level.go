@@ -343,8 +343,9 @@ func buildWalls(l *Level) []Wall {
 // are bounded by a room, which is the trade every adjacency-based PVS makes.
 //
 // SYMMETRIC BY CONSTRUCTION, because adjacency is. If you are on my frame I am
-// on yours, and the day something shoots that is what stops a player being hit
-// by somebody his own client was never told about.
+// on yours, and that is what stops a player being hit by somebody his own client
+// was never told about — the hit test is confined to this set (world.go,
+// targetsFor), so the symmetry is load-bearing rather than merely tidy.
 //
 // IT SAYS NOTHING ABOUT TIME, WHICH IS WHY IT IS NOT READ ON ITS OWN. A sector is
 // derived from a position, so somebody standing in a doorway belongs to whichever

@@ -53,9 +53,10 @@ type Command struct {
 	// a state the client is in, where this describes a moment it wants.
 	//
 	// A REQUEST AND NEVER A CLAIM, exactly like the rest of this type. It says
-	// "I pulled the trigger", not "I fired" and certainly not "I hit somebody" —
-	// whether anything comes of it is Step's to decide, against a gun state the
-	// server owns.
+	// "I pulled the trigger", not "I fired" and certainly not "I hit somebody".
+	// Whether a barrel is spent is Step's to decide, against a gun state the
+	// server owns; where the ray then goes and who it lands on is the world's
+	// (world.go, resolveShot), and no part of it is ever the client's.
 	//
 	// A BOOL AND NOT A BUTTON BITFIELD, which is what the comment on wireCommand
 	// used to anticipate. There is one button today; a bitfield with one bit set
@@ -127,6 +128,24 @@ type Player struct {
 	// (message_test.go), and TestTheGunIsOnlyEverBusyForOneReason pins it.
 	CooldownLeft float64
 	ReloadLeft   float64
+
+	// ProtectedLeft is seconds of spawn protection remaining: he cannot be hurt
+	// and he cannot fire (content.go, SpawnProtectSeconds).
+	//
+	// ON Player RATHER THAN ON THE OCCUPANT, and it is the same argument the gun
+	// made rather than a second one. Being UNHURTABLE is the world's business and
+	// the client could be told about it in any shape at all; being unable to FIRE
+	// is a refusal the browser has to run for itself, because it decides whether
+	// to draw a muzzle flash the instant a thumb lands and it can only do that by
+	// running the same rule the server is about to. So it goes here, into the
+	// port, into the golden vectors and into the reconcile spread — the five
+	// coordinated edits ADR-058 prices, paid for the same reason.
+	//
+	// A COUNTDOWN IN SECONDS AND NOT A TICK DEADLINE, like the gun's two timers
+	// and unlike the world's respawn: Step is pure, reads no clock and knows no
+	// tick, so seconds counted down by the command's own dt is the only
+	// representation both ends can agree on.
+	ProtectedLeft float64
 }
 
 // NewPlayer places somebody at the level's spawn with a full bar, a loaded gun
@@ -156,7 +175,7 @@ func NewPlayer(l *Level) Player {
 // is a bug that only appears when somebody stops moving — the state a player is
 // in whenever he is aiming at something.
 func (p Player) ticking() bool {
-	return p.CooldownLeft > 0 || p.ReloadLeft > 0
+	return p.CooldownLeft > 0 || p.ReloadLeft > 0 || p.ProtectedLeft > 0
 }
 
 // Clone copies a player deeply enough that the copy can be stepped without the
@@ -201,6 +220,29 @@ func clampFinite(v, lo, hi float64) float64 {
 func Step(l *Level, p Player, c Command) Player {
 	c = c.Sanitise()
 	p.Yaw, p.Pitch = c.Yaw, c.Pitch
+
+	// A MAN ON THE FLOOR DOES NOTHING BUT LOOK AROUND. He does not walk, he does
+	// not shoot, and neither of his timers runs — what gets him up again is the
+	// world's own deadline (world.go, rise) rather than anything he sends.
+	//
+	// IT IS A RULE OF Step AND NOT OF THE WORLD, deliberately, because the client
+	// predicts through this function: a server that quietly ignored the commands
+	// of a dead player while the browser went on applying them would drag his
+	// corpse down the corridor and correct it twenty times a second. Here, both
+	// ends refuse the same input and there is nothing to reconcile.
+	//
+	// The angles are still assigned, above, because the camera belongs to the
+	// client — a death you cannot look around from is a black screen with a
+	// timer on it.
+	if p.Health <= 0 {
+		return p
+	}
+
+	// Spawn protection runs on the command's own dt, exactly as the gun's timers
+	// do, and it is what stops the trigger below (content.go,
+	// SpawnProtectSeconds).
+	p.ProtectedLeft = math.Max(0, p.ProtectedLeft-c.Dt)
+
 	// BEFORE the standing-still return below, and that ordering is the whole of
 	// whether the gun works: firing while standing perfectly still is not an edge
 	// case, it is how anybody shoots at anything. A gun folded in after that
@@ -245,11 +287,15 @@ func Step(l *Level, p Player, c Command) Player {
 // broken. It also means the whole gun is ONE rule read top to bottom, rather
 // than a rule plus an "and also, when the gun happens to empty" clause.
 //
-// NOTHING HERE HITS ANYTHING. A granted shot spends a barrel and starts a
-// cooldown, and that is the complete list. The ray, the damage, the death and
-// the respawn are the next iteration; splitting them off is what keeps the
-// input protocol and the first read-modify-write state on Player debuggable
-// without a hit test in the picture.
+// NOTHING HERE HITS ANYTHING, STILL. A granted shot spends a barrel and starts a
+// cooldown; where the ray went and who it landed on is the WORLD's, because a
+// hit test needs every other body in the building and a rewind buffer of where
+// they used to be (world.go, resolveShot). Step stays a pure function of one
+// player, which is what lets the browser run it.
+//
+// A SPENT BARREL IS THEREFORE THE WHOLE SIGNAL. The world watches the count fall
+// and resolves the shot from that, so there is no second definition of "he
+// fired" to keep in step with this one.
 func stepGun(p Player, c Command) Player {
 	if p.ReloadLeft > 0 {
 		p.ReloadLeft = math.Max(0, p.ReloadLeft-c.Dt)
@@ -259,7 +305,10 @@ func stepGun(p Player, c Command) Player {
 	}
 	p.CooldownLeft = math.Max(0, p.CooldownLeft-c.Dt)
 
-	if !c.Fire || p.CooldownLeft > 0 || p.ReloadLeft > 0 {
+	// PROTECTION IS PART OF THE REFUSAL AND NOT A SEPARATE CHECK, so a protected
+	// man cannot start a reload either — otherwise the window would be spent
+	// filling the gun he is about to be untouchable with.
+	if !c.Fire || p.CooldownLeft > 0 || p.ReloadLeft > 0 || p.ProtectedLeft > 0 {
 		return p
 	}
 	if p.Loaded > 0 {
@@ -268,8 +317,9 @@ func stepGun(p Player, c Command) Player {
 		return p
 	}
 	// An empty gun. The beer is spent NOW rather than when the reload finishes,
-	// so that a reload interrupted by anything at all — and in the next iteration
-	// that is being killed halfway through one — cannot be a free one.
+	// so that a reload interrupted by anything at all cannot be a free one — and
+	// something does interrupt one: being shot halfway through it clears the
+	// timer and puts the man on the floor (world.go, wound).
 	if p.Counters[AmmoCounter] >= ReloadCost {
 		p.Counters = spendCounter(p.Counters, AmmoCounter, ReloadCost)
 		p.ReloadLeft = ReloadSeconds

@@ -8,8 +8,8 @@
  * not: it is constant for as long as somebody is in the building. So a peer is
  * addressed by a SLOT, a small integer, and the mapping from slot to pseudonym
  * rides the standings frame once a second instead. That swap is most of what
- * took a peer from 71 bytes to 49, and it is the whole of what bought the fifth
- * place in the заброшка.
+ * took a peer entry from 71 bytes to 49 — and `st` has since put 7 of them back,
+ * which is what the building's capacity is derived from.
  *
  * THE TWO FRAMES SAY DIFFERENT THINGS, AND THAT IS THE POINT.
  *
@@ -48,6 +48,31 @@ function num(v: unknown): number {
 }
 
 /**
+ * The values a peer's `st` takes — everything a viewer has to be told about
+ * somebody beyond where he is standing.
+ *
+ * ONE FIELD FOR FOUR VALUES, because the server's rules make them mutually
+ * exclusive: a man on the floor cannot fire and cannot be hit again, and a
+ * protected man can do neither either. Its precedence is the server's — down
+ * beats protected beats hit beats fired — so a killing blow arrives as DOWN
+ * rather than as HIT, and the acknowledgement for it is the figure going over.
+ *
+ * TWO INSTANTS AND TWO STATES, and the difference decides how each is drawn.
+ * `FIRED` and `HIT` are true for exactly the tick they happened on, so they are
+ * marked on the TRANSITION and shown for a few frames (vanyadumFlash). `DOWN`
+ * and `PROTECTED` last their whole duration, so they are drawn as properties of
+ * the figure for as long as the field carries them — a mark that flashed once
+ * would say nothing about the three seconds that follow.
+ *
+ * Zero — which is the omitted state, and almost every peer on almost every tick
+ * — is a man who is alive, unprotected and did nothing.
+ */
+export const PEER_FIRED = 1;
+export const PEER_HIT = 2;
+export const PEER_DOWN = 3;
+export const PEER_PROTECTED = 4;
+
+/**
  * One row of the standings: a place in the building and who is in it.
  *
  * `slot` is the same number a snapshot's peer entry carries, and that
@@ -61,7 +86,36 @@ export interface BoardRow {
   seconds: number;
   /** What they are carrying, keyed by the catalogue's `grants`. */
   bag: Record<string, number>;
+  /**
+   * How often the building has put them on the floor, and how many friends they
+   * have put there.
+   *
+   * THERE IS NO KILL COLUMN, and that is the joke rather than an omission:
+   * friendly fire is on and there is nothing else here to shoot, so every kill
+   * is a betrayal and no total anywhere is increased by it. Both ride the
+   * standings at 1 Hz rather than the snapshot at 20, because both move a few
+   * times a MINUTE — and both are omitted at zero, so a building where nobody
+   * has shot anybody carries neither.
+   */
+  deaths: number;
+  betrayals: number;
 }
+
+/**
+ * The glyphs those two columns are labelled with.
+ *
+ * SHARED BECAUSE THEY HAVE TWO USES TODAY, which is this project's bar for a
+ * seam: the standings draw them, and the splash cheatsheet names them when it
+ * tells a player what he is looking at. Two copies could drift, and a cheatsheet
+ * describing a column by a symbol that is no longer on it is worse than one that
+ * says nothing.
+ *
+ * NOT FROM THE CATALOGUE, unlike a pickup's icon, because the server publishes
+ * no icon for either — it publishes the WORD for the second one
+ * (`world.betrayals_title`), which is the part of the joke it owns.
+ */
+export const DEATHS_ICON = '💀';
+export const BETRAYALS_ICON = '🔪';
 
 /**
  * Reads the peer array off a snapshot.
@@ -82,11 +136,13 @@ export interface BoardRow {
  * A sector index the level has no room for falls back to the bare eye height,
  * which is what the server's own `EyeZ` answers for the same question.
  *
- * THE SHOT MARKER IS THE ONE FIELD HERE THAT IS NOT GEOMETRY, and it is on the
- * peer rather than derivable from one: a barrel count falling says a shot
- * happened for your OWN gun, but nothing about another man's gun is on the wire
- * to fall. It is omitted in the resting state, which is almost every peer on
- * almost every tick, so absent reads as no.
+ * `st` IS THE ONE FIELD HERE THAT IS NOT GEOMETRY, and it is on the peer rather
+ * than derivable from one. Your own gun needs no marker — a barrel count falling
+ * IS the shot — but nothing about another man's gun is on the wire to fall, and
+ * a HIT moves nobody at all, so there is no value already on the frame that
+ * could imply either. See PEER_FIRED above for the four values and for which of
+ * them are instants. Omitted in the resting state, which is almost every peer on
+ * almost every tick, so absent reads as nothing happening.
  */
 export function decodePeers(
   raw: unknown,
@@ -106,11 +162,12 @@ export function decodePeers(
       y: num(p.y) / 100,
       z: eyeZ(level, num(p.s), eyeHeight),
       yaw: num(p.yaw) / 1000,
-      // Set on every peer rather than only on the one that fired, so the object
-      // this loop produces has one shape: it is built five times a tick forever,
-      // and a field that comes and goes is the kind of thing an engine
-      // deoptimises for.
-      firing: p.f === true,
+      // Set on every peer rather than only on the ones that have something to
+      // say, so the object this loop produces has one shape: it is built four
+      // times a tick forever, and a field that comes and goes is the kind of
+      // thing an engine deoptimises for. Zero is the resting value AND the
+      // omitted one, which is what makes `num` the whole of the decode.
+      st: num(p.st),
     });
   }
   return out;
@@ -142,6 +199,10 @@ export function decodeBoard(raw: unknown): BoardRow[] {
       name: typeof r.i === 'string' ? r.i : '',
       seconds: num(r.s),
       bag,
+      // Both omitted at zero on the wire, so absent reads as none — which is
+      // every row in a building where nobody has shot anybody yet.
+      deaths: num(r.d),
+      betrayals: num(r.br),
     });
   }
   return out;
