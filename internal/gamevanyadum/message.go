@@ -81,11 +81,14 @@ type InputFrame struct {
 //
 // It is also what makes INPUT REDUNDANCY free: a client may resend commands it
 // has not seen acknowledged, and the server drops any whose seq it has already
-// applied. One lost packet then costs nothing at all.
+// ACCEPTED — which includes the ones still waiting in its queue and not only
+// the ones already stepped (Occupant.highSeq). One lost packet then costs
+// nothing at all.
+//
 // Sequence numbers are 1-BASED. Zero means "unset", and an unset command is
-// dropped rather than applied — the server acknowledges the last sequence it
-// folded in and starts at zero, so accepting a zero would make the very first
-// command indistinguishable from one already applied.
+// dropped rather than applied — the arena deduplicates against the highest
+// sequence it has ACCEPTED, which starts at zero, so accepting a zero would
+// make the very first command indistinguishable from one already seen.
 type wireCommand struct {
 	Seq   int64   `json:"q"`
 	Dt    float64 `json:"dt"`
@@ -134,11 +137,16 @@ func parseInput(f InputFrame) *ParsedInput {
 	// asking for extra simulation time. The surplus is dropped rather than the
 	// frame refused: the honest client that drifted by one step keeps playing,
 	// and the dishonest one gains nothing.
+	//
 	// Redundant commands ride along with the fresh ones, so a frame may legally
 	// be larger than the sampling ratio. The bound is on how much SIMULATION a
-	// frame can ask for, and re-sent commands ask for none — the arena drops
-	// any whose sequence it has already applied. So the cap here is the ratio
-	// plus the redundancy window.
+	// frame can ask for, and a re-sent command asks for none because
+	// Arena.Enqueue drops every sequence it has already ACCEPTED — the ones
+	// still sitting in the queue as well as the ones already stepped. That
+	// dedupe is the whole of what this cap rests on, which is why it is the
+	// ratio plus the redundancy window rather than the ratio alone: deduplicate
+	// on what has been APPLIED instead and the surplus this cap permits becomes
+	// real simulation a client did not pay for.
 	n := len(f.Cmds)
 	if n > MaxCommandsPerFrame+RedundantCommands {
 		n = MaxCommandsPerFrame + RedundantCommands
@@ -146,16 +154,16 @@ func parseInput(f InputFrame) *ParsedInput {
 	out := &ParsedInput{Seen: f.Seen, Cmds: make([]Command, 0, n)}
 	for i := 0; i < n; i++ {
 		// A direct conversion, which the two types being field-for-field
-		// identical is what permits. They are separate types anyway, because the
-		// wire form is allowed to grow a field (a button bitfield, next
-		// iteration) that the simulation has no opinion about yet — and the day
-		// they diverge, this line stops compiling rather than silently dropping
-		// something.
-		// A direct conversion, which the two types being field-for-field
 		// identical is what permits. They stay separate types because the wire
-		// form is allowed to grow a field the simulation has no opinion about
-		// — and the day they diverge, this line stops compiling rather than
-		// silently dropping something.
+		// form is allowed to grow a field (a button bitfield, next iteration)
+		// that the simulation has no opinion about yet — and the day they
+		// diverge, this line stops compiling rather than silently dropping
+		// something.
+		//
+		// This clamp is the WIRE boundary's own, and it is one of three —
+		// Arena.Enqueue and Step each clamp again, and each carries a guarantee
+		// the other two do not. The duplication is deliberate; the arrangement is
+		// written out in full at the Enqueue site (arena.go).
 		out.Cmds = append(out.Cmds, Command(f.Cmds[i]).Sanitise())
 	}
 	return out

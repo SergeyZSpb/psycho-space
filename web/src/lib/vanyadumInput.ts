@@ -275,6 +275,32 @@ export function createEmitter(opts: EmitterOptions) {
       return out;
     },
 
+    /**
+     * Time that has elapsed but has not yet become a command, in seconds.
+     *
+     * THE RENDERER NEEDS THIS AND NOTHING ELSE DOES. Commands exist at forty a
+     * second because merging them would break prediction, while the screen
+     * refreshes at sixty, ninety or a hundred and forty-four — so drawing the
+     * eye at the last command's endpoint holds it still for one to three frames
+     * and then jumps it a whole sub-step, 12.5 cm at a walk. In first person
+     * that jump moves the entire viewport, and it is why only WALKING judders:
+     * `look` already runs on every drawn frame, so turning was always smooth.
+     *
+     * Handing the leftover to the renderer closes the gap without inventing
+     * anything. It is time that has genuinely passed and that the very next
+     * command will claim, so the eye drawn from it is exactly where `apply` is
+     * about to put it. Capped at one period because a single command is the
+     * most that can be owed: past that the arrears are a stall the wake budget
+     * is already refusing, and drawing ahead of a refusal would be
+     * extrapolation rather than carry.
+     *
+     * It is a RENDERING quantity and never a simulated one — nothing derived
+     * from it is sent, stored, or folded into prediction.
+     */
+    residualSeconds(): number {
+      return Math.min(owed, period) / 1000;
+    },
+
     /** Drops everything, for when a run ends. */
     reset(): void {
       last = null;

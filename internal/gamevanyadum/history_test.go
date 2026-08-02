@@ -219,22 +219,40 @@ func TestRedundantCommandsAreAppliedOnlyOnce(t *testing.T) {
 }
 
 func TestAcknowledgementFollowsWhatWasActuallySimulated(t *testing.T) {
-	// A command truncated by the time budget must NOT be acknowledged as
-	// applied — the client would drop it from its pending list and its
-	// prediction would drift permanently by whatever the server declined to
-	// simulate.
+	// The ack is EXACTLY the last sequence folded in whole. A command the budget
+	// could not afford must not be acknowledged, because the client drops
+	// everything at or below the ack and would keep the whole of a half-run
+	// command in its own prediction for ever.
+	//
+	// This assertion is written as an equality on purpose. It used to read
+	// `LastSeq > 1`, which the truncating drain satisfied — that drain
+	// acknowledged sequence 1 after simulating a quarter of it, so the test
+	// passed green over the exact defect its own comment named.
 	a := newTestArena(t, 5)
 	cmds := make([]Command, 0, 8)
 	for i := 1; i <= 8; i++ {
 		cmds = append(cmds, Command{Seq: int64(i), Dt: MaxStepSeconds, MY: 1})
 	}
 	a.Enqueue(a.AccountID, &ParsedInput{Cmds: cmds})
-	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
 
-	// One tick buys one tick of simulated time, which is a fraction of the
-	// first command — so at most the first can have been acknowledged.
-	if got := a.Owner().State.LastSeq; got > 1 {
-		t.Fatalf("acknowledged up to %d after a single tick's budget", got)
+	// One tick buys 50 ms and every one of these asks for 200, so not one of
+	// them is affordable and the ack has to still be zero.
+	a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	if got := a.Owner().State.LastSeq; got != 0 {
+		t.Fatalf("acknowledged up to %d before a single command was affordable", got)
+	}
+
+	// Four ticks buy the first command exactly, and nothing towards the second.
+	// Exact IEEE754 arithmetic rather than a tolerance, so a retune of SimHz or
+	// MaxStepSeconds that accumulates one ULP short fails here over the tuning
+	// and not over the rule — the full caveat is at
+	// TestACommandLargerThanTheBudgetWaitsWholeRatherThanBeingTruncated in
+	// arena_test.go.
+	for i := 0; i < 3; i++ {
+		a.Advance(SimStep.Seconds(), time.Unix(0, 0))
+	}
+	if got := a.Owner().State.LastSeq; got != 1 {
+		t.Fatalf("acknowledged up to %d after a budget worth exactly one command", got)
 	}
 }
 

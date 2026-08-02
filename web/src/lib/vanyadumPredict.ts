@@ -20,6 +20,7 @@
  * without the client getting a say. See ADR-052.
  */
 
+import type { VanyadumAxes } from './vanyadumInput';
 import type { VanyadumLevel } from './vanyadumLevel';
 import { eyeZ, step, type StepCommand, type StepConstants, type StepPlayer } from './vanyadumStep';
 
@@ -106,6 +107,27 @@ export function createPredictor(opts: PredictorOptions) {
   let errX = 0;
   let errY = 0;
 
+  /**
+   * Turns a simulated player into what the renderer draws: the correction
+   * offset applied, then the eye placed on whatever sector that lands in.
+   *
+   * Both branches of `view` end here — the resting frame and the carried one —
+   * so the two cannot come to disagree about how the correction is applied or
+   * where the eye sits, which is what they would do as two functions kept in
+   * step by hand.
+   */
+  function drawnView(p: StepPlayer): PredictedView {
+    const shown: StepPlayer = { ...p, x: p.x + errX, y: p.y + errY };
+    return {
+      x: shown.x,
+      y: shown.y,
+      z: eyeZ(level, shown, eyeHeight),
+      yaw: shown.yaw,
+      pitch: shown.pitch,
+      sector: shown.sector,
+    };
+  }
+
   return {
     /**
      * Applies one command locally and returns it, stamped with its sequence.
@@ -132,6 +154,31 @@ export function createPredictor(opts: PredictorOptions) {
      * rubber-band.
      */
     reconcile(a: Authoritative): void {
+      // A PREDICTOR REBUILT MID-RUN ADOPTS THE SERVER'S COUNT, or it is frozen
+      // for the rest of the run. `createPredictor` starts at zero, so its first
+      // command is sequence 1 — and an arena that has already accepted hundreds
+      // drops 1 as stale, then 2, then every command after it, silently and for
+      // ever. This is not a corner case: a reload does it, a backgrounded tab
+      // that lost its socket and rebuilt on the way back does it, and so does
+      // the ordinary resume path that picks up a run already in progress.
+      //
+      // The ack is the right floor because THE SERVER IS THE ONE THAT SAID IT.
+      // It is the last sequence the server folded in, so counting on from it is
+      // the client agreeing with what it has just been told, not asserting a
+      // number of its own — the same relationship the rest of this file has
+      // with authority. And it only ever moves the counter FORWARDS: an ack at
+      // or below `seq` is acknowledging commands this predictor itself sent, and
+      // rewinding onto sequences that are still pending would put two different
+      // commands under one number.
+      //
+      // It is a floor, not an exact resync. The arena deduplicates against the
+      // highest sequence it has ACCEPTED into its queue, which sits at or above
+      // the last one it has STEPPED — the ack — by however much is still waiting
+      // there. So a handful of the first resumed commands can still land below
+      // that mark and be dropped before the ack catches up. That is a fraction
+      // of a second of unresponsiveness, against a freeze that lasted the run.
+      if (a.ack > seq) seq = a.ack;
+
       pending = pending.filter((c) => (c.seq ?? 0) > a.ack);
 
       // Where the player is being DRAWN right now — predicted plus whatever
@@ -185,17 +232,73 @@ export function createPredictor(opts: PredictorOptions) {
       predicted.pitch = pitch;
     },
 
-    /** What to draw this frame. */
-    view(): PredictedView {
-      const shown: StepPlayer = { ...predicted, x: predicted.x + errX, y: predicted.y + errY };
-      return {
-        x: shown.x,
-        y: shown.y,
-        z: eyeZ(level, shown, eyeHeight),
-        yaw: shown.yaw,
-        pitch: shown.pitch,
-        sector: shown.sector,
-      };
+    /**
+     * What to draw this frame: the prediction, carried forward over the time
+     * that has already elapsed but has not yet become a command.
+     *
+     * This is the difference between an eye that moves and an eye that
+     * flickers. `predicted` only advances inside `apply`, which happens forty
+     * times a second, while this is called on every animation frame — so
+     * without the carry the camera is redrawn in the same place for one to
+     * three frames and then teleported 12.5 cm, forty times a second, for ever.
+     * Only walking suffers, because `look` already runs every frame and turning
+     * was therefore always smooth: that asymmetry is the fault's own signature.
+     *
+     * THERE IS ONE METHOD AND `carrySeconds` IS REQUIRED — not a carrying
+     * method beside a resting one, and not an optional argument that leads back
+     * to the resting shape. That buys exactly two things, and it is worth being
+     * precise about which. First, there is a single drawing path through the
+     * predictor, so there is no carry-free second path for the specs to leave
+     * uncovered: a resting frame is this same call with a zero, so every spec in
+     * `vanyadumPredict.spec.ts` drives the method the game draws with. Second, a
+     * required argument makes removing the carry a DELIBERATE edit — the
+     * compiler refuses a bare `view()` — rather than a line that can quietly go
+     * missing.
+     *
+     * WHAT IT DOES NOT BUY, AND CANNOT. The ARGUMENT the view passes is
+     * unpinned: change `emitter.residualSeconds()` to `0` at the call site and
+     * the types are still satisfied, every suite is still green, and the judder
+     * is back. There is nowhere to pin it: the eye lives inside the canvas, and
+     * ADR-047 accepts that a canvas is opaque to both Playwright suites — what
+     * it could offer is a pixel comparison or a test-only introspection API, and
+     * this repository takes neither. So only a person looking at the game can
+     * see that line go wrong. The gap is written down rather than papered over,
+     * because a reviewer who believes the specs cover it will not look at it.
+     *
+     * THE CARRY COMMAND IS THE AXES PLUS THE ELAPSED TIME — the same two
+     * ingredients `emitter.due` puts into the real command, so the carried
+     * frame and the command it anticipates agree by construction rather than by
+     * call ordering. Taking the aim off `predicted` instead would agree only
+     * while `look` happened to have run earlier in the same frame, and would
+     * quietly draw a stale horizon against a fresh command the day it did not.
+     * The aim has to be carried at all because THIS GAME'S COMMAND IS ABSOLUTE
+     * about where the player is looking rather than relative — `step` writes
+     * `c.yaw` and `c.pitch` straight onto the player — so a carry command built
+     * without them would step the copy facing yaw zero, and every frame between
+     * two commands would swing the horizon round to north and back again.
+     * «СИМУЛЯТОР ФИНТЕХА»'s command carries no aim at all, so the hazard is
+     * this game's alone and the two carries are not the same shape.
+     *
+     * **It is not extrapolation and it cannot drift.** The step is over time
+     * that has already passed, and it runs against a COPY — `predicted` is left
+     * exactly as the real command will find it.
+     *
+     * WHERE IT IS EXACT, AND WHERE IT IS NOT. While the axes are unchanged
+     * between the carried frame and the frame that emits, the real command
+     * starts from the untouched `predicted` and lands precisely where this had
+     * already drawn: nothing moves twice and nothing moves back. When the thumb
+     * HAS moved, the command goes somewhere the carry was not pointing and the
+     * drawn eye takes one small step across to it — sub-step scale, the same
+     * size of disagreement the correction smoothing already glides out on every
+     * snapshot. Releasing the stick is the case that happens constantly, and
+     * there it steps BACK by whatever fraction of a sub-step the carry was
+     * showing: at a walk, at most 12.5 cm on one frame, which the specs pin.
+     * That is honest rather than wrong — the carry was drawing a command that
+     * then never came.
+     */
+    view(carrySeconds: number, axes: VanyadumAxes): PredictedView {
+      if (!(carrySeconds > 0)) return drawnView(predicted);
+      return drawnView(step(level, predicted, { dt: carrySeconds, ...axes }, constants));
     },
 
     /**
@@ -203,7 +306,9 @@ export function createPredictor(opts: PredictorOptions) {
      *
      * Sent again in each frame up to `max`, which costs a few bytes and means
      * one lost packet costs no input at all — the server drops any sequence it
-     * has already applied, so a duplicate is free. This is only possible
+     * has already ACCEPTED, queued as well as stepped, so a duplicate is free.
+     * Filtering on what it had stepped would have re-admitted everything still
+     * waiting in the queue and run it twice. This is only possible
      * because the pending list has to exist for reconciliation anyway.
      */
     unacknowledged(max: number): StepCommand[] {

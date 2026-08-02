@@ -242,6 +242,39 @@ describe('createEmitter', () => {
     e.reset();
     expect(e.due(5000, walking)).toEqual([]);
   });
+
+  it('owes the renderer nothing until it has an interval to measure', () => {
+    const e = createEmitter(opts);
+    expect(e.residualSeconds()).toBe(0);
+    // The first reading only starts the clock; there is no elapsed time in it.
+    e.due(1000, walking);
+    expect(e.residualSeconds()).toBe(0);
+  });
+
+  it('grows the leftover as time passes and drops it when a command claims it', () => {
+    // What makes the carry a carry: the renderer is only ever offered time that
+    // has genuinely elapsed and that the next command is about to take.
+    const e = createEmitter(opts);
+    e.due(0, walking);
+    e.due(10, walking);
+    expect(e.residualSeconds()).toBeCloseTo(0.01, 9);
+    e.due(20, walking);
+    expect(e.residualSeconds()).toBeCloseTo(0.02, 9);
+    // Past the 25 ms period: one command is emitted and takes a period with it.
+    expect(e.due(30, walking)).toHaveLength(1);
+    expect(e.residualSeconds()).toBeCloseTo(0.005, 9);
+  });
+
+  it('never offers more than one period, however far behind it is', () => {
+    // Beyond a period the arrears are a stall the wake budget is already
+    // refusing, and drawing ahead of a refusal is extrapolation, not carry.
+    const e = createEmitter(opts);
+    e.due(0, walking);
+    // 140 ms is five and a half periods but only four commands are allowed, so
+    // 40 ms is left owing — more than the renderer may be handed.
+    expect(e.due(140, walking)).toHaveLength(opts.maxPerWake);
+    expect(e.residualSeconds()).toBeCloseTo(1 / opts.hz, 9);
+  });
 });
 
 describe('buildInputFrame', () => {

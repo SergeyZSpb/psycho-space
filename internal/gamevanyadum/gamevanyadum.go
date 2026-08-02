@@ -103,8 +103,11 @@ const MaxCommandsPerFrame = 4
 //
 // The pending list prediction already keeps exists for reconciliation, so
 // resending its tail is a loop and a few bytes. The server drops any command
-// whose sequence it has already applied, which is what makes the redundancy
-// free rather than a way to buy extra simulation.
+// whose sequence it has already ACCEPTED — the ones still waiting in its queue
+// as well as the ones already stepped (Occupant.highSeq) — and that is what
+// makes the redundancy free rather than a way to buy extra simulation.
+// Deduplicating against what has been APPLIED instead would let through
+// precisely the repeats of what is queued, which is most of the window.
 const RedundantCommands = 6
 
 // InterpolationDelay is how far in the past a peer is drawn.

@@ -565,14 +565,28 @@ function drawFrame(now: number): void {
 
   if (predictor && emitter) {
     predictor.look(aim.yaw, aim.pitch);
-    for (const cmd of emitter.due(now, currentAxes())) {
+    const axes = currentAxes();
+    for (const cmd of emitter.due(now, axes)) {
       // Applied locally the instant it exists, and queued for sending
       // unchanged. Predicting one thing and sending another is the one mistake
       // this whole arrangement cannot survive.
       outbox.push(predictor.apply(cmd));
     }
     predictor.tick(dt);
-    const v = predictor.view();
+    // Drawn over the carry rather than at the last command's endpoint: commands
+    // exist forty times a second and this runs sixty to a hundred and
+    // forty-four, so without it the eye is redrawn identically for one to three
+    // frames and then jumps a sub-step. Read AFTER `due`, which has just taken
+    // whatever it could out of the leftover — and given the SAME axes `due` was
+    // given, so the frame drawn ahead and the command it anticipates cannot
+    // disagree.
+    //
+    // NOTHING PINS THIS ARGUMENT. A zero here type-checks and leaves every suite
+    // green while the judder comes straight back, because the camera is inside
+    // the canvas, which ADR-047 accepts is opaque to both Playwright suites.
+    // Only a person looking at the game can see it — so change this line on
+    // purpose or not at all. The reasoning is on `view` in vanyadumPredict.ts.
+    const v = predictor.view(emitter.residualSeconds(), axes);
     view.x = v.x;
     view.y = v.y;
     view.z = v.z;
@@ -600,8 +614,10 @@ function sendInput(): void {
 
   // Redundancy: the tail of everything still unacknowledged rides along, so one
   // lost packet costs no input at all. The server drops any sequence it has
-  // already applied, which is what makes a duplicate free — and the pending
-  // list this reads from has to exist for reconciliation anyway.
+  // already ACCEPTED — queued as well as stepped — which is what makes a
+  // duplicate free; dropping only what it had stepped would have let a resend
+  // back into a queue that was still holding the original. The pending list
+  // this reads from has to exist for reconciliation anyway.
   //
   // The frame's shape is a pure function (buildInputFrame), tested on its own —
   // `seenTick` is the last snapshot tick we drew, from which the server derives

@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -318,7 +319,9 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 		for j := 0; j < perFrame; j++ {
 			// One sequence per COMMAND, one-based: reconciliation has to hear
 			// "I applied three of your four", and the server drops anything at
-			// or below what it has already folded in.
+			// or below the highest it has ACCEPTED — which includes the ones
+			// still waiting in its queue, and not only the ones it has folded
+			// in.
 			seq := i*perFrame + j + 1
 			cmds = append(cmds, map[string]any{
 				"q": seq, "dt": 0.05, "my": 1, "yaw": float64(seq) * 0.6,
@@ -366,6 +369,149 @@ func TestVanyadumTheSocketSimulatesAndAnswersWithSnapshots(t *testing.T) {
 	}
 	if _, ok := moved["hp"]; !ok {
 		t.Fatal("a snapshot with no health in it")
+	}
+}
+
+func TestVanyadumRedundantInputBuysInsuranceAndNotDistance(t *testing.T) {
+	// A player walks exactly as far as he asked to, over a real socket, while
+	// resending his unacknowledged commands the way the browser does.
+	//
+	// THIS IS THE DEFECT «СИМУЛЯТОР ФИНТЕХА» FOUND, in the game that shipped it
+	// first. A client repeats the tail of everything it has not seen
+	// acknowledged so that one lost packet costs no input, and that is only free
+	// while the arena drops the repeats. Dropping them by the last APPLIED
+	// sequence drops the repeats of commands already stepped and accepts the
+	// repeats of commands still WAITING — so the redundancy window buys
+	// simulation instead of insurance, and the player is dragged forward while
+	// walking and keeps walking after he lets go.
+	//
+	// The arena's own tests pin the queue arithmetic. This one pins that nothing
+	// between the browser and that queue undoes it: the real frame, the real
+	// per-frame cap in parseInput, the real socket, the real service loop.
+	app, tick, svc := buildAppVanyadum(t, dumVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cli := loginAs(t, srv.URL, "910008", "user")
+
+	startRun(t, cli, srv.URL)
+	conn, _, err := dialVanyadum(t, srv.URL, cookieHeader(t, cli, srv.URL), gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	wire := newDumWire(conn, readFrames(t, conn))
+
+	wire.attach(t)
+
+	// Where he starts and how much room he has, taken from the level rather than
+	// from a snapshot. A level is a pure function of its seed and is never
+	// written to after it is generated, so reading one while the simulation runs
+	// is safe in a way that reading a player's position would not be — and the
+	// walk has to be measured from a position no rounding has touched.
+	accountID, err := uuid.Parse(accountIDByUID(t, "910008"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	arena, ok := svc.CurrentRun(accountID)
+	if !ok {
+		t.Fatal("no arena for the run that was just started")
+	}
+	spawn := arena.Level.Spawn
+	room := arena.Level.Sectors[arena.Level.SpawnSector]
+
+	// One send window's worth of sampling, at the rates the catalogue publishes:
+	// MaxCommandsPerFrame sub-steps of 1/(InputHz*MaxCommandsPerFrame) seconds
+	// each, which is the client's whole output for a tenth of a second.
+	const subStep = 1.0 / (gamevanyadum.InputHz * gamevanyadum.MaxCommandsPerFrame)
+	// Four windows: enough that three of them land on a queue that is behind,
+	// and few enough to stay inside the socket's own budget — each window costs
+	// two messages with its delivery barrier, against a burst of twenty at ten a
+	// second (internal/realtime/conn.go). A much longer drive would have to pace
+	// its sends rather than fire them as fast as this one does.
+	const windows = 4
+	const eastward = math.Pi / 2 // yaw zero looks along +Y, so this walks along +X
+	total := int64(windows * gamevanyadum.MaxCommandsPerFrame)
+	asked := float64(total) * subStep * gamevanyadum.WalkSpeed
+
+	// He walks in a straight line inside the room he spawned in, and the walk is
+	// short enough that no wall can shorten it: the spawn is the room's centre,
+	// every room is at least RoomMin across, and the generator never puts a
+	// pickup in the spawn room, so nothing here can end the run underneath the
+	// assertion either. Checked rather than assumed, because retuning RoomMin
+	// would otherwise turn this test into a slow puzzle about collision.
+	if clear := (room.MaxX-room.MinX)/2 - gamevanyadum.PlayerRadius; clear <= asked {
+		t.Fatalf("the spawn room leaves %.2f m of clear floor eastward and this walk asks for %.2f m", clear, asked)
+	}
+
+	// THE CADENCE IS THE POINT, and it is expressed in ticks rather than in wall
+	// time because the tick is injected: a send window is a tenth of a second,
+	// which is two of the simulation's twenty steps a second.
+	//
+	// The first window gets ONE tick instead of two — a single late tick, the
+	// cheapest thing a mobile connection produces. At the ideal cadence the
+	// client's demand and the budget's accrual are exactly equal, so the queue
+	// is empty every time a frame lands and a duplicate has nothing to duplicate;
+	// one late tick puts the queue two commands behind, and because demand
+	// equals accrual nothing ever brings it back. Every window after the first
+	// therefore lands on a queue with something in it, which is the state the
+	// redundancy rule is actually judged in.
+	//
+	// Each window is a round trip rather than a write: the frame is delivered,
+	// then the world moves, then the client reads what came back before composing
+	// the next one — which is the order the browser's own loop runs in, and the
+	// only order in which the client's redundancy tail means anything.
+	for w := 0; w < windows; w++ {
+		wire.send(t, gamevanyadum.MaxCommandsPerFrame, dumCommand{Dt: subStep, MY: 1, Yaw: eastward})
+		wire.attach(t) // the barrier: the frame is in the arena before a tick fires
+		ticks := 2
+		if w == 0 {
+			ticks = 1
+		}
+		for i := 0; i < ticks; i++ {
+			wire.step(t, tick)
+		}
+		wire.draw(t)
+	}
+
+	// The drive granted 2*windows-1 ticks against windows*100 ms of input, so the
+	// arena cannot have caught up here — and if a retune ever makes it catch up,
+	// every frame lands on an empty queue and this test quietly stops testing
+	// anything.
+	if wire.ack >= total {
+		t.Fatalf("the arena acknowledged all %d commands during the walk, so no frame ever landed on a queue with anything in it", total)
+	}
+
+	// Now let it finish what it was asked for.
+	acked := wire.pumpUntil(t, tick, "every command acknowledged",
+		func(s dumSnapshot) bool { return s.Ack >= total })
+
+	// And then keep ticking with nothing left to send, which is what letting go
+	// of the controls looks like from here. The queue holds at most maxPending
+	// commands of subStep each — the expression is arena.go's, mirrored because
+	// the constant is unexported — so this many ticks empties whatever the
+	// acknowledgement did not account for. Arithmetic on a bounded queue rather
+	// than a wait on anything that could be slow.
+	const queueCap = 4 * (gamevanyadum.MaxCommandsPerFrame + gamevanyadum.RedundantCommands)
+	settleTicks := int64(math.Ceil(queueCap * subStep * gamevanyadum.SimHz))
+	settled := wire.pumpUntil(t, tick, "the walk to settle",
+		func(s dumSnapshot) bool { return s.Tick >= acked.Tick+settleTicks })
+
+	// THE ACK IS A PROMISE THAT THERE IS NOTHING LEFT. A client drops everything
+	// at or below it and stops predicting it, so movement an arena produces after
+	// acknowledging the input that caused it is movement the client has no record
+	// of and cannot reconcile against — it can only be corrected to, as a jump.
+	if drag := math.Hypot(float64(settled.X-acked.X), float64(settled.Y-acked.Y)) / 100; drag > 0.02 {
+		t.Fatalf("all %d commands were acknowledged and he then walked another %.2f m", total, drag)
+	}
+
+	travelled := math.Hypot(float64(settled.X)/100-spawn.X, float64(settled.Y)/100-spawn.Y)
+	// Two centimetres is the wire's own resolution rather than a tolerance on the
+	// simulation — a snapshot carries positions as whole centimetres — and the
+	// defect this rules out is not subtle at that scale: these same four windows
+	// walked 3.25 m where 2.00 m was asked for, an extra metre and a quarter
+	// nobody pressed anything for.
+	if math.Abs(travelled-asked) > 0.02 {
+		t.Fatalf("walked %.2f m where %d sub-steps asked for %.2f m", travelled, total, asked)
 	}
 }
 
@@ -493,6 +639,244 @@ func TestVanyadumRoomIsRefusedWhenNothingListens(t *testing.T) {
 		t.Fatal("an unregistered room was accepted")
 	} else if resp == nil || resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("want 400, got %v", resp)
+	}
+}
+
+// dumCommand is one sub-step on the wire, field for field as
+// web/src/lib/vanyadumInput.ts puts it there.
+//
+// Written out rather than borrowed from the game's package, because the wire
+// type there is unexported and deliberately so — it is the wire's shape, not the
+// simulation's. The cost of the copy is that a field the wire grows later will
+// not appear here, and this test will go on sending the frame an older client
+// sends. That is tolerable exactly because an older client's frame is a shape
+// the server has to keep accepting anyway.
+type dumCommand struct {
+	Seq   int64   `json:"q"`
+	Dt    float64 `json:"dt"`
+	MX    float64 `json:"mx"`
+	MY    float64 `json:"my"`
+	Yaw   float64 `json:"yaw"`
+	Pitch float64 `json:"pitch"`
+}
+
+// dumInput is one client→server input frame.
+type dumInput struct {
+	T    string       `json:"t"`
+	Seen int64        `json:"k"`
+	Cmds []dumCommand `json:"cmds"`
+}
+
+// dumSnapshot is the part of a snapshot a driving test reads. Typed rather than
+// the map[string]any the assertions above use, because every field of it is a
+// number this one does arithmetic on.
+type dumSnapshot struct {
+	T    string `json:"t"`
+	Tick int64  `json:"k"`
+	Ack  int64  `json:"ack"`
+	X    int    `json:"x"`
+	Y    int    `json:"y"`
+}
+
+// dumWire is the browser's send loop, reduced to the part the arena can tell
+// apart: a monotonic per-command sequence, the commands not yet acknowledged,
+// and the last snapshot drawn. Everything the real client additionally does with
+// a frame — prediction, replay, interpolation — is client-side and invisible
+// from the server's end of the socket, so reproducing it here would only be
+// reproducing a second implementation of it.
+type dumWire struct {
+	conn   *websocket.Conn
+	frames <-chan []byte
+
+	// now is the clock handed to the simulation loop, advanced by one SimStep
+	// per tick because that is what the production ticker does. ticks counts
+	// them, and is therefore also the arena's own tick number: nothing else in
+	// the test fires one.
+	now   time.Time
+	ticks int64
+
+	seq     int64
+	unacked []dumCommand
+	// ack is the highest acknowledgement any snapshot has carried, and seen is
+	// the tick of the last one — the number the server derives round trip from.
+	ack  int64
+	seen int64
+}
+
+func newDumWire(conn *websocket.Conn, frames <-chan []byte) *dumWire {
+	return &dumWire{conn: conn, frames: frames, now: time.Unix(0, 0)}
+}
+
+// send writes one input frame: n fresh sub-steps of proto, preceded by the tail
+// of everything still unacknowledged, which is buildInputFrame's shape exactly.
+//
+// The tail is capped at RedundantCommands and the fresh commands are never in
+// it, because parseInput keeps the FIRST MaxCommandsPerFrame+RedundantCommands
+// of a frame and drops the rest — so a client that sent a longer tail would have
+// its own new input truncated away, which is a different bug wearing this one's
+// symptoms.
+func (w *dumWire) send(t *testing.T, n int, proto dumCommand) {
+	t.Helper()
+	fresh := make([]dumCommand, 0, n)
+	for i := 0; i < n; i++ {
+		w.seq++
+		c := proto
+		c.Seq = w.seq
+		fresh = append(fresh, c)
+	}
+	tail := w.unacked
+	if len(tail) > gamevanyadum.RedundantCommands {
+		tail = tail[len(tail)-gamevanyadum.RedundantCommands:]
+	}
+	msg, err := json.Marshal(dumInput{
+		T:    gamevanyadum.TypeInput,
+		Seen: w.seen,
+		Cmds: append(append([]dumCommand{}, tail...), fresh...),
+	})
+	if err != nil {
+		t.Fatalf("marshal input frame: %v", err)
+	}
+	if err := w.conn.Write(context.Background(), websocket.MessageText, msg); err != nil {
+		t.Fatalf("send input frame: %v", err)
+	}
+	w.unacked = append(w.unacked, fresh...)
+}
+
+// step fires one simulation tick.
+func (w *dumWire) step(t *testing.T, tick chan time.Time) {
+	t.Helper()
+	select {
+	case tick <- w.now:
+		w.now = w.now.Add(gamevanyadum.SimStep)
+		w.ticks++
+	case <-time.After(10 * time.Second):
+		t.Fatal("the simulation loop stopped taking ticks")
+	}
+}
+
+// attach sends a hello and waits for the ready it is answered with, folding in
+// any snapshot that arrives on the way.
+//
+// It is the handshake, and it is ALSO this file's delivery barrier. One
+// connection's messages are read in order on one read pump, so a ready proves
+// that everything written before the hello has already reached the arena. Without
+// it the gap between Write returning and the read pump enqueueing is settled by
+// the goroutine scheduler, and a test that fires a tick into that gap measures a
+// cadence it did not choose — which is how a phase-sensitive test comes to pass
+// on one machine and fail on another.
+//
+// No tick is fired while waiting, deliberately. An idle tick is not free to the
+// occupant it ticks: each one banks another SimStep of unspent time budget, up
+// to TimeBudgetCap's half second, and an occupant holding half a second of credit
+// swallows a whole backlog in a single step — which is precisely the condition
+// the walk above is built to create.
+func (w *dumWire) attach(t *testing.T) {
+	t.Helper()
+	if err := w.conn.Write(context.Background(), websocket.MessageText,
+		[]byte(`{"t":"`+gamevanyadum.TypeHello+`"}`)); err != nil {
+		t.Fatalf("send hello: %v", err)
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case raw, ok := <-w.frames:
+			if !ok {
+				t.Fatal("the socket closed before the hello was answered")
+			}
+			if _, isSnap := w.apply(raw); isSnap {
+				continue
+			}
+			var f struct {
+				T string `json:"t"`
+			}
+			if json.Unmarshal(raw, &f) == nil && f.T == gamevanyadum.TypeReady {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no ready frame arrived")
+		}
+	}
+}
+
+// draw folds in snapshots until one describes the last tick this test fired, and
+// returns it — so the acknowledgement the next frame is composed against is as
+// current as the world it is answering. That is what the browser has, and it is
+// what makes the redundancy tail this test sends the tail a browser would.
+//
+// It waits on a tick already fired and never fires one itself; see attach on why
+// an idle tick is not free.
+func (w *dumWire) draw(t *testing.T) dumSnapshot {
+	t.Helper()
+	want := w.ticks
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case raw, ok := <-w.frames:
+			if !ok {
+				t.Fatal("the socket closed mid-walk")
+			}
+			if s, isSnap := w.apply(raw); isSnap && s.Tick >= want {
+				return s
+			}
+		case <-deadline:
+			t.Fatalf("no snapshot for tick %d arrived", want)
+		}
+	}
+}
+
+// apply reads one delivered frame, reporting the snapshot it was — anything
+// else on this socket is a ready or an over, and neither says anything about
+// what has been simulated.
+func (w *dumWire) apply(raw []byte) (dumSnapshot, bool) {
+	var s dumSnapshot
+	if json.Unmarshal(raw, &s) != nil || s.T != gamevanyadum.TypeSnapshot {
+		return dumSnapshot{}, false
+	}
+	w.seen = s.Tick
+	if s.Ack > w.ack {
+		w.ack = s.Ack
+	}
+	kept := w.unacked[:0]
+	for _, c := range w.unacked {
+		if c.Seq > w.ack {
+			kept = append(kept, c)
+		}
+	}
+	w.unacked = kept
+	return s, true
+}
+
+// pumpUntil advances the simulation, ONE TICK PER ROUND TRIP, until a snapshot
+// satisfies done — and returns that snapshot. why names what was being waited
+// for, so a timeout says which condition never arrived rather than merely that
+// something did not happen.
+//
+// The one-at-a-time part is not tidiness. A loop that offers the tick channel and
+// the frame channel to the same select fires as many ticks as the scheduler will
+// accept, which on a busy machine is hundreds before the first snapshot is read —
+// and every tick publishes a frame, so the connection's send buffer overflows and
+// the hub evicts the socket as a slow consumer (internal/realtime/hub.go). It
+// presents as a socket that closes mid-test on a loaded runner and nowhere else.
+//
+// Everything an assertion needs is read from one frame, deliberately: asking for
+// the acknowledgement and then asking again for the position is two round trips
+// through a loop that moves twenty times a second, and the answer to the second
+// question describes a different world from the answer to the first.
+//
+// Bounded by a DEADLINE and never by a count of ticks: how long a tick takes is a
+// property of the machine the suite is running on, so a count that is generous
+// here runs out mid-convergence on a loaded runner and reports the wrong reason.
+func (w *dumWire) pumpUntil(t *testing.T, tick chan time.Time, why string, done func(dumSnapshot) bool) dumSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		w.step(t, tick)
+		if s := w.draw(t); done(s) {
+			return s
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waited for %s and it never came; %d commands acknowledged", why, w.ack)
+		}
 	}
 }
 
