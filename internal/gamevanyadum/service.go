@@ -330,11 +330,11 @@ func (s *Service) finish(w *World, o *Occupant) {
 		Seed:      w.Level.Seed,
 		JoinedAt:  o.JoinedAt,
 		Seconds:   o.Stayed(),
-		// What he COLLECTED and not what he still had. The two were the same
-		// number until the gun started spending it, and the column means the
-		// former (migrations/015, immutable) — a visit that read the bag would now
-		// record a nought for everybody who actually used the building's beer.
-		Beer: o.collected["beer"],
+		// What he COLLECTED, which the column means (migrations/015, immutable)
+		// and which nothing in the building can take back off him: no counter is
+		// ever spent, so what he is carrying when he leaves is exactly what he
+		// found (world.go, Occupant.bag).
+		Beer: o.bag["beer"],
 	}
 	select {
 	case s.saves <- v:

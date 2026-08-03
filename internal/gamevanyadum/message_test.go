@@ -361,6 +361,21 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// the game can really send is now the barrels and TWO timers rather than one.
 	// Four in the fixture is still a bound rather than a claim; it is just a
 	// slightly less generous one than it was.
+	//
+	// AND THEN THE BAG CAME OFF, WHICH IS THE FIRST TIME THIS BUDGET HAS FALLEN.
+	// Measured: `,"c":{"beer":9}` was 15 of the 179 bytes this fixture used to
+	// produce, so the frame is 164 and the budget moves from 180 to 165. Its
+	// reader — the predictor reconciling a gun that spent a bottle — was deleted
+	// when ammunition became infinite, and what was left was a HUD cell fed twenty
+	// times a second with a number that changes a few times a minute (message.go,
+	// Snapshot.Events). It rides the standings now, where the same map already
+	// went out unfiltered.
+	//
+	// THE SAVING IS BIGGER THAN THE FIFTEEN BYTES, because the field would not
+	// have stayed fifteen: the ceiling on the counter went with it (content.go,
+	// PickupKind), so nothing bounds the digits any more and the widest honest
+	// `"c"` is `{"beer":999999}` — 21 bytes, 420 B/s per viewer, on a wire that
+	// had 32 B/s left.
 	s := Snapshot{
 		T: TypeSnapshot, Tick: 999999, Ack: 999999,
 		X: 123456, Y: -123456, Z: 12345, Yaw: 3142, Sector: 12, Health: 100,
@@ -370,7 +385,6 @@ func TestSnapshotStaysSmall(t *testing.T) {
 		Reload:   ms(ReloadSeconds),
 		Down:     int(DownTime / time.Millisecond),
 		Protect:  ms(SpawnProtectSeconds),
-		Bag:      map[string]int{"beer": 9},
 	}
 	raw, err := json.Marshal(s)
 	if err != nil {
@@ -379,7 +393,7 @@ func TestSnapshotStaysSmall(t *testing.T) {
 	// If a field is added that pushes past this, the right response is to measure
 	// and move the budget deliberately — with the arithmetic written down, as
 	// above — and never to raise the number until the test passes.
-	const budget = 180
+	const budget = 165
 	if len(raw) > budget {
 		t.Fatalf("a full snapshot is %d bytes, budget is %d: %s", len(raw), budget, raw)
 	}
@@ -398,8 +412,15 @@ func TestSnapshotStaysSmall(t *testing.T) {
 // Snapshot.Events was stated here and left out at ~28 B/s on the grounds of being
 // two orders of magnitude under the headroom, and 28 against 71 is not two orders
 // under anything — it is 39% of what was left. So it is a term of the sum now
-// (worstEventCost), priced at its own rate rather than at the frame rate, and the
-// headroom the sum reports is the real one: 32 B/s.
+// (worstEventCost), priced at its own rate rather than at the frame rate.
+//
+// THE HEADROOM IS 317 B/s, AND IT WAS 32 UNTIL THE BAG CAME OFF THE SNAPSHOT.
+// That is the first time any of these three terms has gone DOWN, and it is worth
+// recording which way the trade went: 15 bytes of `c` × SnapshotHz = 300 B/s
+// came off every viewer's frame, and 5 bytes a row went ON to the standings —
+// once a second, because removing the counter's ceiling took its digits from one
+// to six (worstStandings). 300 saved against 15 spent, for a number that lags a
+// pickup by up to StandingsInterval and buys nothing when it arrives.
 //
 // ONE THING IS STILL OUTSIDE THE SUM, and it is bounded rather than negligible:
 // STANDINGS FRAMES OUT OF TURN. One goes to everybody on the tick the roster
@@ -467,7 +488,6 @@ func worstSnapshot(n, f int) Snapshot {
 		Reload:   ms(ReloadSeconds),
 		Down:     int(DownTime / time.Millisecond),
 		Protect:  ms(SpawnProtectSeconds),
-		Bag:      map[string]int{"beer": 9},
 	}
 	// Everybody else, and NOT a peer fewer because some of them were filtered
 	// out: interest management makes the typical frame smaller and does nothing
@@ -502,11 +522,11 @@ func worstEventCost(t *testing.T) int {
 	// and the highest index the mask can carry.
 	//
 	// Taken from the catalogue rather than typed here, which stopped being a
-	// refinement the day a second kind arrived: this was `AmmoCounter`, true only
-	// while "beer" was the only key there was, and a catalogue entry with a longer
-	// one would have made the ceiling arithmetic quietly optimistic — the one
-	// direction it may never be, because it is what decides how many people fit in
-	// the building.
+	// refinement the day a second kind arrived: this used to be the one key the
+	// gun named, true only while "beer" was the only key there was, and a
+	// catalogue entry with a longer one would have made the ceiling arithmetic
+	// quietly optimistic — the one direction it may never be, because it is what
+	// decides how many people fit in the building.
 	widest := ""
 	for _, k := range Pickups {
 		if len(k.Key) > len(widest) {
@@ -523,14 +543,22 @@ func worstEventCost(t *testing.T) int {
 }
 
 // worstStandings is the widest standings frame for a building of n people: a
-// twelve-character pseudonym each, a bag, a stay of eleven days, and the three
-// counters — a career of deaths, a career of слопы and a career of friends shot,
-// all at six figures.
+// twelve-character pseudonym each, a stay of eleven days, and four six-figure
+// numbers — a career of bottles, a career of deaths, a career of слопы and a
+// career of friends shot.
+//
+// THE BAG IS SIX FIGURES HERE AND USED TO BE ONE, which is what removing the
+// ceiling cost this frame and the only place it cost anything. Beer capped at
+// nine while a reload drank a bottle; nothing spends a counter now, so the
+// number only ever grows — and over the eleven-day stay the rest of this row is
+// measured at, a building whose pickups come back every PickupRespawn hands out
+// six figures of them. Four bytes a row, once a second, is the whole price of
+// the counter never stopping.
 func worstStandings(n int) Standings {
 	b := Standings{T: TypeStandings}
 	for i := 0; i < n; i++ {
 		b.Rows = append(b.Rows, StandingsRow{
-			Slot: 9, Name: "K3jf9sLm2QpZ", Seconds: 999999, Bag: map[string]int{"beer": 9},
+			Slot: 9, Name: "K3jf9sLm2QpZ", Seconds: 999999, Bag: map[string]int{"beer": 999999},
 			Deaths: 999999, Kills: 999999, Betrayals: 999999,
 		})
 	}
@@ -547,39 +575,50 @@ func TestEverythingAFullBuildingSendsAViewerFitsTheCeiling(t *testing.T) {
 	// moving the ceiling rather than meeting it — which is how the capacity came to
 	// be six before anybody measured a peer.
 	//
-	// Measured at the widest quantisation the wire can carry: 180 bytes of self,
+	// Measured at the widest quantisation the wire can carry: 165 bytes of self,
 	// +63 for the first peer and +57 for each one after, +44 for the first слоп
-	// and +38 for each one after; a standings frame is 115 bytes with one row and
-	// +87 a row after that; and events sustain 39 B/s at the densest heap a level
-	// can hold (worstEventCost). So three people and two слопы is 382 × 20 + 289 +
-	// 39 = 7968 B/s, where a third слоп would be 8728 and a fourth person 9195 —
+	// and +38 for each one after; a standings frame is 120 bytes with one row and
+	// +92 a row after that; and events sustain 39 B/s at the densest heap a level
+	// can hold (worstEventCost). So three people and two слопы is 367 × 20 + 304 +
+	// 39 = 7683 B/s, where a third слоп would be 8443 and a fourth person 8915 —
 	// both over, and both by more than the whole of the headroom. That is the
 	// derivation of the two constants, and this is what turns it into a gate:
 	// raising either, or growing any of the three frames, fails here rather than
 	// on somebody's mobile data.
 	//
+	// THE SNAPSHOT SHRANK BY 15 AND THE STANDINGS GREW BY 5 A ROW, which is the
+	// whole of what taking the bag off the frame did to this sum: 7968 B/s became
+	// 7683, and the headroom 32 became 317. Neither constant moves on it. A place
+	// bought back would need 1232 B/s for the fourth man and 760 for the third
+	// слоп — the saving is a fifth of the cheaper of the two, and the answer to
+	// wanting either is still the binary codec.
+	//
 	// THE НЕЙРОСЛОПЫ COST THE FOURTH PLACE, and not by a margin worth arguing
-	// about: four people and ONE слоп is 8435 B/s, so the building was over the
+	// about: four people and ONE слоп is 8155 B/s, so the building was over the
 	// ceiling before the antagonist arrived. A слоп is already the cheapest entity
 	// this wire can carry — 37 bytes against a peer's 56, with no yaw and no state
 	// field, because it has nothing to say with either (message.go, Foe). The
 	// arithmetic above is what says three people rather than four; the answer to
 	// wanting the fourth back is the binary codec.
 	//
-	// 19 of that 180 assumes a gun reloading AND on its firing cadence while its
+	// 19 of that 165 assumes a gun reloading AND on its firing cadence while its
 	// owner is simultaneously freshly protected and either dead or being injected,
 	// which is four timers at once and no reachable state carries more than two of
 	// them. The pessimism is on purpose (see worstSnapshot) and it is worth about
-	// 200 B/s — which is to say the headroom this leaves is a good deal smaller
-	// than the pessimism inside the number.
+	// 200 B/s — which is to say most of the headroom this leaves is pessimism
+	// rather than room.
 	//
 	// THE ШПРИЦ IS IN THIS ARITHMETIC AND ADDED NOTHING TO IT, which is not an
 	// omission. Everything it needs on the wire it borrowed: the injection's own
 	// countdown rides `dn` against `hp` (message.go, Snapshot.Down) and what the
 	// room sees is a FIFTH VALUE on a state field every peer was already carrying
-	// (Peer.St). A field of either kind would have been 120 B/s at the JSON floor
-	// against the 32 B/s below, so the alternatives were a smaller building or the
-	// binary codec; the reuse is what made a third occupant survive the iteration.
+	// (Peer.St). A field of either kind would have been 120 B/s at the JSON floor,
+	// and the headroom when that was decided was 32 B/s — so the alternatives were
+	// a smaller building or the binary codec, and the reuse is what made a third
+	// occupant survive the iteration. It would fit inside today's 317, which is
+	// worth saying plainly rather than leaving for somebody to rediscover: the
+	// bag coming off this frame is what bought that room, and spending it on a
+	// field the шприц demonstrably does not need would be spending it twice.
 	//
 	// WHAT IS STILL NOT COUNTED IS ON wireCeiling: the out-of-turn standings
 	// frames, bounded by an inbound rate limit and delivered to the socket that
@@ -639,7 +678,7 @@ func TestTheAmpouleRidesTheDownTimerWithoutWideningIt(t *testing.T) {
 	// (message.go, Snapshot.Down), and a reuse is only free while the borrowed
 	// field is wide enough to hold what was put in it. The budget above measures
 	// `dn` at DownTime; an injection longer than that would add a digit to a frame
-	// that goes out twenty times a second, which is 20 B/s against 32 B/s of
+	// that goes out twenty times a second, which is 20 B/s against 317 B/s of
 	// headroom — and it would do so without any test noticing, because nothing
 	// else in this file knows the field has two meanings.
 	//
@@ -801,10 +840,27 @@ func TestNoNameAndNoScoreRidesTheRepeatingFrame(t *testing.T) {
 	}
 }
 
-func TestTheStandingsSayNothingAboutAnEmptyBag(t *testing.T) {
-	// Prefer omitting to sending empty, at 1 Hz as much as at 20: everybody's
-	// first minute in the building is spent carrying nothing, and `"c":{}` a
-	// second per occupant per viewer is bytes spent to say so.
+func TestTheBagRidesTheStandingsAloneAndNeverEmpty(t *testing.T) {
+	// TWO CLAIMS, AND THE FIRST ONE IS THE EXPENSIVE ONE. `c` was on the snapshot
+	// for the reader's own bag until the predictor stopped reading it, at 15 bytes
+	// × SnapshotHz × every viewer to restate a tally that moves a few times a
+	// minute (message.go, Snapshot.Events). Nothing serialises it there now, and
+	// this is what says so — a field re-added by reflex would cost 300 B/s of a
+	// budget with 317 in it and no test below would notice, because the ceiling
+	// arithmetic measures whatever the struct happens to hold.
+	snap, err := json.Marshal(Snapshot{
+		T: TypeSnapshot, Tick: 7, Loaded: Barrels, Left: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(snap), `"c"`) {
+		t.Fatalf("the snapshot carries a bag again: %s", snap)
+	}
+
+	// And the second: prefer omitting to sending empty, at 1 Hz as much as at 20.
+	// Everybody's first minute in the building is spent carrying nothing, and
+	// `"c":{}` a second per occupant per viewer is bytes spent to say so.
 	raw, err := json.Marshal(Standings{
 		T:    TypeStandings,
 		Rows: []StandingsRow{{Slot: 0, Name: "K3jf9sLm2QpZ", Seconds: 3}},

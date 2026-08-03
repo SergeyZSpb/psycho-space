@@ -784,11 +784,15 @@ export interface VanyadumPickupKind {
    * catalogue says so without a kind field: an ampoule goes into the man the
    * instant he walks over it and never into a bag, so there is no counter for it
    * and the HUD must not draw a column of zeroes for one.
+   *
+   * NOTHING PUBLISHES A CEILING, because a counter nothing spends does not have
+   * one. There was a `max` here for as long as the обрез drank пиво — a bound on
+   * how much anybody could hold was the last thing left of that economy — and it
+   * went with `PickupKind.Max` when ammunition became infinite. The cheatsheet
+   * line that printed it went too (vanyadumRules.ts, pickupLine).
    */
   grants: string;
   amount: number;
-  /** Ceiling for that counter; 0 means uncapped. */
-  max: number;
   tint: string;
   /** One line of Russian for the rules cheatsheet. */
   blurb: string;
@@ -890,19 +894,20 @@ export interface VanyadumWorldConfig {
  * The обрез: enough to draw the shell count, enough to run the same trigger rule
  * the server runs, and enough to say all of it in Russian on the splash screen.
  *
- * `ammo` IS A COUNTER NAME AND NOT A DESCRIPTION, which is what lets the
- * cheatsheet JOIN it against `pickups[].grants` and reuse that entry's title,
- * icon and blurb rather than being told the same thing twice. It is also how the
- * client picks its predicted ammunition out of the snapshot's generic bag.
+ * NOTHING HERE NAMES A PRICE, because a reload no longer has one. The catalogue
+ * used to publish what a reload cost and which counter it came out of, so the
+ * cheatsheet could join that name against `pickups[].grants` and point at the
+ * thing to walk to; ammunition is infinite now, so there is no name to publish
+ * and no join to make.
  */
 export interface VanyadumGunConfig {
   barrels: number;
   fire_cooldown_seconds: number;
+  /**
+   * How long a reload takes, and the WHOLE of what one costs: the gun fills
+   * itself and nothing is spent to make it.
+   */
   reload_seconds: number;
-  /** How much of `ammo` one reload spends. */
-  reload_cost: number;
-  /** The counter a reload spends — matches some pickup's `grants`. */
-  ammo: string;
   /**
    * What one barrel takes off whoever it lands on, against `player.max_health`.
    * The two together are how the cheatsheet says how many hits a man survives

@@ -29,10 +29,10 @@ import type { VanyadumLevel } from '../lib/vanyadumLevel';
  * One step of the trace: where he ended up, what state his gun is in, and what
  * is left of him.
  *
- * The gun's three fields are OPTIONAL because the artefact omits them at rest —
- * `cd`, `rl` and `ammo` are absent far more often than they are present, on a
- * file that already lands in every diff touching movement. Absent means zero,
- * and reading it as anything else is how a vacuous pass starts.
+ * The gun's two timers are OPTIONAL because the artefact omits them at rest —
+ * `cd` and `rl` are absent far more often than they are present, on a file that
+ * already lands in every diff touching movement. Absent means zero, and reading
+ * it as anything else is how a vacuous pass starts.
  */
 interface GoldenPoint {
   x: number;
@@ -43,7 +43,6 @@ interface GoldenPoint {
   /** Seconds, unquantised — the wire's millisecond rounding happens elsewhere. */
   cd?: number;
   rl?: number;
-  ammo?: number;
   /**
    * Seconds of spawn protection left, omitted at zero — which is every step of
    * every case except the one that is about it.
@@ -74,8 +73,6 @@ interface GoldenCase {
   level: VanyadumLevel;
   start: { x: number; y: number };
   sector: number;
-  /** How much ammunition the player begins with; absent means none. */
-  start_ammo?: number;
   /**
    * `down` starts the case with the player on the floor, and `start_protect`
    * with that many seconds of spawn protection.
@@ -120,8 +117,6 @@ interface GoldenFile {
     barrels: number;
     fire_cooldown_seconds: number;
     reload_seconds: number;
-    reload_cost: number;
-    ammo: string;
     /**
      * The ampoule, and the cap its heal is clamped to. A port healing by a
      * different amount or over a different time would fail every point of the
@@ -152,7 +147,6 @@ const K: StepConstants = {
   barrels: golden.constants.barrels,
   fireCooldownSeconds: golden.constants.fire_cooldown_seconds,
   reloadSeconds: golden.constants.reload_seconds,
-  reloadCost: golden.constants.reload_cost,
   maxHealth: golden.constants.max_health,
   syringeHeal: golden.constants.syringe_heal,
   syringeSeconds: golden.constants.syringe_seconds,
@@ -229,6 +223,17 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
     expect(points.some((p) => p.b === 0)).toBe(true);
     expect(points.some((p) => (p.rl ?? 0) > 0)).toBe(true);
     expect(points.some((p) => (p.cd ?? 0) > 0)).toBe(true);
+
+    // AND IT HAS TO RELOAD MORE THAN ONCE, which is the guard infinite
+    // ammunition needs and nothing above provides. A reload is free — the gun
+    // fills itself out of empty pockets — so a port that kept any condition on
+    // that branch fires the first barrels correctly, starts one reload if it
+    // happens to have inherited a state that allows it, and then stands there
+    // for ever. One reload in the file would let that ship; two cannot.
+    const reloadStarts = golden.cases.flatMap((c) =>
+      c.trace.filter((p, i) => (p.rl ?? 0) > 0 && (c.trace[i - 1]?.rl ?? 0) === 0),
+    );
+    expect(reloadStarts.length).toBeGreaterThanOrEqual(2);
   });
 
   it('has a case about being dead and a case about being untouchable', () => {
@@ -295,12 +300,12 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
         protectedLeft: c.start_protect ?? 0,
         injectLeft: c.start_inject ?? 0,
         // The gun always starts full, exactly as the server's NewPlayer leaves
-        // it, and the ammunition is the case's own — a reload cannot be
-        // exercised by somebody with empty pockets.
+        // it. The case used to carry a starting ammunition beside this, because
+        // a reload could not be exercised by somebody with empty pockets; now it
+        // is the only way one ever is.
         loaded: K.barrels,
         cooldown: 0,
         reload: 0,
-        ammo: c.start_ammo ?? 0,
       };
       for (let i = 0; i < c.commands.length; i++) {
         const g = c.commands[i];
@@ -328,7 +333,6 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
         ).toBeLessThan(TOLERANCE);
         expect(p.sector, `${c.name} step ${i}: sector`).toBe(want.s);
         expect(p.loaded, `${c.name} step ${i}: barrels`).toBe(want.b);
-        expect(p.ammo, `${c.name} step ${i}: ammunition`).toBe(want.ammo ?? 0);
         expect(
           Math.abs(p.cooldown - (want.cd ?? 0)),
           `${c.name} step ${i}: cooldown got ${p.cooldown} want ${want.cd ?? 0}`,
@@ -404,7 +408,6 @@ describe('the gun, where the vectors cannot reach', () => {
     loaded: K.barrels,
     cooldown: 0,
     reload: 0,
-    ammo: 1,
     injectLeft: 0,
   });
 
@@ -444,11 +447,34 @@ describe('the gun, where the vectors cannot reach', () => {
 
   it('refuses the reload too, so the window is not spent filling the gun', () => {
     // A protected man who could reload would come out of the window with a full
-    // обрез he never had to walk for.
-    const guarded: StepPlayer = { ...still(), protectedLeft: 1, loaded: 0, ammo: 2 };
+    // обрез and none of the second and a half everybody else pays for it.
+    const guarded: StepPlayer = { ...still(), protectedLeft: 1, loaded: 0 };
     const after = step(level, guarded, { ...standing, fire: true }, K);
     expect(after.reload).toBe(0);
-    expect(after.ammo).toBe(2);
+    expect(after.loaded).toBe(0);
+  });
+
+  it('reloads an empty gun out of nothing, every time it is asked', () => {
+    // THE WHOLE OF THE RULE THAT REPLACED THE PRICE. A reload costs the time and
+    // nothing else, so the trigger's answer to an empty обрез does not depend on
+    // anything a player is carrying — and it is the same answer the second time,
+    // and the tenth. The golden vectors' `gun` case pins the sequence; this
+    // states the claim on its own, because a port that kept a condition here is
+    // a gun that stops for good after the shots it spawned with.
+    let p: StepPlayer = { ...still(), loaded: 0 };
+    for (let reloads = 0; reloads < 3; reloads++) {
+      p = step(level, p, { ...standing, fire: true }, K);
+      expect(p.reload).toBe(K.reloadSeconds);
+      // Run it out, which is the only thing that fills the gun.
+      for (let i = 0; i < 200 && p.reload > 0; i++) p = step(level, p, standing, K);
+      expect(p.loaded).toBe(K.barrels);
+      // And empty it again the honest way, through the cadence.
+      for (let barrel = 0; barrel < K.barrels; barrel++) {
+        p = step(level, p, { ...standing, fire: true }, K);
+        for (let i = 0; i < 200 && p.cooldown > 0; i++) p = step(level, p, standing, K);
+      }
+      expect(p.loaded).toBe(0);
+    }
   });
 
   it('lets a man on the floor look around and do nothing else', () => {
@@ -472,8 +498,8 @@ describe('the gun, where the vectors cannot reach', () => {
   it('leaves the player it was given alone', () => {
     // `step` is called twice on the same object by construction — the predictor
     // replays every pending command on top of each snapshot it reconciles
-    // against — so an in-place decrement would spend a bottle per replay rather
-    // than per command, and drain a bag at the round-trip rate.
+    // against — so a step that wrote through to its argument would apply each
+    // command once per replay rather than once per command.
     const before = still();
     const snapshot = { ...before };
     step(level, before, { ...standing, fire: true }, K);
@@ -497,7 +523,6 @@ describe('the шприц, where the vectors cannot reach', () => {
     loaded: K.barrels,
     cooldown: 0,
     reload: 0,
-    ammo: 1,
     injectLeft: K.syringeSeconds,
     ...over,
   });
@@ -532,9 +557,9 @@ describe('the шприц, where the vectors cannot reach', () => {
     expect(after.loaded).toBe(K.barrels);
     expect(after.cooldown).toBe(0);
 
-    const dry = step(level, injecting({ loaded: 0, ammo: 2 }), { ...walking, fire: true }, K);
-    expect(dry.reload).toBe(0);
-    expect(dry.ammo).toBe(2);
+    const empty = step(level, injecting({ loaded: 0 }), { ...walking, fire: true }, K);
+    expect(empty.reload).toBe(0);
+    expect(empty.loaded).toBe(0);
   });
 
   it('gives him the step it ends on, rather than one more of standing still', () => {
@@ -630,10 +655,9 @@ describe('gunBusy — the one refusal three callers ask about', () => {
   });
 
   it('does not call an empty gun busy', () => {
-    // Deliberate, and the one case where the client must NOT answer for itself:
-    // whether there is a bottle in your pockets is the server's to say, and a
-    // pickup may have landed since the last frame. So a pull on an empty gun
-    // goes out, and the trigger control stays lit for it.
+    // An empty обрез is a reload waiting to be started rather than a refusal:
+    // the trigger is the only thing that begins one, and it costs nothing, so a
+    // pull on an empty gun is granted and the trigger control stays lit for it.
     const empty: StepPlayer = {
       x: 5,
       y: 5,
@@ -642,9 +666,12 @@ describe('gunBusy — the one refusal three callers ask about', () => {
       sector: 0,
       ...ready,
       loaded: 0,
-      ammo: 0,
     };
     expect(gunBusy(empty)).toBe(false);
+    // And it IS granted, which is the half `gunBusy` alone cannot say.
+    const level = golden.cases[golden.cases.length - 1].level;
+    const after = step(level, empty, { dt: 0.025, mx: 0, my: 0, yaw: 0, pitch: 0, fire: true }, K);
+    expect(after.reload).toBe(K.reloadSeconds);
   });
 
   it('is exactly what step refuses on, which is why it is shared', () => {
@@ -659,7 +686,6 @@ describe('gunBusy — the one refusal three callers ask about', () => {
       pitch: 0,
       sector: 0,
       loaded: K.barrels,
-      ammo: 1,
       ...ready,
     };
     const pull = { dt: 0.025, mx: 0, my: 0, yaw: 0, pitch: 0, fire: true };

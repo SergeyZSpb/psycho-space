@@ -3,9 +3,7 @@
  * and the gun's own readout while you are inside.
  *
  * BOTH HALVES ARE THE SAME JOB — turning the served catalogue into Russian — and
- * that is why they share a file rather than a theme. The cheatsheet quotes the
- * readout's own words for an empty обрез (see `shellsReadout`), so the sentence
- * describing the HUD and the HUD cannot say different things.
+ * that is why they share a file rather than a theme.
  *
  * WHY IT IS DERIVED RATHER THAN WRITTEN OUT. `CLAUDE.md` requires every game to
  * state its current rules on its own splash screen — the actual numbers and the
@@ -32,85 +30,35 @@ import type { VanyadumConfig, VanyadumPickupKind } from '../api/types';
 import { BETRAYALS_ICON, DEATHS_ICON, KILLS_ICON } from './vanyadumRoster';
 
 /**
- * The catalogue entry the gun's ammunition comes from, or null.
- *
- * THE JOIN IS THE POINT. `config.gun.ammo` publishes a COUNTER NAME rather than
- * a description, and the pickup whose `grants` matches it already carries the
- * title, the icon and the blurb — so the cheatsheet says «🍺 пиво» because the
- * catalogue said the gun drinks `beer` and that `beer` is what a пиво grants,
- * not because this file was told twice. The day a second ammunition is added it
- * is one catalogue line and no frontend change.
- *
- * Null when nothing grants it. The server has a test that will not let that
- * happen (a gun spending a counter nothing scatters can never be reloaded), so
- * this is the client refusing to render «undefined» rather than a case anybody
- * expects to see.
- */
-export function ammoPickup(config: VanyadumConfig): VanyadumPickupKind | null {
-  return config.pickups.find((p) => p.grants === config.gun.ammo) ?? null;
-}
-
-/** What the HUD's barrel cell says, and whether the trigger is worth pulling. */
-export interface ShellsReadout {
-  /** The readout's text, drawn after the gun's own icon. */
-  text: string;
-  /**
-   * True when a pull would produce neither a shot nor a reload: the обрез is
-   * empty and there is not enough in the pockets to fill it.
-   *
-   * IT IS THE ONE REFUSAL IN THIS GAME THAT NO CLOCK ENDS. The cadence, the
-   * reload, the ампула and the spawn shield are all over in a second or two and
-   * a player who waits gets his gun back; this one lasts until he walks to a
-   * bottle. That is why it is worth telling apart from all of them, and why the
-   * trigger wears the same mark for it — the two are one answer here rather than
-   * two conditions in two files that have to be kept agreeing.
-   */
-  dry: boolean;
-}
-
-/**
  * The обрез as the newest snapshot describes it, in the words a player reads.
  *
- * AN EMPTY GUN NAMES ITS REASON RATHER THAN SHOWING A ZERO, which is the whole
- * of why this exists. Nobody walks into the заброшка carrying ammunition, so
- * every player reaches this state a full gun's worth of shots after arriving,
- * and it answers his every pull with nothing at all — where a bare «0/N» beside
- * a button that still looks live is indistinguishable from a control that has
- * stopped working.
+ * THREE STATES AND NOT FOUR, WHICH IS WHAT INFINITE AMMUNITION LEFT. There used
+ * to be two different empties — one you could press out of and one that lasted
+ * until you found a бутылка — and the second of them was the only refusal in
+ * this game no clock ended. A reload costs nothing now, so an empty gun always
+ * has the same answer: press, and wait. The readout that named what you were out
+ * of went with the state it described, and so did the mark the barrel cell and
+ * the trigger both wore for it.
  *
- * TWO EMPTIES, TWO DIFFERENT ANSWERS, and telling them apart is the point. With
- * a bottle in the pockets the trigger IS the reload — nothing starts one by
- * itself — so the readout says to press it, and the wait is a second or two.
- * Without one there is nothing to press for and the player has a walk to make.
- *
- * THE AMMUNITION IS NAMED BY THE CATALOGUE'S OWN JOIN, never by a word typed
- * here: `gun.ammo` publishes a counter name and the pickup that grants it
- * carries the icon, exactly as the cheatsheet's line above does. Retune what the
- * обрез drinks and this readout follows with no frontend change.
+ * AN EMPTY GUN STILL SAYS WHAT TO DO RATHER THAN SHOWING A ZERO. Nothing starts
+ * a reload by itself, so «0/N» beside a live-looking button is a player waiting
+ * for something that is never going to happen.
  *
  * IT IS GIVEN THE SNAPSHOT'S NUMBERS AND NEVER THE PREDICTION'S, by the rule
  * every other readout on that HUD follows — a number a player reads must not be
  * a guess that is taken back a frame later.
  */
 export function shellsReadout(
-  gun: { loaded: number; reloading: boolean; ammo: number },
+  gun: { loaded: number; reloading: boolean },
   config: VanyadumConfig | null,
-): ShellsReadout {
+): string {
   // Nothing to say before the catalogue has landed — a state the play screen is
   // never actually reached in, since `enterPlay` refuses without a config.
   // Answered rather than thrown, exactly as `carriedKinds` answers empty.
-  if (!config) return { text: '', dry: false };
-  if (gun.reloading) return { text: 'жду', dry: false };
-  if (gun.loaded > 0) return { text: `${gun.loaded}/${config.gun.barrels}`, dry: false };
-  if (gun.ammo >= config.gun.reload_cost) return { text: 'пусто · жми', dry: false };
-  // The icon alone rather than the title, and deliberately: this cell sits in a
-  // HUD row that has to fit a 360 px phone beside the health, the bag and the
-  // floor count, and «пиво» would have to be declined into the genitive to read
-  // as Russian — which is a transformation the catalogue's nominative title
-  // cannot survive. A catalogue with no ammunition at all is a config the server
-  // refuses to serve; it gets the bare word rather than «нет undefined».
-  const ammo = ammoPickup(config);
-  return { text: ammo ? `нет ${ammo.icon}` : 'пусто', dry: true };
+  if (!config) return '';
+  if (gun.reloading) return 'жду';
+  if (gun.loaded > 0) return `${gun.loaded}/${config.gun.barrels}`;
+  return 'пусто · жми';
 }
 
 /**
@@ -182,14 +130,22 @@ function carriedList(config: VanyadumConfig): string {
 }
 
 /**
- * «пиво» → «пиво (+1, максимум 9)» — the whole line derived from the entry.
+ * «пиво» → «пиво (+1)» — the whole line derived from the entry.
+ *
+ * IT NO LONGER SAYS HOW MUCH YOU MAY HOLD, BECAUSE NOTHING BOUNDS IT. The
+ * catalogue used to publish a ceiling and this line printed it, and that ceiling
+ * only ever made sense while the обрез drank what was in the pockets. Nothing
+ * spends a counter now, so the number only goes up and there is no bound to
+ * state — and a cheatsheet describing a cap that has been removed is worse than
+ * one that says nothing, because a player believes it. What пиво IS for is the
+ * catalogue's own blurb, which says it: it accumulates on the standings.
  *
  * A KIND WITH NOTHING TO GRANT GETS THE OTHER SENTENCE, and which one it gets is
  * derived rather than keyed: an empty `grants` is the catalogue saying the thing
- * is used on the spot rather than carried, so «(+0, максимум 0)» would be the
- * cheatsheet reading a field that does not apply and printing it anyway. What the
- * ampoule actually does is a block of its own below — this line is the catalogue
- * listing, and its job is to say what the thing is and how it is picked up.
+ * is used on the spot rather than carried, so «(+0)» would be the cheatsheet
+ * reading a field that does not apply and printing it anyway. What the ampoule
+ * actually does is a block of its own below — this line is the catalogue listing,
+ * and its job is to say what the thing is and how it is picked up.
  */
 export function pickupLine(p: VanyadumPickupKind): RuleLine {
   if (p.grants === '') {
@@ -198,11 +154,9 @@ export function pickupLine(p: VanyadumPickupKind): RuleLine {
       text: `${p.blurb} Подбирается сам, когда наступишь, и тут же идёт в дело — в карманах не лежит.`,
     };
   }
-  const parts = [`+${p.amount}`];
-  if (p.max > 0) parts.push(`максимум ${p.max}`);
   return {
     label: `${p.icon} ${p.title}`,
-    text: `${p.blurb} Подбирается сам, когда наступишь (${parts.join(', ')}).`,
+    text: `${p.blurb} Подбирается сам, когда наступишь (+${p.amount}).`,
   };
 }
 
@@ -279,67 +233,63 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
     ],
   });
 
-  // THE GUN, and every number on it derived. The cadence, the barrel count, what
-  // a reload costs and how long it takes are all served, so retuning any of them
-  // on the server updates this screen by itself — which is the whole reason the
-  // catalogue carries them rather than the client assuming them.
+  // THE GUN, and every number on it derived. The cadence, the barrel count and
+  // how long a reload takes are all served, so retuning any of them on the server
+  // updates this screen by itself — which is the whole reason the catalogue
+  // carries them rather than the client assuming them.
   //
-  // The ammunition is NAMED by the join above rather than by a string here: the
-  // gun publishes which counter it spends, and the pickup that grants it already
-  // has a title and an icon. A hand-typed «пиво» would be the one word on this
-  // screen that a second ammunition would not update.
+  // WHAT A RELOAD COSTS IS NO LONGER AMONG THEM, because it costs nothing: the
+  // обрез fills itself. There is no counter to name and no join to make, so the
+  // line that pointed a player at the thing to walk to is gone with the rule it
+  // described — and the ABSENCE is the half that has to be typed out, since a
+  // catalogue can only publish what exists.
   {
     const gun = config.gun;
-    const ammo = ammoPickup(config);
     const lines: RuleLine[] = [
       {
         label: '🔫 стволов',
         text: `${gun.barrels}. Между выстрелами ${num(gun.fire_cooldown_seconds, 2)} с — дуплетом не выйдет.`,
       },
+      {
+        // THE DURATION IS DERIVED AND THE PRICE IS TYPED OUT, which is this
+        // file's standing division applied to a rule that is now an absence: the
+        // catalogue publishes how long a reload takes and carries no field at all
+        // for what it costs, because it costs nothing. A change back to paid
+        // ammunition has to come back and edit this clause by hand.
+        //
+        // ALL THREE THINGS A PLAYER NEEDS, IN ONE LINE: it is free, it takes
+        // time, and the time is time you cannot answer in — which is the whole
+        // of what the обрез's character now is.
+        label: '⏳ перезарядка',
+        text: `${num(gun.reload_seconds)} с с пустыми руками — и это вся её цена: патроны бесконечные, тратить на неё нечего. Сама не начинается: жми на курок с пустым обрезом. Пока идёт — не стреляешь и ответить нечем.`,
+      },
     ];
-    if (ammo) {
-      lines.push({
-        label: `${ammo.icon} чем заряжать`,
-        // THE COST IS DERIVED AND THE EMPTY POCKETS ARE TYPED OUT. The catalogue
-        // publishes what a reload spends and carries no field at all for what a
-        // man walks in holding — the server simply gives him an empty bag
-        // (`NewPlayer` in sim.go) — so a change to that has to come back and
-        // edit this clause by hand. It is worth its sentence because it is the
-        // rule that empties the обрез for good: a full gun, no ammunition, and a
-        // handful of shots before the trigger goes quiet for as long as it takes
-        // to find a bottle.
-        text: `Одна перезарядка тратит ${gun.reload_cost} · ${ammo.icon} ${ammo.title} и заполняет обрез целиком. Начинаешь с пустыми карманами — ${ammo.icon} надо найти раньше, чем кончатся стволы.`,
-      });
-    }
-    lines.push({
-      label: '⏳ перезарядка',
-      text: `${num(gun.reload_seconds)} с с пустыми руками. Сама не начинается: жми на курок с пустым обрезом.`,
-    });
-    // EVERY WAY THE TRIGGER CAN GO QUIET, IN ONE PLACE. Six states answer a pull
+    // EVERY WAY THE TRIGGER CAN GO QUIET, IN ONE PLACE. Five states answer a pull
     // with silence, and a player who cannot tell them apart concludes the обрез
     // is broken — which is the report this game actually got. The controls line
     // in the prose block used to carry half the list and now points here, so
-    // there is one place to edit when a seventh arrives.
+    // there is one place to edit when a sixth arrives.
+    //
+    // IT WAS SIX UNTIL AMMUNITION WENT INFINITE. The one that is gone is the only
+    // one that was not a timer and the only one no clock ended — an empty обрез
+    // with nothing to fill it — and it went with the price of a reload.
     //
     // DERIVED WHERE THE CATALOGUE CARRIES THE NUMBER, and the two it does not are
-    // deliberate: the cadence and the reload have their own durations two lines
-    // above, and repeating either here would be the same number in two places on
-    // one screen. The ампула's is stated because its block is much further down
-    // and it is the one pause long enough to be mistaken for a broken control.
+    // deliberate: the cadence and the reload have their own durations above, and
+    // repeating either here would be the same number in two places on one screen.
+    // The ампула's is stated because its block is much further down and it is the
+    // one pause long enough to be mistaken for a broken control.
     //
-    // NO CLAIM ABOUT WHICH PAUSE IS LONGEST, on the same terms the шприц block
-    // refuses one: all four durations are served and any of them can be retuned,
-    // so a sentence ranking them is a sentence that goes quietly false.
-    //
-    // The last clause QUOTES THE HUD rather than describing it — `shellsReadout`
-    // is asked what an empty gun with empty pockets says, so the cheatsheet and
-    // the readout cannot drift into saying different things.
+    // NO CLAIM ABOUT WHICH PAUSE IS LONGEST AND NONE ABOUT HOW LONG THEY ARE,
+    // on the same terms the шприц block refuses one: all four durations are
+    // served and any of them can be retuned, so a sentence ranking them — or one
+    // calling them all short — is a sentence that goes quietly false. That every
+    // one of them ENDS is the part that cannot.
     const med = medicinePickup(config);
     const injecting = med ? `, колешься (${num(med.inject_seconds ?? 0)} с)` : '';
-    const dry = shellsReadout({ loaded: 0, reloading: false, ammo: 0 }, config).text;
     lines.push({
       label: '🚫 когда молчит',
-      text: `Кнопка тусклая — курок не сработает: перезаряжаешься, отдыхаешь между выстрелами${injecting}, стоишь под щитом первые ${num(config.world.protect_seconds, 0)} с на спавне или лежишь. Пусто и заряжать нечем — тоже тусклая, и на счётчике будет «${dry}»: это само не пройдёт, надо идти искать.`,
+      text: `Кнопка тусклая — курок не сработает: перезаряжаешься, отдыхаешь между выстрелами${injecting}, стоишь под щитом первые ${num(config.world.protect_seconds, 0)} с на спавне или лежишь. Всё это само проходит: жди и жми снова, искать ничего не надо.`,
     });
     blocks.push({ title: 'Обрез', lines });
   }
@@ -352,7 +302,7 @@ export function buildRules(config: VanyadumConfig | null): RuleBlock[] {
   // no client change at all.
   //
   // TWO OF THESE LINES ARE JOINS RATHER THAN FIELDS, which is the same trick the
-  // gun's ammunition line plays. How many barrels one takes is its health
+  // ♥ line in the «Ваня» block plays. How many barrels one takes is its health
   // against the gun's damage, and how many touches a man survives is his health
   // against the слоп's — both pairs are published, neither total is, and a third
   // number saying the same thing is a third number to keep in step by hand.

@@ -319,27 +319,23 @@ func TestVanyadumConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 			cfg.Gun["barrels"], cfg.Gun["damage"], cfg.Player["max_health"])
 	}
 	// And the gun, which is the part of the cheatsheet a player most needs before
-	// he walks in: how many shots he has, how fast they come, what a reload costs
-	// him and what it is paid in. The ammunition is published as the counter's
-	// name so the splash screen can JOIN it against the pickup that grants it,
-	// rather than being told the same string twice.
-	for _, key := range []string{"barrels", "fire_cooldown_seconds", "reload_seconds", "reload_cost"} {
+	// he walks in: how many shots he has, how fast they come, and how long he
+	// stands there with nothing in his hands when they run out.
+	for _, key := range []string{"barrels", "fire_cooldown_seconds", "reload_seconds"} {
 		if n, ok := cfg.Gun[key].(float64); !ok || n <= 0 {
 			t.Fatalf("the gun catalogue says nothing usable about %q: %+v", key, cfg.Gun)
 		}
 	}
-	ammo, _ := cfg.Gun["ammo"].(string)
-	if ammo == "" {
-		t.Fatalf("the catalogue does not say what the gun is loaded with: %+v", cfg.Gun)
-	}
-	granted := false
-	for _, p := range cfg.Pickups {
-		if p["grants"] == ammo {
-			granted = true
+	// AND IT NAMES NO PRICE, which is an absence worth pinning rather than one to
+	// leave to whoever reads the struct. Ammunition is infinite, so the catalogue
+	// used to publish two fields — what a reload cost and which counter it came
+	// out of — that describe a rule the server no longer runs. A client that
+	// still found them would draw a cheatsheet telling players to go and look for
+	// bottles they do not need.
+	for _, gone := range []string{"reload_cost", "ammo"} {
+		if _, found := cfg.Gun[gone]; found {
+			t.Fatalf("the gun catalogue still publishes %q, and nothing spends anything: %+v", gone, cfg.Gun)
 		}
-	}
-	if !granted {
-		t.Fatalf("the gun is loaded with %q and nothing in the building grants it", ammo)
 	}
 }
 
@@ -713,6 +709,22 @@ func TestVanyadumTwoPeopleShareOneBuildingAndItsBeer(t *testing.T) {
 	dumStandingBy(t, tick, clk, room, b, level, corner, "the beer to be gone for both of them",
 		func() bool { return a.last.Left&bit == 0 && b.last.Left&bit == 0 })
 
+	// AND WHAT HE TOOK IS ON THE STANDINGS, WHICH IS NOW THE ONLY PLACE A BAG
+	// GOES. It was on the snapshot as well while the predictor reconciled a gun
+	// that spent bottles; the обрез reloads for nothing now, so the field came off
+	// the twenty-a-second frame and rides the once-a-second board alone
+	// (message.go, StandingsRow.Bag). Read off B's board rather than A's, because
+	// the board is UNFILTERED: B is two rooms away, cannot see A at all, and is
+	// still told what he is carrying.
+	//
+	// Waited for rather than read, because the walk above was measured in
+	// snapshots and this frame arrives at a twentieth of their rate — which is
+	// exactly the staleness the move traded the bytes for.
+	dumWaitFor(t, tick, clk, room, "the standings to credit a with the bottle he took", func() bool {
+		row, ok := rowOf(b, a.slot)
+		return ok && row.Bag["beer"] > 0
+	})
+
 	// Then it comes back, on the tick the catalogue promised and not before. The
 	// respawn rides the mask and nothing else: there is no event for it, because
 	// the frame already says so twenty times a second.
@@ -1045,10 +1057,13 @@ type dumPeer struct {
 
 // dumRow is one line of the standings, and dumBoard is the frame it arrives on.
 type dumRow struct {
-	Slot    int            `json:"n"`
-	Name    string         `json:"i"`
-	Seconds int            `json:"s"`
-	Bag     map[string]int `json:"c"`
+	Slot    int    `json:"n"`
+	Name    string `json:"i"`
+	Seconds int    `json:"s"`
+	// Bag is what that occupant is carrying, and this row is the ONLY frame it
+	// rides: the reader's own used to be on the snapshot as well, twenty times a
+	// second, and came off with the predictor that read it.
+	Bag map[string]int `json:"c"`
 	// Deaths is how often the building has put him on the floor, Kills is how many
 	// нейрослопы he has put down and Betrayals is how many friends he has. The
 	// kills and the betrayals are separate columns and neither is a subtotal of the
@@ -1764,9 +1779,11 @@ func TestVanyadumTheTriggerReachesTheWorldAndTheShellCountComesBack(t *testing.T
 		return !busy
 	})
 
-	// The second barrel, and then an empty gun with no bottle to load: the pull
-	// is answered by nothing at all, which is what makes the beer worth walking
-	// to rather than a counter that goes up.
+	// The second barrel, and then an empty gun: the pull is answered by a RELOAD,
+	// bought out of pockets nothing has ever put anything in. Ammunition is
+	// infinite (content.go, ReloadSeconds), so the only thing an empty gun costs
+	// is the second and a half — and this is that rule crossing the wire rather
+	// than being true inside Step.
 	pullTrigger(t, conn, 2)
 	waitForSnap(t, frames, tick, clk, "reported an empty gun", func(f map[string]any) bool {
 		b, _ := f["b"].(float64)
@@ -1778,18 +1795,33 @@ func TestVanyadumTheTriggerReachesTheWorldAndTheShellCountComesBack(t *testing.T
 	})
 
 	pullTrigger(t, conn, 3)
-	for i := 0; i < gamevanyadum.SimHz; i++ {
-		clk.step(t, tick)
-	}
-	dry := waitForSnap(t, frames, tick, clk, "acknowledged the dry trigger", func(f map[string]any) bool {
+	empty := waitForSnap(t, frames, tick, clk, "answered the empty gun with a reload", func(f map[string]any) bool {
 		ack, _ := f["ack"].(float64)
-		return ack >= 3
+		_, reloading := f["r"]
+		return ack >= 3 && reloading
 	})
-	if b, _ := dry["b"].(float64); int(b) != 0 {
-		t.Fatalf("a dry trigger loaded %v barrels out of nowhere: %v", dry["b"], dry)
+	if b, _ := empty["b"].(float64); int(b) != 0 {
+		t.Fatalf("the pull that started the reload also put %v barrels in the gun: %v", empty["b"], empty)
 	}
-	if _, reloading := dry["r"]; reloading {
-		t.Fatalf("a reload started with nothing in the bag: %v", dry)
+	// AND NO SNAPSHOT CARRIES A BAG AT ALL, which is the wire contract this
+	// reload used to be entangled with. `c` was on the frame so the predictor
+	// could reconcile a gun that spent bottles; the reload costs nothing now, that
+	// reader is gone, and what a man is carrying rides the standings alone
+	// (message.go, StandingsRow.Bag) — 300 B/s per viewer off a budget that had 32
+	// to spare. Asserted here on the RAW frame rather than through the typed
+	// reader, because a field the struct does not know about is a field a typed
+	// decode cannot see coming back.
+	if bag, carrying := empty["c"]; carrying {
+		t.Fatalf("a snapshot carries a bag holding %v: %v", bag, empty)
+	}
+	// And it finishes on its own, with both barrels back and nothing else asked
+	// for — a reload that started is a reload that returns the gun.
+	full := waitForSnap(t, frames, tick, clk, "gave the barrels back", func(f map[string]any) bool {
+		b, _ := f["b"].(float64)
+		return int(b) == gamevanyadum.Barrels
+	})
+	if _, reloading := full["r"]; reloading {
+		t.Fatalf("the barrels came back with a reload still running: %v", full)
 	}
 }
 
@@ -2311,8 +2343,9 @@ func TestVanyadumAShotFriendWalksToTheShprizAndTheRoomWatchesHimMend(t *testing.
 	if b.last.Left&(1<<uint(idx)) != 0 {
 		t.Fatalf("he is being injected and the mask %b still says the шприц is lying there", b.last.Left)
 	}
-	// NOTHING WENT INTO A BAG, because medicine is used rather than carried: a
-	// counter for it would be a counter nothing ever spends.
+	// NOTHING WENT INTO A BAG, because medicine is used rather than carried: the
+	// ampoule empties into his forearm the instant he walks onto it, so a counter
+	// for it would be a tally of things he no longer has.
 	if row, ok := rowOf(b, b.slot); ok {
 		for k, n := range row.Bag {
 			if k != "beer" {

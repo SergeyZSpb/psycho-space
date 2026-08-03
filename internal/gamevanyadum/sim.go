@@ -69,10 +69,15 @@ type Command struct {
 
 // Player is one occupant of the заброшка.
 //
-// Counters is the generic bag every pickup grants into, keyed by the catalogue's
-// Grants field, so the HUD and the snapshot both iterate rather than naming
-// anything — which is what makes the syringe and the keys catalogue entries
-// rather than code.
+// THE BAG IS NOT HERE, AND USED TO BE. It sat on this struct for exactly one
+// reason — the snapshot carried it, so the client held a copy — and that reason
+// is gone: what somebody is carrying rides the standings at 1 Hz and nothing
+// else (message.go, StandingsRow.Bag). Step never read it or wrote it even
+// then, so it now lives beside the other numbers a viewer only ever sees once a
+// second (world.go, Occupant.bag), which is where this package already puts a
+// man's deaths, his kills and his betrayals. It also makes this struct a plain
+// value with no reference field in it, so copying one is `=` and stepping a
+// copy cannot move the original.
 //
 // THE GUN IS HERE, AND THAT IS A DECISION ADR-058 DID NOT QUITE COVER. Its test
 // is "does Step have to read this to produce the same POSITION?", and the gun
@@ -109,13 +114,12 @@ type Command struct {
 // would stop the moment its owner stopped walking. The whole argument, and the
 // object literal it turns into, is in web/src/lib/vanyadumPredict.ts.
 type Player struct {
-	Pos      Vec2
-	Yaw      float64
-	Pitch    float64
-	Sector   int
-	Health   int
-	Counters map[string]int
-	LastSeq  int64
+	Pos     Vec2
+	Yaw     float64
+	Pitch   float64
+	Sector  int
+	Health  int
+	LastSeq int64
 
 	// Loaded is how many barrels are ready to fire, 0..Barrels.
 	Loaded int
@@ -208,21 +212,21 @@ type Player struct {
 	InjectLeft float64
 }
 
-// NewPlayer places somebody at the level's spawn with a full bar, a loaded gun
-// and nothing in his pockets.
+// NewPlayer places somebody at the level's spawn with a full bar and a loaded
+// gun.
 //
-// LOADED BUT WITH NO BEER, deliberately: the first two shots are free and the
-// third costs a walk. Spawning dry would make the first thing a new player does
-// pulling a trigger that does nothing, and spawning with a bottle would make the
-// bottles scenery.
+// LOADED RATHER THAN EMPTY, deliberately: the first thing a new player does is
+// pull the trigger, and a gun that answered that with ReloadSeconds of nothing
+// happening reads as a game that has not started yet. Arriving with empty
+// pockets costs him nothing now — the reload is free — so what he walks to the
+// bottles for is the standings rather than the next two shots.
 func NewPlayer(l *Level) Player {
 	return Player{
-		Pos:      l.Spawn,
-		Yaw:      l.SpawnYaw,
-		Sector:   l.SpawnSector,
-		Health:   StartHealth,
-		Counters: map[string]int{},
-		Loaded:   Barrels,
+		Pos:    l.Spawn,
+		Yaw:    l.SpawnYaw,
+		Sector: l.SpawnSector,
+		Health: StartHealth,
+		Loaded: Barrels,
 	}
 }
 
@@ -236,18 +240,6 @@ func NewPlayer(l *Level) Player {
 // in whenever he is aiming at something.
 func (p Player) ticking() bool {
 	return p.CooldownLeft > 0 || p.ReloadLeft > 0 || p.ProtectedLeft > 0 || p.InjectLeft > 0
-}
-
-// Clone copies a player deeply enough that the copy can be stepped without the
-// original moving. Only Counters is shared by reference otherwise, and a
-// snapshot that aliased it would report the future.
-func (p Player) Clone() Player {
-	c := p
-	c.Counters = make(map[string]int, len(p.Counters))
-	for k, v := range p.Counters {
-		c.Counters[k] = v
-	}
-	return c
 }
 
 // Sanitise clamps a command into the range the server is willing to simulate.
@@ -407,10 +399,10 @@ func injectDelivered(left float64) int {
 //
 // THE TRIGGER IS THE ONLY THING THAT STARTS A RELOAD, and nothing reloads by
 // itself. Pulling on an empty gun is therefore always answered — with a shot, or
-// with a reload, or with nothing at all when there is no beer — which is what
-// makes an empty gun teach the player about the bottles instead of feeling
-// broken. It also means the whole gun is ONE rule read top to bottom, rather
-// than a rule plus an "and also, when the gun happens to empty" clause.
+// with a reload, and never with silence — so the whole gun is ONE rule read top
+// to bottom, rather than a rule plus an "and also, when the gun happens to
+// empty" clause. There is no third outcome left for the trigger to have: a
+// reload costs nothing but the time it takes (content.go, ReloadSeconds).
 //
 // NOTHING HERE HITS ANYTHING, STILL. A granted shot spends a barrel and starts a
 // cooldown; where the ray went and who it landed on is the WORLD's, because a
@@ -467,48 +459,14 @@ func stepGun(p Player, c Command) Player {
 		p.CooldownLeft = FireCooldownSeconds
 		return p
 	}
-	// An empty gun. The beer is spent NOW rather than when the reload finishes,
-	// so that a reload interrupted by anything at all cannot be a free one — and
-	// something does interrupt one: being shot halfway through it clears the
-	// timer and puts the man on the floor (world.go, wound).
-	if p.Counters[AmmoCounter] >= ReloadCost {
-		p.Counters = spendCounter(p.Counters, AmmoCounter, ReloadCost)
-		p.ReloadLeft = ReloadSeconds
-	}
+	// An empty gun, which is the only state left for the trigger to answer. It
+	// reloads itself: nothing is checked and nothing is spent, because nothing in
+	// this building is ammunition any more (content.go, ReloadSeconds). What the
+	// pull buys is the wait — and being shot halfway through it clears the timer
+	// and puts the man on the floor, so the wait is still interruptible and still
+	// the only thing missing costs (world.go, wound).
+	p.ReloadLeft = ReloadSeconds
 	return p
-}
-
-// spendCounter returns the bag with n taken off key, WITHOUT writing to the map
-// it was given.
-//
-// STEP IS PURE AND A MAP IS NOT COPIED BY VALUE, which together make this the
-// one place in the simulation where the obvious line is a bug. `p.Counters[k]--`
-// on a Player taken by value writes through to the caller's map, and Step is
-// deliberately called twice on the same Player: the client replays every pending
-// command on top of each snapshot it reconciles against (ADR-058). An in-place
-// decrement would land once per replay rather than once per command, so a
-// player's beer would drain at the round-trip rate — and the golden vectors,
-// which run one long transcript through a single Player, would never see it.
-//
-// The copy is paid only on the reload branch: at most one allocation of a
-// one-entry map per ReloadSeconds per player, against a tick that otherwise
-// allocates nothing.
-//
-// A KEY THAT REACHES ZERO IS DELETED rather than left sitting at zero. The bag
-// is serialised onto the snapshot at 20 Hz and onto the standings at 1 Hz, both
-// guarded by `len(Counters) > 0`, so `"c":{"beer":0}` would be eleven bytes per
-// frame per viewer spent saying a man is carrying nothing.
-func spendCounter(in map[string]int, key string, n int) map[string]int {
-	out := make(map[string]int, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	if left := out[key] - n; left > 0 {
-		out[key] = left
-	} else {
-		delete(out, key)
-	}
-	return out
 }
 
 // resolve moves a disc from one point towards another, sliding along whatever it

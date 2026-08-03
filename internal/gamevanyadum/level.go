@@ -401,17 +401,18 @@ func subtractPortals(e Wall, portals []Portal) []Wall {
 //
 // ONE OF EVERY KIND BEFORE A SECOND OF ANYTHING, which stopped being a nicety
 // the moment there were two kinds. A uniform draw over a heap of two or three
-// produces a building with no beer in it about one time in eight — a gun that
-// can never be reloaded — and one with no шприц just as often, which is this
-// whole iteration invisible for the length of a match that never ends. Neither
-// is a rare enough accident to leave to a die, and both are silent: nothing
-// about the заброшка says what it failed to generate.
+// produces a building with no beer in it about one time in eight — nothing to
+// tour it for, since the bottles are the only thing anybody collects — and one
+// with no шприц just as often, which is a building where being hurt is permanent
+// for the length of a match that never ends. Neither is a rare enough accident
+// to leave to a die, and both are silent: nothing about the заброшка says what
+// it failed to generate.
 //
 // SO THE HEAP IS len(Pickups) GUARANTEED PLUS ONE OR TWO DRAWN AT RANDOM. The
 // count moved up by one with the ampoule rather than staying where it was,
 // because medicine is an ADDITION to the building and not a bottle taken out of
-// it: the beer feeds a gun that spends it, and thinning the ammunition to make
-// room for the cure would have retuned the firefight by accident.
+// it: what the two kinds are for has nothing in common, so trading one for the
+// other would have thinned the standings to pay for the cure.
 func (l *Level) placePickups(rng *rand.Rand) {
 	if len(l.Sectors) < 2 {
 		return

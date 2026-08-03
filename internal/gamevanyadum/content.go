@@ -153,9 +153,10 @@ const (
 	KillsTitle     = "слопы"
 )
 
-// The gun: a double-barrelled обрез, and пиво is what goes in it. The bottles
-// the building has been scattering since the first iteration finally spend on
-// something, which is what makes walking to one worth the walk.
+// The gun: a double-barrelled обрез that holds Barrels and fills itself when it
+// is empty. NOTHING LOADS IT — a reload is bought with ReloadSeconds of standing
+// still and with nothing else, so the only resource this weapon has ever really
+// spent is time.
 //
 // SECONDS AS A FLOAT64 COUNTDOWN, AND NOT A TICK DEADLINE — the opposite of the
 // choice made for the respawn below, so the difference is worth stating rather
@@ -183,25 +184,20 @@ const (
 	// cannot empty the gun by accident.
 	FireCooldownSeconds = 0.35
 
-	// ReloadSeconds is how long a reload takes, and it is the game's only real
-	// punishment for missing: a second and a half standing in a заброшка with
-	// nothing in your hands. Doom's super shotgun is the reference and it is the
-	// right one — the reload is the weapon's whole character.
+	// ReloadSeconds is how long a reload takes, and it is now the WHOLE of what a
+	// reload costs: a second and a half standing in a заброшка with nothing in
+	// your hands, and no price of any other kind. Doom's super shotgun is the
+	// reference and it is the right one — the reload is the weapon's whole
+	// character.
+	//
+	// IT USED TO COST A BOTTLE AS WELL, and that half is gone: ammunition is
+	// infinite, so an empty gun fills itself the moment the trigger is pulled
+	// (sim.go, stepGun). What survives is the interesting half — a window in which
+	// you cannot answer, in a building where something is always walking towards
+	// you. What it deletes is the dry click, which punished a player for having
+	// walked over fewer bottles than the man who found him.
 	ReloadSeconds = 1.5
-
-	// ReloadCost is how much of AmmoCounter one reload spends. A single bottle
-	// fills both barrels, so beer is counted in shots-times-Barrels and the cap
-	// on the counter (PickupKind.Max) is what bounds how much anybody can hold.
-	ReloadCost = 1
 )
-
-// AmmoCounter is the counter a reload spends.
-//
-// It is a Pickups entry's Grants value and not a name the simulation invented —
-// TestTheAmmunitionIsSomethingTheBuildingActuallyScatters is what keeps the two
-// pointing at each other, because a gun that spends a counter nothing grants is
-// a gun that can never be reloaded and nothing else would say so.
-const AmmoCounter = "beer"
 
 // PickupKind is a thing lying on the floor that is used by walking over it.
 //
@@ -214,11 +210,20 @@ type PickupKind struct {
 	// Icon is the HUD glyph. One emoji, because the HUD is real text.
 	Icon string `json:"icon"`
 	// Grants names the counter it fills and Amount is how much of it. Both are
-	// read generically by the HUD, so a second pickup needs no client change.
+	// read generically by the standings and the cheatsheet, so a second pickup
+	// needs no client change.
+	//
+	// AND THERE IS NO CEILING ON THE COUNTER, which is a thing this struct used
+	// to carry and no longer does. A cap bounded how much anybody could hold
+	// while a reload drank a bottle; ammunition is infinite now (ReloadSeconds),
+	// so nothing in the building spends a counter and a ceiling would only mean
+	// the number stopped moving after the first couple of minutes — and, worse,
+	// that a man who had reached it destroyed every bottle he walked over for
+	// PickupRespawn and denied it to everybody else, because that clock is the
+	// building's rather than his. Beer was the only kind that ever set one, and
+	// an option with one value is not an option.
 	Grants string `json:"grants"`
 	Amount int    `json:"amount"`
-	// Max is the ceiling for that counter; zero means uncapped.
-	Max int `json:"max"`
 	// Heals is how much health the thing puts back and InjectSeconds is how long
 	// it takes to put it back. Zero on both means the thing is not medicine,
 	// which is every kind but the шприц.
@@ -268,11 +273,10 @@ type PickupKind struct {
 // IT COMES BACK WHERE IT WAS, which is what makes it free on the wire: the
 // client was sent the level once and the remaining-pickup mask is indexed into
 // it, so a return is one bit changing rather than a position being re-sent.
-// Camping IS worth thinking about now that the gun drinks the beer: a bottle is
-// ammunition rather than a trophy, so a player who stands on one spot waiting
-// for a respawn is farming shots. Thirty seconds against a reload that returns
-// Barrels of them is what keeps that a poor trade compared with touring the
-// building — and this is the constant to move if it ever stops being one.
+// Camping is a poor trade at this number and nothing here rewards it: a bottle
+// buys a place on the standings and nothing a fight is decided by, so standing
+// on one spot for thirty seconds is thirty seconds of not being anywhere
+// interesting — and this is the constant to move if that ever stops being true.
 const PickupRespawn = 30 * time.Second
 
 // pickupRespawnTicks is that interval as a whole number of simulation steps,
@@ -497,13 +501,13 @@ const doorwayStep = PlayerRadius
 // rather than normalised, so it reaches five characters; positions are far beyond
 // anything a generated level produces):
 //
-//	solo snapshot             180 bytes
+//	solo snapshot             165 bytes
 //	the first peer            +63  (the entry, plus the `p` array around it)
 //	each further peer         +57
 //	the first слоп            +44  (the entry, plus the `f` array around it)
 //	each further слоп         +38
-//	standings with one row    115
-//	each further row          +87
+//	standings with one row    120
+//	each further row          +92
 //	events, sustained         39 B/s (the densest heap a level can hold, once
 //	                          per PickupRespawn each — it does not grow with the
 //	                          building, since a man collects only what he walks on)
@@ -511,22 +515,29 @@ const doorwayStep = PlayerRadius
 // So a viewer pays 20 × the snapshot + the standings + the events, and the whole
 // grid of answers is this:
 //
-//	3 people, 0 слопы    300 × 20 + 289 + 39 = 6328 B/s
-//	3 people, 2 слопы    382 × 20 + 289 + 39 = 7968 B/s   ← what ships
-//	3 people, 3 слопы    420 × 20 + 289 + 39 = 8728 B/s — over
-//	4 people, 0 слопы    357 × 20 + 376 + 39 = 7555 B/s
-//	4 people, 1 слоп     401 × 20 + 376 + 39 = 8435 B/s — over
+//	3 people, 0 слопы    285 × 20 + 304 + 39 = 6043 B/s
+//	3 people, 2 слопы    367 × 20 + 304 + 39 = 7683 B/s   ← what ships
+//	3 people, 3 слопы    405 × 20 + 304 + 39 = 8443 B/s — over
+//	4 people, 0 слопы    342 × 20 + 396 + 39 = 7275 B/s
+//	4 people, 1 слоп     386 × 20 + 396 + 39 = 8155 B/s — over
 //
-// Three people and two слопы, with 32 B/s of headroom. Pinned by
+// Three people and two слопы, with 317 B/s of headroom. Pinned by
 // TestEverythingAFullBuildingSendsAViewerFitsTheCeiling, which fails when either
 // constant is raised or when any of the three frames grows a field.
+//
+// THE HEADROOM WAS 32 UNTIL THE BAG CAME OFF THE SNAPSHOT, and that is the only
+// time any of these numbers has gone down. `c` was 15 bytes of the solo frame at
+// SnapshotHz — 300 B/s per viewer — restating a tally that changes a few times a
+// minute; it rides the standings alone now, which cost 5 bytes a row once a
+// second because the counter's ceiling went with it (message.go, StandingsRow).
+// It buys no place: see the two costs below.
 //
 // IT WAS FOUR, AND THE НЕЙРОСЛОПЫ COST THE FOURTH PLACE. Read the grid again and
 // the crunch is stark: FOUR PEOPLE AND ONE СЛОП DO NOT FIT — the building is over
 // the ceiling before the antagonist has arrived at all. So this is not a case of
 // trimming a field until it fits. What went, and what it bought:
 //
-//   - THE FOURTH OCCUPANT, −57 bytes a snapshot and −87 a standings row: 1227 B/s,
+//   - THE FOURTH OCCUPANT, −57 bytes a snapshot and −92 a standings row: 1232 B/s,
 //     which is what the слопы are bought with.
 //   - THE KILL COLUMN, +11 bytes a standings row at six figures, on a frame that
 //     goes out once a second. It is not optional: a kill counter that is not
@@ -556,14 +567,21 @@ const doorwayStep = PlayerRadius
 // honest choices were a smaller building or the binary codec, and this is the
 // smaller building.
 //
-// 32 B/s IS A BYTE AND A HALF OF A SNAPSHOT, AND THAT IS THE FINDING. JSON is
-// exhausted here: there is no further byte worth trimming — a peer is six integers
-// behind keys of one to three characters and a слоп is four, and the rest is
-// punctuation — so the NEXT field of any size at all, on any of the three frames,
-// costs the third occupant. Getting a place back, or a third слоп, needs the
-// binary codec the design doc earmarked as an iteration of its own. That is not a
-// thing to discover from somebody's data allowance; it is written here, and the
-// test above is what makes it impossible to walk past.
+// 317 B/s IS FIFTEEN BYTES OF A SNAPSHOT, AND THAT IS THE FINDING. It reads like
+// room and is not: a new field on the snapshot is spent twenty times a second, so
+// fifteen bytes is the WHOLE of what the frame can still grow by — and about 200
+// of the 317 is the deliberate pessimism inside the measurement (four timers at
+// once, a state no player can reach), which is to say most of the slack is an
+// accounting decision rather than capacity. What it emphatically does not buy is
+// a place: the fourth occupant is 1232 B/s and the third слоп 760, four and two
+// times what there is. Getting either needs the binary codec the design doc
+// earmarked as an iteration of its own.
+//
+// The headroom was 32 B/s for three iterations and JSON was genuinely exhausted
+// at that point; taking a repeating field off the frame is what moved it, which
+// is the only lever this shape of wire has left. That is not a thing to discover
+// from somebody's data allowance; it is written here, and the test above is what
+// makes it impossible to walk past.
 //
 // A refusal is a refusal and never a queue: somebody who arrives at a full
 // заброшка is told so (the `vanyadum_full` frame) rather than being put on hold,
@@ -574,9 +592,10 @@ const MaxOccupants = 3
 //
 // THE GENERATOR SCATTERS ONE OF EVERY KIND BEFORE IT SCATTERS A SECOND OF
 // ANYTHING (level.go, placePickups), so the order here is not cosmetic: a
-// building generated with no ammunition is a gun that cannot be reloaded and one
-// generated with no medicine is this whole iteration invisible, and a uniform
-// draw over two kinds produces the first about one building in eight.
+// building generated with no beer is one with nothing in it worth the standings
+// and one generated with no medicine is a building where being hurt is
+// permanent, and a uniform draw over two kinds produces either about one
+// building in eight.
 //
 // THE KEYS ARE ASCII AND SHORT, and that is a wire decision rather than a
 // stylistic one: a key rides the pickup event (message.go, Event), and the
@@ -590,9 +609,8 @@ var Pickups = []PickupKind{
 		Icon:   "🍺",
 		Grants: "beer",
 		Amount: 1,
-		Max:    9,
 		Tint:   "#c8892f",
-		Blurb:  "Патроны для обреза. Стрелять на трезвую голову тут не принято.",
+		Blurb:  "В обрез не заряжается — он справляется сам. Просто копится в таблице: доказательство, что ты обошёл заброшку не зря.",
 	},
 	{
 		Key:           "med",
@@ -728,16 +746,16 @@ type SlopConfig struct {
 // runs, and enough to say all of it in Russian on the splash screen without a
 // number being typed out twice.
 //
-// Ammo is the counter a reload spends, published so the cheatsheet can JOIN it
-// against Pickups rather than being told the name twice: the entry whose Grants
-// matches is the thing to walk to, with its own title, icon and blurb already on
-// it. That join is what lets a second ammunition ever be a catalogue line.
+// NOTHING HERE NAMES A PRICE, because a reload no longer has one. It used to
+// publish what a reload cost and which counter it came out of, so the cheatsheet
+// could join that name against Pickups and point at the thing to walk to; with
+// ammunition infinite there is no name to publish and no join to make, and a
+// field saying "one" of a counter nothing spends would be a rule the client
+// drew and the server did not run.
 type GunConfig struct {
 	Barrels             int     `json:"barrels"`
 	FireCooldownSeconds float64 `json:"fire_cooldown_seconds"`
 	ReloadSeconds       float64 `json:"reload_seconds"`
-	ReloadCost          int     `json:"reload_cost"`
-	Ammo                string  `json:"ammo"`
 	// Damage is what one barrel takes off whoever it lands on, against the
 	// player's own MaxHealth published below — the two together are how the
 	// cheatsheet says "two in the chest and he is done" without either number
@@ -827,8 +845,6 @@ func BuildConfig() Config {
 			Barrels:             Barrels,
 			FireCooldownSeconds: FireCooldownSeconds,
 			ReloadSeconds:       ReloadSeconds,
-			ReloadCost:          ReloadCost,
-			Ammo:                AmmoCounter,
 			Damage:              BarrelDamage,
 		},
 		Slop: SlopConfig{

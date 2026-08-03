@@ -254,26 +254,31 @@ type Occupant struct {
 	kills     int
 	betrayals int
 
-	// collected is everything this occupant has picked up during this visit,
-	// keyed exactly as the bag is, and it is what the visit row records.
+	// bag is everything this occupant has walked over during this visit, keyed by
+	// the catalogue's Grants field. It is what the standings publish as what he is
+	// CARRYING and what the visit row records as what he FOUND.
 	//
-	// IT IS NOT THE BAG, and it stopped being the same number the day the gun
-	// arrived. Until then nothing was ever spent, so what somebody was carrying
-	// when they left was what they had found — and the visit row simply read the
-	// bag. Now a reload takes a bottle out of it, so a player who actually used
-	// the building's beer would have his visit recorded as zero, which is the
-	// opposite of what the column means (migrations/015, and that file is
-	// immutable, so the code is what has to agree with it).
+	// ONE MAP FOR BOTH, BECAUSE NOTHING IN THE BUILDING SPENDS A COUNTER. Those
+	// were two fields while a reload drank a bottle, and the pair was genuinely
+	// two numbers then. Ammunition is infinite now (sim.go, stepGun), so the tally
+	// and the pocket are equal at every instant — and two variables holding the
+	// same number for the life of the process is a thing to keep consistent, to
+	// read twice and to get wrong once, bought against a rule nobody has written
+	// yet. They split back into found-versus-carried the day anything here costs a
+	// counter, and the visit column keeps the former (migrations/015, immutable).
 	//
-	// ON THE OCCUPANT AND NOT ON Player, by ADR-058's test read the easy way:
-	// Step never looks at it, so the client never has to simulate it, so it costs
-	// no port, no golden vector and no reconcile spread.
+	// ON THE OCCUPANT AND NOT ON Player, with the other things a viewer sees once
+	// a second rather than twenty times. ADR-058's test read the easy way says the
+	// same: Step never looks at it, so the client never has to simulate it, so it
+	// costs no port, no golden vector and no reconcile spread — and it no longer
+	// costs a map copy per tick either, which is what it did while it sat on the
+	// state Step takes by value.
 	//
 	// Keyed rather than counted, because the loop that fills it is generic over
-	// the catalogue — `collected[kind.Grants] += n` is exactly as general as the
-	// line above it, where a plain int would put the word "beer" inside the
-	// world's collection loop.
-	collected map[string]int
+	// the catalogue — `bag[kind.Grants] += n` is exactly as general as the line
+	// above it, where a plain int would put the word "beer" inside the world's
+	// collection loop.
+	bag map[string]int
 }
 
 // Stayed is how long this occupant actually had a connection, in whole seconds,
@@ -1117,6 +1122,18 @@ func (w *World) available(i int) bool { return w.Tick >= w.ready[i] }
 // not from Step: he is killed standing on a bottle, the respawn comes back
 // during his three seconds down, and without this he drinks it lying there and
 // is sent the event for it.
+//
+// EVERY REFUSAL IS DECIDED BEFORE THE DEADLINE IS SET, and that ordering is the
+// whole correctness of this loop rather than a stylistic preference. The
+// respawn clock is the BUILDING'S — one deadline per pickup, shared by
+// everybody — so a branch that stamped it and then declined to hand anything
+// over would destroy the thing for PickupRespawn, give the man walking over it
+// nothing, and take it away from the other two occupants as well. Medicine is
+// the one kind that can refuse (a man at full health, or one already injecting)
+// and it returns above the stamp. The generic branch has no refusal left in it
+// at all: nothing caps a counter any more (content.go, PickupKind) and
+// TestEveryPickupKindIsWorthWalkingOver is what keeps a catalogue entry from
+// quietly introducing one by granting nothing.
 func (w *World) collect(o *Occupant) {
 	if o.State.Health <= 0 {
 		return
@@ -1167,25 +1184,10 @@ func (w *World) collect(o *Occupant) {
 			continue
 		}
 		w.ready[i] = w.Tick + pickupRespawnTicks
-		if o.State.Counters == nil {
-			o.State.Counters = map[string]int{}
+		if o.bag == nil {
+			o.bag = map[string]int{}
 		}
-		v := o.State.Counters[kind.Grants] + kind.Amount
-		if kind.Max > 0 && v > kind.Max {
-			v = kind.Max
-		}
-		// The tally counts what the bag actually GAINED rather than what the
-		// pickup offers, so somebody standing on a bottle with a full bag is
-		// recorded as having gained nothing — which he did. It keeps "collected"
-		// an upper bound on "carrying" for the whole visit, which is the one
-		// relationship between the two numbers anybody would rely on.
-		if gained := v - o.State.Counters[kind.Grants]; gained > 0 {
-			if o.collected == nil {
-				o.collected = map[string]int{}
-			}
-			o.collected[kind.Grants] += gained
-		}
-		o.State.Counters[kind.Grants] = v
+		o.bag[kind.Grants] += kind.Amount
 		o.events = append(o.events, Event{E: EventPickup, K: p.Kind, ID: p.ID})
 	}
 }
@@ -1463,9 +1465,10 @@ func (w *World) killSlop(id int) {
 // hands out the same one, because walking in and getting up put a man in exactly
 // the same place with exactly the same problem.
 //
-// HE KEEPS HIS BAG AND HIS ANGLES. The beer because a death already costs
-// DownTime and the walk back, and taking the building's beer off him as well
-// would compound whoever is winning (content.go). The angles because the camera
+// HE KEEPS HIS BAG AND HIS ANGLES. The beer because it is what his visit records
+// and the only score he owns himself, and a death already costs DownTime and the
+// walk back — emptying his pockets as well would compound whoever is already
+// winning (content.go, DownTime). The angles because the camera
 // belongs to the client, and snapping his view somewhere he did not point it is
 // the one thing a first-person game may never do to somebody.
 func (w *World) rise(o *Occupant) {
@@ -1740,9 +1743,9 @@ func (w *World) Standings(now time.Time) Standings {
 			Slot: slot, Name: o.Pseudonym, Seconds: secs,
 			Deaths: o.deaths, Kills: o.kills, Betrayals: o.betrayals,
 		}
-		if len(o.State.Counters) > 0 {
-			row.Bag = make(map[string]int, len(o.State.Counters))
-			for k, v := range o.State.Counters {
+		if len(o.bag) > 0 {
+			row.Bag = make(map[string]int, len(o.bag))
+			for k, v := range o.bag {
 				row.Bag[k] = v
 			}
 		}
@@ -1834,12 +1837,10 @@ func (w *World) SnapshotFor(accountID string) (Snapshot, bool) {
 		Protect:  ms(me.State.ProtectedLeft),
 		Events:   me.events,
 	}
-	if len(me.State.Counters) > 0 {
-		s.Bag = make(map[string]int, len(me.State.Counters))
-		for k, v := range me.State.Counters {
-			s.Bag[k] = v
-		}
-	}
+	// NOTHING ABOUT THE BAG IS ON THIS FRAME, and the reader's own is no
+	// exception: it goes out once a second on the standings, which already
+	// carries everybody's unfiltered (message.go, StandingsRow.Bag).
+	//
 	// In SLOT order, which is stable by construction — an occupant's slot does
 	// not move while he is in the building — and is the order the standings lists
 	// the same people in, so a client reading the two frames together never has

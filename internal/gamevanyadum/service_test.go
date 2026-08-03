@@ -677,15 +677,15 @@ func TestSomebodyWhoStopsComingBackHasHisVisitWritten(t *testing.T) {
 		return s.world.Level.Seed
 	}()
 
-	// He found two bottles and put one of them in the gun, which is what a player
-	// does with beer now that it is the ammunition. Set directly rather than
-	// walked to, because what is being tested here is what gets WRITTEN.
+	// He walked over two bottles. Set directly rather than walked to, because what
+	// is being tested is what gets WRITTEN rather than what the collection loop
+	// does — and a value nothing in the building could hand out by accident is
+	// what makes the assertion below about this occupant's own tally rather than
+	// about whatever the generator happened to scatter near the spawn.
 	func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		o := s.world.Occupant(acc)
-		o.collected = map[string]int{"beer": 2}
-		o.State.Counters["beer"] = 1
+		s.world.Occupant(acc).bag = map[string]int{"beer": 2}
 	}()
 
 	tr.setMembers(nil) // the socket goes, and does not come back
@@ -707,12 +707,13 @@ func TestSomebodyWhoStopsComingBackHasHisVisitWritten(t *testing.T) {
 	if written.Seconds != 20 {
 		t.Fatalf("the visit records %d seconds; the grace was counted as time in the building", written.Seconds)
 	}
-	// And what he FOUND rather than what he still had. The two were the same
-	// number until the gun started spending beer; the column means the former and
-	// the migration that says so is immutable, so a visit that read the bag would
-	// quietly record a nought for everybody who actually played.
+	// And what he FOUND, which the column means (migrations/015, immutable) and
+	// which is also what he still had: nothing in the заброшка spends a counter,
+	// so the bag he walked out with IS the tally, and one field carries both
+	// (world.go, Occupant.bag). The day anything costs a bottle they are two
+	// numbers again and this is the assertion that has to say which one it wants.
 	if written.Beer != 2 {
-		t.Fatalf("the visit records %d bottles; he found two and reloaded with one", written.Beer)
+		t.Fatalf("the visit records %d bottles; he walked over two", written.Beer)
 	}
 }
 

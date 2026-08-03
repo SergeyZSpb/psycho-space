@@ -66,8 +66,6 @@ type goldenConstants struct {
 	Barrels             int     `json:"barrels"`
 	FireCooldownSeconds float64 `json:"fire_cooldown_seconds"`
 	ReloadSeconds       float64 `json:"reload_seconds"`
-	ReloadCost          int     `json:"reload_cost"`
-	Ammo                string  `json:"ammo"`
 	// The ampoule, on the same terms: a port healing by a different amount or
 	// over a different time would fail every point of the injection case, and
 	// this is what makes the report say which of the three numbers is wrong. Full
@@ -85,10 +83,6 @@ type goldenCase struct {
 	// rather than starting wherever the generator put the spawn.
 	Start  Vec2 `json:"start"`
 	Sector int  `json:"sector"`
-	// StartAmmo is how much of AmmoCounter the player begins with, because a
-	// reload cannot be exercised by somebody with empty pockets. The gun itself
-	// always begins loaded, exactly as NewPlayer leaves it.
-	StartAmmo int `json:"start_ammo,omitempty"`
 	// Down starts the case with the player on the floor — health at zero — and
 	// StartProtect starts him with that many seconds of spawn protection.
 	//
@@ -142,7 +136,6 @@ type goldenPoint struct {
 	// millisecond rounding happens later and on one side only.
 	Cooldown float64 `json:"cd,omitempty"`
 	Reload   float64 `json:"rl,omitempty"`
-	Ammo     int     `json:"ammo,omitempty"`
 	// Protected is seconds of spawn protection left, and it is omitted at zero —
 	// which is every step of every case except the one that is about it. The
 	// countdown is on the point rather than left to be inferred from a refused
@@ -172,11 +165,15 @@ type goldenPoint struct {
 // ampoule made it a product of Step (sim.go, stepInject), so it is on the point
 // like everything else — and carrying it on the cases that do NOT inject is what
 // asserts that nothing else in the simulation touches it.
+//
+// THE BAG IS NOT A PREDICTED QUANTITY, which is what took it off this struct.
+// It rode every point while a reload spent a bottle; ammunition is infinite now,
+// and the bag is not on Player at all any more (world.go, Occupant.bag) — so
+// there is nothing here for a port to reproduce and nothing for a column to echo.
 func pointOf(p Player) goldenPoint {
 	return goldenPoint{
 		X: p.Pos.X, Y: p.Pos.Y, Sector: p.Sector,
 		Loaded: p.Loaded, Cooldown: p.CooldownLeft, Reload: p.ReloadLeft,
-		Ammo:      p.Counters[AmmoCounter],
 		Protected: p.ProtectedLeft,
 		Inject:    p.InjectLeft,
 		Health:    p.Health,
@@ -205,8 +202,6 @@ func buildGolden() goldenFile {
 			Barrels:             Barrels,
 			FireCooldownSeconds: FireCooldownSeconds,
 			ReloadSeconds:       ReloadSeconds,
-			ReloadCost:          ReloadCost,
-			Ammo:                AmmoCounter,
 			MaxHealth:           MaxHealth,
 			SyringeHeal:         SyringeHeal,
 			SyringeSeconds:      SyringeSeconds,
@@ -303,11 +298,19 @@ func buildGolden() goldenFile {
 	}
 
 	// The gun, driven through every branch it has: a shot, a trigger held down
-	// inside the cadence and refused, the second barrel, a dry click, a reload
-	// bought with the last bottle, the barrels coming back, and a final pull with
-	// nothing left to load. Walking runs underneath the whole of it, because
-	// firing while moving is the ordinary case and a port that folded the gun in
-	// after the standing-still return would pass a stationary trace.
+	// inside the cadence and refused, the second barrel, an empty gun reloading
+	// itself, the trigger refused for the whole of that, the barrels coming back —
+	// and then the same thing a SECOND time, out of the same empty pockets.
+	// Walking runs underneath the whole of it, because firing while moving is the
+	// ordinary case and a port that folded the gun in after the standing-still
+	// return would pass a stationary trace.
+	//
+	// THE PLAYER CARRIES NOTHING, AND THAT IS THE ASSERTION. He used to start with
+	// one bottle so a reload could be exercised at all, and the transcript ended
+	// with a dry click nobody could answer. A reload costs nothing now, so an empty
+	// bag is the state every reload in this trace starts from — and a port that
+	// kept any condition on the reload branch at all fires the first four shots
+	// correctly and then stands there for ever.
 	//
 	// THE SUB-STEPS ARE MIXED ON PURPOSE. A cadence of 0.35 divides exactly by
 	// the client's 0.025, so a transcript of nothing but those would land every
@@ -321,8 +324,7 @@ func buildGolden() goldenFile {
 		l.Walls = buildWalls(l)
 		p := NewPlayer(l)
 		p.Pos, p.Sector = Vec2{X: 5, Y: 5}, 0
-		p.Counters[AmmoCounter] = 1
-		c := goldenCase{Name: "gun", Level: l, Start: p.Pos, Sector: p.Sector, StartAmmo: 1}
+		c := goldenCase{Name: "gun", Level: l, Start: p.Pos, Sector: p.Sector}
 
 		// step appends n commands of the given length, with the trigger held or
 		// released and the player walking north-east throughout.
@@ -343,12 +345,14 @@ func buildGolden() goldenFile {
 		step(9, 0.02, false)   // 0.35 − 4×0.025 − 9×0.02 leaves 0.07 on the clock
 		step(2, 0.05, true)    // the first of these is still inside it; the second fires
 		step(6, 0.025, true)   // empty, and inside the second barrel's cadence
-		step(9, 0.02, true)    // the cadence expires mid-run and the reload starts
+		step(9, 0.02, true)    // the cadence expires mid-run and the reload starts, free
 		step(30, 0.025, true)  // the trigger held through the reload, which refuses it
 		step(34, 0.025, false) // and released, so the barrels come back and simply sit there
-		step(4, 0.05, true)    // the barrels are back: two shots and their cadences
-		step(20, 0.05, true)
-		step(10, 0.025, true) // and a dry gun with no bottle left to load
+		step(4, 0.05, true)    // the barrels are back: a shot and the cadence after it
+		step(20, 0.05, true)   // the second barrel, and then a SECOND reload out of nothing
+		step(30, 0.025, true)  // held through that one too, and refused for all of it
+		step(10, 0.05, false)  // released; the barrels come back a second time
+		step(2, 0.05, true)    // and it fires again, which is what "infinite" means here
 		f.Cases = append(f.Cases, c)
 	}
 

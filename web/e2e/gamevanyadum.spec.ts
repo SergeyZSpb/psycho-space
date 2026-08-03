@@ -50,8 +50,6 @@ const CONFIG = {
     barrels: 3,
     fire_cooldown_seconds: 0.65,
     reload_seconds: 2.5,
-    reload_cost: 2,
-    ammo: 'beer',
     damage: 40,
   },
   // Not production's population, damage, speed or spawn interval either, and the
@@ -82,8 +80,13 @@ const CONFIG = {
       title: 'пиво',
       icon: '🍺',
       grants: 'beer',
-      amount: 1,
-      max: 9,
+      // Not production's one-per-bottle, and for the reason every other wrong
+      // number in this fixture is wrong: the cheatsheet states what a bottle
+      // grants, so a hand-typed «+1» would pass against the real catalogue and
+      // fail here. It is also the whole of what that line can be derived from
+      // now: the ceiling this entry used to carry went with the rule that gave it
+      // a meaning, so this is the one number left proving the line is generated.
+      amount: 4,
       tint: '#c8892f',
       blurb: 'Заливаешь — и панчи сами идут.',
     },
@@ -93,7 +96,6 @@ const CONFIG = {
       icon: '💉',
       grants: '',
       amount: 0,
-      max: 0,
       tint: '#9fd6c8',
       blurb: 'Чинит, но стоя.',
       heals: 35,
@@ -332,20 +334,26 @@ async function stubSocket(page: Page): Promise<{
 /**
  * A board frame with the building as full as the served catalogue allows.
  *
- * A full-width pseudonym, an hour on the clock and a bag at its ceiling — the
- * widest row this readout can ever be asked to draw, which is what makes it the
- * layout case rather than a plausible one.
+ * A full-width pseudonym, an hour on the clock, and every number two digits
+ * wide — which is what makes it the layout case rather than a plausible one.
+ *
+ * THE BAG HAS NO CEILING TO SIT AT ANY MORE, so this fixture names its own bound
+ * instead of reading one off the catalogue: nothing spends a counter, so пиво
+ * only ever goes up, and «the widest row that can be asked for» stopped being a
+ * number the served config could answer. Two digits is what an hour in the
+ * building actually reaches, and it is what the three columns beside it already
+ * use — so the row is one consistent worst case rather than one wide column
+ * beside a narrow one.
  */
 function fullHouse(): Record<string, unknown>[] {
   return Array.from({ length: CONFIG.world.max_occupants }, (_, n) => ({
     n,
     i: `Wwwwwwwwww${n}m`,
     s: 3671 + n,
-    c: { beer: 9 },
-    // Two digits of each, which is wider than a заброшка of this size will ever
-    // really produce — the layout case is the widest row that can be asked for,
-    // not a plausible one. Three numeric columns now, and they are what the name
-    // gives its width to.
+    c: { beer: 47 },
+    // Wider than a заброшка of this size will really produce, for the reason
+    // above. Three numeric columns now, and they are what the name gives its
+    // width to.
     d: 12,
     k: 56,
     br: 34,
@@ -444,7 +452,12 @@ test.describe('«ВАНЯДУМ» splash', () => {
     await expect(rules).toContainText('90 см');
     await expect(rules).toContainText('61 из 80');
     await expect(rules).toContainText('пиво');
-    await expect(rules).toContainText('максимум 9');
+    // What a bottle grants, which is the whole of what the пиво line has left to
+    // derive: it used to state a ceiling too, and that went with the rule that
+    // made one mean anything. A cheatsheet still naming a cap would be describing
+    // a rule this game no longer has.
+    await expect(rules).toContainText('+4');
+    await expect(rules).not.toContainText('максимум');
   });
 
   test('and it states what the game now IS: one shared building that never ends', async ({
@@ -468,27 +481,46 @@ test.describe('«ВАНЯДУМ» splash', () => {
   test('and it states the обрез’s rules, every number of them derived', async ({ page }) => {
     // C1a's rules change, and the reason the splash is a gate rather than a
     // nicety: a player who does not know the gun holds three, has a cadence, and
-    // spends beer to reload will empty it, stand there, and conclude the game is
-    // broken. Every number here is the stub's rather than production's, so a
-    // hand-typed cheatsheet fails.
+    // goes quiet for two and a half seconds when it runs out will conclude the
+    // game is broken. Every number here is the stub's rather than production's,
+    // so a hand-typed cheatsheet fails.
     await openSplash(page);
     const rules = page.getByTestId('vanyadum-rules');
     await expect(rules).toContainText('0,65 с');
     await expect(rules).toContainText('2,5 с');
-    // The ammunition is NAMED BY A JOIN — the gun publishes a counter and the
-    // pickup that grants it carries the word — so this is also what says the two
-    // agree.
+    // пиво is still on the screen — it is still scattered, still collected and
+    // still a column on the standings — it simply no longer loads anything.
     await expect(rules).toContainText('🍺 пиво');
     // AND EVERY WAY THE TRIGGER GOES QUIET, which is the line a player reads at
     // the one moment he needs it. The ампула is the one that used to be missing
     // and the longest of them; its duration is the stub's, so a hand-typed list
-    // fails here. The empty-gun clause quotes the HUD's own words rather than
-    // repeating them, so the two cannot drift apart.
+    // fails here.
     await expect(rules).toContainText('когда молчит');
     await expect(rules).toContainText('колешься (4 с)');
-    await expect(rules).toContainText('«нет 🍺»');
-    // And you walk in with nothing, which is what makes the first refusal.
-    await expect(rules).toContainText('с пустыми карманами');
+    // And every one of them ends by itself, which is the whole of what infinite
+    // ammunition changed about this block.
+    await expect(rules).toContainText('само проходит');
+  });
+
+  test('and it states that the обрез reloads itself, for nothing', async ({ page }) => {
+    // THE OWNER'S RULES CHANGE, AND THE ONE A CHEATSHEET MOST HAS TO GET RIGHT.
+    // It used to tell the player a бутылка fills both barrels and that without
+    // пиво the обрез is silent — both now false, and a screen that says them is
+    // worse than no screen, because a player will believe it and spend the visit
+    // hunting for ammunition he does not need.
+    await openSplash(page);
+    const rules = page.getByTestId('vanyadum-rules');
+    // Free, still timed, and helpless while it runs — the three things a player
+    // needs, with the duration the stub's rather than production's.
+    await expect(rules).toContainText('бесконечные');
+    await expect(rules).toContainText('2,5 с с пустыми руками');
+    await expect(rules).toContainText('Пока идёт — не стреляешь');
+    // And the economy that is gone is gone from the screen entirely: no price,
+    // no counter to walk for, and no empty pockets to be warned about.
+    await expect(rules).not.toContainText('чем заряжать');
+    await expect(rules).not.toContainText('Одна перезарядка тратит');
+    await expect(rules).not.toContainText('с пустыми карманами');
+    await expect(rules).not.toContainText('нет 🍺');
   });
 
   test('and it states what a barrel does, and what happens when one lands', async ({ page }) => {
@@ -591,13 +623,12 @@ test.describe('«ВАНЯДУМ» splash', () => {
 
   test('and it does not price the шприц as something you carry', async ({ page }) => {
     // An empty `grants` is the catalogue saying a thing is used on the spot and
-    // never kept, so the listing must not print «(+0, максимум 0)» — a cheatsheet
-    // reading a field that does not apply and rendering it anyway.
+    // never kept, so the listing must not print «(+0)» — a cheatsheet reading a
+    // field that does not apply and rendering it anyway.
     await openSplash(page);
     const rules = page.getByTestId('vanyadum-rules');
     await expect(rules).toContainText('в карманах не лежит');
     await expect(rules).not.toContainText('+0');
-    await expect(rules).not.toContainText('максимум 0');
   });
 
   test('and it says you cannot see everybody, and where the rest are listed', async ({ page }) => {
@@ -716,11 +747,63 @@ test.describe('«ВАНЯДУМ» play', () => {
     await walkIn(page);
 
     // One bit set: the bottle at index 0 is lying there, the other was taken.
-    await socket.snapshot({ hp: 37, c: { beer: 2 }, pk: 0b01 });
+    await socket.snapshot({ hp: 37, pk: 0b01 });
 
     await expect(page.getByTestId('vanyadum-hud')).toContainText('37');
-    await expect(page.getByTestId('vanyadum-count-beer')).toContainText('2');
     await expect(page.getByTestId('vanyadum-floor')).toContainText('на полу 1');
+  });
+
+  test('the counter follows the standings, which is the only frame that carries it', async ({
+    page,
+  }) => {
+    // WHERE THE BAG IS NOW, AND WHY IT MOVED. It used to ride the snapshot,
+    // because the predictor read a counter out of it to reconcile the gun;
+    // ammunition is infinite, that reader is gone, and the same map was already
+    // on the standings once a second — so about 18 bytes twenty times a second
+    // per viewer bought nothing but a fresher number. The counter is a second
+    // behind now, which is affordable precisely because пиво buys nothing.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    // A ZERO RATHER THAN A BLANK BEFORE THE FIRST BOARD LANDS. Snapshots alone
+    // say nothing about a bag now, and a cell that waited for one would be the
+    // HUD showing an empty box for the fraction of a second before the roster
+    // change publishes a board.
+    await socket.snapshot({ hp: 61 });
+    await expect(page.getByTestId('vanyadum-count-beer')).toHaveText(
+      `${CONFIG.pickups[0].icon} 0`,
+    );
+
+    // OUR OWN ROW AND NOBODY ELSE'S, which is what the ready frame's slot is
+    // for: the board is unfiltered and lists everybody, so a HUD reading the
+    // first row would show whatever the man in slot 0 is carrying.
+    await socket.ready(WORLD_ID, 1);
+    await socket.board([
+      { n: 0, i: 'K3jf9sLm2QpZ', s: 137, c: { beer: 8 } },
+      { n: 1, i: 'Qq1Ww2Ee3Rr4', s: 41, c: { beer: 2 } },
+    ]);
+    await expect(page.getByTestId('vanyadum-count-beer')).toHaveText(
+      `${CONFIG.pickups[0].icon} 2`,
+    );
+
+    // And it keeps following: a later board is the whole truth, replacing rather
+    // than merging, exactly as the column on the standings does.
+    await socket.board([{ n: 1, i: 'Qq1Ww2Ee3Rr4', s: 42, c: { beer: 3 } }]);
+    await expect(page.getByTestId('vanyadum-count-beer')).toHaveText(
+      `${CONFIG.pickups[0].icon} 3`,
+    );
+
+    // AND IT GOES BACK TO ZERO WITH THE LINK, which is not a counter being
+    // cleared but the row it reads disappearing: the standings are emptied the
+    // moment the socket goes, because a directory nothing is refreshing has
+    // stopped being true. A close the client will not retry, so the state stays
+    // long enough to be read — an ordinary drop is reconnected within a second.
+    socket.revoke();
+    await expect(page.getByTestId('vanyadum-link')).toBeVisible();
+    await expect(page.getByTestId('vanyadum-count-beer')).toHaveText(
+      `${CONFIG.pickups[0].icon} 0`,
+    );
   });
 
   test('a bottle that comes back is shown as back, not only as taken', async ({ page }) => {
@@ -1302,14 +1385,14 @@ test.describe('«ВАНЯДУМ» play', () => {
     const socket = await stubSocket(page);
     await openSplash(page);
     await walkIn(page);
-    await socket.snapshot({ hp: 61, c: { beer: 3 } });
+    // ONE FRAME FOR BOTH READOUTS, which is what makes this a single claim: the
+    // HUD's counters and the board's columns are now the same map off the same
+    // row, so a filter that let the ampoule through would draw «💉 0» twice.
+    await socket.ready(WORLD_ID, 0);
+    await socket.board([{ n: 0, i: 'Ваня', s: 12, c: { beer: 3 } }]);
 
     await expect(page.getByTestId('vanyadum-count-beer')).toContainText('3');
     await expect(page.getByTestId('vanyadum-count-med')).toHaveCount(0);
-
-    // And the standings do not grow one either — the board publishes what people
-    // are CARRYING, and nobody ever carries an ampoule.
-    await socket.board([{ n: 0, i: 'Ваня', s: 12, c: { beer: 3 } }]);
     await expect(page.getByTestId('vanyadum-board-beer')).toHaveCount(1);
     await expect(page.getByTestId('vanyadum-board-med')).toHaveCount(0);
   });
@@ -1419,7 +1502,7 @@ test.describe('«ВАНЯДУМ» play', () => {
 
   test('the trigger says when the обрез is busy, and never by going disabled', async ({ page }) => {
     // A REFUSAL NOBODY CAN SEE IS AN UNFINISHED ACTION. The обрез refuses a pull
-    // for six different reasons and answers every one of them with silence, so
+    // for five different reasons and answers every one of them with silence, so
     // a control that looked identical either way left «занят» and «кнопка не
     // работает» indistinguishable — which is half of the report that this game
     // sometimes does not shoot.
@@ -1453,31 +1536,27 @@ test.describe('«ВАНЯДУМ» play', () => {
     await socket.snapshot({ hp: 0, dn: 4000 });
     await expect(fire).toHaveClass(/is-busy/);
 
-    // THE SIXTH, AND THE ONLY ONE THAT IS NOT A TIMER: an empty обрез with
-    // nothing in the pockets to fill it. Every other refusal above ends by
-    // itself within a second or two; this one lasts until the player finds a
-    // bottle, and every player reaches it a full gun's worth of shots after
-    // walking in, because nobody arrives carrying ammunition. `c` is omitted,
-    // which is what an empty bag looks like on the wire.
+    // AND THERE IS NO SIXTH ANY MORE. An empty обрез used to be one — the only
+    // refusal that was not a timer and the only one no clock ended, because the
+    // gun drank пиво and a player with none had nothing to press for. A reload is
+    // free now, so an empty gun IS the reload waiting to be started and the
+    // button has to look pressable. The snapshot cannot even describe a bag any
+    // more, which is the same rule stated on the wire: what somebody is carrying
+    // has nothing to do with what the trigger will do.
     await socket.snapshot({ b: 0 });
-    await expect(fire).toHaveClass(/is-busy/);
-
-    // And with a bottle it is not a refusal at all — the trigger IS the reload,
-    // so the button has to look pressable.
-    await socket.snapshot({ b: 0, c: { beer: CONFIG.gun.reload_cost } });
     await expect(fire).not.toHaveClass(/is-busy/);
 
     await socket.snapshot({});
     await expect(fire).not.toHaveClass(/is-busy/);
   });
 
-  test('an empty обрез says what it is empty of, and fits a 360 px phone', async ({ page }) => {
+  test('an empty обрез says what to do about it, and fits a 360 px phone', async ({ page }) => {
     // THE OWNER'S QUESTION, ANSWERED ON THE SCREEN: «а патроны бесконечные?».
-    // They are not — a fixed number of barrels, a бутылка per reload, and
-    // nothing in your pockets when you walk in — and the moment that matters is
-    // the one where the trigger stops answering. A bare «0/3» beside a
-    // live-looking button is indistinguishable from a control that has broken,
-    // so the cell names the reason instead.
+    // They are now — the reload costs the time and nothing else — so the cell no
+    // longer has to name what somebody is short of. What survived is the other
+    // half of why it says anything at all: nothing starts a reload by itself, so
+    // a bare «0/3» beside a live-looking button is a player waiting for something
+    // that will never happen.
     const socket = await stubSocket(page);
     await openSplash(page);
     await walkIn(page);
@@ -1492,29 +1571,27 @@ test.describe('«ВАНЯДУМ» play', () => {
     await socket.snapshot({});
     const restHeight = (await hud.boundingBox())!.height;
 
-    // Empty, with enough for a reload: a wait the player ends himself, since
-    // nothing starts a reload by itself.
-    await socket.snapshot({ b: 0, c: { beer: CONFIG.gun.reload_cost } });
-    await expect(shells).toContainText('пусто · жми');
-    await expect(shells).not.toHaveClass(/is-dry/);
-
-    // Empty, with nothing to load: the ammunition is named by the catalogue's
-    // own icon, which is why the fixture's is asserted rather than a 🍺 typed
-    // out here.
-    await socket.snapshot({ b: 0, c: { beer: CONFIG.gun.reload_cost - 1 } });
-    await expect(shells).toContainText(`нет ${CONFIG.pickups[0].icon}`);
-    await expect(shells).toHaveClass(/is-dry/);
-
-    // THE BAG HAS TO STOP LYING FOR ANY OF THIS TO BE TRUE. A counter that
-    // reaches zero is DELETED from the map the server serialises rather than
-    // sent as a zero, so the frame that spends your last bottle simply stops
-    // mentioning beer — and a HUD that merged frames would go on showing it and
-    // go on offering a reload nobody can make.
+    // Empty: a wait the player ends himself, and the same answer whatever is in
+    // the pockets. Nothing about the bag is on this frame any more, so the two
+    // states below are a board apart rather than a field apart — carrying
+    // nothing, then carrying a great deal, and the gun says the same thing to
+    // both.
     await socket.snapshot({ b: 0 });
+    await expect(shells).toContainText('пусто · жми');
     await expect(page.getByTestId('vanyadum-count-beer')).toHaveText(
       `${CONFIG.pickups[0].icon} 0`,
     );
-    await expect(shells).toContainText(`нет ${CONFIG.pickups[0].icon}`);
+
+    // A BAG WIDE ENOUGH TO MEASURE THE STRIP AGAINST, and it is only reachable
+    // because the ceiling is gone: пиво is a tally nothing spends, so the cell
+    // that used to be one digit for ever now grows for as long as somebody keeps
+    // walking around. Two digits is what an hour in the building reaches.
+    await socket.ready(WORLD_ID, 0);
+    await socket.board([{ n: 0, i: 'Wwwwwwwwww0m', s: 3671, c: { beer: 47 } }]);
+    await expect(page.getByTestId('vanyadum-count-beer')).toHaveText(
+      `${CONFIG.pickups[0].icon} 47`,
+    );
+    await expect(shells).toContainText('пусто · жми');
 
     // THE LONGEST THING THIS CELL CAN EVER SAY, ON THE NARROWEST SCREEN IT IS
     // EVER SAID ON. It shares one un-wrapping row with the health, the bag and
@@ -1532,7 +1609,6 @@ test.describe('«ВАНЯДУМ» play', () => {
     // useful thing to show whenever there is one.
     await socket.snapshot({ b: 1 });
     await expect(shells).toContainText(`1/${CONFIG.gun.barrels}`);
-    await expect(shells).not.toHaveClass(/is-dry/);
   });
 
   test('and the trigger is never disabled, whatever the gun is doing', async ({ page }) => {
@@ -1547,11 +1623,9 @@ test.describe('«ВАНЯДУМ» play', () => {
     await walkIn(page);
 
     const fire = page.getByTestId('vanyadum-fire');
-    // Every state that marks the trigger, the empty обрез included — and that
-    // last one matters most here, because it is the one that lasts: a control
-    // disabled until the player finds a bottle is a control he will decide is
-    // broken, and it is also the state whose refusal the server may already
-    // disagree with, since a pickup can land between two frames.
+    // Every state the gun can be in, marked or not — the empty обрез included,
+    // because a pull on one is what starts the reload and a control that could
+    // not be pressed there would be a gun nobody could ever fill.
     for (const frame of [
       {},
       { d: 300 },

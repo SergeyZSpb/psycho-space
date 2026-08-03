@@ -94,7 +94,16 @@ export interface BoardRow {
   name: string;
   /** How long they have been in the building. */
   seconds: number;
-  /** What they are carrying, keyed by the catalogue's `grants`. */
+  /**
+   * What they are carrying, keyed by the catalogue's `grants`.
+   *
+   * THE ONLY PLACE A CLIENT IS EVER TOLD THIS, INCLUDING ABOUT ITSELF. It rode
+   * the snapshot until the gun stopped drinking пиво and the predictor stopped
+   * reading a counter out of it; a tally nothing spends does not belong on a
+   * frame that repeats twenty times a second, so the HUD's own counters are read
+   * off this row too — which is why the number at the top of the screen is a
+   * second behind, and why it and the board's column cannot disagree.
+   */
   bag: Record<string, number>;
   /**
    * How often the building has put them on the floor, how many нейрослопы they

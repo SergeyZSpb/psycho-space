@@ -2,6 +2,7 @@ package gamevanyadum
 
 import (
 	"math"
+	"reflect"
 	"testing"
 )
 
@@ -240,7 +241,8 @@ func TestStepIsDeterministic(t *testing.T) {
 	// a new way. Position is a function of the command alone; the gun is a
 	// function of the command AND of how much of a countdown was left, so a
 	// transcript that fires is the one that would catch a timer picking up
-	// anything ambient. Beer is in the bag so the reload branch is reached too.
+	// anything ambient. Two hundred steps of it empty the gun, which is what
+	// carries the reload branch into the run as well.
 	l := Generate(7)
 	cmds := []Command{
 		{Dt: dt, MY: 1, Yaw: 0, Fire: true},
@@ -248,27 +250,26 @@ func TestStepIsDeterministic(t *testing.T) {
 		{Dt: dt, MY: -1, Yaw: 2.1, Fire: true},
 		{Dt: dt, MX: -1, Yaw: 5.9, Fire: true},
 	}
-	run := func() Player {
+	run := func() (Player, bool) {
 		p := NewPlayer(l)
-		p.Counters[AmmoCounter] = 3
+		reloaded := false
 		for i := 0; i < 200; i++ {
 			p = Step(l, p, cmds[i%len(cmds)])
+			reloaded = reloaded || p.ReloadLeft > 0
 		}
-		return p
+		return p, reloaded
 	}
-	a, b := run(), run()
+	a, reloaded := run()
+	b, _ := run()
 	if a.Pos != b.Pos || a.Sector != b.Sector || a.Yaw != b.Yaw {
 		t.Fatalf("two identical runs diverged: %+v vs %+v", a, b)
 	}
 	if a.Loaded != b.Loaded || a.CooldownLeft != b.CooldownLeft || a.ReloadLeft != b.ReloadLeft {
 		t.Fatalf("two identical runs left different guns: %+v vs %+v", a, b)
 	}
-	if a.Counters[AmmoCounter] != b.Counters[AmmoCounter] {
-		t.Fatalf("two identical runs spent different amounts of beer: %v vs %v", a.Counters, b.Counters)
-	}
 	// And the transcript really did reach the reload, or the paragraph above is
 	// describing a branch this test never enters.
-	if a.Counters[AmmoCounter] == 3 {
+	if !reloaded {
 		t.Fatal("two hundred steps of firing never reloaded; the transcript proves less than it claims")
 	}
 }
@@ -330,15 +331,17 @@ func holdStill(p Player, seconds float64) Command {
 	return Command{Dt: seconds, Yaw: p.Yaw, Pitch: p.Pitch}
 }
 
-// armed is somebody standing in the middle of a room with a full gun and n
-// bottles in his pockets.
-func armed(ammo int) (*Level, Player) {
+// armed is somebody standing in the middle of a room with a full gun.
+//
+// IT TAKES NO AMMUNITION, and there is nothing to give it: the обрез reloads
+// itself for nothing (content.go, ReloadSeconds) and what a man is carrying is
+// not on the state Step reads at all (world.go, Occupant.bag). So every gun test
+// below starts from exactly one thing — a full обрез — which is the only pocket
+// content the simulation has ever been able to tell apart.
+func armed() (*Level, Player) {
 	l := room(0, 0, 20, 20, 0)
 	p := NewPlayer(l)
 	p.Pos = Vec2{X: 10, Y: 10}
-	if ammo > 0 {
-		p.Counters[AmmoCounter] = ammo
-	}
 	return l, p
 }
 
@@ -346,7 +349,7 @@ func TestTheCadenceRefusesASecondShotInsideItAndAllowsOneAfter(t *testing.T) {
 	// The rule the whole weapon hangs off. Without it a client that samples at
 	// forty a second empties both barrels in 50 ms and reloads for ever, which is
 	// not a fire rate, it is the absence of one.
-	l, p := armed(0)
+	l, p := armed()
 
 	fired := Step(l, p, fireAt(p, dt))
 	if fired.Loaded != Barrels-1 {
@@ -385,28 +388,37 @@ func TestTheCadenceRefusesASecondShotInsideItAndAllowsOneAfter(t *testing.T) {
 	}
 }
 
-func TestAnEmptyGunWithNothingToLoadCannotFire(t *testing.T) {
-	// What makes the bottles worth walking to. A player with no beer is not
-	// slowed down or made weaker, he is disarmed — which is the only version of
-	// scarcity that survives a game where nothing else is spent.
-	l, p := armed(0)
+func TestAnEmptyGunReloadsItselfOutOfEmptyPockets(t *testing.T) {
+	// AMMUNITION IS INFINITE, and this is the whole of what that means: a man with
+	// nothing in his pockets pulls the trigger on an empty gun and gets a reload,
+	// every time, for as long as he keeps asking. What he does not get is the shot
+	// — the ReloadSeconds of standing there unable to answer is the only thing a
+	// reload has ever really charged, and it is untouched.
+	l, p := armed()
 	p.Loaded = 0
 
-	dry := p
-	for i := 0; i < SimHz; i++ {
-		dry = Step(l, dry, fireAt(dry, dt))
+	started := Step(l, p, fireAt(p, dt))
+	if started.ReloadLeft != ReloadSeconds {
+		t.Fatalf("a pull on an empty gun left %.4f s of reload, expected %.4f",
+			started.ReloadLeft, ReloadSeconds)
 	}
-	if dry.Loaded != 0 || dry.ReloadLeft != 0 || dry.CooldownLeft != 0 {
-		t.Fatalf("a second of pulling a dry trigger produced %+v", dry)
-	}
-	if len(dry.Counters) != 0 {
-		t.Fatalf("something was spent out of an empty bag: %v", dry.Counters)
+	if started.Loaded != 0 {
+		t.Fatalf("the pull that started the reload also put %d barrels in the gun", started.Loaded)
 	}
 
-	// One bottle is the whole difference.
-	p.Counters[AmmoCounter] = ReloadCost
-	if wet := Step(l, p, fireAt(p, dt)); wet.ReloadLeft != ReloadSeconds {
-		t.Fatalf("the same pull with a bottle in the bag left %.4f s of reload", wet.ReloadLeft)
+	// And it is not a one-off that some starting state paid for: run the gun dry
+	// twice over, holding the trigger the whole way, and the second empty gun
+	// answers exactly as the first did.
+	reloads := 0
+	for i := 0; i < 10*SimHz; i++ {
+		before := p.ReloadLeft
+		p = Step(l, p, fireAt(p, dt))
+		if before == 0 && p.ReloadLeft > 0 {
+			reloads++
+		}
+	}
+	if reloads < 2 {
+		t.Fatalf("ten seconds of a held trigger produced %d reloads, so nothing here is repeating", reloads)
 	}
 }
 
@@ -414,15 +426,12 @@ func TestAReloadTakesWhatTheCatalogueSaysAndNoLess(t *testing.T) {
 	// A reload that finished early would be a reload that is not the cost it is
 	// described as, and the cheatsheet on the splash screen is generated from
 	// exactly the number this asserts against.
-	l, p := armed(ReloadCost)
+	l, p := armed()
 	p.Loaded = 0
 
 	p = Step(l, p, fireAt(p, dt))
 	if p.ReloadLeft != ReloadSeconds {
 		t.Fatalf("the reload started at %.4f s, the catalogue says %.4f", p.ReloadLeft, ReloadSeconds)
-	}
-	if got := p.Counters[AmmoCounter]; got != 0 {
-		t.Fatalf("the bottle was not spent when the reload started: %d left", got)
 	}
 
 	elapsed, done := 0.0, -1.0
@@ -455,7 +464,7 @@ func TestAGrantedShotSpendsABarrelAndNothingElse(t *testing.T) {
 	// input protocol and the first read-modify-write state on Player debuggable
 	// without a hit test in the picture. If this ever fails, something started
 	// hitting things early.
-	l, p := armed(2)
+	l, p := armed()
 	p.Yaw, p.Pitch = 1.1, -0.4
 
 	got := Step(l, p, fireAt(p, dt))
@@ -468,9 +477,6 @@ func TestAGrantedShotSpendsABarrelAndNothingElse(t *testing.T) {
 	if got.Yaw != p.Yaw || got.Pitch != p.Pitch {
 		t.Fatalf("firing moved the view to %.3f/%.3f", got.Yaw, got.Pitch)
 	}
-	if got.Counters[AmmoCounter] != 2 {
-		t.Fatalf("a shot spent beer as well as a barrel: %v", got.Counters)
-	}
 }
 
 func TestTheGunRunsWhileStandingPerfectlyStill(t *testing.T) {
@@ -478,7 +484,7 @@ func TestTheGunRunsWhileStandingPerfectlyStill(t *testing.T) {
 	// early when both axes are zero, so a gun folded in after that return would
 	// cool down only while its owner was walking. Standing still is the state
 	// anybody is in while aiming at something.
-	l, p := armed(0)
+	l, p := armed()
 	fired := Step(l, p, fireAt(p, dt))
 
 	got := Step(l, fired, holdStill(fired, dt))
@@ -499,7 +505,6 @@ func TestTheGunIsOnlyEverBusyForOneReason(t *testing.T) {
 	// over a long transcript rather than over a single path.
 	l := Generate(23)
 	p := NewPlayer(l)
-	p.Counters[AmmoCounter] = 9
 	yaw := 0.0
 	for i := 0; i < 4000; i++ {
 		// A deterministic wander with the trigger pulled on an irregular beat, so
@@ -513,53 +518,48 @@ func TestTheGunIsOnlyEverBusyForOneReason(t *testing.T) {
 		if p.Loaded < 0 || p.Loaded > Barrels {
 			t.Fatalf("step %d: %d barrels loaded", i, p.Loaded)
 		}
-		if n := p.Counters[AmmoCounter]; n < 0 {
-			t.Fatalf("step %d: %d bottles in the bag", i, n)
-		}
 		if p.CooldownLeft > FireCooldownSeconds+1e-9 || p.ReloadLeft > ReloadSeconds+1e-9 {
 			t.Fatalf("step %d: a timer above what the catalogue sets it to: %+v", i, p)
 		}
 	}
 }
 
-func TestReloadingDoesNotWriteToTheCallersBag(t *testing.T) {
-	// Step takes a Player BY VALUE and a map is not copied by value, so the
-	// obvious decrement would write through to whatever the caller is holding.
-	// That is not a stylistic point here: the client replays every pending
-	// command on top of each snapshot (ADR-058), so an in-place decrement would
-	// spend a bottle once per REPLAY instead of once per command, and a player's
-	// beer would drain at the round-trip rate.
-	l, p := armed(2)
+func TestSteppingAPlayerCannotReachThroughToTheCaller(t *testing.T) {
+	// THE HAZARD THAT USED TO LIVE ON THE BAG, WIDENED TO THE WHOLE STRUCT. Step
+	// takes a Player BY VALUE, which copies every field except the contents of a
+	// reference one — so a map or a slice on Player is a channel back into
+	// whatever the caller is holding, and the client replays every pending command
+	// on top of each snapshot it reconciles against (ADR-058). A write through one
+	// would land once per REPLAY rather than once per command, which is a quantity
+	// draining at the round-trip rate rather than at the rate the game charges.
+	//
+	// The bag was the one such field and it is gone (world.go, Occupant.bag), so
+	// the invariant is now stronger than "the reload takes nothing": there is
+	// NOTHING on this struct a step could reach through, and this is what says so
+	// for every field that will ever be added rather than for the one that made
+	// the point. A reviewer who needs shared state on Player has to delete this
+	// test deliberately.
+	for i, f := range reflect.VisibleFields(reflect.TypeOf(Player{})) {
+		switch f.Type.Kind() {
+		case reflect.Map, reflect.Slice, reflect.Pointer, reflect.Chan, reflect.Func:
+			t.Fatalf("field %d, Player.%s, is a %s: Step takes a Player by value, so writing through it would move the caller's own state",
+				i, f.Name, f.Type.Kind())
+		}
+	}
+
+	// And the behaviour that guards: the same command run twice from the same
+	// base produces the same reload, rather than a second one that started from
+	// something the first left behind.
+	l, p := armed()
 	p.Loaded = 0
 
 	first := Step(l, p, fireAt(p, dt))
 	second := Step(l, p, fireAt(p, dt))
-
-	if got := p.Counters[AmmoCounter]; got != 2 {
-		t.Fatalf("Step wrote through to the caller's bag: %d bottles left of 2", got)
+	if first != second {
+		t.Fatalf("two runs of one command from one base disagree: %+v and %+v", first, second)
 	}
-	if first.Counters[AmmoCounter] != 2-ReloadCost || second.Counters[AmmoCounter] != 2-ReloadCost {
-		t.Fatalf("two runs of one command spent differently: %v and %v", first.Counters, second.Counters)
-	}
-	// And the copy is a copy, not a second reference to the same map.
-	first.Counters[AmmoCounter] = 99
-	if second.Counters[AmmoCounter] == 99 {
-		t.Fatal("two results share one bag")
-	}
-}
-
-func TestTheBagStopsMentioningWhatIsGone(t *testing.T) {
-	// Prefer omitting to sending empty, applied to the bag rather than to a
-	// field: `"c":{"beer":0}` would ride the snapshot at 20 Hz and the standings
-	// at 1 Hz for as long as its owner stayed in the building, to say he is
-	// carrying nothing. Both frames guard on the bag being non-empty, so
-	// deleting the last bottle is what makes the guard fire.
-	l, p := armed(ReloadCost)
-	p.Loaded = 0
-
-	spent := Step(l, p, fireAt(p, dt))
-	if len(spent.Counters) != 0 {
-		t.Fatalf("the bag still names something after the last of it was spent: %v", spent.Counters)
+	if first.ReloadLeft != ReloadSeconds {
+		t.Fatalf("the reload started at %.4f s, the catalogue says %.4f", first.ReloadLeft, ReloadSeconds)
 	}
 }
 
@@ -587,7 +587,7 @@ func TestReplayingACommandDecrementsTheCooldownAgain(t *testing.T) {
 	// Until this iteration the property was a provable no-op, because there was
 	// nothing on Player a second application could disagree about. This is what
 	// stops it being one.
-	l, p := armed(0)
+	l, p := armed()
 	fired := Step(l, p, fireAt(p, dt))
 	c := holdStill(fired, dt)
 
@@ -606,31 +606,13 @@ func TestReplayingACommandDecrementsTheCooldownAgain(t *testing.T) {
 	}
 }
 
-func TestTheAmmunitionIsSomethingTheBuildingActuallyScatters(t *testing.T) {
-	// The gun spends a counter, and a counter is only ever filled by a pickup's
-	// Grants. If the two ever stop naming the same thing, the gun becomes
-	// impossible to reload and nothing else in the package would say so — the
-	// simulation would simply refuse every trigger pull on an empty gun, for
-	// ever, in silence.
-	for _, k := range Pickups {
-		if k.Grants == AmmoCounter {
-			if k.Max < ReloadCost {
-				t.Fatalf("%q caps at %d and a reload costs %d, so a full bag cannot load the gun",
-					k.Key, k.Max, ReloadCost)
-			}
-			return
-		}
-	}
-	t.Fatalf("nothing in the catalogue grants %q, so the gun can never be reloaded", AmmoCounter)
-}
-
 // --- the шприц ---------------------------------------------------------------
 
 // injecting is somebody standing in the middle of a room, hurt by `hurt`, with a
 // full ampoule running. It is the state collect leaves a man in the tick after he
 // walks over one (world.go).
 func injecting(hurt int) (*Level, Player) {
-	l, p := armed(0)
+	l, p := armed()
 	p.Health = MaxHealth - hurt
 	p.InjectLeft = SyringeSeconds
 	return l, p
@@ -847,9 +829,10 @@ func TestAnAmpouleKeepsTheIdleFillRunning(t *testing.T) {
 }
 
 func TestTheAmpouleIsSomethingTheBuildingActuallyScatters(t *testing.T) {
-	// The same guard the ammunition has: the injection's constants are the
-	// simulation's, and a catalogue with no medicine in it would mean nothing can
-	// ever start one — silently, because a building simply would not scatter any.
+	// The injection's constants are the SIMULATION's and the thing that starts one
+	// is a CATALOGUE entry, so the two have to keep pointing at each other: a
+	// catalogue with no medicine in it means nothing can ever start an injection —
+	// silently, because a building simply would not scatter any.
 	for _, k := range Pickups {
 		if k.Heals <= 0 {
 			continue
@@ -859,10 +842,35 @@ func TestTheAmpouleIsSomethingTheBuildingActuallyScatters(t *testing.T) {
 				k.Key, k.Heals, k.InjectSeconds)
 		}
 		if k.Grants != "" {
-			t.Fatalf("%q both heals and grants %q; medicine is used rather than carried, so a bag entry is a counter nothing spends",
+			t.Fatalf("%q both heals and grants %q; medicine is used rather than carried, so a bag entry would be a counter nobody can ever look at",
 				k.Key, k.Grants)
 		}
 		return
 	}
 	t.Fatal("nothing in the catalogue heals, so no ampoule can ever be started")
+}
+
+func TestEveryPickupKindIsWorthWalkingOver(t *testing.T) {
+	// THE INVARIANT THAT REPLACED A RUNTIME GUARD, and it is worth saying which
+	// one. The collection loop used to clamp a counter to a ceiling and then check
+	// whether anything had actually been gained — after it had already stamped the
+	// respawn deadline, so a man at the ceiling destroyed the bottle for
+	// PickupRespawn, got nothing, and took it from the other two occupants as
+	// well, since that clock is the building's rather than his.
+	//
+	// The ceiling is gone (content.go, PickupKind) and with it the only way the
+	// generic branch could decline, so the branch consumes unconditionally and
+	// world.go says so. That is only true while every kind actually hands
+	// something over, which is a property of the CATALOGUE and therefore belongs
+	// here: a kind granting nothing would silently reintroduce exactly the state
+	// the loop no longer checks for.
+	for _, k := range Pickups {
+		heals := k.Heals > 0
+		grants := k.Grants != "" && k.Amount > 0
+		if heals == grants {
+			t.Fatalf("%q heals %d and grants %d of %q: a kind does exactly one of the two, "+
+				"or walking over it consumes it for %s and hands the player nothing",
+				k.Key, k.Heals, k.Amount, k.Grants, PickupRespawn)
+		}
+	}
 }

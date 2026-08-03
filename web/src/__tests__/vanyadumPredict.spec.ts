@@ -28,7 +28,6 @@ const K: StepConstants = {
   barrels: 2,
   fireCooldownSeconds: 0.35,
   reloadSeconds: 1.5,
-  reloadCost: 1,
   maxHealth: 100,
   syringeHeal: 50,
   syringeSeconds: 2.5,
@@ -51,7 +50,6 @@ function snap(over: Partial<Authoritative> & { ack: number }): Authoritative {
     cooldown: 0,
     reload: 0,
     protect: 0,
-    ammo: 0,
     inject: 0,
     ...over,
   };
@@ -267,30 +265,21 @@ describe('the gun, which is the first thing here that is decremented rather than
     expect(p.raw().cooldown).toBeCloseTo(0.05, 12);
   });
 
-  it('takes the ammunition from the snapshot, because it never sees a pickup', () => {
-    // Walking over a bottle is the server's to decide and this client predicts
-    // none of it, so a locally held count would only ever fall — and an empty
-    // gun would refuse the reload the server was granting.
+  it('starts the same reload however many times the command is replayed', () => {
+    // WHAT SURVIVED THE PRICE. A reload used to spend a bottle, and a replay that
+    // spent it again drained a bag at the round-trip rate — that hazard is gone
+    // with the counter. What remains is the timer, which is DECREMENTED rather
+    // than replaced: replayed against a base that already carried it, the same
+    // pull would take its dt off twice and finish the reload early.
     const p = predictor();
-    expect(p.raw().ammo).toBe(0);
-    p.reconcile(snap({ ack: 0, ammo: 3 }));
-    expect(p.raw().ammo).toBe(3);
-  });
-
-  it('spends one bottle per reload however many times the command is replayed', () => {
-    // The other half of the same hazard. A reload spends ammunition, and a
-    // replay that spent it again would drain a bag at the round-trip rate.
-    const p = predictor();
-    // An empty gun with something to load it: the pull starts a reload.
-    p.reconcile(snap({ ack: 0, loaded: 0, ammo: 2 }));
+    // An empty gun: the pull starts a reload, and it costs nothing to start.
+    p.reconcile(snap({ ack: 0, loaded: 0 }));
     p.apply(shoot);
     expect(p.raw().reload).toBe(K.reloadSeconds);
-    expect(p.raw().ammo).toBe(1);
 
     // The same command, still unacknowledged, replayed on top of a snapshot
-    // taken before it.
-    p.reconcile(snap({ y: p.raw().y, ack: 0, loaded: 0, ammo: 2 }));
-    expect(p.raw().ammo).toBe(1);
+    // taken before it — which is the server's `r` of zero, not this client's.
+    p.reconcile(snap({ y: p.raw().y, ack: 0, loaded: 0 }));
     expect(p.raw().reload).toBe(K.reloadSeconds);
   });
 
@@ -377,7 +366,7 @@ describe('the shot is reported by the step that granted it', () => {
     // played per frame for as long as a one-and-a-half-second timer is running
     // is not a sound, it is a fault.
     const p = predictor();
-    p.reconcile(snap({ ack: 0, loaded: 0, ammo: 2 }));
+    p.reconcile(snap({ ack: 0, loaded: 0 }));
     const started = p.apply(shoot);
     expect(started.reloadStarted).toBe(true);
     expect(started.fired).toBe(false);
@@ -387,14 +376,20 @@ describe('the shot is reported by the step that granted it', () => {
     expect(p.apply(walk).reloadStarted).toBe(false);
   });
 
-  it('says nothing when there is no beer to load', () => {
-    // A pull on an empty gun with an empty bag reaches the server — whether
-    // there is a bottle in your pockets is its call — and grants nothing at all.
+  it('and reports another one the next time the gun runs out, out of empty pockets', () => {
+    // THE CLAIM THAT REPLACED «there is no beer to load». A pull on an empty
+    // обрез used to be able to grant nothing at all, and the sound and the
+    // animation both hung off that. Reloads are free now, so the second one is
+    // reported exactly like the first — a port that kept a condition on the
+    // branch would report the first and then go silent for the rest of the visit.
     const p = predictor();
-    p.reconcile(snap({ ack: 0, loaded: 0, ammo: 0 }));
-    const applied = p.apply(shoot);
-    expect(applied.fired).toBe(false);
-    expect(applied.reloadStarted).toBe(false);
+    p.reconcile(snap({ ack: 0, loaded: 0 }));
+    expect(p.apply(shoot).reloadStarted).toBe(true);
+    // That reload ran out and the two barrels went the same way, so the server's
+    // gun is empty and idle again. Acknowledged, or the pull that started the
+    // first one would be replayed on top of this and start it a second time.
+    p.reconcile(snap({ ack: 1, loaded: 0, reload: 0 }));
+    expect(p.apply(shoot).reloadStarted).toBe(true);
   });
 });
 

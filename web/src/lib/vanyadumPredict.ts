@@ -16,7 +16,7 @@
  * frame rate, and the server still decides everything.
  *
  * WHAT IS PREDICTED, AND WHY THE GUN IS. Position, and — since the обрез — the
- * shell count, both of its timers and the ammunition the reload spends.
+ * shell count and both of its timers.
  * ADR-058's question is the one that decides each of them, asked the way that
  * record's reasoning asks it rather than the way its one-line test does: must
  * the CLIENT simulate this? The gun must, because the muzzle flash is drawn the
@@ -90,17 +90,6 @@ export interface Authoritative {
   cooldown: number;
   /** Seconds until a reload finishes; the caller converts the wire's `r` ms. */
   reload: number;
-  /**
-   * How much ammunition the player is carrying, out of the snapshot's bag.
-   *
-   * ON THIS TYPE ALTHOUGH THE TRIGGER IS THE ONLY THING THAT SPENDS IT, because
-   * the trigger is not the only thing that MOVES it: walking over a bottle is
-   * the server's to decide and this client predicts no pickups at all. A locally
-   * held count would therefore only ever fall, so an empty gun would refuse a
-   * reload the server was granting — and the reload is the one branch of the
-   * trigger a player waits a second and a half for.
-   */
-  ammo: number;
   /**
    * Seconds of ampoule left, and the CALLER reads the discriminator: the wire
    * spends one field on this and on the respawn countdown, with `hp` saying
@@ -236,16 +225,14 @@ export function createPredictor(opts: PredictorOptions) {
     yaw: opts.start.yaw,
     pitch: 0,
     sector: opts.start.sector,
-    // Alive and unprotected, loaded and dry — which is how the server's
-    // NewPlayer leaves somebody: two free shots and then a walk to a bottle.
-    // Guessed here only for the fraction of a second before the first snapshot,
-    // which overwrites every one of them.
+    // Alive, unprotected and loaded — which is how the server's NewPlayer leaves
+    // somebody. Guessed here only for the fraction of a second before the first
+    // snapshot, which overwrites every one of them.
     health: opts.start.health,
     protectedLeft: 0,
     loaded: constants.barrels,
     cooldown: 0,
     reload: 0,
-    ammo: 0,
     injectLeft: 0,
   };
   // The offset being eased out, in metres. Added to the predicted position when
@@ -371,7 +358,7 @@ export function createPredictor(opts: PredictorOptions) {
       //
       // Until the обрез arrived, every field on the predicted player was
       // REPLACED — by the snapshot, or by the thumb. The gun brought the first
-      // three that are DECREMENTED, and a decremented field cannot be replayed
+      // two that are DECREMENTED, and a decremented field cannot be replayed
       // on top of a state that already contains it: write `cooldown:
       // predicted.cooldown` here and every command still pending takes its dt
       // off the clock a second time, so a walking client burns its cadence at
@@ -410,7 +397,6 @@ export function createPredictor(opts: PredictorOptions) {
         loaded: a.loaded,
         cooldown: a.cooldown,
         reload: a.reload,
-        ammo: a.ammo,
         injectLeft: a.inject,
       };
       for (const c of pending) replayed = step(level, replayed, c, constants);

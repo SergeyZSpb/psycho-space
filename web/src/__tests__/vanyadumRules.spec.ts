@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   VANYADUM_PROSE,
-  ammoPickup,
   buildRules,
   carriedKinds,
   medicinePickup,
@@ -35,8 +34,6 @@ const config: VanyadumConfig = {
     barrels: 2,
     fire_cooldown_seconds: 0.35,
     reload_seconds: 1.5,
-    reload_cost: 1,
-    ammo: 'beer',
     damage: 50,
   },
   // Deliberately not the server's numbers, exactly like everything else here: a
@@ -64,7 +61,6 @@ const config: VanyadumConfig = {
       icon: '🍺',
       grants: 'beer',
       amount: 1,
-      max: 9,
       tint: '#c8892f',
       blurb: 'Заливаешь — и панчи сами идут.',
     },
@@ -181,7 +177,6 @@ describe('buildRules', () => {
           icon: '💉',
           grants: 'health',
           amount: 25,
-          max: 0,
           tint: '#c9d6d2',
           blurb: 'В руку и на поршень.',
         },
@@ -235,45 +230,42 @@ describe('buildRules', () => {
     // decides the обрез is too slow.
     const retuned = {
       ...config,
-      gun: { ...config.gun, barrels: 4, fire_cooldown_seconds: 0.8, reload_seconds: 2.5, reload_cost: 3 },
+      gun: { ...config.gun, barrels: 4, fire_cooldown_seconds: 0.8, reload_seconds: 2.5 },
     };
     const block = buildRules(retuned).find((b) => b.title === 'Обрез');
     const text = block?.lines.map((l) => l.text).join(' ') ?? '';
     expect(text).toContain('4');
     expect(text).toContain('0,8 с');
     expect(text).toContain('2,5 с');
-    expect(text).toContain('3');
     // Not marked as prose, because none of it was typed out.
     expect(block?.prose).toBeFalsy();
   });
 
-  it('names the ammunition by joining the gun to the pickup that grants it', () => {
-    // THE JOIN IS THE POINT, and it is what a second ammunition would ride on.
-    // The catalogue publishes a counter NAME, and the entry whose `grants`
-    // matches already carries the title and the icon — so the screen says «🍺
-    // пиво» because the two agree, not because this file was told twice.
-    const renamed = {
-      ...config,
-      gun: { ...config.gun, ammo: 'juice' },
-      pickups: [
-        { ...config.pickups[0], grants: 'juice', title: 'сок', icon: '🧃' },
-      ],
-    };
-    const block = buildRules(renamed).find((b) => b.title === 'Обрез');
+  it('says the reload is free, and that it is still the whole of the cost', () => {
+    // THE RULES CHANGE THIS FIXTURE EXISTS TO PIN. The обрез used to spend a
+    // бутылка per reload and the block named the counter and the price; ammunition
+    // is infinite now, so the cheatsheet has to say all three things a player
+    // needs — nothing is spent, it still takes the served time, and the time is
+    // time he cannot shoot in. A screen still describing the old economy is worse
+    // than none, because it will be believed.
+    const block = buildRules(config).find((b) => b.title === 'Обрез');
+    const line = block?.lines.find((l) => l.label.includes('перезарядка'));
+    expect(line?.text).toContain('1,5 с');
+    expect(line?.text).toContain('бесконечные');
+    expect(line?.text).toContain('не стреляешь');
+    // And no line anywhere in the block still tells him what a reload costs or
+    // sends him looking for the thing that pays for it.
     const text = block?.lines.map((l) => `${l.label} ${l.text}`).join(' ') ?? '';
-    expect(text).toContain('🧃');
-    expect(text).toContain('сок');
-    expect(text).not.toContain('пиво');
+    expect(text).not.toContain('чем заряжать');
+    expect(text).not.toContain('Одна перезарядка тратит');
+    expect(text).not.toContain('с пустыми карманами');
   });
 
-  it('says nothing about ammunition when nothing in the catalogue grants it', () => {
-    // The server has a test that will not let a gun spend a counter nothing
-    // scatters, so this is the client refusing to render «undefined» rather than
-    // a case anybody expects. The rest of the block still says what it can.
-    const orphaned = { ...config, gun: { ...config.gun, ammo: 'petrol' } };
-    const block = buildRules(orphaned).find((b) => b.title === 'Обрез');
-    // The barrels, the reload and the list of refusals — everything except the
-    // line that would have had to name an ammunition nothing scatters.
+  it('is three lines now, because the ammunition line went with the price', () => {
+    // The block that names the barrels, the reload and the refusals. There used
+    // to be a fourth pointing at the thing to walk to, joined out of a counter
+    // name the catalogue no longer publishes.
+    const block = buildRules(config).find((b) => b.title === 'Обрез');
     expect(block?.lines.length).toBe(3);
     for (const line of block?.lines ?? []) {
       expect(`${line.label} ${line.text}`).not.toContain('undefined');
@@ -281,10 +273,10 @@ describe('buildRules', () => {
   });
 
   it('lists every way the trigger can go quiet, including the ампула', () => {
-    // THE LINE A PLAYER READS WHEN THE BUTTON GOES GREY. It named three of the
-    // six refusals and left out the longest — an injection roots the trigger for
-    // the whole of `inject_seconds`, which is far more than a cadence and reads
-    // as the control having died. Six states, one place.
+    // THE LINE A PLAYER READS WHEN THE BUTTON GOES GREY. It named three of them
+    // and left out the longest — an injection roots the trigger for the whole of
+    // `inject_seconds`, which is far more than a cadence and reads as the control
+    // having died. Five states, one place.
     const line = buildRules(medConfig)
       .find((b) => b.title === 'Обрез')
       ?.lines.find((l) => l.label.includes('молчит'));
@@ -321,37 +313,23 @@ describe('buildRules', () => {
     expect(line?.text).not.toContain('колешься');
   });
 
-  it('quotes the HUD’s own words for an empty gun rather than repeating them', () => {
-    // THE ONE CLAIM THIS LINE MAKES ABOUT THE SCREEN. It tells the player what
-    // the barrel cell will say, so it asks `shellsReadout` instead of typing the
-    // words a second time — retune what the обрез drinks and both follow.
-    const juice = {
-      ...config,
-      gun: { ...config.gun, ammo: 'juice' },
-      pickups: [{ ...config.pickups[0], grants: 'juice', title: 'сок', icon: '🧃' }],
-    };
-    const line = buildRules(juice)
-      .find((b) => b.title === 'Обрез')
-      ?.lines.find((l) => l.label.includes('молчит'));
-    expect(line?.text).toContain(
-      `«${shellsReadout({ loaded: 0, reloading: false, ammo: 0 }, juice).text}»`,
-    );
-    expect(line?.text).toContain('🧃');
-  });
-
-  it('says you walk in with empty pockets, which is the rule that empties the gun', () => {
-    // TYPED OUT — the server hands a new man an empty bag and publishes no field
-    // for it — and worth its clause, because it is what puts every player in
-    // front of a silent trigger a full gun's worth of shots after walking in.
+  it('promises every refusal ends by itself, because now every one of them does', () => {
+    // THE CLAIM THAT REPLACED THE QUOTED HUD WORDS. This line used to end by
+    // telling the player about the one refusal no clock ended — an empty обрез
+    // with nothing to fill it — and it quoted `shellsReadout` so the two could
+    // not drift. That state is unreachable with a free reload, so the sentence
+    // says the opposite and says it plainly: wait, and press again.
     const line = buildRules(config)
       .find((b) => b.title === 'Обрез')
-      ?.lines.find((l) => l.label.includes('заряжать'));
-    expect(line?.text).toContain('с пустыми карманами');
+      ?.lines.find((l) => l.label.includes('молчит'));
+    expect(line?.text).toContain('само проходит');
+    expect(line?.text).not.toContain('надо идти искать');
+    expect(line?.text).not.toContain('нет 🍺');
   });
 
   it('no longer keeps a second, shorter list of refusals in the prose', () => {
-    // It carried three of the six and could not carry the durations at all, so
-    // it was a copy that had already gone stale. The controls stay prose; the
+    // It carried three of them and could not carry the durations at all, so it
+    // was a copy that had already gone stale. The controls stay prose; the
     // reasons are derived, in one place.
     const prose = VANYADUM_PROSE.find((l) => l.label.includes('стрелять'));
     expect(prose?.text).toContain('Обрез');
@@ -609,7 +587,6 @@ describe('buildRules', () => {
           icon: '💉',
           grants: 'health',
           amount: 25,
-          max: 0,
           tint: '#c9d6d2',
           blurb: 'В руку и на поршень.',
         },
@@ -659,7 +636,6 @@ const MEDICINE: VanyadumPickupKind = {
   icon: '💉',
   grants: '',
   amount: 0,
-  max: 0,
   tint: '#9fd6c8',
   blurb: 'Чинит, но стоя.',
   heals: 35,
@@ -811,128 +787,73 @@ describe('carriedKinds', () => {
   });
 });
 
-describe('ammoPickup', () => {
-  it('finds the entry whose grants the gun spends', () => {
-    expect(ammoPickup(config)?.title).toBe('пиво');
-  });
-
-  it('answers null rather than guessing when nothing grants it', () => {
-    expect(ammoPickup({ ...config, gun: { ...config.gun, ammo: 'petrol' } })).toBeNull();
-  });
-
-  it('matches on the counter and not on the pickup’s own key', () => {
-    // `key` names the thing on the floor and `grants` names the counter it
-    // fills; they happen to be equal for beer today, which is exactly the sort
-    // of coincidence a join can be written wrong against and still pass.
-    const split = {
-      ...config,
-      gun: { ...config.gun, ammo: 'shells' },
-      pickups: [{ ...config.pickups[0], key: 'beer', grants: 'shells' }],
-    };
-    expect(ammoPickup(split)?.key).toBe('beer');
-  });
-});
-
 /**
  * The barrel readout, which is the HUD half of this module.
  *
- * IT EXISTS BECAUSE OF ONE QUESTION — «а патроны бесконечные?» — and the answer
- * was that they are not, that nobody starts with any, and that the game said so
- * nowhere at the moment it mattered. A trigger that answers a pull with nothing
- * is this project's definition of an unfinished action, and an empty обрез with
- * empty pockets is the one refusal a player cannot wait out.
+ * IT EXISTS BECAUSE OF ONE QUESTION — «а патроны бесконечные?» — which for one
+ * iteration was answered no, and is now answered yes. What survived that is the
+ * other half of the reason: nothing starts a reload by itself, so an empty обрез
+ * beside a live-looking button is a player waiting for something that will never
+ * happen. THREE STATES AND NOT FOUR — the empty gun that named what it was short
+ * of went with the price of a reload, and so did the `dry` flag the barrel cell
+ * and the trigger both wore for it.
  */
 describe('shellsReadout', () => {
-  const gun = { loaded: 2, reloading: false, ammo: 0 };
-
   it('counts the barrels against the catalogue when there are any', () => {
-    expect(shellsReadout({ ...gun, loaded: 1 }, config)).toEqual({ text: '1/2', dry: false });
+    expect(shellsReadout({ loaded: 1, reloading: false }, config)).toBe('1/2');
     // The ceiling is the catalogue's, never a 2 typed into the view.
-    expect(shellsReadout({ ...gun, loaded: 4 }, { ...config, gun: { ...config.gun, barrels: 4 } })).toEqual({
-      text: '4/4',
-      dry: false,
-    });
+    expect(
+      shellsReadout({ loaded: 4, reloading: false }, { ...config, gun: { ...config.gun, barrels: 4 } }),
+    ).toBe('4/4');
   });
 
-  it('an empty gun with a bottle in the pockets says to pull the trigger', () => {
-    // Nothing starts a reload by itself, so the empty-with-ammunition state is a
-    // thing the player DOES rather than a thing he waits out — and it is not a
-    // refusal at all, which is why the trigger is not marked for it.
-    expect(shellsReadout({ loaded: 0, reloading: false, ammo: 1 }, config)).toEqual({
-      text: 'пусто · жми',
-      dry: false,
-    });
+  it('an empty gun always says to pull the trigger, with nothing in the pockets', () => {
+    // THE STATE THAT ABSORBED THE OTHER ONE. A reload costs nothing, so the
+    // answer to an empty обрез does not depend on what anybody is carrying — and
+    // it is a thing the player DOES rather than a thing he waits out, because
+    // nothing starts a reload by itself.
+    expect(shellsReadout({ loaded: 0, reloading: false }, config)).toBe('пусто · жми');
   });
 
-  it('an empty gun with nothing to load names what it is short of', () => {
-    // THE REFUSAL NO CLOCK ENDS, and the only one that asks the player to walk
-    // somewhere. The ammunition is named by the catalogue's own join, so the cell
-    // cannot go stale against a retune.
-    expect(shellsReadout({ loaded: 0, reloading: false, ammo: 0 }, config)).toEqual({
-      text: 'нет 🍺',
-      dry: true,
-    });
-  });
-
-  it('counts a part-paid reload as nothing to load with', () => {
-    // A reload is all-or-nothing: `stepGun` spends `reload_cost` or does not
-    // start. Half of one in the pockets is a gun that will not answer, and a
-    // readout that showed it as loadable would be promising a pull that fails.
-    const dear = { ...config, gun: { ...config.gun, reload_cost: 3 } };
-    expect(shellsReadout({ loaded: 0, reloading: false, ammo: 2 }, dear).dry).toBe(true);
-    expect(shellsReadout({ loaded: 0, reloading: false, ammo: 3 }, dear).dry).toBe(false);
-  });
-
-  it('says it is waiting while a reload runs, whatever is in the pockets', () => {
-    // The count is not the useful thing to show mid-reload, and neither is the
-    // bag: the gun is coming back on its own, which is the opposite of dry.
-    expect(shellsReadout({ loaded: 0, reloading: true, ammo: 0 }, config)).toEqual({
-      text: 'жду',
-      dry: false,
-    });
-  });
-
-  it('names the ammunition by the join and not by a word typed here', () => {
-    const juice = {
-      ...config,
-      gun: { ...config.gun, ammo: 'juice' },
-      pickups: [{ ...config.pickups[0], grants: 'juice', title: 'сок', icon: '🧃' }],
-    };
-    expect(shellsReadout({ loaded: 0, reloading: false, ammo: 0 }, juice).text).toBe('нет 🧃');
-  });
-
-  it('renders no «undefined» for a catalogue that grants the gun nothing', () => {
-    // The server will not serve one — a gun spending a counter nothing scatters
-    // could never be reloaded — so this is the client declining to print a hole.
-    const orphaned = { ...config, gun: { ...config.gun, ammo: 'petrol' } };
-    expect(shellsReadout({ loaded: 0, reloading: false, ammo: 0 }, orphaned)).toEqual({
-      text: 'пусто',
-      dry: true,
-    });
+  it('says it is waiting while a reload runs', () => {
+    // The count is not the useful thing to show mid-reload: the gun is coming
+    // back on its own, and what a player wants to know is that it is.
+    expect(shellsReadout({ loaded: 0, reloading: true }, config)).toBe('жду');
   });
 
   it('says nothing at all before the catalogue has arrived', () => {
-    // A state the play screen is never reached in, answered rather than thrown —
-    // and never `dry`, because a mark on the trigger before anything is known
-    // would be the readout guessing.
-    expect(shellsReadout({ loaded: 0, reloading: false, ammo: 0 }, null)).toEqual({
-      text: '',
-      dry: false,
-    });
+    // A state the play screen is never reached in, answered rather than thrown.
+    expect(shellsReadout({ loaded: 0, reloading: false }, null)).toBe('');
+  });
+
+  it('never tells anybody he is out of something, because he cannot be', () => {
+    // The readout that named the ammunition is gone with the state it described.
+    // Asserted over every reachable state rather than by inspecting the source,
+    // so a helper quietly reintroduced elsewhere still fails here.
+    for (const gun of [
+      { loaded: 0, reloading: false },
+      { loaded: 0, reloading: true },
+      { loaded: 1, reloading: false },
+      { loaded: 2, reloading: false },
+    ]) {
+      expect(shellsReadout(gun, config)).not.toContain('нет');
+    }
   });
 });
 
 describe('pickupLine', () => {
-  it('states what it grants and what the ceiling is', () => {
+  it('states what it grants', () => {
     const line = pickupLine(config.pickups[0]);
     expect(line.label).toBe('🍺 пиво');
     expect(line.text).toContain('+1');
-    expect(line.text).toContain('максимум 9');
   });
 
-  it('says nothing about a ceiling when there is not one', () => {
-    const line = pickupLine({ ...config.pickups[0], max: 0 });
-    expect(line.text).not.toContain('максимум');
+  it('promises no ceiling, because there is not one to promise', () => {
+    // The counter used to have one, and it only made sense while the обрез drank
+    // what was in the pockets. Nothing spends пиво now, so it only ever goes up —
+    // and a cheatsheet still naming a ceiling would be describing a rule that was
+    // deleted, which a player would believe.
+    expect(pickupLine(config.pickups[0]).text).not.toContain('максимум');
   });
 
   it('tells the player it is picked up by walking, because there is no button', () => {

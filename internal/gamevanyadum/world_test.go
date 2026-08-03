@@ -466,8 +466,8 @@ func TestWalkingOverSomethingPicksItUp(t *testing.T) {
 	if w.available(0) {
 		t.Fatal("stood on the beer and it is still lying there")
 	}
-	if w.Occupant(acc).State.Counters["beer"] != 1 {
-		t.Fatalf("counter is %d, expected 1", w.Occupant(acc).State.Counters["beer"])
+	if w.Occupant(acc).bag["beer"] != 1 {
+		t.Fatalf("counter is %d, expected 1", w.Occupant(acc).bag["beer"])
 	}
 }
 
@@ -477,7 +477,7 @@ func TestAPickupIsCollectedOnceUntilItComesBack(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		w.Advance(SimStep.Seconds(), epoch)
 	}
-	if got := w.Occupant(acc).State.Counters["beer"]; got != 1 {
+	if got := w.Occupant(acc).bag["beer"]; got != 1 {
 		t.Fatalf("standing on it for five ticks gave %d beers", got)
 	}
 }
@@ -777,7 +777,7 @@ func TestTwoPlayersReachingTheSameBeerAreResolvedDeterministically(t *testing.T)
 	}
 	awarded := 0
 	for _, id := range ids {
-		awarded += first.Occupant(id).State.Counters["beer"]
+		awarded += first.Occupant(id).bag["beer"]
 	}
 	if awarded != 1 {
 		t.Fatalf("%d beers awarded for one bottle; the contention this test needs did not happen", awarded)
@@ -1114,7 +1114,7 @@ func TestTheStandingsAreOfTheBuildingAndNotOfWhatYouCanSee(t *testing.T) {
 	me.State.Sector = w.Level.SpawnSector
 	hidden, _ := w.Join("account-hidden", "pseudo-hidden", epoch)
 	hidden.State.Sector = far
-	hidden.State.Counters = map[string]int{"beer": 3}
+	hidden.bag = map[string]int{"beer": 3}
 
 	if peers := mustSnapshot(t, w, "account-me").Peers; len(peers) != 0 {
 		t.Fatalf("the man two rooms away is on the snapshot: %+v", peers)
@@ -1210,19 +1210,20 @@ func TestNobodyWinsEveryContestedPickup(t *testing.T) {
 	const contests = 40
 	for i := 0; i < contests; i++ {
 		// A fresh contest each tick: the bottle is put back and both of them are
-		// standing on it with nothing else to separate them. The counters go with
-		// it, because beer caps at PickupKind.Max and a capped counter would stop
-		// recording who won.
+		// standing on it with nothing else to separate them. The bags are emptied
+		// with it, because nothing in the building ever takes anything out of one
+		// — so a running total would say who has won SO FAR, where what this loop
+		// needs to read is who won THIS contest.
 		w.ready[0] = 0
 		for _, id := range ids {
 			standOn(w, id, 0)
-			w.Occupant(id).State.Counters = nil
+			w.Occupant(id).bag = nil
 		}
 		w.Advance(SimStep.Seconds(), epoch)
 
 		won := ""
 		for _, id := range ids {
-			if w.Occupant(id).State.Counters["beer"] > 0 {
+			if w.Occupant(id).bag["beer"] > 0 {
 				if won != "" {
 					t.Fatalf("contest %d awarded the same bottle to both of them", i)
 				}
@@ -1260,12 +1261,17 @@ func TestNobodyWinsEveryContestedPickup(t *testing.T) {
 func worldDigest(t *testing.T, w *World, ids ...string) string {
 	t.Helper()
 	type occupantState struct {
-		ID       string
-		Pos      Vec2
-		Sector   int
-		Health   int
-		LastSeq  int64
-		Counters map[string]int
+		ID      string
+		Pos     Vec2
+		Sector  int
+		Health  int
+		LastSeq int64
+		// Bag is the occupant's own rather than the player state's, and that is
+		// where it moved to when it left the snapshot (world.go, Occupant.bag).
+		// It stays in the digest for the reason everything else here is: two runs
+		// that awarded a contested bottle to different men produce identical
+		// positions on the tick after, and different pockets for ever.
+		Bag      map[string]int
 		Loaded   int
 		Cooldown float64
 		Reload   float64
@@ -1319,7 +1325,7 @@ func worldDigest(t *testing.T, w *World, ids ...string) string {
 		}
 		out.Occs = append(out.Occs, occupantState{
 			ID: id, Pos: o.State.Pos, Sector: o.State.Sector,
-			Health: o.State.Health, LastSeq: o.State.LastSeq, Counters: o.State.Counters,
+			Health: o.State.Health, LastSeq: o.State.LastSeq, Bag: o.bag,
 			Loaded: o.State.Loaded, Cooldown: o.State.CooldownLeft, Reload: o.State.ReloadLeft,
 			Inject: o.State.InjectLeft,
 			Kills:  o.kills, Deaths: o.deaths, Betrayals: o.betrayals,
@@ -1351,13 +1357,15 @@ func mustSnapshot(t *testing.T, w *World, accountID string) Snapshot {
 // arm puts an occupant somewhere harmless with a gun in whatever state a test
 // needs. The spawn room is the one place the generator never puts anything, so
 // the clock can run without something being collected under an assertion.
-func arm(w *World, acc string, loaded, ammo int) *Occupant {
+//
+// IT USED TO TAKE A BOTTLE COUNT AS WELL, and every caller that passed one was
+// buying the right to reload. A reload is free now (sim.go, stepGun), so the
+// argument had one value at every call site, and an option with one value is not
+// an option. A test that needs a bag writes to the occupant's own `bag`.
+func arm(w *World, acc string, loaded int) *Occupant {
 	standAtSpawn(w, acc)
 	o := w.Occupant(acc)
 	o.State.Loaded = loaded
-	if ammo > 0 {
-		o.State.Counters[AmmoCounter] = ammo
-	}
 	return o
 }
 
@@ -1381,7 +1389,7 @@ func TestTheGunKeepsRunningWhileTheClientSaysNothing(t *testing.T) {
 	// Without the fill the gun would work only while you were walking, which is
 	// the state you are least often in when you are shooting at something.
 	w, acc := newTestWorld(t, 11)
-	o := arm(w, acc, Barrels, 0)
+	o := arm(w, acc, Barrels)
 
 	fireOnTheWire(w, acc, 1)
 	w.Advance(SimStep.Seconds(), epoch)
@@ -1414,7 +1422,7 @@ func TestAnIdleTickDoesNotSnapTheView(t *testing.T) {
 	// bare Command{Dt: idle} would point every player who stopped moving due
 	// north and level — twenty times a second, for as long as they stood there.
 	w, acc := newTestWorld(t, 11)
-	o := arm(w, acc, Barrels, 0)
+	o := arm(w, acc, Barrels)
 	o.State.Yaw, o.State.Pitch = 2.2, -0.7
 
 	fireOnTheWire(w, acc, 1)
@@ -1439,7 +1447,7 @@ func TestQuietTimeCannotBeBankedAndSpentOnTheGun(t *testing.T) {
 	// So the assertion is the invariant rather than the symptom: over any window,
 	// the gun cannot be granted more time than actually passed.
 	w, acc := newTestWorld(t, 11)
-	o := arm(w, acc, 0, ReloadCost)
+	o := arm(w, acc, 0)
 
 	fireOnTheWire(w, acc, 1)
 	w.Advance(SimStep.Seconds(), epoch)
@@ -1480,7 +1488,7 @@ func TestAColdGunIsNotChargedForStandingStill(t *testing.T) {
 	// already at rest — so charging the budget for it would spend the honest
 	// client's catch-up cushion on a simulation that did nothing.
 	w, acc := newTestWorld(t, 3)
-	o := arm(w, acc, Barrels, 0)
+	o := arm(w, acc, Barrels)
 
 	for i := 0; i < SimHz/2; i++ {
 		w.Advance(SimStep.Seconds(), epoch)
@@ -1496,7 +1504,7 @@ func TestTheSnapshotCarriesTheGunAndOmitsItWhenItIsResting(t *testing.T) {
 	// count is the SERVER's, so a client that mispredicted a refused shot is put
 	// right within one frame rather than showing a number it made up.
 	w, acc := newTestWorld(t, 11)
-	o := arm(w, acc, Barrels, ReloadCost)
+	o := arm(w, acc, Barrels)
 
 	resting, ok := w.SnapshotFor(acc)
 	if !ok {
@@ -1549,7 +1557,7 @@ func TestTheSnapshotCarriesTheGunAndOmitsItWhenItIsResting(t *testing.T) {
 func watching(t *testing.T, n int) (*World, string, []string) {
 	t.Helper()
 	w, shooter := newTestWorld(t, 11)
-	arm(w, shooter, Barrels, 0)
+	arm(w, shooter, Barrels)
 	var watchers []string
 	for i := 0; i < n; i++ {
 		acc := uuid.New().String()
@@ -1667,27 +1675,25 @@ func TestEverybodyWatchingIsToldAboutTheSameShot(t *testing.T) {
 	}
 }
 
-func TestTheVisitRecordsWhatWasFoundAndNotWhatWasLeftOver(t *testing.T) {
-	// The two numbers were the same until the gun started spending beer, and the
-	// column means the first of them — "how much beer was collected on the way",
-	// in a migration that can no longer be edited. So a visit that read the bag
-	// would record a nought for every player who actually used what he found,
-	// which is the one thing the splash screen's «твои визиты» list is for.
+func TestTheVisitRecordsWhatWasFoundAndAReloadTakesNoneOfIt(t *testing.T) {
+	// The column means "how much beer was collected on the way", in a migration
+	// that can no longer be edited — and the thing that could once make the tally
+	// and the bag disagree was the gun drinking out of it. It cannot now: a reload
+	// is free (sim.go, stepGun), so one map is both numbers (Occupant.bag) and the
+	// pull that starts a reload leaves it exactly where the walk over the bottle
+	// put it. The «твои визиты» list still says what the visit found.
 	w, acc := newTestWorld(t, 11)
 	standOn(w, acc, 0)
 	w.Advance(SimStep.Seconds(), epoch)
 
 	o := w.Occupant(acc)
-	found := o.collected["beer"]
+	found := o.bag["beer"]
 	if found == 0 {
 		t.Fatal("standing on a bottle collected nothing")
 	}
-	if got := o.State.Counters["beer"]; got != found {
-		t.Fatalf("carrying %d of the %d collected before anything was spent", got, found)
-	}
 
-	// Now empty the gun into the floor and reload out of the bag, which is the
-	// ordinary thing a player does with the beer he just picked up.
+	// Now empty the gun into the floor and reload, which is the ordinary thing a
+	// player does about two seconds after picking anything up.
 	o.State.Loaded = 0
 	standAtSpawn(w, acc)
 	fireOnTheWire(w, acc, 1)
@@ -1695,11 +1701,8 @@ func TestTheVisitRecordsWhatWasFoundAndNotWhatWasLeftOver(t *testing.T) {
 	if o.State.ReloadLeft <= 0 {
 		t.Fatalf("the reload did not start: %+v", o.State)
 	}
-	if got := o.State.Counters["beer"]; got != found-ReloadCost {
-		t.Fatalf("the bag holds %d after a reload of %d out of %d", got, ReloadCost, found)
-	}
-	if got := o.collected["beer"]; got != found {
-		t.Fatalf("spending beer changed what was collected from %d to %d", found, got)
+	if got := o.bag["beer"]; got != found {
+		t.Fatalf("the reload took %d out of a bag of %d", found-got, found)
 	}
 }
 
@@ -1928,12 +1931,12 @@ func TestADeathCostsTheDeadManNothingHeWasCarrying(t *testing.T) {
 	// (content.go, DownTime): dying costs the three seconds and the walk back,
 	// and never the bottles somebody toured the building for.
 	w, sw, shooter, victim := duel(t)
-	w.Occupant(victim).State.Counters[AmmoCounter] = 4
+	w.Occupant(victim).bag = map[string]int{"beer": 4}
 	sw.run(w, 3)
 	kill(t, w, sw, shooter, victim)
 	sw.run(w, int(downTicks)+1)
 
-	if got := w.Occupant(victim).State.Counters[AmmoCounter]; got != 4 {
+	if got := w.Occupant(victim).bag["beer"]; got != 4 {
 		t.Fatalf("he walked in with 4 bottles, died, and got up with %d", got)
 	}
 }
@@ -1954,7 +1957,7 @@ func TestAManOnTheFloorPicksNothingUp(t *testing.T) {
 	// He takes it while he is alive, which is what leaves him standing on an empty
 	// spot with the respawn running.
 	sw.run(w, 3)
-	carrying := w.Occupant(victim).State.Counters[AmmoCounter]
+	carrying := w.Occupant(victim).bag["beer"]
 	if carrying == 0 {
 		t.Fatal("he did not pick up the bottle he is standing on, so this fixture proves nothing")
 	}
@@ -1970,14 +1973,11 @@ func TestAManOnTheFloorPicksNothingUp(t *testing.T) {
 	if v.State.Health != 0 {
 		t.Fatal("he got up before the part of the test that needs him down")
 	}
-	if got := v.State.Counters[AmmoCounter]; got != carrying {
+	if got := v.bag["beer"]; got != carrying {
 		t.Fatalf("a corpse drank one: he went down with %d bottles and is lying there with %d", carrying, got)
 	}
 	if !w.available(0) {
 		t.Fatal("the bottle standing next to a corpse was taken by him")
-	}
-	if got := v.collected[AmmoCounter]; got != carrying {
-		t.Fatalf("his visit records %d bottles found, and he found %d before he died", got, carrying)
 	}
 
 	// And the control: on his feet, on the same bottle, he takes it — so the
@@ -1986,7 +1986,7 @@ func TestAManOnTheFloorPicksNothingUp(t *testing.T) {
 	sw.run(w, int(downTicks)+1)
 	stand(t, w, victim, Vec2{X: 9, Y: 10}, 0)
 	sw.tick(w)
-	if got := v.State.Counters[AmmoCounter]; got != carrying+1 {
+	if got := v.bag["beer"]; got != carrying+1 {
 		t.Fatalf("back on his feet on the same bottle he is carrying %d, expected %d", got, carrying+1)
 	}
 }
@@ -2546,7 +2546,7 @@ func TestTheSameShotsKillTheSamePeopleEveryTime(t *testing.T) {
 			settled(w, acc)
 			// A triangle, each man looking at the next one round it.
 			stand(t, w, acc, Vec2{X: 8 + float64(i)*2, Y: 10}, eastward)
-			w.Occupant(acc).State.Counters[AmmoCounter] = 3
+			w.Occupant(acc).bag = map[string]int{"beer": 3}
 		}
 		// The one facing the others is turned round, so the fire goes both ways.
 		stand(t, w, accs[2], Vec2{X: 12, Y: 10}, eastward+math.Pi)
@@ -2669,8 +2669,8 @@ func TestWalkingOverAnAmpouleStartsAnInjection(t *testing.T) {
 	}
 	// NOTHING WENT INTO THE BAG. Medicine is used rather than carried, so a
 	// counter for it would be a counter nothing ever spends.
-	if len(o.State.Counters) != 0 {
-		t.Fatalf("taking an ampoule put %v in his bag", o.State.Counters)
+	if len(o.bag) != 0 {
+		t.Fatalf("taking an ampoule put %v in his bag", o.bag)
 	}
 	// And it was announced, on the same event every pickup uses — the client draws
 	// the needle from the state field and the sound from this.
@@ -2741,7 +2741,7 @@ func TestAManOnTheFloorStartsNoInjection(t *testing.T) {
 	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
 	victim := joinTo(t, w, Vec2{X: 9, Y: 10}, 0)
 
-	arm(w, shooter, Barrels, 0)
+	arm(w, shooter, Barrels)
 	stand(t, w, shooter, Vec2{X: 5, Y: 10}, eastward)
 	// The ampoule is away while he is being shot, so that what puts him on the
 	// floor is the two barrels and not this test's fixture racing them.
@@ -2934,7 +2934,7 @@ func TestBeingShotTakesTheNeedleOut(t *testing.T) {
 	// with the ampoule, which is on the floor of the room he took it from with a
 	// respawn running (content.go).
 	w, sw, shooter, victim := duel(t)
-	arm(w, shooter, Barrels, 0)
+	arm(w, shooter, Barrels)
 	stand(t, w, shooter, Vec2{X: 5, Y: 10}, eastward)
 	v := hurtBy(w, victim, SyringeHeal)
 	v.State.InjectLeft = SyringeSeconds
@@ -2985,7 +2985,7 @@ func TestTheAmpouleRidesTheDownTimerAndTheHealthSaysWhich(t *testing.T) {
 	// the wire, and `hp` is what says whether it is a man on the floor or a man
 	// with a needle in his arm. The two are exclusive, so the reader never guesses.
 	w, sw, shooter, victim := duel(t)
-	arm(w, shooter, Barrels, 0)
+	arm(w, shooter, Barrels)
 	stand(t, w, shooter, Vec2{X: 5, Y: 10}, eastward)
 	v := hurtBy(w, victim, SyringeHeal)
 	v.State.InjectLeft = SyringeSeconds
@@ -3053,7 +3053,7 @@ func TestBeingShotMidInjectionIsToldToTheRoomAsAHit(t *testing.T) {
 	// comes out is a tick there is no needle — and what the room is told is the
 	// thing that changed the building.
 	w, sw, shooter, victim := duel(t)
-	arm(w, shooter, Barrels, 0)
+	arm(w, shooter, Barrels)
 	stand(t, w, shooter, Vec2{X: 5, Y: 10}, eastward)
 	v := hurtBy(w, victim, SyringeHeal)
 	v.State.InjectLeft = SyringeSeconds
@@ -3130,8 +3130,9 @@ func TestAProtectedManStartsNoInjectionBecauseHeSpawnsWhole(t *testing.T) {
 	// would look. Retune the first below the second and a freshly-spawned man can
 	// be injected while protected, both fields appear on one frame, and the widest
 	// snapshot grows by about ten bytes — 200 B/s at the snapshot rate, against
-	// 32 B/s of headroom. It would present as a phone on mobile data rather than
-	// as a failing test, so it is a failing test.
+	// 317 B/s of headroom, most of which is the deliberate pessimism in the
+	// measurement rather than room (content.go, MaxOccupants). It would present as
+	// a phone on mobile data rather than as a failing test, so it is a failing test.
 	if StartHealth < MaxHealth {
 		t.Fatalf("a man spawns on %d of %d, so he can be injected inside his spawn protection and `dn` and `pr` "+
 			"can both ride one frame — re-measure the wire budget before shipping that", StartHealth, MaxHealth)

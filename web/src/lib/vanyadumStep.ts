@@ -11,8 +11,8 @@
  * level, an input transcript and the resulting position trace into
  * `internal/gamevanyadum/testdata/step_vectors.json`, and
  * `vanyadumStep.spec.ts` asserts this file reproduces it — the positions, the
- * shell count, both of the gun's timers, the ammunition, and the spawn
- * protection a man gets up with.
+ * shell count, both of the gun's timers, and the spawn protection a man gets up
+ * with.
  * Change either on one side and the gate goes red on the other. **Do not edit
  * this file without regenerating the vectors and reading them.**
  *
@@ -40,10 +40,11 @@ export interface StepConstants {
   barrels: number;
   /** Seconds the gun is busy after a shot. */
   fireCooldownSeconds: number;
-  /** Seconds a reload takes. */
+  /**
+   * Seconds a reload takes, and the WHOLE of what one costs: the gun fills
+   * itself and nothing is spent to make it.
+   */
   reloadSeconds: number;
-  /** How much ammunition one reload spends. */
-  reloadCost: number;
   /**
    * The most health a man can hold. Here because it is the CAP AN AMPOULE IS
    * CLAMPED TO, and clamping is the whole of why injecting at nearly full health
@@ -85,11 +86,11 @@ export interface StepCommand {
  * EVERY FIELD HERE IS EITHER PREDICTED OR READ, and the two are worth telling
  * apart. ADR-058's question decides which: must the CLIENT simulate this?
  *
- *   * PREDICTED — the position, and the gun's shell count, both timers and the
- *     ammunition a reload spends. The gun has to be, for a reason movement never
- *     raised: the muzzle flash is drawn the instant a thumb lands, and a flash
- *     can only be honest if the browser has already run the same refusal the
- *     server is about to run.
+ *   * PREDICTED — the position, and the gun's shell count and both of its
+ *     timers. The gun has to be, for a reason movement never raised: the muzzle
+ *     flash is drawn the instant a thumb lands, and a flash can only be honest
+ *     if the browser has already run the same refusal the server is about to
+ *     run.
  *   * BOTH — `protectedLeft` and `injectLeft`. Each is SET by the server (a
  *     respawn grants the first, walking over an ampoule the second) and COUNTED
  *     DOWN here, because each refuses the trigger and that refusal has to run in
@@ -105,14 +106,17 @@ export interface StepCommand {
  *     walking him would have his corpse dragged down the corridor and corrected
  *     twenty times a second.
  *
- * `ammo` IS ONE NUMBER WHERE THE SERVER KEEPS A WHOLE BAG. `Step` reads exactly
- * one key of `Player.Counters` — the one a reload spends — and the golden vectors
- * trace exactly that one integer, so a map here would be a second copy of the
- * HUD's bag pretending to be part of the simulation. The HUD reads the whole bag
- * straight off the snapshot; this is only the number the trigger consults.
+ * WHAT SOMEBODY IS CARRYING IS NOT HERE AT ALL, and it used to be. The обрез
+ * spent a бутылка per reload, so the trigger's answer depended on the bag and
+ * this type carried the one counter it read. Reloads are free now — the gun
+ * fills itself (`stepGun` below) — so the simulation consults no counter, and a
+ * copy of one here would be the HUD's bag pretending to be part of the
+ * arithmetic. The HUD reads the whole bag off the standings, which is a frame
+ * this file has never had anything to do with and now never will: a tally that
+ * no rule consults does not belong on a payload the simulation runs on.
  *
- * `loaded`, `cooldown` and `ammo` ARE READ-MODIFY-WRITE, which nothing on this
- * type was before. A countdown is decremented rather than replaced, so replaying
+ * `loaded` AND `cooldown` ARE READ-MODIFY-WRITE, which nothing on this type was
+ * before the gun. A countdown is decremented rather than replaced, so replaying
  * a pending command on top of a state that already contains it decrements it
  * twice — see the reconcile in vanyadumPredict.ts for what that obliges.
  */
@@ -145,8 +149,6 @@ export interface StepPlayer {
   cooldown: number;
   /** Seconds until a reload completes; zero when none is running. */
   reload: number;
-  /** How much of the reload's ammunition is in the player's pockets. */
-  ammo: number;
   /**
    * Seconds until the ampoule in his forearm is empty; zero when there is none.
    *
@@ -483,7 +485,8 @@ export function gunBusy(
  *
  * THE TRIGGER IS THE ONLY THING THAT STARTS A RELOAD, and nothing reloads by
  * itself, so pulling on an empty gun is always answered: with a shot, or with a
- * reload, or with nothing at all when there is no beer.
+ * reload, and never with silence. There is no third outcome left for the trigger
+ * to have — a reload costs nothing but the time it takes.
  *
  * NOTHING HERE HITS ANYTHING, AND THAT IS PERMANENT RATHER THAN UNFINISHED. A
  * granted shot spends a barrel and starts a cooldown, and that is the complete
@@ -524,15 +527,13 @@ function stepGun(p: StepPlayer, c: StepCommand, k: StepConstants): void {
     p.cooldown = k.fireCooldownSeconds;
     return;
   }
-  // An empty gun. The ammunition is spent NOW rather than when the reload
-  // finishes, so that a reload interrupted by anything at all cannot be a free
-  // one. There is no in-place hazard to guard against here the way the server has
-  // one — its bag is a map shared with the caller, and this is a plain number on
-  // an object `step` has just copied.
-  if (p.ammo >= k.reloadCost) {
-    p.ammo -= k.reloadCost;
-    p.reload = k.reloadSeconds;
-  }
+  // An empty gun, which is the only state left for the trigger to answer. It
+  // reloads itself: nothing is checked and nothing is spent, because nothing in
+  // this building is ammunition any more. A PORT THAT KEEPS A CONDITION HERE
+  // fires the first shots correctly and then stands there for ever, which is
+  // what the golden vectors' rebuilt `gun` case is aimed at — it starts the
+  // player with empty pockets and reloads twice out of them.
+  p.reload = k.reloadSeconds;
 }
 
 /**

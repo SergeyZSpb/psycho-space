@@ -83,28 +83,23 @@
              client that predicted a shot the server refused is corrected within
              one frame rather than showing a number it made up.
 
-             AND WHEN THERE IS NOTHING TO COUNT IT SAYS WHY. An empty обрез with
-             empty pockets refuses every pull in silence, and every player
-             reaches it a full gun's worth of shots after walking in, because
-             nobody walks in carrying ammunition. It is also the only refusal in
-             the game that no clock ends — the rest are over in a second or two.
-             A bare zero beside a live-looking button reads as a broken control,
-             so the cell names the reason instead — and wears a colour for as
-             long as it lasts, because a state with no clock on it is not an
-             event to be flashed once. The words come from the catalogue
-             (`shellsReadout`), which is also where the splash gets them. -->
-        <span
-          class="dum-hud-cell"
-          :class="{ 'is-dry': shells.dry }"
-          data-testid="vanyadum-shells"
-        >
-          🔫 {{ shells.text }}
+             AND AN EMPTY ОБРЕЗ SAYS WHAT TO DO WITH IT. Nothing starts a reload
+             by itself, so a bare zero beside a live-looking button is a player
+             waiting for something that will never happen. The words come from
+             `shellsReadout`, which is also where the splash gets them. -->
+        <span class="dum-hud-cell" data-testid="vanyadum-shells">
+          🔫 {{ shells }}
         </span>
         <!-- ONLY THE KINDS THAT GO INTO THE BAG. An empty `grants` is the
              catalogue saying a thing is used the instant it is walked over and
              never carried, so a counter for one would be a column of zeroes for
              the whole visit. The шприц is a landmark rather than a possession,
-             and the readout that says one is running is the badge below. -->
+             and the readout that says one is running is the badge below.
+
+             THE NUMBERS ARE THE STANDINGS' OWN, off our row of the board rather
+             than off the snapshot — so this cell and the board's own column are
+             literally the same map, and the counter is up to a second old. See
+             `bag`. -->
         <span
           v-for="p in carried"
           :key="p.key"
@@ -289,15 +284,14 @@
            `pointercancel` both release it: a pointer the browser takes away
            mid-gesture must not leave the trigger stuck down.
 
-           IT SAYS WHEN THE GUN WILL NOT ANSWER — including the one refusal that
-           is not a timer, an empty обрез with nothing to fill it — AND NEVER BY
-           BEING DISABLED. A disabled
-           button dispatches no `pointerup` and no `pointerleave`, so a trigger
-           disabled by the cadence WHILE HELD would never hear the thumb lift and
-           would go on firing by itself. The state is a class and the control
-           stays live — which is also the honest arrangement, because the server
-           is the one that decides, and a pull it turns out to grant must reach
-           it.
+           IT SAYS WHEN THE GUN WILL NOT ANSWER — every refusal is a timer now,
+           and every one of them ends by itself — AND NEVER BY BEING DISABLED. A
+           disabled button dispatches no `pointerup` and no `pointerleave`, so a
+           trigger disabled by the cadence WHILE HELD would never hear the thumb
+           lift and would go on firing by itself. The state is a class and the
+           control stays live — which is also the honest arrangement, because the
+           server is the one that decides, and a pull it turns out to grant must
+           reach it.
 
            The gesture is stopped from reaching the pad underneath, or the same
            thumb would also be turning the player round. -->
@@ -548,7 +542,6 @@ const injectTenths = ref(0);
 /** «1,4» — the Russian decimal comma, from the tenths above. */
 const protectLeft = computed(() => String(protectTenths.value / 10).replace('.', ','));
 const injectLeft = computed(() => String(injectTenths.value / 10).replace('.', ','));
-const bag = ref<Record<string, number>>({});
 /**
  * The gun, as the newest snapshot describes it.
  *
@@ -561,34 +554,27 @@ const bag = ref<Record<string, number>>({});
 const loaded = ref(0);
 const reloading = ref(false);
 /**
- * What the barrel cell writes, and whether a pull would do nothing whatever.
+ * What the barrel cell writes.
  *
- * ALL THREE INPUTS ARE THE SNAPSHOT'S — the count, the reload and the bag — for
- * the same reason the count alone was: a readout is something a player reads,
- * and a guess taken back a frame later is worse than a number fifty milliseconds
- * old. The ammunition is addressed by the counter name the catalogue publishes,
- * so this view never learns what the обрез drinks.
+ * BOTH INPUTS ARE THE SNAPSHOT'S — the count and the reload — for the same
+ * reason the count alone was: a readout is something a player reads, and a guess
+ * taken back a frame later is worse than a number fifty milliseconds old.
  *
- * A COMPUTED RATHER THAN A THIRD ASSIGNMENT IN `applySnapshot`, because all
- * three of its sources are already refs that only fire when they actually
- * change: the two numbers are primitives Vue compares before waking anything,
- * and the bag is replaced only on a real difference. So this re-evaluates when
+ * IT USED TO READ THE BAG AS WELL, because an empty обрез with no бутылка said
+ * so, and that state cannot happen now: a reload costs nothing, so the answer to
+ * an empty gun is always «жми».
+ *
+ * A COMPUTED RATHER THAN A THIRD ASSIGNMENT IN `applySnapshot`, because both of
+ * its sources are already refs that only fire when they actually change — they
+ * are primitives Vue compares before waking anything. So this re-evaluates when
  * the gun changes rather than twenty times a second.
  */
 const shells = computed(() =>
-  shellsReadout(
-    {
-      loaded: loaded.value,
-      reloading: reloading.value,
-      ammo: config.value ? (bag.value[config.value.gun.ammo] ?? 0) : 0,
-    },
-    config.value,
-  ),
+  shellsReadout({ loaded: loaded.value, reloading: reloading.value }, config.value),
 );
 /**
- * Whether the gun's five TIMERS refuse a pull right now, as the newest snapshot
- * says. The sixth refusal — an empty gun with nothing to fill it — is `shells`
- * above, and the two are joined in `triggerBusy` below.
+ * Whether the trigger control wears its busy mark — every refusal at once, as
+ * the newest snapshot says.
  *
  * THE TRIGGER'S REFUSAL IS AN ACTION NOBODY COULD SEE, which this project counts
  * as unfinished. The обрез has a cadence, a reload, spawn protection, an ampoule
@@ -597,6 +583,12 @@ const shells = computed(() =>
  * from a control that had stopped working. That is the whole of the report «иногда
  * не стреляет»: some of those pulls really were being lost, and the rest were
  * being refused invisibly, and from the outside the two are the same thing.
+ *
+ * ALL FIVE ARE TIMERS AND EVERY ONE OF THEM ENDS BY ITSELF, which is what
+ * infinite ammunition left. There used to be a sixth that was not — an empty gun
+ * with nothing to fill it, the only refusal in the game no clock ended — and it
+ * was joined onto this one from the barrel readout. A reload is free now, so the
+ * state is unreachable and the join went with it.
  *
  * FROM THE SNAPSHOT AND NOT FROM THE PREDICTION, on the terms every other
  * readout on this screen follows: the prediction advances inside the draw loop,
@@ -610,22 +602,7 @@ const shells = computed(() =>
  * it arrives twenty times a second and the answer changes about six times in
  * that second while somebody is firing.
  */
-const timersBusy = ref(false);
-/**
- * Whether the trigger control wears its busy mark — every refusal at once.
- *
- * THE MARK AND THE READOUT NAME THE SAME SET, which is the whole point of
- * joining them here: a barrel cell saying «нет 🍺» beside a button that still
- * looks ready would be the silent refusal all over again, one readout further
- * on. Five of the six are timers the snapshot carries; the sixth is the empty
- * gun, and it is the only one a player cannot wait out.
- *
- * IT DOES NOT GATE THE UPLINK, and that asymmetry is deliberate — see
- * `triggerWanted`, which goes on sending a dry pull because the bag belongs to
- * the server. The button says the обрез will do nothing; the pull still asks, in
- * case a bottle landed since the last frame.
- */
-const triggerBusy = computed(() => timersBusy.value || shells.value.dry);
+const triggerBusy = ref(false);
 /** The pickup ids lying on the floor right now. Goes UP as well as down. */
 const onFloor = ref<number[]>([]);
 /**
@@ -660,6 +637,36 @@ const board = ref<BoardRow[]>([]);
  * handed out — defaulting to it would put the arrow on somebody else.
  */
 const mySlot = ref(-1);
+/**
+ * What WE are carrying, for the HUD's own counters — our own row of the
+ * standings, and nothing else.
+ *
+ * IT USED TO COME OFF THE SNAPSHOT, AND THAT WAS THE EXPENSIVE PLACE FOR IT.
+ * The bag rode a frame that repeats twenty times a second because the predictor
+ * read a counter out of it to reconcile the gun; ammunition is infinite now, so
+ * that reader is gone and the only thing left asking was this readout — while
+ * the same map was already on the standings once a second, unfiltered and
+ * including the reader himself. Priced server-side at about 18 bytes per viewer
+ * per snapshot, which is 360 B/s against 32 B/s of headroom (message.go,
+ * Snapshot), to restate a number that changes when somebody walks over a bottle.
+ *
+ * SO IT LAGS BY UP TO A SECOND, DELIBERATELY. That is the whole cost, and it is
+ * affordable because the number buys nothing: пиво is a tally now, so a counter
+ * that is a beat behind changes nothing a player can do. THE MOMENT ITSELF IS
+ * NOT DELAYED, and it never depended on this map: the pickup bitmask is on the
+ * snapshot, so the bottle leaves the floor and «на полу» drops on the tick it was
+ * walked over — twenty times a second, for everybody in the building. What
+ * arrives a beat later is the tally, which is the part nobody is acting on.
+ *
+ * ZERO RATHER THAN NOTHING BEFORE THE FIRST BOARD ARRIVES, which is the fraction
+ * of a second between walking in and the roster change that publishes one: no
+ * row means an empty map, and the template draws its `?? 0` over that. Same
+ * answer while the link is down, when the board is emptied on purpose because a
+ * directory nothing is refreshing has stopped being true.
+ */
+const bag = computed<Record<string, number>>(
+  () => board.value.find((r) => r.slot === mySlot.value)?.bag ?? {},
+);
 const link = ref<'connecting' | 'open' | 'lost'>('connecting');
 
 /**
@@ -868,13 +875,9 @@ function toggleSound(): void {
  * the pull is still latched or the trigger is still held, so it goes out on the
  * next command a fortieth of a second later.
  *
- * A DRY GUN IS NOT SUPPRESSED HERE, deliberately, although it IS marked on the
- * button: pulling with nothing to load still reaches the server, because whether
- * there is a bottle in your pockets is the server's to say and a pickup may have
- * landed since the last frame. That is the one place the mark and the uplink
- * disagree on purpose — a stale refusal costs a lost pull, which is the exact
- * failure this iteration exists to remove, and a stale mark costs one frame of a
- * cell that is the wrong colour.
+ * AN EMPTY GUN IS NOT A REFUSAL AND IS NOT SUPPRESSED, which used to need an
+ * argument and no longer does: a pull on an empty обрез starts a reload, so it is
+ * a granted pull like any other and `gunBusy` says so on both ends.
  */
 function triggerWanted(nowMs: number): boolean {
   if (!predictor || !config.value) return false;
@@ -1060,15 +1063,18 @@ async function buildWorld(): Promise<void> {
   protectTenths.value = 0;
   injectTenths.value = 0;
   clearHurt();
-  // Loaded and dry, exactly as the server's NewPlayer leaves somebody — and
+  // A full gun, exactly as the server's NewPlayer leaves somebody — and
   // overwritten by the first snapshot, which is a twentieth of a second away.
   loaded.value = config.value.gun.barrels;
   reloading.value = false;
   // And a trigger that will answer, for the same reason: walking in wearing the
   // busy mark from the last visit would be the control lying about a gun that is
   // ready. Overwritten by the first snapshot either way.
-  timersBusy.value = false;
-  bag.value = {};
+  triggerBusy.value = false;
+  // Nothing resets the counters here, and that is the standings frame's doing
+  // rather than an omission: `disposeWorld` empties the board when a building is
+  // thrown away, so the row this HUD reads its own bag off is already gone by
+  // the time anybody walks into the next one.
   onFloor.value = level.pickups.map((p) => p.id);
   floorMask = null;
   aim.yaw = level.spawn_yaw;
@@ -1151,7 +1157,6 @@ async function buildWorld(): Promise<void> {
       barrels: config.value.gun.barrels,
       fireCooldownSeconds: config.value.gun.fire_cooldown_seconds,
       reloadSeconds: config.value.gun.reload_seconds,
-      reloadCost: config.value.gun.reload_cost,
       // The cap the ampoule's heal is clamped to, and the ampoule itself. The
       // browser runs the same arithmetic the server does — the health an
       // injection delivers is derived from the countdown on both ends — so all
@@ -1466,16 +1471,6 @@ function applySnapshot(frame: RealtimeFrame): void {
   const tick = num(frame.k);
   seenTick = tick;
 
-  // The authoritative position, folded in rather than assigned: the predictor
-  // drops what this acknowledges, resets to it, and replays whatever is still
-  // pending on top. Assigning it directly is what iteration 1 did, and it is
-  // exactly the twenty-hertz camera this change exists to remove.
-  // What the player is carrying, read here because two things need it: the HUD
-  // draws the whole bag, and the predictor needs the one counter the trigger
-  // spends. `c` is omitted for somebody carrying nothing, which is everybody for
-  // their first minute.
-  const carriedNow = (frame.c as Record<string, number> | undefined) ?? {};
-
   // `dn` IS TWO THINGS AND `hp` SAYS WHICH, and this is the one place that split
   // happens. The server spends a single field on the respawn countdown and on the
   // ampoule because the two are exclusive by construction — a dead man collects
@@ -1519,7 +1514,6 @@ function applySnapshot(frame: RealtimeFrame): void {
     // replaced, and the server advances it through ticks a rooted man sends
     // nothing for, so the frame is the only honest source for how much is left.
     inject: injectMS / 1000,
-    ammo: config.value ? num(carriedNow[config.value.gun.ammo]) : 0,
   });
 
   // Peers go into the interpolation buffer stamped with the SERVER'S TICK, and
@@ -1585,10 +1579,10 @@ function applySnapshot(frame: RealtimeFrame): void {
   loaded.value = num(frame.b);
   reloading.value = num(frame.r) > 0;
 
-  // And whether the gun's timers would refuse a pull — the same five-way rule
-  // `step` runs, over the snapshot's own numbers rather than the prediction's.
-  // The sixth refusal, an empty обрез with nothing to fill it, is not a timer and
-  // is not here: it falls out of the count and the bag, which `shells` reads.
+  // And whether the gun would refuse a pull — the same five-way rule `step`
+  // runs, over the snapshot's own numbers rather than the prediction's, and now
+  // the whole of the answer rather than five sixths of it: an empty обрез is a
+  // reload waiting to be started, not a refusal.
   // Milliseconds on the wire and seconds in the simulation, so all four are
   // converted even though this only asks whether they are above zero: a value
   // handed to a seconds-shaped argument in milliseconds is a lie that reads as
@@ -1600,7 +1594,7 @@ function applySnapshot(frame: RealtimeFrame): void {
     reload: num(frame.r) / 1000,
     injectLeft: injectMS / 1000,
   });
-  if (busy !== timersBusy.value) timersBusy.value = busy;
+  if (busy !== triggerBusy.value) triggerBusy.value = busy;
 
   // WHAT IS LYING ON THE FLOOR, AS A BITMASK over the index into the level's own
   // list: bit i set means the i-th pickup is there to be walked over. One number
@@ -1624,23 +1618,6 @@ function applySnapshot(frame: RealtimeFrame): void {
     onFloor.value = pickupsOnFloor(world?.level.pickups ?? [], mask);
     scene.value?.setOnFloor(onFloor.value);
   }
-  // THE BAG IS REPLACED AND NOT MERGED, and the difference is a readout that
-  // lies. A counter reaching zero is DELETED from the map the server serialises
-  // rather than sent as a zero — `spendCounter` in sim.go, because eleven bytes
-  // twenty times a second to say a man is carrying nothing is eleven bytes for
-  // nothing — so the frame that spends your last bottle simply stops mentioning
-  // beer. Merged, that bottle stayed on the HUD for the rest of the visit, and
-  // the barrel cell beside it would go on offering a reload nobody can make.
-  //
-  // Compared before assigning, on the same terms as everything else here: this
-  // arrives twenty times a second and changes when somebody walks over a pickup.
-  const carriedKeys = Object.keys(carriedNow);
-  if (
-    carriedKeys.length !== Object.keys(bag.value).length ||
-    carriedKeys.some((k) => bag.value[k] !== carriedNow[k])
-  ) {
-    bag.value = carriedNow;
-  }
 }
 
 /**
@@ -1659,6 +1636,12 @@ function applySnapshot(frame: RealtimeFrame): void {
  * left. Blended, that draws one man sliding across the building into another
  * man's position. Only the changed slots are dropped; resetting the whole buffer
  * would pause every other peer every time anybody walked in.
+ *
+ * AND IT IS WHERE THE HUD'S OWN COUNTERS COME FROM, which is a third job and the
+ * newest one. Our row's bag is the only place the client is told what we are
+ * carrying — the snapshot stopped saying so once nothing in the simulation read
+ * a counter — so the cell at the top of the screen and the column on the board
+ * are the same number by construction rather than by agreement. See `bag`.
  */
 function applyStandings(frame: RealtimeFrame): void {
   const next = decodeBoard(frame.b);
@@ -2056,15 +2039,6 @@ watch(
   to {
     color: #ff6b5e;
   }
-}
-
-/* AN EMPTY ОБРЕЗ WITH EMPTY POCKETS, and it is a STATE rather than an event — so
-   it is a colour the cell wears for the whole of it, not a flash. Unanimated, so
-   it survives `prefers-reduced-motion` by construction rather than by a second
-   rule. Amber rather than the hurt mark's red: two different things can be true
-   of this HUD at once, and they have to be told apart at a glance. */
-.dum-hud-cell.is-dry {
-  color: #ffc46b;
 }
 
 /* Pushed to the far end, so what is true of the BUILDING sits away from what is

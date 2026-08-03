@@ -462,10 +462,31 @@ type Snapshot struct {
 	// out of, and a peer carries neither of these two fields. Giving it one would
 	// cost more than the small integer that replaced them — see Peer.St for the
 	// measurement.
-	Cooldown int            `json:"d,omitempty"`
-	Reload   int            `json:"r,omitempty"`
-	Bag      map[string]int `json:"c,omitempty"`
-	Events   []Event        `json:"ev,omitempty"`
+	Cooldown int `json:"d,omitempty"`
+	Reload   int `json:"r,omitempty"`
+	// Events is what happened to the reader since the last frame, delivered once.
+	//
+	// THE BAG IS NOT ON THIS FRAME AND USED TO BE, which is worth a paragraph
+	// here because `c` was a documented part of this type for three iterations.
+	// It was justified at the snapshot rate by the predictor: the client
+	// reconciled its gun against the bottle count, because a reload spent one.
+	// Ammunition is infinite now (content.go, ReloadSeconds), that reader is
+	// deleted, and what was left was a HUD cell — fed twenty times a second with a
+	// number that changes a few times a minute and buys nothing when it does.
+	//
+	// PRICED THE WAY THIS PROJECT ASKS: `,"c":{"beer":9}` measured 15 bytes, per
+	// viewer, at SnapshotHz — 300 B/s against the 32 B/s of headroom the ceiling
+	// actually had (message_test.go, wireCeiling), and it would not have stayed 15
+	// once nothing capped the digits. It went to the standings, where the same map
+	// already rode UNFILTERED and included the reader himself, so the move deleted
+	// a field rather than moving one.
+	//
+	// WHAT IT COSTS is that the HUD lags a pickup by up to StandingsInterval. That
+	// is the honest price and it is affordable for a number nothing is decided by:
+	// the MOMENT is still immediate, because THIS field carries the pickup event
+	// on the tick the bottle was walked over and `pk`'s bit clears on the same
+	// frame. Only the tally catches up a beat later.
+	Events []Event `json:"ev,omitempty"`
 	// Peers is every PERSON in the building that is not you and that you could
 	// plausibly see. Omitted entirely when there is nobody, which is the common
 	// case and the one that should cost nothing. The нейрослопы are beside it in
@@ -597,8 +618,8 @@ type Peer struct {
 	//
 	// A FIFTH VALUE COST NOTHING, and that is why the ampoule is here rather than
 	// in a field of its own: the digit was already being sent. It is the reason
-	// this iteration's "everybody must see it" was affordable on a wire with
-	// 32 B/s left in it.
+	// this iteration's "everybody must see it" was affordable on a wire that had
+	// 32 B/s left in it when the ampoule was written.
 	//
 	// IT SAYS WHERE, NOT WHAT (CLAUDE.md). Five values the client tells apart by
 	// colour and shape; no numbers, no names, no damage. It is the acknowledgement
@@ -706,8 +727,8 @@ const (
 	// AND IT COST NOTHING AT ALL, which is the reason it is a value here rather
 	// than a field anywhere. `St` was already on every peer and already carried
 	// four states; a fifth is one character inside a field that was going to be
-	// sent regardless, so the whole of what other people see of this iteration is
-	// free on a wire with 32 B/s of headroom.
+	// sent regardless, so the whole of what other people see of this iteration was
+	// free on a wire that had 32 B/s of headroom at the time.
 	PeerInjecting = 5
 )
 
@@ -724,20 +745,19 @@ const (
 // last two on the iteration that made a player killable, which is the rule: a
 // column appears with the thing it counts.
 //
-// WHAT IS CARRIED RATHER THAN WHAT WAS FOUND, and since the gun started spending
-// beer the two are different numbers. Carried is the one worth publishing: it
-// says who is out of ammunition, which is a thing to act on, where a lifetime
-// total is trivia. The lifetime total is what the visit row keeps
-// (world.go, Occupant.collected).
+// WHAT IS CARRIED, WHICH IS ALSO WHAT WAS FOUND: nothing in the building spends
+// a counter, so the two are one number and one field (world.go, Occupant.bag).
 //
-// A FRAME OF ITS OWN AT ONE HERTZ, AND NOT A FIELD ON THE SNAPSHOT. The
+// A FRAME OF ITS OWN AT ONE HERTZ, AND NOT A FIELD ON THE SNAPSHOT — and that is
+// now true of the bag in BOTH directions, the reader's own included. The
 // arithmetic is the whole argument. A seconds-and-bag pair on each peer is about
-// 25 bytes (`"s":999999,"c":{"beer":9}`), and the snapshot is built per occupant
-// and carries everybody, so at MaxOccupants that is 25 × 20 × 5 ≈ 2.5 kB/s per
-// viewer — nearly a third of the whole budget — to restate numbers that change a
-// few times a minute, twenty times a second. The same rows on their own frame at
-// StandingsInterval cost 293 B/s. Twenty times cheaper, for a readout nobody
-// reads at frame rate.
+// 25 bytes (`"s":999999,"c":{"beer":99}`), and the snapshot is built per occupant
+// and carries everybody, so at MaxOccupants that is 25 × 20 × 3 ≈ 1.5 kB/s per
+// viewer — several times the whole remaining headroom — to restate numbers that
+// change a few times a minute, twenty times a second. The reader's OWN bag was
+// on the snapshot until the predictor stopped reading it, and it was 18 bytes at
+// SnapshotHz for the same reason: 360 B/s to say nothing had changed. Both are
+// here now, in rows that cost 304 B/s for the whole building.
 //
 // IT IS NOT FILTERED, and that is the point of it rather than an oversight. A
 // snapshot is what you can SEE and is therefore cut to your own room and the
@@ -774,10 +794,19 @@ type StandingsRow struct {
 	Name string `json:"i"`
 	// Seconds is how long they have been in the building.
 	Seconds int `json:"s"`
-	// Bag is what they are CARRYING, keyed by the catalogue's Grants exactly as
-	// the snapshot's own is. Omitted entirely for somebody carrying nothing,
-	// which is everybody for their first minute — and everybody again once the
-	// gun has drunk what they found.
+	// Bag is what they are CARRYING, keyed by the catalogue's Grants field.
+	// Omitted entirely for somebody carrying nothing, which is everybody for
+	// their first minute and nobody afterwards: it only ever goes up.
+	//
+	// THIS IS THE ONLY PLACE A BAG RIDES THE WIRE, the reader's own included, and
+	// it is why the snapshot has no `c`. The row is unfiltered — a standings frame
+	// describes the building rather than one man's view of it, so every reader
+	// finds himself on it by the slot his ready frame gave him.
+	//
+	// IT ONLY GROWS, and that is what makes once a second the right rate rather
+	// than merely an affordable one. Nothing in the заброшка spends a counter, so
+	// this is a monotonic tally of a tour of the building — a thing to look at
+	// between fights, not a resource anybody is deciding on.
 	Bag map[string]int `json:"c,omitempty"`
 	// Deaths is how many times the building has put them on the floor, Kills is
 	// how many нейрослопы they have put down, and Betrayals is how many friends
