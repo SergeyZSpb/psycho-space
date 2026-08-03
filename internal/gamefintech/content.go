@@ -410,7 +410,14 @@ var bossRedirectLines = []string{
 // the balloon over the only other figure on the plane was frozen for most of a
 // shift. One line is not a run, so rotating required writing more of them —
 // same voice, but aimed at nobody in particular: a man across the room being
-// pleased with the day rather than pleased with you.
+// pleased with the day rather than pleased with you. The last two are him having
+// read something about AI over the weekend, which is the same man in a different
+// costume — still not talking to you, still not going away.
+//
+// GROWING THIS RUN MOVES EVERY LATER RUN in the flat pool, and that is safe only
+// because every base below is written as the sum of the preceding runs' lengths
+// rather than as a number. Keep it that way: a hardcoded base would go wrong here
+// silently, since nothing on the wire or in the database stores a line index.
 var bossFar = []string{
 	"Я ЛЫСЫЙ",
 	"ХОРОШО СИДИМ",
@@ -419,6 +426,8 @@ var bossFar = []string{
 	"Я ПРОСТО ПОСМОТРЕТЬ",
 	"КОМАНДА, Я ЗДЕСЬ",
 	"КАКИЕ У НАС ПЛАНЫ",
+	"ТЕХНОЛОГИЧЕСКАЯ СИНГУЛЯРНОСТЬ УЖЕ ТУТ",
+	"ГОЛОВКА ВСЕХ ЗАМЕНИТ",
 }
 
 // bossClosing is what he says once the grin has started: he is a micromanager,
@@ -550,7 +559,7 @@ var dashingLines = []string{
 // Personas are who you might be on any given shift, drawn when you clock in.
 //
 // The office is a fintech rather than one man's office, so the person standing
-// perfectly still is Карен, or Андрюха, or Саня, or Темирлан. It changes nothing about
+// perfectly still is Карен, or Андрюха, or Саня К, or Темирлан. It changes nothing about
 // how the game plays: a persona decides what your figure SAYS when it introduces
 // itself and nothing else.
 //
@@ -558,7 +567,7 @@ var dashingLines = []string{
 // on the wire means zero, `introLine` is zero, and `stillLines[0]` is «Я КАРЕН» —
 // three separate contracts that all agree only while he is first. Reordering this
 // slice is a wire change.
-var Personas = []string{"Карен", "Андрюха", "Саня", "Темирлан"}
+var Personas = []string{"Карен", "Андрюха", "Саня К", "Темирлан"}
 
 // personaIntros is what each persona AFTER Карен says when it introduces itself.
 //
@@ -572,7 +581,7 @@ var Personas = []string{"Карен", "Андрюха", "Саня", "Темир�
 // the flat pool's index 0 has to stay.
 var personaIntros = []string{
 	"Я АНДРЮХА",
-	"Я САНЯ",
+	"Я САНЯ К",
 	"Я ТЕМИРЛАН",
 }
 
@@ -758,6 +767,10 @@ type NPCKind struct {
 // A POOL EACH rather than a run inside a shared array: they are two figures with two
 // indexes on the frame, and folding them together would make one man able to say the
 // other's lines. Index 0 is the self-introduction, as in every pool here.
+//
+// Both of them claim to be smoking the кальян. Neither of them ever touches it — see
+// the note above on why they take no part in the game — and saying a thing you are
+// not doing is the most in-character line either man has.
 var NPCCast = []NPCKind{
 	{
 		Key:   "serega",
@@ -769,6 +782,7 @@ var NPCCast = []NPCKind{
 			"ТЫ ТУПО КОДЕКСШЛАК ЗАЛИЛ?",
 			"ДА Я ХУЕМ БОЛЬШЕ ДЕЛАЮ",
 			"А РЕВЬЮВИТЬ ОЧКО СЕМА АЛЬМАНА БУДЕТ?",
+			"Я КУРЮ КАЛЬЯН",
 		},
 	},
 	{
@@ -781,6 +795,7 @@ var NPCCast = []NPCKind{
 			"А РЕВЬЮВИТЬ КТО БУДЕТ?",
 			"Я В ПОЛЁТЕ, ПОТОМ",
 			"ДА Я ХУЕМ БОЛЬШЕ ДЕЛАЮ",
+			"Я КУРЮ КАЛЬЯН",
 		},
 	},
 }

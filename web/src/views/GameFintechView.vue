@@ -438,7 +438,7 @@
         за {{ formatClock(over?.secs ?? 0) }}
       </p>
       <!-- WHO WAS WORKING. The ending is the one screen where the persona is worth
-           repeating: the shift is over, the figure is gone, and «ты был Саня» is the
+           repeating: the shift is over, the figure is gone, and «ты был Саня К» is the
            whole of the reframe in three words. -->
       <p v-if="personaName" class="fintech-over-secs" data-testid="fintech-over-who">
         ты был {{ personaName }}
@@ -696,7 +696,7 @@ const meFaceBroken = ref(false);
  * WHO YOU ARE THIS SHIFT.
  *
  * The office is a fintech rather than one man's office, so the person standing
- * perfectly still is Карен, or Андрюха, or Саня, or Темирлан, drawn when you clock in.
+ * perfectly still is Карен, or Андрюха, or Саня К, or Темирлан, drawn when you clock in.
  * The shift response carries the INDEX and the catalogue carries the names, so
  * retuning the cast is a backend deploy — and the index rides the two shift
  * responses plus the ready frame rather than a repeating payload, because it never
