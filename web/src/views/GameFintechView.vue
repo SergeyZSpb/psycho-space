@@ -696,7 +696,7 @@ const meFaceBroken = ref(false);
  * WHO YOU ARE THIS SHIFT.
  *
  * The office is a fintech rather than one man's office, so the person standing
- * perfectly still is Карен, or Андрюха, or Саня, or Даша, drawn when you clock in.
+ * perfectly still is Карен, or Андрюха, or Саня, or Темирлан, drawn when you clock in.
  * The shift response carries the INDEX and the catalogue carries the names, so
  * retuning the cast is a backend deploy — and the index rides the two shift
  * responses plus the ready frame rather than a repeating payload, because it never

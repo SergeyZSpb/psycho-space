@@ -550,7 +550,7 @@ var dashingLines = []string{
 // Personas are who you might be on any given shift, drawn when you clock in.
 //
 // The office is a fintech rather than one man's office, so the person standing
-// perfectly still is Карен, or Андрюха, or Саня, or Даша. It changes nothing about
+// perfectly still is Карен, or Андрюха, or Саня, or Темирлан. It changes nothing about
 // how the game plays: a persona decides what your figure SAYS when it introduces
 // itself and nothing else.
 //
@@ -558,7 +558,7 @@ var dashingLines = []string{
 // on the wire means zero, `introLine` is zero, and `stillLines[0]` is «Я КАРЕН» —
 // three separate contracts that all agree only while he is first. Reordering this
 // slice is a wire change.
-var Personas = []string{"Карен", "Андрюха", "Саня", "Даша"}
+var Personas = []string{"Карен", "Андрюха", "Саня", "Темирлан"}
 
 // personaIntros is what each persona AFTER Карен says when it introduces itself.
 //
@@ -573,7 +573,7 @@ var Personas = []string{"Карен", "Андрюха", "Саня", "Даша"}
 var personaIntros = []string{
 	"Я АНДРЮХА",
 	"Я САНЯ",
-	"Я ДАША",
+	"Я ТЕМИРЛАН",
 }
 
 var PlayerLines = slices.Concat(stillLines, movingLines, dashingLines, redirectLines, personaIntros, routerLines)
