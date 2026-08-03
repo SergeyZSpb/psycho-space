@@ -399,6 +399,137 @@ func TestFintechTheTwoBoardsRankTheSamePeopleDifferently(t *testing.T) {
 	}
 }
 
+func TestFintechAScoreOlderThanAWeekIsOffTheBoardAndStillInYourHistory(t *testing.T) {
+	// BOTH HALVES OF THE RULE, and the second one is the reason it is a window
+	// rather than a delete: a record stops ranking after gamefintech.BoardWindow,
+	// and the row it came from is untouched — «мои смены» still lists it.
+	//
+	// The ages are written straight into created_at, because the only other way to
+	// have an eight-day-old row is to wait eight days. Everything downstream of the
+	// INSERT is real: the windowed DISTINCT ON, both orderings, the name lookup and
+	// the JSON the splash screen reads.
+	app, _, _ := buildAppFintech(t, fintechVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	// THE NUMBERS ARE UNIQUE TO THIS TEST ON PURPOSE. Every test in this file
+	// shares one database, so the boards also carry rows seeded by its neighbours
+	// — asserting on the length of a board, or on what leads it, would be
+	// asserting on the rest of the suite. These three values appear nowhere else,
+	// so «is it on the board» and «which of my two rows ranks higher» are both
+	// answerable whatever else is in the table.
+	const (
+		legendarySalary, legendarySeconds = 987_654, 4_321
+		vetSalary, vetSeconds             = 1_234, 43
+		newcomerSalary, newcomerSeconds   = 2_345, 87
+	)
+	veteran := loginAs(t, srv.URL, "920020", "user")
+	_ = loginAs(t, srv.URL, "920021", "user")
+	for _, row := range []struct {
+		uid     string
+		salary  float64
+		seconds float64
+		age     string
+	}{
+		// The veteran's legendary afternoon, a week and a day ago: it would beat
+		// everything else here on both numbers if the window were not there.
+		{"920020", legendarySalary, legendarySeconds, "8 days"},
+		// ...and what he has managed since, which is what he should be ranked on.
+		{"920020", vetSalary, vetSeconds, "1 hour"},
+		// A newcomer, this afternoon, who therefore ranks above him on both.
+		{"920021", newcomerSalary, newcomerSeconds, "2 hours"},
+	} {
+		if _, err := pool.Exec(context.Background(),
+			`INSERT INTO game_fintech_shifts (id, account_id, cause, salary, seconds, created_at)
+			 VALUES (gen_random_uuid(), $1::uuid, 'left', $2, $3, now() - $4::interval)`,
+			accountIDByUID(t, row.uid), row.salary, row.seconds, row.age); err != nil {
+			t.Fatalf("seed shift for %s: %v", row.uid, err)
+		}
+	}
+
+	resp, err := veteran.Get(srv.URL + "/api/game-fintech/shifts/top?limit=50")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var board struct {
+		Salary []struct {
+			Salary  float64 `json:"salary"`
+			Seconds float64 `json:"seconds"`
+		} `json:"salary"`
+		Seconds []struct {
+			Salary  float64 `json:"salary"`
+			Seconds float64 `json:"seconds"`
+		} `json:"seconds"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&board); err != nil {
+		t.Fatal(err)
+	}
+	// rankOf is where a score sits on a board, or -1 when it is not on it at all.
+	rankOf := func(rows []struct {
+		Salary  float64 `json:"salary"`
+		Seconds float64 `json:"seconds"`
+	}, salary, seconds float64) int {
+		for i, row := range rows {
+			if row.Salary == salary && row.Seconds == seconds {
+				return i
+			}
+		}
+		return -1
+	}
+	if at := rankOf(board.Salary, legendarySalary, legendarySeconds); at >= 0 {
+		t.Fatalf("the eight-day-old record is still on the money board, at %d: %+v", at, board.Salary)
+	}
+	if at := rankOf(board.Seconds, legendarySalary, legendarySeconds); at >= 0 {
+		t.Fatalf("the eight-day-old record is still on the length board, at %d: %+v", at, board.Seconds)
+	}
+	// AND THE VETERAN IS STILL ON THE BOARD, ranked on what he has done this week
+	// rather than dropped from it. That is the difference between windowing inside
+	// the DISTINCT ON and windowing outside it: outside, his best-ever row would be
+	// chosen and then discarded for being old, and he would vanish from the board
+	// while a worse player stayed.
+	vetMoney := rankOf(board.Salary, vetSalary, vetSeconds)
+	newMoney := rankOf(board.Salary, newcomerSalary, newcomerSeconds)
+	if vetMoney < 0 || newMoney < 0 || newMoney > vetMoney {
+		t.Fatalf("the money board is not this week's: veteran at %d, newcomer at %d: %+v",
+			vetMoney, newMoney, board.Salary)
+	}
+	vetLength := rankOf(board.Seconds, vetSalary, vetSeconds)
+	newLength := rankOf(board.Seconds, newcomerSalary, newcomerSeconds)
+	if vetLength < 0 || newLength < 0 || newLength > vetLength {
+		t.Fatalf("the length board is not this week's: veteran at %d, newcomer at %d: %+v",
+			vetLength, newLength, board.Seconds)
+	}
+
+	// NOTHING WAS DELETED. His own list still has all three of his shifts, the old
+	// one included, which is the whole reason this is a read-time window.
+	mineResp, err := veteran.Get(srv.URL + "/api/game-fintech/shifts/me?limit=10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mineResp.Body.Close()
+	var mine struct {
+		Shifts []struct {
+			Salary float64 `json:"salary"`
+		} `json:"shifts"`
+	}
+	if err := json.NewDecoder(mineResp.Body).Decode(&mine); err != nil {
+		t.Fatal(err)
+	}
+	if len(mine.Shifts) != 2 {
+		t.Fatalf("my shifts returned %d rows, want both of the veteran's: %+v", len(mine.Shifts), mine.Shifts)
+	}
+	var kept bool
+	for _, s := range mine.Shifts {
+		if s.Salary == legendarySalary {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Fatalf("the aged-out shift is gone from my own history: %+v", mine.Shifts)
+	}
+}
+
 func TestFintechConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 	app, _, _ := buildAppFintech(t, fintechVK(t))
 	srv := httptest.NewServer(app)

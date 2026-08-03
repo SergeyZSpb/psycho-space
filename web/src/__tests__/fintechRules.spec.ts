@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FINTECH_LORE,
   FINTECH_PROSE,
+  boardWindowLabel,
   buffsFor,
   buildRules,
   endingFor,
@@ -46,6 +47,7 @@ const config: FintechConfig = {
   ],
   boss_lines: ['А ГДЕ?'],
   personas: ['Карен', 'Андрюха', 'Саня К', 'Темирлан'],
+  board: { window_days: 7 },
   player_lines: ['Я КАРЕН', 'Я ПРОСТО ВОДЫ ПОПИТЬ', 'Я НА ВСТРЕЧУ'],
   max_occupants: 3,
 };
@@ -137,7 +139,8 @@ describe('buildRules', () => {
     // «Коллеги» survives because ITS half of the catalogue did: the block is
     // derived from max_occupants, which is still here. That is the claim — a
     // block is dropped when its own input is missing, not when a neighbour's is.
-    expect(blocks.map((b) => b.title)).toEqual(['Ноги', 'Коллеги', 'Коротко']);
+    // «Доска» survives for the same reason: its own input, `board`, is still here.
+    expect(blocks.map((b) => b.title)).toEqual(['Ноги', 'Коллеги', 'Доска', 'Коротко']);
   });
 
   it('still says how to play when the catalogue says nothing at all', () => {
@@ -392,5 +395,43 @@ describe('Claude being away in the buff row', () => {
   it('is absent when he is on the floor, which is most of a shift', () => {
     expect(buffsFor({}).some((b) => b.key === 'away')).toBe(false);
     expect(buffsFor({ awayMs: 0 }).some((b) => b.key === 'away')).toBe(false);
+  });
+});
+
+describe('the board window', () => {
+  it('states the rule from the served number, in agreeing Russian', () => {
+    // The whole point of publishing `board.window_days`: the server owns how far
+    // back the boards look, and retuning it moves both the caption under the
+    // boards and this block with no frontend change.
+    const block = buildRules(config).find((b) => b.title === 'Доска');
+    expect(block).toBeDefined();
+    const text = block!.lines.map((l) => `${l.label} ${l.text}`).join(' | ');
+    expect(text).toContain('за последние 7 дней');
+    // AND THAT NOTHING IS LOST, which is the half a player will actually worry
+    // about when their record stops being on the board.
+    expect(text).toContain('остаётся в твоём списке');
+  });
+
+  it('declines the number for the window it is given', () => {
+    // A retune is a backend deploy, so the label has to agree with whatever
+    // number arrives — a hardcoded «дней» reads as broken at 1 and at 3.
+    const label = (window_days: number) =>
+      boardWindowLabel({ ...config, board: { window_days } });
+    expect(label(1)).toBe('за последние 1 день');
+    expect(label(3)).toBe('за последние 3 дня');
+    expect(label(7)).toBe('за последние 7 дней');
+    expect(label(11)).toBe('за последние 11 дней');
+    expect(label(21)).toBe('за последние 21 день');
+    expect(label(30)).toBe('за последние 30 дней');
+  });
+
+  it('says nothing at all when the server did not publish a window', () => {
+    // This client may be a version behind the server, and «за последние NaN
+    // дней» under the boards is worse than no caption at all.
+    expect(boardWindowLabel(null)).toBeNull();
+    expect(boardWindowLabel({ ...config, board: undefined })).toBeNull();
+    expect(boardWindowLabel({ ...config, board: { window_days: 0 } })).toBeNull();
+    const blocks = buildRules({ ...config, board: undefined });
+    expect(blocks.some((b) => b.title === 'Доска')).toBe(false);
   });
 });

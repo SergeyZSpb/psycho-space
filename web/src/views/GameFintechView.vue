@@ -51,6 +51,18 @@
           </div>
         </div>
 
+        <!-- WHY YOUR RECORD IS NOT THERE ANY MORE. The boards only rank the last
+             few days, and a player whose best afternoon has just aged off would
+             otherwise read that as the game having lost it. The window comes from
+             the served catalogue, so retuning it moves this line too. -->
+        <p
+          v-if="hasBoards && boardWindow"
+          class="fintech-board-window"
+          data-testid="fintech-board-window"
+        >
+          Топ {{ boardWindow }}. Твои смены — все, ниже.
+        </p>
+
         <div class="fintech-rules" data-testid="fintech-rules">
           <section
             v-for="block in rules"
@@ -503,6 +515,7 @@ import type {
 import {
   FINTECH_DISCLAIMER,
   FINTECH_LORE,
+  boardWindowLabel,
   buffsFor,
   buildRules,
   endingFor,
@@ -572,6 +585,10 @@ const boards = computed(() => [
   { key: 'seconds', title: 'Кто дольше не работал', rows: topShifts.value.seconds },
 ]);
 const hasBoards = computed(() => boards.value.some((b) => b.rows.length > 0));
+// How far back the boards look, in words. Null until the catalogue has arrived,
+// and null on a server that does not publish a window — the caption is dropped
+// rather than guessed at, exactly as every derived rule on this screen is.
+const boardWindow = computed(() => boardWindowLabel(config.value));
 const rules = computed(() => buildRules(config.value));
 const desks = computed<FintechRect[]>(() => config.value?.office.desks ?? []);
 /**
@@ -2096,6 +2113,17 @@ function onDash(): void {
   display: flex;
   align-items: baseline;
   gap: 8px;
+}
+
+/* The window caption: quieter than a board row and directly under both of them,
+   because it is a footnote to the boards rather than a rule of its own — the
+   cheatsheet block «Доска» is where the rule is stated properly. */
+.fintech-board-window {
+  width: 100%;
+  max-width: 34rem;
+  margin: -4px 0 0;
+  font-size: 0.78rem;
+  opacity: 0.7;
 }
 
 .fintech-board-name {

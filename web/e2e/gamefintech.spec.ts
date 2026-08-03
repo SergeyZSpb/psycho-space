@@ -149,6 +149,10 @@ const CONFIG = {
   // 10, so a HUD or a cheatsheet that hardcoded the ramp cannot pass below. At
   // 20 Hz that is 500 ticks a level, which is what the tempo assertions drive.
   tempo: { every_ms: 25000, step_pct: 15 },
+  // Three days rather than production's seven, and for the usual reason: a
+  // caption or a cheatsheet line that hardcoded «7 дней» cannot pass here. It also
+  // exercises the other declension — «3 дня», not «дней».
+  board: { window_days: 3 },
   // «РОУТЕР УПАЛ», marked like everything else in this stub — 9 s and 45 s are not
   // production's 12 and 30, and the label carries the СТЕНД marker so a client
   // that hardcoded the button's words cannot pass.
@@ -456,6 +460,15 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» splash', () => {
     await expect(byTime).toContainText('4 200');
     // The length board is a DIFFERENT board rather than the same one relabelled.
     await expect(byTime).not.toContainText('Карен');
+
+    // AND THE BOARDS SAY HOW FAR BACK THEY LOOK, from the served window rather
+    // than typed: a record that has aged off is otherwise indistinguishable from
+    // one the game lost. The stub says three days, so «7» here would be a client
+    // that hardcoded production's number.
+    const window = page.getByTestId('fintech-board-window');
+    await expect(window).toBeVisible();
+    await expect(window).toContainText('за последние 3 дня');
+    await expect(window).not.toContainText('7');
   });
 
   test('the splash is ordered button, boards, guide, your own shifts', async ({ page }) => {
@@ -489,6 +502,9 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» splash', () => {
     await expect(page.getByTestId('fintech-splash')).toBeVisible();
     await expect(page.getByTestId('fintech-runs')).toHaveCount(0);
     await expect(page.getByTestId('fintech-top')).toHaveCount(0);
+    // Including the window caption, which is a footnote TO the boards: with no
+    // board on the screen it would be a sentence about nothing.
+    await expect(page.getByTestId('fintech-board-window')).toHaveCount(0);
   });
 
   test('the start button is a real tap target', async ({ page }) => {

@@ -4,6 +4,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 )
 
 // THE CATALOGUE.
@@ -184,6 +185,28 @@ const (
 	BossSpawnY   = 20.5
 	PlayerSpawnX = 8.0
 	PlayerSpawnY = 4.0
+)
+
+// THE BOARD IS THIS WEEK'S — a record older than the window is off it.
+//
+// A leaderboard nobody can reach stops being a reason to play. One extraordinary
+// afternoon would otherwise sit at the top for ever, and everybody who arrives
+// after it is competing for second place against a number nobody remembers being
+// set. Seven days is short enough that the board is always winnable and long
+// enough that a good shift is worth something for more than one evening.
+//
+// IT WINDOWS THE READ, IT DELETES NOTHING. The row stays exactly where it was:
+// «мои смены» still lists every shift you have ever played, and anything we ever
+// want to count still has all of it. Ageing a score off a board is therefore a
+// read-time decision — retuning this number moves the board on the very next
+// request, with no sweep to schedule, no migration, and no value of it that can
+// destroy data. That is the whole reason it is a window and not a delete.
+const (
+	// BoardWindowDays is how old a shift may be and still rank.
+	BoardWindowDays = 7
+	// BoardWindow is the same number as a duration: the cutoff the service hands
+	// the repository on every board read.
+	BoardWindow = BoardWindowDays * 24 * time.Hour
 )
 
 // THE TEMPO — the office gets faster the longer anybody survives it.
@@ -1178,6 +1201,19 @@ type Config struct {
 	Bottle BottleConfig `json:"bottle"`
 	Hookah HookahConfig `json:"hookah"`
 	Tempo  TempoConfig  `json:"tempo"`
+	Board  BoardConfig  `json:"board"`
+}
+
+// BoardConfig is the leaderboard's one published rule: how far back it looks.
+//
+// PUBLISHED BECAUSE TWO PLACES ON THE SPLASH SCREEN STATE IT — the caption under
+// the boards and the cheatsheet line — and a score silently vanishing off a board
+// is the kind of thing a player reads as the game losing their record. Both are
+// derived from this number, so shortening the window to a weekend is a backend
+// deploy and the screen follows it.
+type BoardConfig struct {
+	// WindowDays is BoardWindowDays: how old a shift may be and still rank.
+	WindowDays int `json:"window_days"`
 }
 
 // TempoConfig is the ramp: how often the office speeds up, and by how much.
@@ -1388,6 +1424,7 @@ func BuildConfig() Config {
 			EveryMs: int(LevelSeconds * 1000),
 			StepPct: int(math.Round(LevelSpeedStep * 100)),
 		},
+		Board: BoardConfig{WindowDays: BoardWindowDays},
 		Redirect: VerbConfig{
 			Label:      "ЭТО К НЕМУ",
 			Say:        redirectLines[0],

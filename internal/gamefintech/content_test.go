@@ -164,6 +164,7 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 		`"endings"`, `"key"`, `"sub"`,
 		`"boss_lines"`, `"personas"`, `"claude_lines"`, `"npcs"`, `"max_occupants"`,
 		`"tempo"`, `"every_ms"`, `"step_pct"`,
+		`"board"`, `"window_days"`,
 	} {
 		if !strings.Contains(string(raw), key) {
 			t.Fatalf("the served catalogue has no %s: %s", key, raw)

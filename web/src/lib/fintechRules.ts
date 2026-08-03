@@ -51,6 +51,39 @@ function has(v: unknown): v is number {
 }
 
 /**
+ * Russian days, agreeing with the number in front of them: 1 день, 3 дня,
+ * 7 дней, 11 дней.
+ *
+ * Here rather than as a general pluraliser because there is exactly one word to
+ * decline in this whole game, and a table of forms for a single use would be an
+ * abstraction with no second caller. When a second one arrives, that is the
+ * moment to generalise it.
+ */
+function days(n: number): string {
+  const teen = n % 100 >= 11 && n % 100 <= 14;
+  const last = n % 10;
+  if (teen || last === 0 || last >= 5) return `${n} дней`;
+  if (last === 1) return `${n} день`;
+  return `${n} дня`;
+}
+
+/**
+ * How far back the leaderboards look, in words — «за последние 7 дней» — or null
+ * when the server did not say.
+ *
+ * ONE HELPER FOR TWO PLACES: the caption under the boards on the splash screen
+ * and the cheatsheet block below both state the same rule, and a second copy of
+ * this sentence is a second thing to forget when the window is retuned.
+ */
+export function boardWindowLabel(config: FintechConfig | null): string | null {
+  const window = config?.board?.window_days;
+  if (!has(window) || window <= 0) {
+    return null;
+  }
+  return `за последние ${days(window)}`;
+}
+
+/**
  * Builds the whole cheatsheet.
  *
  * Returns blocks rather than a flat list so the splash can lay them out without
@@ -335,6 +368,26 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
             (has(bottle.per_player) && bottle.per_player > 0
               ? `Бутылок на полу по ${bottle.per_player} на каждого.`
               : ''),
+        },
+      ],
+    });
+  }
+
+  // THE BOARD ONLY REMEMBERS A WEEK, and a player has to be told that before a
+  // record of theirs quietly stops being on it. Derived from the served window,
+  // so shortening it to a weekend is a backend deploy.
+  const boardWindow = boardWindowLabel(config);
+  if (boardWindow) {
+    blocks.push({
+      title: 'Доска',
+      lines: [
+        {
+          label: '🏆 что в топе',
+          text: `Только смены ${boardWindow}. Что старше — уходит с доски.`,
+        },
+        {
+          label: '🗂 но не пропадает',
+          text: 'Сама смена остаётся в твоём списке внизу. Уходит только место в топе.',
         },
       ],
     });

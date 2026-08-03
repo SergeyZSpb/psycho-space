@@ -55,7 +55,12 @@ type Repository interface {
 	// TopShifts is the leaderboard by MONEY: the best shift per account, not the
 	// best rows. One good afternoon would otherwise fill the whole board, which
 	// is both boring and exactly the wrong incentive.
-	TopShifts(ctx context.Context, q db.DBTX, limit int) ([]Shift, error)
+	//
+	// `since` is the oldest a shift may be and still rank — the caller's clock
+	// rather than the database's, which is what lets a test place a row on either
+	// side of the boundary without waiting a week. Nothing is deleted: a shift
+	// older than this is simply not selected, and RecentShifts still returns it.
+	TopShifts(ctx context.Context, q db.DBTX, since time.Time, limit int) ([]Shift, error)
 	// TopShiftsBySeconds is the same board scored on the other dimension: the
 	// LONGEST shift per account.
 	//
@@ -64,5 +69,5 @@ type Repository interface {
 	// surviving a floor that speeds up every twenty seconds, and the best way to
 	// do one is not the best way to do the other. A single board would quietly
 	// declare one of them the point.
-	TopShiftsBySeconds(ctx context.Context, q db.DBTX, limit int) ([]Shift, error)
+	TopShiftsBySeconds(ctx context.Context, q db.DBTX, since time.Time, limit int) ([]Shift, error)
 }

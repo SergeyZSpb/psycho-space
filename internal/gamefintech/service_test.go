@@ -84,9 +84,28 @@ func (f *fakeTransport) framesOfType(t string) []struct {
 
 type fakeRepo struct {
 	inserted chan Shift
+	// boardSince is the cutoff the last board read was made with. Recorded rather
+	// than asserted here, because what the service owes the repository is a
+	// window — and the only way to see it is to look at the argument.
+	mu         sync.Mutex
+	boardSince time.Time
 }
 
 func newFakeRepo() *fakeRepo { return &fakeRepo{inserted: make(chan Shift, 16)} }
+
+// lastBoardSince is the cutoff of the most recent board read, and the zero time
+// when no board has been read.
+func (f *fakeRepo) lastBoardSince() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.boardSince
+}
+
+func (f *fakeRepo) recordBoardSince(since time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.boardSince = since
+}
 
 func (f *fakeRepo) InsertShift(_ context.Context, _ db.DBTX, s Shift) error {
 	f.inserted <- s
@@ -97,9 +116,13 @@ func (f *fakeRepo) RecentShifts(context.Context, db.DBTX, uuid.UUID, int) ([]Shi
 	return nil, nil
 }
 
-func (f *fakeRepo) TopShifts(context.Context, db.DBTX, int) ([]Shift, error) { return nil, nil }
+func (f *fakeRepo) TopShifts(_ context.Context, _ db.DBTX, since time.Time, _ int) ([]Shift, error) {
+	f.recordBoardSince(since)
+	return nil, nil
+}
 
-func (f *fakeRepo) TopShiftsBySeconds(context.Context, db.DBTX, int) ([]Shift, error) {
+func (f *fakeRepo) TopShiftsBySeconds(_ context.Context, _ db.DBTX, since time.Time, _ int) ([]Shift, error) {
+	f.recordBoardSince(since)
 	return nil, nil
 }
 
@@ -487,6 +510,49 @@ func TestAShiftShorterThanTheMinimumIsNotWritten(t *testing.T) {
 	}
 	if got := len(h.tr.framesOfType(TypeOver)); got != 1 {
 		t.Fatalf("%d over frames — the player was not told", got)
+	}
+}
+
+func TestBothBoardsAreReadWithTheWeekWindow(t *testing.T) {
+	// THE BOARD AGES BY ITSELF, and this is where that is asserted: the service
+	// hands the repository a cutoff of BoardWindow ago on every read, so a record
+	// leaves the board a week after it was set with nothing scheduled and nothing
+	// swept. Both boards, because two nearly-identical methods are exactly where
+	// one of them gets to keep the old behaviour unnoticed.
+	h := start(t)
+	ctx := context.Background()
+	for _, board := range []struct {
+		name string
+		read func() ([]Shift, error)
+	}{
+		{"salary", func() ([]Shift, error) { return h.svc.TopShifts(ctx, 5) }},
+		{"seconds", func() ([]Shift, error) { return h.svc.TopShiftsBySeconds(ctx, 5) }},
+	} {
+		before := time.Now()
+		if _, err := board.read(); err != nil {
+			t.Fatalf("%s board: %v", board.name, err)
+		}
+		since := h.repo.lastBoardSince()
+		// Bounded by the two clock readings around the call rather than by an
+		// equality against a third: `time.Now()` moves between them, so the only
+		// true statement is that the cutoff is BoardWindow before some instant
+		// inside the call.
+		if since.Before(before.Add(-BoardWindow)) || since.After(time.Now().Add(-BoardWindow)) {
+			t.Fatalf("the %s board was read from %v, which is not %v ago", board.name, since, BoardWindow)
+		}
+	}
+}
+
+func TestTheBoardWindowIsAWeekAndIsPublished(t *testing.T) {
+	// The number the SQL filters on and the number the splash screen states are
+	// the same number, and the cheatsheet is generated from the served config —
+	// so a window retuned in one place and not the other would be a screen that
+	// lies about the rule.
+	if BoardWindow != time.Duration(BoardWindowDays)*24*time.Hour {
+		t.Fatalf("BoardWindow is %v, which is not %d days", BoardWindow, BoardWindowDays)
+	}
+	if got := BuildConfig().Board.WindowDays; got != BoardWindowDays {
+		t.Fatalf("the served board window is %d days, want %d", got, BoardWindowDays)
 	}
 }
 

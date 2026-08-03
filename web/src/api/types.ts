@@ -1171,6 +1171,20 @@ export interface FintechConfig {
     every_ms: number;
     step_pct: number;
   };
+  /**
+   * How far back the leaderboards look. A shift older than this stops ranking —
+   * the row is untouched and «мои смены» still lists it, so the only thing that
+   * expires is the place in the top.
+   *
+   * SERVED BECAUSE TWO PLACES ON THE SPLASH SCREEN STATE IT: the caption under
+   * the boards and the cheatsheet line, both from `boardWindowLabel` in
+   * `lib/fintechRules.ts`. Optional here for the same reason every other block
+   * is — this client may be a version behind the server, and a missing window
+   * drops the caption rather than rendering `NaN дней`.
+   */
+  board?: {
+    window_days: number;
+  };
 }
 
 /** A started or resumed shift. No level — the office is in the catalogue. */

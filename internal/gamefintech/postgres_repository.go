@@ -3,6 +3,7 @@ package gamefintech
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/google/uuid"
@@ -48,14 +49,15 @@ func (PostgresRepository) RecentShifts(ctx context.Context, q db.DBTX, accountID
 	return scanShifts(rows, limit, "recent")
 }
 
-// TopShifts is the leaderboard by money: the BEST SHIFT PER ACCOUNT.
-func (r PostgresRepository) TopShifts(ctx context.Context, q db.DBTX, limit int) ([]Shift, error) {
-	return r.topShiftsBy(ctx, q, metricSalary, limit)
+// TopShifts is the leaderboard by money: the BEST SHIFT PER ACCOUNT, and only
+// among shifts no older than `since`.
+func (r PostgresRepository) TopShifts(ctx context.Context, q db.DBTX, since time.Time, limit int) ([]Shift, error) {
+	return r.topShiftsBy(ctx, q, metricSalary, since, limit)
 }
 
 // TopShiftsBySeconds is the same board scored on how long the shift lasted.
-func (r PostgresRepository) TopShiftsBySeconds(ctx context.Context, q db.DBTX, limit int) ([]Shift, error) {
-	return r.topShiftsBy(ctx, q, metricSeconds, limit)
+func (r PostgresRepository) TopShiftsBySeconds(ctx context.Context, q db.DBTX, since time.Time, limit int) ([]Shift, error) {
+	return r.topShiftsBy(ctx, q, metricSeconds, since, limit)
 }
 
 // The two things a shift is scored on. PACKAGE CONSTANTS, and that is what makes
@@ -85,18 +87,23 @@ const (
 // No index exists for the seconds ordering and none is added: this table holds
 // one row per finished shift for a handful of friends, so the sort is a few
 // hundred rows in memory, and a migration is forever.
-func (PostgresRepository) topShiftsBy(ctx context.Context, q db.DBTX, metric string, limit int) ([]Shift, error) {
+// THE WINDOW IS INSIDE THE DISTINCT ON, and it has to be. Filtering the outer
+// query instead would pick each account's best shift of all time and then drop it
+// for being old — so a player whose best week was in February would be missing
+// from the board entirely, rather than ranked on the best he has done since.
+// «Best of the last seven days» is what the inner query has to mean.
+func (PostgresRepository) topShiftsBy(ctx context.Context, q db.DBTX, metric string, since time.Time, limit int) ([]Shift, error) {
 	rows, err := q.Query(ctx,
 		`SELECT `+shiftColumns+`
 		   FROM (
 		     SELECT DISTINCT ON (account_id) `+shiftColumns+`
 		       FROM game_fintech_shifts
-		      WHERE deleted_at IS NULL
+		      WHERE deleted_at IS NULL AND created_at >= $1
 		      ORDER BY account_id, `+metric+` DESC, created_at DESC
 		   ) best
 		  ORDER BY `+metric+` DESC, created_at ASC
-		  LIMIT $1`,
-		limit)
+		  LIMIT $2`,
+		since, limit)
 	if err != nil {
 		return nil, fmt.Errorf("gamefintech: top shifts by %s: %w", metric, err)
 	}
