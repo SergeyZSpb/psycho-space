@@ -275,6 +275,12 @@ func waitForFintechFrame(t *testing.T, frames <-chan []byte, tick chan time.Time
 	}
 }
 
+// steerEvery is how often a test client may send an input frame, in WALL-CLOCK
+// time. Half the socket's ten-a-second allowance, so a burst of buffered
+// snapshots after a CI stall can never spend the limiter's budget: the pacing is
+// a property of real time, which is the only clock the limiter is watching.
+const steerEvery = 200 * time.Millisecond
+
 // fintechRows counts an account's rows in this game's one table.
 func fintechRows(t *testing.T, uid string) int {
 	t.Helper()
@@ -423,8 +429,8 @@ func TestFintechAScoreOlderThanAWeekIsOffTheBoardAndStillInYourHistory(t *testin
 		vetSalary, vetSeconds             = 1_234, 43
 		newcomerSalary, newcomerSeconds   = 2_345, 87
 	)
-	veteran := loginAs(t, srv.URL, "920020", "user")
-	_ = loginAs(t, srv.URL, "920021", "user")
+	veteran := loginAs(t, srv.URL, "920040", "user")
+	_ = loginAs(t, srv.URL, "920041", "user")
 	for _, row := range []struct {
 		uid     string
 		salary  float64
@@ -433,11 +439,11 @@ func TestFintechAScoreOlderThanAWeekIsOffTheBoardAndStillInYourHistory(t *testin
 	}{
 		// The veteran's legendary afternoon, a week and a day ago: it would beat
 		// everything else here on both numbers if the window were not there.
-		{"920020", legendarySalary, legendarySeconds, "8 days"},
+		{"920040", legendarySalary, legendarySeconds, "8 days"},
 		// ...and what he has managed since, which is what he should be ranked on.
-		{"920020", vetSalary, vetSeconds, "1 hour"},
+		{"920040", vetSalary, vetSeconds, "1 hour"},
 		// A newcomer, this afternoon, who therefore ranks above him on both.
-		{"920021", newcomerSalary, newcomerSeconds, "2 hours"},
+		{"920041", newcomerSalary, newcomerSeconds, "2 hours"},
 	} {
 		if _, err := pool.Exec(context.Background(),
 			`INSERT INTO game_fintech_shifts (id, account_id, cause, salary, seconds, created_at)
@@ -1578,15 +1584,19 @@ func TestFintechBuyingHimARoundIsVisibleToTheWholeOffice(t *testing.T) {
 	}
 
 	// Steer towards the bottle from wherever the draw put him, re-reading his
-	// position as he goes. Bounded by TIME, never by a count of attempts.
-	// EVERY OTHER SNAPSHOT, not every one. The socket allows ten frames a second
-	// and snapshots arrive at ten a second, so steering on each of them sits
-	// exactly on the limiter — which then closes the connection, and the failure
-	// presents as "no fintech_snap frame arrived" rather than as a rate limit.
-	// Steering at half rate is also what a browser does: it samples faster than
-	// it sends and packs the sub-steps into one frame.
+	// position as he goes. Bounded by TIME, never by a count of attempts — and
+	// the STEERING is bounded by time too, which is the part that cost a red CI
+	// run. The socket allows ten frames a second with a burst of twenty; a
+	// loaded runner stalls this goroutine for seconds, the snapshots it missed
+	// are sitting in the channel when it resumes, and "steer on every other
+	// snapshot" then fires that whole backlog of writes in a millisecond —
+	// through the burst, so the connection is closed and the failure presents as
+	// "no fintech_snap frame arrived" rather than as a rate limit. Pacing on the
+	// WALL CLOCK makes a stall harmless: however many frames arrived while we
+	// were away, the next steer is one frame. It is also what a browser does —
+	// it samples faster than it sends and packs the sub-steps into one frame.
 	deadline := time.Now().Add(25 * time.Second)
-	drunk, n := false, 0
+	drunk, lastWalk := false, time.Time{}
 	for !drunk && time.Now().Before(deadline) {
 		f := waitForFintechFrame(t, framesA, tick, clock, "fintech_snap", 15*time.Second)
 		x, _ := f["x"].(float64)
@@ -1600,9 +1610,9 @@ func TestFintechBuyingHimARoundIsVisibleToTheWholeOffice(t *testing.T) {
 		dx := spot.X - x/100
 		dy := spot.Y - y/100
 		d := math.Hypot(dx, dy)
-		n++
-		if d > 1e-6 && n%2 == 0 {
+		if d > 1e-6 && time.Since(lastWalk) >= steerEvery {
 			walk(dx/d, dy/d)
+			lastWalk = time.Now()
 		}
 		if b, ok := f["b"].(map[string]any); ok {
 			if dv, _ := b["d"].(float64); dv > 0 {
@@ -1676,11 +1686,12 @@ func TestFintechWalkingToTheHookahPutsACloudOnTheWire(t *testing.T) {
 		}
 	}
 
-	// Steered on TIME rather than on a count of attempts, and at half the snapshot
-	// rate — steering on every frame sits exactly on the socket's ten-a-second
-	// limiter, which then closes the connection and presents as "no frame arrived".
+	// Steered on TIME rather than on a count of attempts, and the steering itself
+	// is paced on the wall clock for the reason written out over the bottle's own
+	// loop above: a snapshot backlog built up during a CI stall would otherwise be
+	// spent as a burst of writes and close the socket.
 	deadline := time.Now().Add(25 * time.Second)
-	clouded, n := false, 0
+	clouded, lastWalk := false, time.Time{}
 	for !clouded && time.Now().Before(deadline) {
 		f := waitForFintechFrame(t, frames, tick, clock, "fintech_snap", 15*time.Second)
 		x, _ := f["x"].(float64)
@@ -1693,9 +1704,9 @@ func TestFintechWalkingToTheHookahPutsACloudOnTheWire(t *testing.T) {
 		dx := spot.X - x/100
 		dy := spot.Y - y/100
 		d := math.Hypot(dx, dy)
-		n++
-		if d > 1e-6 && n%2 == 0 {
+		if d > 1e-6 && time.Since(lastWalk) >= steerEvery {
 			walk(dx/d, dy/d)
+			lastWalk = time.Now()
 		}
 		if iv, ok := f["iv"].(float64); ok && iv > 0 {
 			clouded = true
