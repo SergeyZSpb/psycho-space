@@ -117,6 +117,50 @@ export interface Authoritative {
   inject: number;
 }
 
+/**
+ * What one applied command did, beyond moving the man.
+ *
+ * THE SHOT IS REPORTED BY THE STEP THAT GRANTED IT, and that is the whole of why
+ * the muzzle flash is trustworthy. It used to be inferred by the view, which
+ * remembered the barrel count of the last DRAWN FRAME and called any fall a
+ * shot — but that count has two writers, `apply` in the draw loop and
+ * `reconcile` in the socket callback BETWEEN two frames, so a change delivered
+ * by the second one is invisible to a comparison taken in the first. The
+ * arithmetic of the common case: a reload completes on the server, the refill
+ * from zero to two arrives through `reconcile`, no frame ever observes the two,
+ * the next shot takes it to one, and one is not less than the zero the view
+ * still remembers. No flash, no recoil, no bang — for a shot that really was
+ * fired, whose `f` really was on the wire, and whose ray the server really did
+ * resolve. Measured through these modules at 60 fps and a 60 ms round trip,
+ * standing still with the trigger held: two shots in five silent, and four
+ * reloads in five eating the shot that followed them.
+ *
+ * Reported from inside `apply` it is immune to `reconcile` by construction: a
+ * shot is drawn exactly when THIS CLIENT'S OWN step spent the barrel, which is
+ * the same condition under which the fire bit goes on the wire, so the flash can
+ * neither lead nor lag the shot. The count arriving from the server changes
+ * nothing here, which is correct — the server's gun landing under a prediction
+ * that was holding a fuller one is what a predictor rebuilt beneath a living
+ * occupant sees, and it is not a shot anybody fired.
+ *
+ * It is also why the decision moved out of the view: a comparison living in a
+ * single-file component is one no unit test can reach, which is precisely how
+ * this survived.
+ */
+export interface Applied {
+  /** The command, stamped with its sequence. This is what goes on the wire. */
+  cmd: StepCommand;
+  /**
+   * This step spent a barrel — the flash, the recoil and the bang belong to it.
+   *
+   * Nothing else in `step` lowers the count: a granted shot is the only thing
+   * that spends one, and a completing reload only ever refills.
+   */
+  fired: boolean;
+  /** This step started a reload — the gun coming open, once per reload. */
+  reloadStarted: boolean;
+}
+
 /** What the renderer draws. */
 export interface PredictedView {
   x: number;
@@ -232,18 +276,51 @@ export function createPredictor(opts: PredictorOptions) {
 
   return {
     /**
-     * Applies one command locally and returns it, stamped with its sequence.
+     * Applies one command locally and returns it, stamped with its sequence,
+     * alongside what the step granted — see `Applied`.
      *
-     * The caller sends what comes back. Nothing is predicted that is not also
-     * sent, and nothing is sent that is not also predicted — the two lists
-     * being the same list is what makes reconciliation exact.
+     * The caller sends `cmd` back. Nothing is predicted that is not also sent,
+     * and nothing is sent that is not also predicted — the two lists being the
+     * same list is what makes reconciliation exact.
      */
-    apply(cmd: Omit<StepCommand, 'seq'>): StepCommand {
+    apply(cmd: Omit<StepCommand, 'seq'>): Applied {
       seq += 1;
       const stamped: StepCommand = { ...cmd, seq };
+      const before = predicted;
       predicted = step(level, predicted, stamped, constants);
       pending.push(stamped);
-      return stamped;
+      return {
+        cmd: stamped,
+        fired: predicted.loaded < before.loaded,
+        reloadStarted: predicted.reload > 0 && before.reload <= 0,
+      };
+    },
+
+    /**
+     * Resumes the command counter from the mark the world has already counted to.
+     *
+     * THE READY FRAME'S `seq`, WHICH IS THE EXACT MARK `World.Enqueue`
+     * DEDUPLICATES AGAINST (`Occupant.highSeq` — internal/gamevanyadum/service.go),
+     * so the first command a predictor seeded with it sends is `seq + 1` and not
+     * one of them is dropped as already seen.
+     *
+     * A FRESH PREDICTOR UNDER A LIVING OCCUPANT IS THE CASE THIS EXISTS FOR, and
+     * it is ordinary rather than exotic: the occupant outlives the socket for the
+     * abandon grace, so a page reload, a backgrounded tab whose socket dropped,
+     * or a заброшка regenerated under a client all come back to a counter that is
+     * still in the hundreds while `createPredictor` starts again at one. Every
+     * command sent until the first snapshot lands is then dropped in silence —
+     * measured at 4 commands at a 60 ms round trip and 14 at 300 ms, and a
+     * trigger pull is as droppable as a step. `reconcile` recovers from the ack,
+     * but the ack is one round trip away and is only a floor; this is the exact
+     * number, and it is available before the first command is even built.
+     *
+     * FORWARDS ONLY, exactly as the ack floor is. A mark at or below `seq` would
+     * be rewinding onto sequences that are still pending, which would put two
+     * different commands under one number.
+     */
+    resumeSequence(highest: number): void {
+      if (highest > seq) seq = highest;
     },
 
     /**
@@ -263,30 +340,22 @@ export function createPredictor(opts: PredictorOptions) {
       // seconds of walking is in the hundreds. So it drops 1 as stale, then 2,
       // then every command after it, silently and for ever.
       //
-      // This is not a corner case, because the occupant outlives the client's
-      // predictor by design. A reload inside the abandon grace comes back to the
-      // player it left standing there; so does a backgrounded tab whose socket
-      // dropped; and so does the заброшка being regenerated, which rebuilds the
-      // predictor against new geometry WITHOUT the socket or the occupant ever
-      // going away — the one that needs no interruption at all.
+      // THE READY FRAME IS WHERE THAT IS FIXED, not here: `resumeSequence` takes
+      // the exact dedupe mark the moment the socket attaches, before the first
+      // command is built. This line is the BACKSTOP behind it — a floor rather
+      // than a resync, because the ack is the last sequence the server has
+      // STEPPED, which sits at or below the highest it has ACCEPTED by whatever
+      // is still queued. It costs nothing to keep and it covers the counter
+      // being behind for any reason the ready frame did not.
       //
-      // The ack is the right floor because THE SERVER IS THE ONE THAT SAID IT.
-      // It is the last sequence the server folded in, so counting on from it is
-      // the client agreeing with what it has just been told, not asserting a
-      // number of its own — the same relationship the rest of this file has
-      // with authority. And it only ever moves the counter FORWARDS: an ack at
+      // The ack is a legitimate floor because THE SERVER IS THE ONE THAT SAID
+      // IT: counting on from it is the client agreeing with what it has just
+      // been told rather than asserting a number of its own, which is the
+      // relationship the rest of this file has with authority. And it only ever
+      // moves the counter FORWARDS, exactly as `resumeSequence` does: an ack at
       // or below `seq` is acknowledging commands this predictor itself sent, and
       // rewinding onto sequences that are still pending would put two different
       // commands under one number.
-      //
-      // It is a floor, not an exact resync. The server deduplicates against the
-      // highest sequence it has ACCEPTED into that occupant's queue, which sits
-      // at or above the last one it has STEPPED — the ack — by however much is
-      // still waiting there. So a handful of the first resumed commands can land
-      // below that mark and be dropped before the ack catches up. That is a
-      // fraction of a second of unresponsiveness, against a freeze a reload
-      // could not clear — the occupant, and the count it is stuck behind,
-      // survive one.
       if (a.ack > seq) seq = a.ack;
 
       pending = pending.filter((c) => (c.seq ?? 0) > a.ack);
@@ -471,11 +540,13 @@ export function createPredictor(opts: PredictorOptions) {
     /**
      * The raw prediction, without the correction offset.
      *
-     * The view reads THE GUN off this once a frame and compares it against the
-     * frame before, which is how a shot becomes a muzzle flash: a barrel count
-     * falling by one IS the shot, exactly as it is on the wire, so nothing has
-     * to be published to say one happened. The position on it is for tests —
-     * `view` is what the camera is placed from.
+     * The view reads it once a frame for the two questions that are about the
+     * player's STATE rather than his position: where the syringe in his hand is,
+     * and whether the gun would refuse a pull, which is what decides both the
+     * uplink and the trigger control's own appearance. What a step GRANTED is
+     * not among them — `apply` reports that, because a comparison across frames
+     * cannot see what `reconcile` changed between two of them. The position here
+     * is for tests; `view` is what the camera is placed from.
      */
     raw(): StepPlayer {
       return { ...predicted };

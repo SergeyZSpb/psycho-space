@@ -249,8 +249,14 @@ export function createEmitter(opts: EmitterOptions) {
      * one of them. A pull is a moment rather than a state, so putting it on
      * every command of the wake would ask the server to fire once per sub-step
      * — which it would refuse, having a cadence, but only after being told four
-     * times. The caller keeps asking until a command comes back carrying it, so
-     * a tap during a frame that produced no command is not silently lost.
+     * times.
+     *
+     * A CALL THAT PRODUCES NO COMMAND CARRIES NO PULL, and that is why the
+     * caller must not pass a pull it is prepared to forget. This returns nothing
+     * whenever less than one period has accrued — which is most frames on a
+     * fast screen, and the whole of the first call after `reset` — so a pull
+     * sampled once and discarded is a pull the player never gets. `createPullLatch`
+     * below is what holds it until a command comes back carrying it.
      */
     due(nowMs: number, axes: VanyadumAxes, fire = false): VanyadumCommand[] {
       if (last === null) {
@@ -339,6 +345,112 @@ export function createEmitter(opts: EmitterOptions) {
 
 export type Emitter = ReturnType<typeof createEmitter>;
 
+/**
+ * The longest a pull may be remembered for, in milliseconds.
+ *
+ * The ceiling rather than the value: `pullLatchMs` takes the smaller of this and
+ * half the served cadence. It is what bounds a SLOW gun — half of a two-second
+ * cadence would buffer a tap for a whole second, and a shot that arrives a
+ * second after the thumb left the button is a shot the player has stopped
+ * wanting. A hundred and fifty milliseconds covers any gap between two animation
+ * frames that is not a stall (a 30 Hz phone draws every 33 ms, and even a 100 ms
+ * hitch fits) plus the one 25 ms command period a `due` call may still be
+ * waiting on.
+ */
+export const MAX_PULL_LATCH_MS = 150;
+
+/**
+ * How long a latched pull stays wanted, given the gun's served cadence.
+ *
+ * DERIVED FROM THE CADENCE RATHER THAN TYPED OUT, because the bound has to stay
+ * UNDER it however the gun is retuned: a pull remembered for longer than the
+ * cadence turns "I tapped once while it was reloading" into an extra shot fired
+ * on the player's behalf at some later moment he was not asking for. Half of it
+ * keeps that true by construction, and `MAX_PULL_LATCH_MS` keeps it short in
+ * absolute terms for a gun whose cadence is long.
+ *
+ * A cadence of zero — a gun with no cadence at all, which the catalogue does not
+ * publish today — falls back to the ceiling: every command would be granted, so
+ * the latch only ever has to survive to the next one.
+ */
+export function pullLatchMs(cadenceSeconds: number): number {
+  const half = cadenceSeconds * 500;
+  return half > 0 && half < MAX_PULL_LATCH_MS ? half : MAX_PULL_LATCH_MS;
+}
+
+/**
+ * Remembers that the trigger was pulled until a command carries the pull.
+ *
+ * THE PULL IS AN EDGE AND THE HOLD IS A LEVEL, and conflating them is what lost
+ * taps. Sampling "is the button down?" once per animation frame and throwing
+ * away whatever did not become a command loses a pull twice over: `due` produces
+ * nothing until a full command period has accrued, which is most frames on a
+ * 144 Hz screen, and a tap that starts and ends BETWEEN two frames is never
+ * sampled at all. Measured: a 16 ms flick-tap lost 37 % of the time at 144 Hz
+ * and 78 % at 90 Hz. Holding never lost one, which is why this went unnoticed —
+ * the game tells you to hold.
+ *
+ * So the press is recorded when the BROWSER EVENT says it happened, and it stays
+ * wanted until `taken` says a command carried it or the window runs out. The
+ * window exists because a pull the gun refuses would otherwise be delivered
+ * whenever the gun next became free: see `pullLatchMs` for why it is what it is.
+ *
+ * IT TAKES THE WINDOW PER CALL RATHER THAN AT CONSTRUCTION, which is what lets
+ * one of these live as long as the view does. The bound belongs to the GUN and
+ * the gun is served, while the press belongs to a thumb that can land before any
+ * of that has been built: the заброшка's meshes and its predictor are put
+ * together asynchronously after the play screen is already on the phone, and a
+ * latch built alongside them would drop a trigger held through that — with no
+ * second press coming, because the thumb never lifted.
+ *
+ * It takes its clock as an argument too, so the whole table of tap lengths
+ * against frame rates is a unit test rather than something you find out about on
+ * a phone.
+ */
+export function createPullLatch() {
+  let held = false;
+  let latchedAt: number | null = null;
+
+  return {
+    /** The thumb, the key or the mouse button went down, at this instant. */
+    press(nowMs: number): void {
+      held = true;
+      latchedAt = nowMs;
+    },
+
+    /**
+     * It came back up. The latch SURVIVES the release, which is the whole point:
+     * the press may not have become a command yet.
+     */
+    release(): void {
+      held = false;
+    },
+
+    /**
+     * Whether a command built at this instant should carry the pull.
+     *
+     * True for as long as the button is down, and for `windowMs` after a press
+     * that no command has claimed. The caller still gets to refuse — the gun's
+     * own state is not this module's business.
+     */
+    wanted(nowMs: number, windowMs: number): boolean {
+      if (held) return true;
+      return latchedAt !== null && nowMs - latchedAt <= windowMs;
+    },
+
+    /** A command carried the pull, so it is spent. A held trigger latches again. */
+    taken(): void {
+      latchedAt = null;
+    },
+
+    /** Drops everything, for when a run ends. */
+    reset(): void {
+      held = false;
+      latchedAt = null;
+    },
+  };
+}
+
 /** One command exactly as it goes on the wire — short keys, `f` omitted. */
 export interface WireCommand {
   q?: number;
@@ -375,6 +487,19 @@ export interface InputFrame {
  * the server applies them in order and drops any sequence it has already seen,
  * so a repeat costs a few bytes and buys immunity to a single lost packet.
  *
+ * AND THE FRAME IS CUT TO THE SERVED CAP HERE, FROM THE HEAD, so the server
+ * never has to cut it. `parseInput` keeps the last `max_commands + redundant`
+ * and drops the prefix, which is exactly this rule — so doing it here changes
+ * nothing about what arrives and everything about what is PAID FOR: an
+ * over-full frame spends uplink on commands that are thrown away on receipt.
+ * The tail this trims is redundancy, which is the right thing to lose: a resend
+ * asks for no simulation and its whole job is insurance against a packet that
+ * was almost certainly not lost, while a fresh command is input the player is
+ * waiting to see happen. The over-full case is not exotic — `outbox` collects
+ * whatever accumulated since the last send, so a send timer the browser ran late
+ * hands this more fresh commands than one wake may produce, and asking for a
+ * full redundancy tail on top of those is what pushed the frame over.
+ *
  * `f` IS OMITTED RATHER THAN SENT FALSE, and on this frame that is not a
  * rounding error. Forty sub-steps a second go out for as long as somebody is
  * walking, and `"f":false` on every one of them would be nine bytes, forty times
@@ -387,9 +512,13 @@ export function buildInputFrame(
   seenTick: number,
   fresh: VanyadumCommand[],
   unacknowledged: VanyadumCommand[],
+  cap: number,
 ): InputFrame {
   const seen = new Set(fresh.map((c) => c.seq));
-  const cmds = [...unacknowledged.filter((c) => !seen.has(c.seq)), ...fresh];
+  const all = [...unacknowledged.filter((c) => !seen.has(c.seq)), ...fresh];
+  // From the head, so what goes is the oldest redundancy and never the newest
+  // input — the same direction the server cuts in.
+  const cmds = all.length > cap ? all.slice(all.length - cap) : all;
   return {
     t: 'vanyadum_input',
     k: seenTick,

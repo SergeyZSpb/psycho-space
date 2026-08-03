@@ -162,8 +162,10 @@ type Occupant struct {
 	//
 	// NOT ON Player, by ADR-058's test: Step never reads it, so the client never
 	// has to simulate it, so it costs no port, no golden vector and no reconcile
-	// spread. The client draws its OWN muzzle flash from the barrel count falling
-	// (web/src/lib/vanyadumPredict.ts, `raw`), which is a value it already has.
+	// spread. The client draws its OWN muzzle flash from the step that spent the
+	// barrel — its predictor reports the shot out of the step that granted it
+	// (`apply`, web/src/lib/vanyadumPredict.ts) — so this field would be telling
+	// him something he ran himself.
 	firedOn int64
 
 	// hitOn is the tick on which this occupant was last hurt — by a barrel or by a
@@ -177,9 +179,10 @@ type Occupant struct {
 	// The room learns somebody was hit, which is a thing nothing else on the
 	// frame can say — neither a shot nor a touch moves the man it lands on, so
 	// there is no value already there to derive it from. And the SHOOTER learns
-	// he connected, because he knows he fired on this tick (his own barrel count
-	// fell) and the man he was aiming at is marked on the very same frame. That
-	// is why there is no second field addressed to the shooter.
+	// he connected, because he knows he fired on this tick — his own client ran
+	// the step that spent the barrel — and the man he was aiming at is marked on
+	// the very same frame. That is why there is no second field addressed to the
+	// shooter.
 	//
 	// The one case that derivation misses is a victim who has walked out of the
 	// shooter's visible set in the time being rewound over: he was hit where the
@@ -861,10 +864,16 @@ func (w *World) Enqueue(accountID string, in *ParsedInput) {
 		// goes no further: highSeq lives on the Occupant, so the only input that
 		// stops flowing is the sender's own — and he can already stop it by
 		// sending nothing at all. An HONEST client that ends up behind a
-		// high-water mark (a reload, a rebuilt socket) is recovered by the
-		// client's own resume path: reconcile takes the server's ack as a floor
-		// on its counter and counts on from there
-		// (web/src/lib/vanyadumPredict.ts).
+		// high-water mark (a reload, a rebuilt socket) is TOLD THIS VERY NUMBER
+		// ON ITS READY FRAME and resumes counting from it, so its first command
+		// is highSeq+1 and not one of them is dropped (message.go, Ready.Seq;
+		// resumeSequence in web/src/lib/vanyadumPredict.ts). Behind that sits the
+		// backstop it used to rely on alone: reconcile takes the server's ack as
+		// a floor on its counter. That one is a floor rather than the mark — the
+		// ack is the last sequence STEPPED where this is the highest ACCEPTED, so
+		// it lags by whatever is still queued and costs the first few commands
+		// after a resume — which is why it is the second path and no longer the
+		// only one.
 		//
 		// THREE PLACES SANITISE AND NONE OF THEM IS REDUNDANT, because each owes
 		// a guarantee the other two cannot. parseInput clamps because it is the
@@ -949,7 +958,8 @@ func (w *World) Advance(dt float64, now time.Time) []*Occupant {
 			o.budget -= c.Dt
 			spent += c.Dt
 			// A BARREL COUNT FALLING IS THE SHOT, which is the same reading the
-			// client makes of its own frame rather than a second definition kept
+			// client makes around its own step (`apply`,
+			// web/src/lib/vanyadumPredict.ts) rather than a second definition kept
 			// in step with it by hand. Nothing else in the simulation lowers it:
 			// a reload only ever raises it, to Barrels. Recorded here so that
 			// everybody watching gets told (Occupant.firedOn); the man who fired

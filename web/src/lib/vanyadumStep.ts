@@ -442,6 +442,36 @@ function injectDelivered(left: number, k: StepConstants): number {
 }
 
 /**
+ * Whether the trigger would be refused right now — every reason at once.
+ *
+ * ONE PREDICATE WITH THREE CALLERS, and the third is what made it worth
+ * extracting. `stepGun` runs it because it is the simulation's own rule; the
+ * view runs it to decide whether a pull is worth the uplink at all, since asking
+ * a question you have already answered spends the worse half of a mobile
+ * connection to be told no; and the view runs it AGAIN over the numbers the
+ * snapshot carries, to mark the trigger control as busy — because a pull refused
+ * by the cadence and a pull that vanished look identical on a button that never
+ * changes, and this project counts an invisible refusal as an unfinished action.
+ * Three copies of a five-way condition is three places to forget the ampoule the
+ * next time one is added.
+ *
+ * `health` IS IN IT although `stepGun` is only ever reached with a living man —
+ * `step` returns early for a corpse — because the other two callers are not,
+ * and a man on the floor is the most obvious refusal of the five.
+ */
+export function gunBusy(
+  p: Pick<StepPlayer, 'health' | 'protectedLeft' | 'cooldown' | 'reload' | 'injectLeft'>,
+): boolean {
+  return (
+    p.health <= 0 ||
+    p.cooldown > 0 ||
+    p.reload > 0 ||
+    p.protectedLeft > 0 ||
+    p.injectLeft > 0
+  );
+}
+
+/**
  * Advances the обрез by one command: the timers by the command's own dt, and
  * then the trigger. Mirrors `stepGun` in `internal/gamevanyadum/sim.go`.
  *
@@ -486,7 +516,7 @@ function stepGun(p: StepPlayer, c: StepCommand, k: StepConstants): void {
   // window you can leave by tapping the thing you were already holding is not a
   // window. The same refusal keeps a reload from starting mid-injection, since
   // the trigger is the only thing that starts one.
-  if (!c.fire || p.cooldown > 0 || p.reload > 0 || p.protectedLeft > 0 || p.injectLeft > 0) {
+  if (!c.fire || gunBusy(p)) {
     return;
   }
   if (p.loaded > 0) {

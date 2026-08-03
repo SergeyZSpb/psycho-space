@@ -471,7 +471,9 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 }
 
 // hello walks the connection's account into the заброшка and tells it which
-// building that is.
+// building that is, which place in it the reader holds, and how far this
+// occupant's input had already counted — everything constant for the life of the
+// attachment, and nothing that repeats.
 //
 // THE HELLO IS THE JOIN. There is no start endpoint, no lobby and no code: the
 // room already carries an authenticated account, so being in the room is being
@@ -501,8 +503,14 @@ func (s *Service) hello(ctx context.Context, m realtime.Member) {
 	o, joined := w.Join(m.AccountID, s.pseudonym(m.AccountID), time.Now())
 	worldID := w.ID.String()
 	slot := 0
+	var seq int64
 	if joined {
 		slot = o.Slot
+		// Read under the lock, because Enqueue advances it on whatever read pump
+		// the occupant's other socket happens to be on. See Ready.Seq for what a
+		// client does with it, and for why a resume hint is affordable here and
+		// would not be on a snapshot.
+		seq = o.highSeq
 		delete(s.boarded, m.ConnID)
 	}
 	s.mu.Unlock()
@@ -512,7 +520,7 @@ func (s *Service) hello(ctx context.Context, m realtime.Member) {
 		err error
 	)
 	if joined {
-		msg, err = json.Marshal(Ready{T: TypeReady, WorldID: worldID, Slot: slot})
+		msg, err = json.Marshal(Ready{T: TypeReady, WorldID: worldID, Slot: slot, Seq: seq})
 	} else {
 		msg, err = json.Marshal(Full{T: TypeFull})
 	}

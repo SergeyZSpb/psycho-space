@@ -159,12 +159,53 @@ func parseInput(f InputFrame) *ParsedInput {
 	// ratio plus the redundancy window rather than the ratio alone: deduplicate
 	// on what has been APPLIED instead and the surplus this cap permits becomes
 	// real simulation a client did not pay for.
+	//
+	// THE LAST n ARE KEPT AND THE PREFIX IS DROPPED, which is a decision separate
+	// from how many are kept and has to be made deliberately. A client composes a
+	// frame as [redundancy tail…, fresh commands…] (buildInputFrame in
+	// web/src/lib/vanyadumInput.ts), so the prefix is by construction the stale
+	// half and the suffix is what the player has just done. Keeping the prefix
+	// therefore threw away the NEWEST input — including, on the frames where it
+	// mattered, the trigger pull he had just made. Measured over a driven session:
+	// no frame is over-full at a 100 ms round trip and 30 % of them are at 250 ms
+	// and above, where the truncation cost about one tap in a hundred.
+	//
+	// WHAT THE DIRECTION COSTS IS RECOVERABILITY, and that is the half worth
+	// arguing. The cap's own guarantee is untouched by it — the cap bounds HOW
+	// MANY commands come out of the wire boundary and says nothing about which, so
+	// a client that fills a frame with sequences the world has never seen gets
+	// exactly n of them accepted either way. What did move is what becomes of the
+	// ones dropped. A dropped PREFIX sits below the high-water mark the moment
+	// anything behind it is accepted, and World.Enqueue drops every sequence at or
+	// below that mark as already seen — so a resend of it is refused as stale and
+	// it is gone for good. The suffix the old direction dropped sat ABOVE the mark,
+	// so the next frame's redundancy tail simply restored it.
+	//
+	// IT IS STILL THE RIGHT DIRECTION, because the two halves are not worth the
+	// same. The prefix is by construction the redundancy tail — commands the server
+	// has already accepted — and this is TCP, where a frame is not lost in
+	// isolation: it is either delivered in order or the connection carrying it is
+	// gone, so "already accepted" is essentially always rather than almost always,
+	// and being unable to resend it loses nothing anybody was waiting for. The
+	// suffix is fresh input, which is not recoverable IN TIME even when it is
+	// recoverable at all: a pull that arrives one frame late is rewound from the
+	// tick it is finally stepped on, so it resolves against a world a send period
+	// and a tick newer than the one the player was aiming at — 100 ms at InputHz
+	// and up to 50 more waiting for the tick, which on a moving target is a
+	// systematic miss with the flash and the bang already played locally.
+	//
+	// THE RESIDUAL CASE IS A STALE CACHED TAB against a server that has moved on,
+	// because it is now the only client that hands this an over-full frame at all:
+	// the current one trims to this same cap, from the same end, before it sends
+	// (buildInputFrame). That tab composes its frame the same way, so the prefix
+	// dropped here is its own already-accepted tail — the harmless half, and the
+	// same handful of bytes it always was.
 	n := len(f.Cmds)
 	if n > MaxCommandsPerFrame+RedundantCommands {
 		n = MaxCommandsPerFrame + RedundantCommands
 	}
 	out := &ParsedInput{Seen: f.Seen, Cmds: make([]Command, 0, n)}
-	for i := 0; i < n; i++ {
+	for i := len(f.Cmds) - n; i < len(f.Cmds); i++ {
 		// A direct conversion, which the two types being field-for-field
 		// identical is what permits. They stay separate types because the wire
 		// form is allowed to grow a field the simulation has no opinion about
@@ -205,6 +246,32 @@ type Ready struct {
 	// repeats. A reconnect is answered with the same number, because a second
 	// hello is the same person walking back to the place he was holding.
 	Slot int `json:"slot"`
+	// Seq is the highest command sequence the world has ACCEPTED from this
+	// occupant (Occupant.highSeq), and it is what a REBUILT PREDICTOR resumes
+	// counting from: its first command is Seq+1.
+	//
+	// WITHOUT IT A RELOAD SILENTLY SWALLOWS EVERY COMMAND IT SENDS UNTIL THE FIRST
+	// SNAPSHOT LANDS. An occupant outlives its socket for AbandonGrace, so a page
+	// reload comes back to a high-water mark that is still counting, while the
+	// client's own counter starts again at zero — and Enqueue drops everything at
+	// or below the mark as already seen. The client recovers by taking the
+	// server's ack as a floor, but that is one round trip away: measured at 4
+	// commands lost at a 60 ms round trip and 14 at 300 ms, and a trigger pull is
+	// as droppable as a step.
+	//
+	// THE ARITHMETIC, because the next person to add a field here will read this.
+	// Ready is sent ONCE PER ATTACH, so this is about ten bytes per socket and
+	// nothing at all per tick — the same trade the world id and the slot already
+	// make. The rule it must not be confused with is the one governing the
+	// SNAPSHOT: a field there costs bytes × SnapshotHz × occupants × viewers,
+	// forever, which is why the resting state of this game's repeating frame is
+	// five numbers. A resume hint belongs on the frame that is sent when there is
+	// something to resume, and nowhere else.
+	//
+	// Omitted at zero, which is the state of everybody walking in for the first
+	// time: absent reads back as zero, so the fresh arrival pays nothing for a
+	// number that only means something to a reconnect.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // Full is the answer to a hello the заброшка cannot honour, because it already
@@ -263,10 +330,17 @@ type Snapshot struct {
 	// Health is what is left of you, and ZERO IS THE WHOLE OF BEING DEAD. There
 	// is no "down" flag for yourself: your own health is already on every frame,
 	// and hp falling IS the acknowledgement that you were hit — the same
-	// per-frame comparison the client already makes for the barrel count and the
-	// pickup mask. A field to say "you were shot" would be bytes on a payload
+	// comparison between two consecutive SNAPSHOTS the client already makes for
+	// the pickup mask. A field to say "you were shot" would be bytes on a payload
 	// that repeats twenty times a second to restate something the payload
 	// carries.
+	//
+	// BETWEEN TWO SNAPSHOTS AND NOT BETWEEN TWO DRAWN FRAMES, a distinction the
+	// gun paid for. The health readout and the floor mask have ONE WRITER EACH —
+	// the socket callback this frame arrives in — so differencing them there sees
+	// every change either of them ever makes. The gun's barrel count is not like
+	// that, because the client predicts it as well, and nothing about the reader's
+	// own shot is derived from it (see Loaded).
 	//
 	// IT IS ALSO THE DISCRIMINATOR FOR `dn`, which is a second job and a
 	// load-bearing one: zero means the number below is a respawn and anything else
@@ -363,17 +437,31 @@ type Snapshot struct {
 	// state nothing can reach, so it stays a bound rather than a claim
 	// (message_test.go, worstSnapshot).
 	//
-	// YOUR OWN SHOT NEEDS NO EVENT, and this is why. `b` falling by one between
-	// two frames IS the shot, and `d` going from absent to set is the same
-	// instant — both are per-frame comparisons the client already makes for the
-	// pickup mask. An "I fired" event addressed to the man who fired would be
-	// bytes on a payload that repeats twenty times a second to say nothing at all
-	// almost every time it was sent.
+	// YOUR OWN SHOT NEEDS NO EVENT, and the reason is stronger than anything this
+	// frame carries: THE CLIENT RAN THE STEP ITSELF. It predicts the gun through
+	// the same rules the server does (sim.go, stepGun, and the port pinned to it),
+	// so the step that spends the barrel is the step that draws the flash and
+	// plays the bang — on the thumb rather than a round trip later. Its predictor
+	// reports the shot out of the step that granted it (`apply`,
+	// web/src/lib/vanyadumPredict.ts). An "I fired" event addressed to the man who
+	// fired would be bytes on a payload that repeats twenty times a second to say
+	// nothing at all almost every time it was sent, and it would arrive after he
+	// had already seen it.
 	//
-	// A PEER'S SHOT IS THE CASE THIS DOES NOT COVER, because a peer carries
-	// neither of these two fields and giving it one would cost more than the
-	// small integer that replaced them: see Peer.St for the measurement and for
-	// why the cheap derivation available here is not available there.
+	// AND IT IS NOT DERIVED FROM THIS FIELD, which is worth writing down because
+	// the obvious reading — the count fell between two frames, so he fired — is
+	// what the client used to do and it swallowed shots. The count has two writers
+	// there, the client's own prediction and the snapshot it reconciles against,
+	// and the second writes BETWEEN two drawn frames: a reload's refill was
+	// therefore invisible to a comparison taken in the draw loop, and the shot
+	// after it was drawn and heard as nothing. `b` is what the HUD shows and what
+	// corrects a mispredicted gun; neither job is an acknowledgement.
+	//
+	// A PEER'S SHOT IS THE CASE NONE OF THAT COVERS, because nobody predicts
+	// somebody else's thumb: a viewer has no step of his own to read a peer's shot
+	// out of, and a peer carries neither of these two fields. Giving it one would
+	// cost more than the small integer that replaced them — see Peer.St for the
+	// measurement.
 	Cooldown int            `json:"d,omitempty"`
 	Reload   int            `json:"r,omitempty"`
 	Bag      map[string]int `json:"c,omitempty"`
@@ -586,9 +674,9 @@ type Foe struct {
 // for every tick they last, which is what makes those three the expensive ones
 // and why the field is priced at the full snapshot rate.
 const (
-	// PeerFired is his gun going off. The man who fired needs no telling — his
-	// own barrel count is on his own frame — so this is how everybody else finds
-	// out, which is the whole reason it exists.
+	// PeerFired is his gun going off. The man who fired needs no telling — his own
+	// client ran the step that spent the barrel, and drew the flash from it — so
+	// this is how everybody else finds out, which is the whole reason it exists.
 	PeerFired = 1
 	// PeerHit is something hurting him: a barrel landing, or a нейрослоп reaching
 	// him, which the room is told about identically because neither one moves the

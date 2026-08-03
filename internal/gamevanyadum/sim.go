@@ -443,6 +443,22 @@ func stepGun(p Player, c Command) Player {
 	// SyringeSeconds of being unable to answer, which is the entire price it
 	// charges. The same refusal keeps a reload from starting mid-injection, since
 	// the trigger is the only thing that starts one.
+	//
+	// THE BROWSER SPELLS THIS SAME REFUSAL A SECOND TIME, IN ITS OWN LANGUAGE, and
+	// they are two copies rather than one shared predicate. It is an inline
+	// condition here and a named function there — `gunBusy`,
+	// web/src/lib/vanyadumStep.ts — because the port has three callers for it
+	// where this file has one: its own step, the uplink filter that declines to
+	// send a pull the gun is going to refuse anyway, and the busy state the
+	// trigger control wears. Nothing in either language compares the two, so what
+	// binds them is the GOLDEN VECTORS (golden_test.go), whose transcripts hold
+	// the trigger down through every one of these five terms — a cadence, a
+	// reload, a man on the floor, a spawn window and an ampoule. Drop one from the
+	// port and it fires where the Go trace says it did not: taking the ampoule out
+	// parts company on the syringe cases, which is how that was confirmed. Drop
+	// one from HERE and TestGoldenVectors fails as stale first, which is the same
+	// gate read from the other end. Either way, a term added on one side is a term
+	// added on the other, in the same change.
 	if !c.Fire || p.CooldownLeft > 0 || p.ReloadLeft > 0 || p.ProtectedLeft > 0 || p.InjectLeft > 0 {
 		return p
 	}

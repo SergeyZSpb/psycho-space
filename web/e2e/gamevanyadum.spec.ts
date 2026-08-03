@@ -479,6 +479,16 @@ test.describe('«ВАНЯДУМ» splash', () => {
     // pickup that grants it carries the word — so this is also what says the two
     // agree.
     await expect(rules).toContainText('🍺 пиво');
+    // AND EVERY WAY THE TRIGGER GOES QUIET, which is the line a player reads at
+    // the one moment he needs it. The ампула is the one that used to be missing
+    // and the longest of them; its duration is the stub's, so a hand-typed list
+    // fails here. The empty-gun clause quotes the HUD's own words rather than
+    // repeating them, so the two cannot drift apart.
+    await expect(rules).toContainText('когда молчит');
+    await expect(rules).toContainText('колешься (4 с)');
+    await expect(rules).toContainText('«нет 🍺»');
+    // And you walk in with nothing, which is what makes the first refusal.
+    await expect(rules).toContainText('с пустыми карманами');
   });
 
   test('and it states what a barrel does, and what happens when one lands', async ({ page }) => {
@@ -1405,6 +1415,155 @@ test.describe('«ВАНЯДУМ» play', () => {
     // being omitted means and what most frames look like.
     await socket.snapshot({ hp: 41, b: 2 });
     await expect(page.getByTestId('vanyadum-health')).toHaveText('♥ 41');
+  });
+
+  test('the trigger says when the обрез is busy, and never by going disabled', async ({ page }) => {
+    // A REFUSAL NOBODY CAN SEE IS AN UNFINISHED ACTION. The обрез refuses a pull
+    // for six different reasons and answers every one of them with silence, so
+    // a control that looked identical either way left «занят» and «кнопка не
+    // работает» indistinguishable — which is half of the report that this game
+    // sometimes does not shoot.
+    //
+    // Driven by snapshots and needing no render loop: the state is written when
+    // the frame arrives, which is exactly why it is taken from the wire rather
+    // than from the prediction the draw loop advances.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    const fire = page.getByTestId('vanyadum-fire');
+    // A resting gun: `d` and `r` are absent, which is what "not busy" looks like.
+    await socket.snapshot({});
+    await expect(fire).not.toHaveClass(/is-busy/);
+
+    // Between two shots.
+    await socket.snapshot({ d: 300 });
+    await expect(fire).toHaveClass(/is-busy/);
+
+    // Reloading, which is the long one — and the one a player is most likely to
+    // read as the game having stopped responding.
+    await socket.snapshot({ r: 1400, b: 0 });
+    await expect(fire).toHaveClass(/is-busy/);
+
+    // Untouchable on a spawn, which refuses the trigger too.
+    await socket.snapshot({ pr: 2000 });
+    await expect(fire).toHaveClass(/is-busy/);
+
+    // And on the floor, where nothing works at all.
+    await socket.snapshot({ hp: 0, dn: 4000 });
+    await expect(fire).toHaveClass(/is-busy/);
+
+    // THE SIXTH, AND THE ONLY ONE THAT IS NOT A TIMER: an empty обрез with
+    // nothing in the pockets to fill it. Every other refusal above ends by
+    // itself within a second or two; this one lasts until the player finds a
+    // bottle, and every player reaches it a full gun's worth of shots after
+    // walking in, because nobody arrives carrying ammunition. `c` is omitted,
+    // which is what an empty bag looks like on the wire.
+    await socket.snapshot({ b: 0 });
+    await expect(fire).toHaveClass(/is-busy/);
+
+    // And with a bottle it is not a refusal at all — the trigger IS the reload,
+    // so the button has to look pressable.
+    await socket.snapshot({ b: 0, c: { beer: CONFIG.gun.reload_cost } });
+    await expect(fire).not.toHaveClass(/is-busy/);
+
+    await socket.snapshot({});
+    await expect(fire).not.toHaveClass(/is-busy/);
+  });
+
+  test('an empty обрез says what it is empty of, and fits a 360 px phone', async ({ page }) => {
+    // THE OWNER'S QUESTION, ANSWERED ON THE SCREEN: «а патроны бесконечные?».
+    // They are not — a fixed number of barrels, a бутылка per reload, and
+    // nothing in your pockets when you walk in — and the moment that matters is
+    // the one where the trigger stops answering. A bare «0/3» beside a
+    // live-looking button is indistinguishable from a control that has broken,
+    // so the cell names the reason instead.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+    const viewport = page.viewportSize()!;
+
+    const shells = page.getByTestId('vanyadum-shells');
+    const hud = page.getByTestId('vanyadum-hud');
+
+    // The strip at rest, which is what the longest readout is measured against
+    // below: the HUD does not wrap, so a cell that grows too wide for the row
+    // costs a second line rather than an overflow the document could report.
+    await socket.snapshot({});
+    const restHeight = (await hud.boundingBox())!.height;
+
+    // Empty, with enough for a reload: a wait the player ends himself, since
+    // nothing starts a reload by itself.
+    await socket.snapshot({ b: 0, c: { beer: CONFIG.gun.reload_cost } });
+    await expect(shells).toContainText('пусто · жми');
+    await expect(shells).not.toHaveClass(/is-dry/);
+
+    // Empty, with nothing to load: the ammunition is named by the catalogue's
+    // own icon, which is why the fixture's is asserted rather than a 🍺 typed
+    // out here.
+    await socket.snapshot({ b: 0, c: { beer: CONFIG.gun.reload_cost - 1 } });
+    await expect(shells).toContainText(`нет ${CONFIG.pickups[0].icon}`);
+    await expect(shells).toHaveClass(/is-dry/);
+
+    // THE BAG HAS TO STOP LYING FOR ANY OF THIS TO BE TRUE. A counter that
+    // reaches zero is DELETED from the map the server serialises rather than
+    // sent as a zero, so the frame that spends your last bottle simply stops
+    // mentioning beer — and a HUD that merged frames would go on showing it and
+    // go on offering a reload nobody can make.
+    await socket.snapshot({ b: 0 });
+    await expect(page.getByTestId('vanyadum-count-beer')).toHaveText(
+      `${CONFIG.pickups[0].icon} 0`,
+    );
+    await expect(shells).toContainText(`нет ${CONFIG.pickups[0].icon}`);
+
+    // THE LONGEST THING THIS CELL CAN EVER SAY, ON THE NARROWEST SCREEN IT IS
+    // EVER SAID ON. It shares one un-wrapping row with the health, the bag and
+    // the floor count, so the claim is about the whole strip: every cell inside
+    // the phone, and the row still one line tall. A readout that grew the HUD to
+    // two lines would push the standings out from under it.
+    for (const cell of ['vanyadum-health', 'vanyadum-shells', 'vanyadum-count-beer', 'vanyadum-floor']) {
+      const box = (await page.getByTestId(cell).boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    }
+    expect((await hud.boundingBox())!.height).toBe(restHeight);
+
+    // And a gun with something in it is still a count, because that is the
+    // useful thing to show whenever there is one.
+    await socket.snapshot({ b: 1 });
+    await expect(shells).toContainText(`1/${CONFIG.gun.barrels}`);
+    await expect(shells).not.toHaveClass(/is-dry/);
+  });
+
+  test('and the trigger is never disabled, whatever the gun is doing', async ({ page }) => {
+    // NOT A STYLE PREFERENCE — a disabled button dispatches no `pointerup` and
+    // no `pointerleave`, so a trigger disabled by the cadence while it was HELD
+    // would never hear the thumb lift, and the flag would stay down: a gun
+    // firing by itself for as long as the page was open. It is also the wrong
+    // authority — the server decides, and a pull it turns out to grant has to be
+    // able to reach it.
+    const socket = await stubSocket(page);
+    await openSplash(page);
+    await walkIn(page);
+
+    const fire = page.getByTestId('vanyadum-fire');
+    // Every state that marks the trigger, the empty обрез included — and that
+    // last one matters most here, because it is the one that lasts: a control
+    // disabled until the player finds a bottle is a control he will decide is
+    // broken, and it is also the state whose refusal the server may already
+    // disagree with, since a pickup can land between two frames.
+    for (const frame of [
+      {},
+      { d: 300 },
+      { r: 1400, b: 0 },
+      { pr: 2000 },
+      { hp: 0, dn: 4000 },
+      { b: 0 },
+    ]) {
+      await socket.snapshot(frame);
+      await expect(fire).toBeEnabled();
+      await expect(fire).not.toHaveAttribute('disabled', /.*/);
+    }
   });
 
   test('holding the trigger reaches the server', async ({ page }) => {

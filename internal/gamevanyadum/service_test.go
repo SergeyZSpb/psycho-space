@@ -249,6 +249,53 @@ func TestAReconnectIsGivenBackTheSamePlace(t *testing.T) {
 	}
 }
 
+func TestAReconnectIsToldHowFarItsInputHadCounted(t *testing.T) {
+	// An occupant outlives its socket for AbandonGrace, and its high-water mark
+	// goes on outliving it too — so a page reload comes back to a world that has
+	// already accepted sequences the rebuilt client is about to start counting
+	// from zero again, and Enqueue drops every one of them as already seen. The
+	// ready frame carries the mark so the client can resume from it instead of
+	// spending a round trip discovering it from the first ack, and what that round
+	// trip swallows is a trigger pull as readily as a step.
+	acc := uuid.New().String()
+	m := realtime.Member{ConnID: "c1", AccountID: acc}
+	tr := newFakeTransport(m)
+	s := NewService(tr, Room, nil, newFakeRepo())
+
+	sayHello(s, m)
+	// A fresh arrival has counted nothing, and the field is omitted rather than
+	// sent as a zero.
+	ready := tr.framesOfType(TypeReady)
+	if _, present := ready[0]["seq"]; present {
+		t.Fatalf("a first arrival was sent a resume hint: %v", ready[0])
+	}
+
+	// He plays for a while. Enqueue is what advances the mark, so the input goes
+	// through the real door rather than being written onto the occupant.
+	s.HandleInbound(context.Background(), m, Room, []byte(
+		`{"t":"`+TypeInput+`","k":0,"cmds":[{"q":1,"dt":0.025,"my":1},{"q":2,"dt":0.025,"my":1},{"q":3,"dt":0.025,"my":1}]}`))
+
+	// The tab reloads: a new connection, the same account, well inside the grace.
+	back := realtime.Member{ConnID: "c2", AccountID: acc}
+	tr.setMembers([]realtime.Member{back})
+	sayHello(s, back)
+
+	ready = tr.framesOfType(TypeReady)
+	if len(ready) != 2 {
+		t.Fatalf("two hellos were answered %d times", len(ready))
+	}
+	if got, ok := ready[1]["seq"].(float64); !ok || int64(got) != 3 {
+		t.Fatalf("the reload was told to resume from %v, the world has accepted 3", ready[1]["seq"])
+	}
+	// And it is the world's own number rather than a count of frames or of
+	// anything else this test could have arranged by accident.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if got := s.world.Occupant(acc).highSeq; got != 3 {
+		t.Fatalf("the occupant's mark is %d", got)
+	}
+}
+
 func TestASecondHelloIsAReconnectAndNotASecondPersonInTheRoom(t *testing.T) {
 	// A page reload, a tunnel and a phone waking up all produce a second hello,
 	// and every one of them is the same person walking back to where he was.

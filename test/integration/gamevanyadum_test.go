@@ -1159,10 +1159,13 @@ const dumSendGap = 120 * time.Millisecond
 // of everything still unacknowledged, which is buildInputFrame's shape exactly.
 //
 // The tail is capped at RedundantCommands and the fresh commands are never in
-// it, because parseInput keeps the FIRST MaxCommandsPerFrame+RedundantCommands
-// of a frame and drops the rest — so a client that sent a longer tail would have
-// its own new input truncated away, which is a different bug wearing this one's
-// symptoms.
+// it, which is the browser's own shape: a frame is
+// MaxCommandsPerFrame+RedundantCommands long at most, and parseInput trims an
+// over-full one back to that. A file that sent a longer tail would be measuring
+// its own overrun rather than the game, and the trim is not a safety net for it —
+// what the trim now drops is the OLDEST half of the frame (message.go), so an
+// over-long tail would push the redundancy this file is testing off the front
+// instead of truncating the input off the back.
 func (w *dumWire) send(t *testing.T, n int, proto dumCommand) {
 	t.Helper()
 	fresh := make([]dumCommand, 0, n)
@@ -1242,6 +1245,7 @@ func (w *dumWire) attach(t *testing.T) string {
 				T       string `json:"t"`
 				WorldID string `json:"world_id"`
 				Slot    int    `json:"slot"`
+				Seq     int64  `json:"seq"`
 			}
 			if json.Unmarshal(raw, &f) != nil {
 				continue
@@ -1249,6 +1253,14 @@ func (w *dumWire) attach(t *testing.T) string {
 			switch f.T {
 			case gamevanyadum.TypeReady:
 				w.slot = f.Slot
+				// THE COUNTER RESUMES FROM THE SERVER'S MARK, which is what the
+				// browser does with this field and the only reason it is on the
+				// frame. A fresh arrival is answered with nothing and starts at
+				// zero; a socket rebuilt behind an occupant that is still counting
+				// is told where to carry on from, and without that its first
+				// commands are all at or below the world's high-water mark and are
+				// dropped as already seen.
+				w.seq = f.Seq
 				return f.WorldID
 			case gamevanyadum.TypeFull:
 				t.Fatal("the заброшка refused this socket as full")
@@ -1778,6 +1790,90 @@ func TestVanyadumTheTriggerReachesTheWorldAndTheShellCountComesBack(t *testing.T
 	}
 	if _, reloading := dry["r"]; reloading {
 		t.Fatalf("a reload started with nothing in the bag: %v", dry)
+	}
+}
+
+func TestVanyadumTheFirstShotAfterAReloadedTabLands(t *testing.T) {
+	// THE PAGE RELOAD THAT USED TO EAT A SHOT. An occupant outlives its socket for
+	// AbandonGrace and its command counter outlives it too, so a rebuilt client
+	// starting again from zero sends sequences the world has already accepted and
+	// Enqueue drops every one of them in silence — until the first snapshot's ack
+	// drags the client's counter forward, which is a round trip away. What that
+	// round trip swallows is whatever the player did first, and if that was the
+	// trigger then the gun did nothing for no reason he can see.
+	//
+	// The ready frame carries the world's high-water mark for exactly this, so the
+	// rebuilt socket resumes counting from it (dumWire.attach) and its very first
+	// command is live. Driven over two real sockets on one account, because the
+	// bug lives in the gap between them and nothing below the wire can show it.
+	app, tick, _ := buildAppVanyadum(t, dumVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	cli := loginAs(t, srv.URL, "910020", "user")
+	cookie := cookieHeader(t, cli, srv.URL)
+	clk := newDumClock()
+
+	first, _, err := dialVanyadum(t, srv.URL, cookie, gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer first.CloseNow()
+	before := newDumWire(first, readFrames(t, first))
+	before.attach(t)
+	if before.seq != 0 {
+		t.Fatalf("a first arrival was told to resume from %d", before.seq)
+	}
+
+	// He plays for a moment — enough commands that a counter restarting at zero
+	// lands well inside what the world has already seen — and then waits out the
+	// walk-in protection, which refuses a trigger as firmly as it refuses a shot
+	// at him (content.go, SpawnProtectSeconds).
+	room := []*dumWire{before}
+	before.send(t, gamevanyadum.MaxCommandsPerFrame, dumCommand{Dt: 0.025, MY: 1})
+	walked := before.pumpUntil(t, tick, clk, "the walk to be acknowledged", func(s dumSnapshot) bool {
+		return s.Ack >= before.seq
+	})
+	if walked.Ack != before.seq {
+		t.Fatalf("the world acknowledged %d of the %d commands sent", walked.Ack, before.seq)
+	}
+	dumWaitFor(t, tick, clk, room, "his walk-in protection to expire", func() bool {
+		return before.last.Protect == 0
+	})
+	mark := before.seq
+
+	// THE TAB RELOADS: the old socket goes away and a new one is dialled on the
+	// same account, well inside the grace, so the man never left the building. A
+	// browser rebuilds its predictor here, which is where the counter used to
+	// start again at zero.
+	first.CloseNow()
+	second, _, err := dialVanyadum(t, srv.URL, cookie, gamevanyadum.Room)
+	if err != nil {
+		t.Fatalf("re-dial: %v", err)
+	}
+	defer second.CloseNow()
+	after := newDumWire(second, readFrames(t, second))
+	after.attach(t)
+	if after.seq != mark {
+		t.Fatalf("the reload was told to resume from %d; the world has accepted %d", after.seq, mark)
+	}
+	if after.slot != before.slot {
+		t.Fatalf("the reload was given place %d and not %d", after.slot, before.slot)
+	}
+
+	// AND THE FIRST THING HE DOES IS PULL THE TRIGGER. It is q=mark+1, which is
+	// live precisely because the ready frame said where to carry on from — the
+	// same pull numbered from zero is at or below the mark and is dropped as
+	// already seen, and the barrel count below never moves.
+	room = []*dumWire{after}
+	after.send(t, 1, dumCommand{Dt: 0.025, Fire: true})
+	if after.seq != mark+1 {
+		t.Fatalf("the first pull after the reload went out as q=%d", after.seq)
+	}
+	dumWaitFor(t, tick, clk, room, "the first shot after the reload to be fired", func() bool {
+		return after.last.Loaded == gamevanyadum.Barrels-1
+	})
+	if after.last.Ack < mark+1 {
+		t.Fatalf("the gun went off but the pull is unacknowledged: ack is %d", after.last.Ack)
 	}
 }
 

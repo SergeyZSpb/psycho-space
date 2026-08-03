@@ -1588,9 +1588,10 @@ func TestAPeersShotIsOnTheFrameForOneTickOnly(t *testing.T) {
 	// An action nobody else can see is an unfinished action (CLAUDE.md), and a
 	// обрез going off is this game's loudest one — so a shot has to reach the
 	// people it was aimed at and not only the man who pulled the trigger. He
-	// needs no telling: his own barrel count is on his own snapshot, and the
-	// count falling by one IS the shot. A peer carries no barrel count, so this
-	// is the field that says so.
+	// needs no telling: his own client ran the step that spent the barrel and
+	// drew the flash out of it. Nobody predicts somebody else's thumb, so a
+	// viewer has no step of his own to read a peer's shot out of, and this is the
+	// field that says so.
 	//
 	// AND IT IS AN INSTANT RATHER THAN A STATE, which is what this test holds it
 	// to. `st` carries five values (message.go, Peer.St) and three of them are
@@ -2451,9 +2452,9 @@ func TestEverybodyIsToldSomebodyWasHitAndOnlyOnTheTickItHappened(t *testing.T) {
 	// all — and it belongs to the whole room rather than to the man who fired.
 	//
 	// IT IS ALSO THE SHOOTER'S OWN ACKNOWLEDGEMENT. He knows he fired, because
-	// his own barrel count fell; the man he was pointing at is marked on the very
-	// same frame; and that is the whole of "I connected", with no field addressed
-	// to him.
+	// his own client ran the step that spent the barrel; the man he was pointing
+	// at is marked on the very same frame; and that is the whole of "I
+	// connected", with no field addressed to him.
 	w := worldIn(t, room(0, 0, 20, 20, 0))
 	sw := newStopwatch()
 	shooter := joinTo(t, w, Vec2{X: 5, Y: 10}, eastward)
@@ -2475,7 +2476,8 @@ func TestEverybodyIsToldSomebodyWasHitAndOnlyOnTheTickItHappened(t *testing.T) {
 		t.Fatal("the second viewer of the same tick lost the hit")
 	}
 	// And the victim's own frame needs no mark: his health fell, which is the
-	// same per-frame comparison the client already makes for the barrel count.
+	// same comparison between two consecutive snapshots the client already makes
+	// for the pickup mask.
 	if got := mustSnapshot(t, w, victim).Health; got != StartHealth-BarrelDamage {
 		t.Fatalf("the man who was shot is published as %d health", got)
 	}

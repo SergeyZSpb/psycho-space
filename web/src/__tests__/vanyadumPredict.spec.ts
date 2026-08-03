@@ -104,8 +104,8 @@ describe('prediction', () => {
 
   it('numbers commands from one, because zero means unset to the server', () => {
     const p = predictor();
-    expect(p.apply(walk).seq).toBe(1);
-    expect(p.apply(walk).seq).toBe(2);
+    expect(p.apply(walk).cmd.seq).toBe(1);
+    expect(p.apply(walk).cmd.seq).toBe(2);
   });
 
   it('keeps every command pending until it is acknowledged', () => {
@@ -306,6 +306,98 @@ describe('the gun, which is the first thing here that is decremented rather than
   });
 });
 
+describe('the shot is reported by the step that granted it', () => {
+  const shoot = { ...walk, fire: true };
+
+  it('says so, so the flash belongs to the command rather than to the frame', () => {
+    const p = predictor();
+    const applied = p.apply(shoot);
+    expect(applied.fired).toBe(true);
+    expect(applied.cmd.fire).toBe(true);
+  });
+
+  it('and says nothing for a pull the cadence refused', () => {
+    // Holding the trigger is mostly refusals — three shots a second against
+    // forty commands — so a report that fired on the asking rather than on the
+    // granting would be a flash per sub-step.
+    const p = predictor();
+    p.apply(shoot);
+    expect(p.apply(shoot).fired).toBe(false);
+  });
+
+  it('or for an ordinary step nobody pulled anything on', () => {
+    expect(predictor().apply(walk).fired).toBe(false);
+  });
+
+  it('reports the shot that follows a reload the SERVER completed', () => {
+    // THE OWNER'S BUG, and the reason this report exists at all. The count has
+    // two writers — `apply`, in the draw loop, and `reconcile`, in the socket
+    // callback BETWEEN two frames — so the view's old comparison against the
+    // last DRAWN frame could not see a refill that arrived through the second
+    // one. The sequence below is the ordinary one: a reload finishes on the
+    // server while the gun is empty, the full gun lands with no command applied
+    // in between, and the next pull spends a barrel. Compared across frames that
+    // is 2 → 1 against a remembered 0, which is not a fall, so no flash, no
+    // recoil and no bang were drawn — for a shot that was really fired, whose
+    // `f` was really on the wire, and whose ray the server really resolved.
+    // Measured at 60 fps and a 60 ms round trip: four reloads in five ate the
+    // shot that followed them.
+    const p = predictor();
+    // Mid-reload with nothing in the barrels, which is what the frames during a
+    // reload say.
+    p.reconcile(snap({ ack: 0, loaded: 0, reload: 0.4 }));
+    // And the reload completes on the server. No command runs in between —
+    // that is the whole point: this arrives between two animation frames.
+    p.reconcile(snap({ ack: 0, loaded: K.barrels, reload: 0 }));
+
+    const applied = p.apply(shoot);
+    expect(applied.fired).toBe(true);
+    expect(p.raw().loaded).toBe(K.barrels - 1);
+  });
+
+  it('and never reports one for the server’s gun landing under a fuller guess', () => {
+    // What the view's old `cooldown > 0` guard was really for, kept as a
+    // property of the reporter instead. A predictor rebuilt beneath a living
+    // occupant — a page reload inside the abandon grace, a socket that came
+    // back, a заброшка regenerated underneath — starts with a full gun and is
+    // then handed the emptier one its owner is actually holding. That fall is
+    // not a shot anybody fired, and walking back in must not open with a muzzle
+    // flash and a bang.
+    //
+    // It cannot be, now, because only `apply` reports and `reconcile` never
+    // does. This pins that the fall does not leak into the next command either.
+    const p = predictor();
+    expect(p.raw().loaded).toBe(K.barrels);
+    p.reconcile(snap({ ack: 0, loaded: 1, cooldown: 0 }));
+    expect(p.apply(walk).fired).toBe(false);
+  });
+
+  it('reports a reload starting, once, on the step that started it', () => {
+    // Same rule, second effect: the gun coming open is a sound, and a sound
+    // played per frame for as long as a one-and-a-half-second timer is running
+    // is not a sound, it is a fault.
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, loaded: 0, ammo: 2 }));
+    const started = p.apply(shoot);
+    expect(started.reloadStarted).toBe(true);
+    expect(started.fired).toBe(false);
+    // The reload is running, so every command after it is refused — including
+    // the next pull, which is what stops a second bang.
+    expect(p.apply(shoot).reloadStarted).toBe(false);
+    expect(p.apply(walk).reloadStarted).toBe(false);
+  });
+
+  it('says nothing when there is no beer to load', () => {
+    // A pull on an empty gun with an empty bag reaches the server — whether
+    // there is a bottle in your pockets is its call — and grants nothing at all.
+    const p = predictor();
+    p.reconcile(snap({ ack: 0, loaded: 0, ammo: 0 }));
+    const applied = p.apply(shoot);
+    expect(applied.fired).toBe(false);
+    expect(applied.reloadStarted).toBe(false);
+  });
+});
+
 describe('being killed, and coming back', () => {
   const shoot = { ...walk, fire: true };
 
@@ -482,10 +574,41 @@ describe('a predictor rebuilt under an occupant that is still standing there', (
   // regenerated, which rebuilds the predictor against new geometry without the
   // socket ever dropping.
 
+  it('resumes at the mark the ready frame carried, before it sends anything', () => {
+    // THE FIX, AND IT ARRIVES BEFORE THE FIRST COMMAND IS EVEN BUILT. `seq` on
+    // the ready frame is `Occupant.highSeq` — the exact mark `World.Enqueue`
+    // deduplicates against — so counting on from it means not one resumed
+    // command is dropped. The ack floor below is a round trip later and only a
+    // floor: it is the last sequence the server STEPPED, which sits at or below
+    // the highest it has ACCEPTED.
+    const p = predictor();
+    p.resumeSequence(137);
+    expect(p.apply(walk).cmd.seq).toBe(138);
+  });
+
+  it('and never rewinds onto sequences it has already spent', () => {
+    // A mark at or below the count would put two different commands under one
+    // number — the same one-directional rule the ack floor follows.
+    const p = predictor();
+    p.apply(walk);
+    p.apply(walk);
+    p.resumeSequence(1);
+    expect(p.apply(walk).cmd.seq).toBe(3);
+  });
+
+  it('takes an absent mark as nothing to resume from', () => {
+    // Omitted at zero on the wire, which is exactly the state of somebody
+    // walking in for the first time: absent reads back as zero and moves
+    // nothing.
+    const p = predictor();
+    p.resumeSequence(0);
+    expect(p.apply(walk).cmd.seq).toBe(1);
+  });
+
   it('counts on from the ack, so its first command is not dropped as stale', () => {
     const p = predictor();
     p.reconcile(snap({ x: 50, y: 50, ack: 400 }));
-    expect(p.apply(walk).seq).toBeGreaterThan(400);
+    expect(p.apply(walk).cmd.seq).toBeGreaterThan(400);
   });
 
   it('but never moves the count when the ack is one of its own', () => {
@@ -499,11 +622,11 @@ describe('a predictor rebuilt under an occupant that is still standing there', (
     p.apply(walk);
     // Below the count: three sent, one folded in so far.
     p.reconcile(snap({ x: 50, y: p.raw().y, ack: 1 }));
-    expect(p.apply(walk).seq).toBe(4);
+    expect(p.apply(walk).cmd.seq).toBe(4);
     // Level with it: everything sent has been folded in, and the next command is
     // still simply the next one.
     p.reconcile(snap({ x: 50, y: p.raw().y, ack: 4 }));
-    expect(p.apply(walk).seq).toBe(5);
+    expect(p.apply(walk).cmd.seq).toBe(5);
   });
 });
 

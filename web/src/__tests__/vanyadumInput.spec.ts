@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   LOOK_SENSITIVITY,
   MAX_MOUSE_DELTA,
+  MAX_PULL_LATCH_MS,
   MOUSE_SENSITIVITY,
   STICK_DEADZONE,
   applyLook,
   axesFromKeys,
   buildInputFrame,
   createEmitter,
+  createPullLatch,
   mouseLook,
+  pullLatchMs,
   stickVector,
   wrapAngle,
   type VanyadumCommand,
@@ -309,31 +312,37 @@ describe('createEmitter', () => {
 
 describe('buildInputFrame', () => {
   const cmd = (seq: number): VanyadumCommand => ({ seq, dt: 0.025, mx: 0, my: 1, yaw: 0, pitch: 0 });
+  /**
+   * The server's own cap — `MaxCommandsPerFrame + RedundantCommands`, both of
+   * which are served on `sim`. Deliberately larger than anything the tests above
+   * build, so only the tests that are ABOUT the cap ever meet it.
+   */
+  const CAP = 10;
 
   it('carries the tick this client last drew, so the server can derive the round trip', () => {
     // Derived rather than reported: lag compensation rewinds by exactly that
     // number, so a client choosing its own would be choosing an advantage.
-    expect(buildInputFrame(42, [cmd(1)], []).k).toBe(42);
+    expect(buildInputFrame(42, [cmd(1)], [], CAP).k).toBe(42);
   });
 
   it('puts the unacknowledged tail first and the fresh commands last', () => {
     // The server applies them in order, so the resend has to come before the
     // new input or a replayed command would land after work that followed it.
-    const frame = buildInputFrame(0, [cmd(5), cmd(6)], [cmd(3), cmd(4)]);
+    const frame = buildInputFrame(0, [cmd(5), cmd(6)], [cmd(3), cmd(4)], CAP);
     expect(frame.cmds.map((c) => c.q)).toEqual([3, 4, 5, 6]);
   });
 
   it('never sends the same sequence twice in one frame', () => {
     // The unacknowledged list still contains what was just applied, so without
     // the de-duplication every frame would carry its own fresh commands twice.
-    const frame = buildInputFrame(0, [cmd(5)], [cmd(4), cmd(5)]);
+    const frame = buildInputFrame(0, [cmd(5)], [cmd(4), cmd(5)], CAP);
     expect(frame.cmds.map((c) => c.q)).toEqual([4, 5]);
   });
 
   it('sends intent and never a fact', () => {
     // The rule the whole design rests on: a prediction is something the client
     // draws, never something it asserts. No position, no health, no hit claim.
-    const frame = buildInputFrame(7, [cmd(1)], []) as unknown as Record<string, unknown>;
+    const frame = buildInputFrame(7, [cmd(1)], [], CAP) as unknown as Record<string, unknown>;
     expect(Object.keys(frame).sort()).toEqual(['cmds', 'k', 't']);
     expect(Object.keys(frame.cmds as object[])).toHaveLength(1);
     for (const c of (frame.cmds as Record<string, unknown>[])) {
@@ -342,11 +351,11 @@ describe('buildInputFrame', () => {
   });
 
   it('is happy with nothing to resend', () => {
-    expect(buildInputFrame(0, [cmd(1)], []).cmds.map((c) => c.q)).toEqual([1]);
+    expect(buildInputFrame(0, [cmd(1)], [], CAP).cmds.map((c) => c.q)).toEqual([1]);
   });
 
   it('carries the trigger on the command that had one', () => {
-    const frame = buildInputFrame(0, [{ ...cmd(1), fire: true }], []);
+    const frame = buildInputFrame(0, [{ ...cmd(1), fire: true }], [], CAP);
     expect(frame.cmds[0].f).toBe(true);
   });
 
@@ -356,7 +365,188 @@ describe('buildInputFrame', () => {
     // uplink, on mobile data, to say that nothing happened. The `sends intent
     // and never a fact` test above is what pins the resting key set; this says
     // why the trigger is not in it.
-    const frame = buildInputFrame(0, [cmd(1), { ...cmd(2), fire: false }], []);
+    const frame = buildInputFrame(0, [cmd(1), { ...cmd(2), fire: false }], [], CAP);
     for (const c of frame.cmds) expect('f' in c).toBe(false);
+  });
+
+  it('never builds a frame the server would cut', () => {
+    // `parseInput` keeps the last `max_commands + redundant` and drops the rest,
+    // so anything past the cap is uplink spent on commands nobody simulates. The
+    // frame that produced it is ordinary: a send timer the browser ran late
+    // leaves more fresh commands in the outbox than one wake may produce, and
+    // the redundancy tail was being asked for on top of them.
+    const fresh = [7, 8, 9, 10, 11, 12].map(cmd);
+    const tail = [1, 2, 3, 4, 5, 6].map(cmd);
+    const frame = buildInputFrame(0, fresh, tail, CAP);
+    expect(frame.cmds).toHaveLength(CAP);
+  });
+
+  it('and cuts the stale half rather than the input the player is waiting for', () => {
+    // The direction is the whole point, and it is the server's own: a resend
+    // asks for no simulation and insures against a packet that was almost
+    // certainly not lost, while a fresh command is something somebody just did.
+    const fresh = [7, 8, 9, 10, 11, 12].map(cmd);
+    const tail = [1, 2, 3, 4, 5, 6].map(cmd);
+    const frame = buildInputFrame(0, fresh, tail, CAP);
+    expect(frame.cmds.map((c) => c.q)).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  it('keeps the newest input even when the fresh commands alone overflow', () => {
+    // A frame that is over-full with nothing to blame it on. Nothing here is
+    // insurance, so what goes is the oldest of the real input — which is what
+    // the server would have thrown away anyway, a round trip later.
+    const fresh = Array.from({ length: CAP + 3 }, (_, i) => cmd(i + 1));
+    const frame = buildInputFrame(0, fresh, [], CAP);
+    expect(frame.cmds).toHaveLength(CAP);
+    expect(frame.cmds[frame.cmds.length - 1].q).toBe(CAP + 3);
+  });
+});
+
+describe('pullLatchMs', () => {
+  it('stays under the served cadence, so a buffered pull cannot become a shot', () => {
+    // The rule the bound exists for: a pull remembered for longer than the
+    // cadence turns one tap during a reload into a second shot fired on the
+    // player's behalf at a moment he was not asking for.
+    for (const cadence of [0.35, 0.2, 0.1, 0.05]) {
+      expect(pullLatchMs(cadence)).toBeLessThan(cadence * 1000);
+    }
+  });
+
+  it('does not buffer a slow gun for a whole second', () => {
+    // Half of a two-second cadence would be a second of memory, and a shot that
+    // lands a second after the thumb left the button is not the shot anybody
+    // asked for.
+    expect(pullLatchMs(2)).toBe(MAX_PULL_LATCH_MS);
+  });
+
+  it('falls back to the ceiling for a gun with no cadence at all', () => {
+    // Not a catalogue anybody publishes; a division that would otherwise return
+    // zero and leave the latch unable to survive a single frame.
+    expect(pullLatchMs(0)).toBe(MAX_PULL_LATCH_MS);
+  });
+});
+
+describe('createPullLatch', () => {
+  /**
+   * One tap, at one frame rate, driven through the real emitter.
+   *
+   * THE TAP HAPPENS BETWEEN TWO FRAMES, which is the case the whole latch exists
+   * for: `press` and `release` are browser events and land wherever they land,
+   * while `due` is only ever called from an animation frame. Everything is
+   * driven off an explicit clock, so a 144 Hz screen is a number here rather
+   * than a device nobody has.
+   *
+   * THE CADENCE IS MODELLED, in the two lines that move `readyAt`, because
+   * without it the claim would be false for a reason that has nothing to do with
+   * the latch: a trigger held across two command periods legitimately asks
+   * twice, and it is the GUN that refuses the second. In the view that refusal is
+   * `gunBusy` over a timer both ends run; here a deadline is enough to make «one
+   * tap, one shot» mean what it says. Nothing else about the gun is modelled —
+   * where the ray went is the server's, and never this module's question.
+   */
+  const opts = { hz: 40, maxStepSeconds: 0.2, maxPerWake: 4 };
+  const still = { mx: 0, my: 0, yaw: 0.5, pitch: 0 };
+  /** The catalogue's own cadence, which is also what bounds the latch window. */
+  const CADENCE_SECONDS = 0.35;
+  /** The window every case below reads the latch with. */
+  const WINDOW = pullLatchMs(CADENCE_SECONDS);
+
+  function tap(tapMs: number, fps: number): number {
+    const e = createEmitter(opts);
+    const latch = createPullLatch();
+    const frameMs = 1000 / fps;
+    let readyAt = 0;
+    // Two seconds is far longer than any of this needs; the claim is about what
+    // the whole gesture produced, not about when.
+    const frames = Math.ceil(2000 / frameMs);
+    // Mid-way between the first and second frames, so no frame ever observes the
+    // press or the release at its own instant. Both are delivered at the first
+    // frame at or after they happened, which is what a browser does with an
+    // event that lands between two: it is dispatched before the next frame runs,
+    // and the latch is told the instant it really happened.
+    const pressAt = frameMs * 1.5;
+    let pressed = false;
+    let released = false;
+    let fired = 0;
+    for (let i = 0; i < frames; i++) {
+      const now = i * frameMs;
+      if (!pressed && now >= pressAt) {
+        latch.press(pressAt);
+        pressed = true;
+      }
+      if (pressed && !released && now >= pressAt + tapMs) {
+        latch.release();
+        released = true;
+      }
+      const cmds = e.due(now, still, latch.wanted(now, WINDOW) && now >= readyAt);
+      if (cmds.some((c) => c.fire)) {
+        latch.taken();
+        readyAt = now + CADENCE_SECONDS * 1000;
+        fired += cmds.filter((c) => c.fire).length;
+      }
+    }
+    return fired;
+  }
+
+  it('turns any tap at any frame rate into exactly one shot', () => {
+    // THE TABLE THE BUG WAS IN. Sampling the button once a frame and discarding
+    // whatever did not become a command lost a 16 ms flick 37 % of the time at
+    // 144 Hz and 78 % at 90 Hz — and 8 ms taps, which every touchscreen
+    // produces, far more often. Never two, either: a pull is a moment, and a
+    // latch that could be claimed twice would be a gun that fires when the
+    // player taps once.
+    for (const tapMs of [8, 16, 25, 40]) {
+      for (const fps of [144, 60, 30]) {
+        expect(`${tapMs}ms@${fps}fps → ${tap(tapMs, fps)}`).toBe(`${tapMs}ms@${fps}fps → 1`);
+      }
+    }
+  });
+
+  it('survives the very first frame of a run, which produces no command at all', () => {
+    // `due`'s first call is its clock initialiser and returns nothing whatever it
+    // is handed, so a pull offered once and forgotten would be lost outright —
+    // and the first frame of a visit is exactly where somebody who has been
+    // waiting to get in puts his thumb.
+    const e = createEmitter(opts);
+    const latch = createPullLatch();
+    latch.press(0);
+    latch.release();
+    expect(e.due(0, still, latch.wanted(0, WINDOW))).toEqual([]);
+    expect(e.due(30, still, latch.wanted(30, WINDOW)).filter((c) => c.fire)).toHaveLength(1);
+  });
+
+  it('holds the pull while the button is down, however long the gun refuses', () => {
+    // A level, not an edge: the window bounds a pull nobody is still asking for,
+    // and a thumb that is still on the button is still asking.
+    const latch = createPullLatch();
+    latch.press(0);
+    latch.taken();
+    expect(latch.wanted(10_000, WINDOW)).toBe(true);
+  });
+
+  it('forgets a pull nobody claimed before the gun could grant it', () => {
+    const latch = createPullLatch();
+    latch.press(0);
+    latch.release();
+    expect(latch.wanted(WINDOW, WINDOW)).toBe(true);
+    expect(latch.wanted(WINDOW + 1, WINDOW)).toBe(false);
+  });
+
+  it('is spent by the command that carried it, and not by the press', () => {
+    // Otherwise a tap during a cooldown would be forgotten the moment it was
+    // asked for, which is the fault this replaced.
+    const latch = createPullLatch();
+    latch.press(0);
+    latch.release();
+    expect(latch.wanted(10, WINDOW)).toBe(true);
+    latch.taken();
+    expect(latch.wanted(11, WINDOW)).toBe(false);
+  });
+
+  it('drops everything when the run ends', () => {
+    const latch = createPullLatch();
+    latch.press(0);
+    latch.reset();
+    expect(latch.wanted(0, WINDOW)).toBe(false);
   });
 });

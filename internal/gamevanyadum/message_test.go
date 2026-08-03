@@ -106,6 +106,54 @@ func TestParseInboundDropsSurplusCommands(t *testing.T) {
 	}
 }
 
+func TestAnOverFullFrameDropsTheStaleHalfAndKeepsTheFreshest(t *testing.T) {
+	// WHICH END IS DROPPED IS THE WHOLE POINT OF THIS TEST, because the cap alone
+	// does not say and the two answers are not equally good. A client composes a
+	// frame as [redundancy tail…, fresh commands…], so the prefix is the half the
+	// server has almost always already accepted and the suffix is the input that
+	// has just happened — a trigger pull among it. Keeping the prefix used to
+	// throw the newest commands away, which at a 250 ms round trip is 30 % of
+	// frames and about one tap in a hundred arriving a frame late, resolved
+	// against a world the player never aimed at.
+	//
+	// It is pinned rather than left to the parser's loop bounds because the
+	// inversion is a one-character edit that breaks nothing else: every count in
+	// every other test is identical either way, and the symptom is a shot that
+	// silently misses.
+	const n = MaxCommandsPerFrame + RedundantCommands
+	const sent = 40
+
+	var b strings.Builder
+	b.WriteString(`{"t":"vanyadum_input","k":0,"cmds":[`)
+	for i := 1; i <= sent; i++ {
+		if i > 1 {
+			b.WriteString(",")
+		}
+		// The newest command is the one that pulls the trigger, which is the shape
+		// this is really about: the player tapped, and the tap is at the end.
+		fmt.Fprintf(&b, `{"q":%d,"dt":0.025,"my":1`, i)
+		if i == sent {
+			b.WriteString(`,"f":true`)
+		}
+		b.WriteString("}")
+	}
+	b.WriteString(`]}`)
+
+	_, in := ParseInbound([]byte(b.String()))
+	if in == nil || len(in.Cmds) != n {
+		t.Fatalf("an over-full frame parsed to %+v", in)
+	}
+	for i, c := range in.Cmds {
+		if want := int64(sent - n + 1 + i); c.Seq != want {
+			t.Fatalf("kept command %d is q=%d, the freshest %d are q=%d…%d",
+				i, c.Seq, n, sent-n+1, sent)
+		}
+	}
+	if !in.Cmds[len(in.Cmds)-1].Fire {
+		t.Fatal("the trigger pull at the end of an over-full frame was truncated away")
+	}
+}
+
 func TestQuantisation(t *testing.T) {
 	for _, tc := range []struct {
 		in   float64

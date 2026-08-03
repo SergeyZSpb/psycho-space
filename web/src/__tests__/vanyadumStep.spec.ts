@@ -1,7 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { sanitise, sectorAt, step, type StepConstants, type StepPlayer } from '../lib/vanyadumStep';
+import {
+  gunBusy,
+  sanitise,
+  sectorAt,
+  step,
+  type StepConstants,
+  type StepPlayer,
+} from '../lib/vanyadumStep';
 import type { VanyadumLevel } from '../lib/vanyadumLevel';
 
 /**
@@ -590,5 +597,83 @@ describe('the шприц, where the vectors cannot reach', () => {
     const after = step(level, dead, { ...walking, fire: true }, K);
     expect(after.injectLeft).toBe(K.syringeSeconds);
     expect(after.health).toBe(0);
+  });
+});
+
+describe('gunBusy — the one refusal three callers ask about', () => {
+  /**
+   * A man who could fire this instant. Every case below names only the field it
+   * is making a claim about.
+   */
+  const ready = {
+    health: 100,
+    protectedLeft: 0,
+    cooldown: 0,
+    reload: 0,
+    injectLeft: 0,
+  };
+
+  it('is false for a man who could fire', () => {
+    expect(gunBusy(ready)).toBe(false);
+  });
+
+  it('is true for every reason the trigger is ever refused', () => {
+    // All five, named, because the view draws the trigger control from this and
+    // a refusal it did not know about would be a button that says «ready» while
+    // the gun says no. The ampoule is the one most recently added, and the one a
+    // sixth check would most likely forget.
+    expect(gunBusy({ ...ready, health: 0 })).toBe(true);
+    expect(gunBusy({ ...ready, cooldown: 0.2 })).toBe(true);
+    expect(gunBusy({ ...ready, reload: 1.5 })).toBe(true);
+    expect(gunBusy({ ...ready, protectedLeft: 3 })).toBe(true);
+    expect(gunBusy({ ...ready, injectLeft: 2.5 })).toBe(true);
+  });
+
+  it('does not call an empty gun busy', () => {
+    // Deliberate, and the one case where the client must NOT answer for itself:
+    // whether there is a bottle in your pockets is the server's to say, and a
+    // pickup may have landed since the last frame. So a pull on an empty gun
+    // goes out, and the trigger control stays lit for it.
+    const empty: StepPlayer = {
+      x: 5,
+      y: 5,
+      yaw: 0,
+      pitch: 0,
+      sector: 0,
+      ...ready,
+      loaded: 0,
+      ammo: 0,
+    };
+    expect(gunBusy(empty)).toBe(false);
+  });
+
+  it('is exactly what step refuses on, which is why it is shared', () => {
+    // The property that makes one predicate honest rather than convenient: the
+    // simulation runs it, so the view's suppression and the view's button state
+    // cannot drift from the rule both ends actually apply.
+    const level = golden.cases[golden.cases.length - 1].level;
+    const base: StepPlayer = {
+      x: 5,
+      y: 5,
+      yaw: 0,
+      pitch: 0,
+      sector: 0,
+      loaded: K.barrels,
+      ammo: 1,
+      ...ready,
+    };
+    const pull = { dt: 0.025, mx: 0, my: 0, yaw: 0, pitch: 0, fire: true };
+    for (const over of [
+      { cooldown: 0.2 },
+      { reload: 1.5 },
+      { protectedLeft: 3 },
+      { injectLeft: 2.5 },
+    ]) {
+      const p: StepPlayer = { ...base, ...over };
+      expect(gunBusy(p)).toBe(true);
+      // Refused: the barrels are exactly where they were.
+      expect(step(level, p, pull, K).loaded).toBe(K.barrels);
+    }
+    expect(step(level, base, pull, K).loaded).toBe(K.barrels - 1);
   });
 });
