@@ -99,7 +99,20 @@ func startHub(t *testing.T) (*Hub, context.CancelFunc) {
 // "has it processed my command yet" is a condition, not a duration.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	// TEN SECONDS, AND IT WAS TWO. A deadline is the right shape — how long each
+	// attempt takes is what load changes, not how many are needed — but two
+	// seconds is a bet on the hub's goroutine being scheduled promptly, and CI
+	// runs this suite with coverage on a four-vCPU runner that is also hosting
+	// Docker. `TestHubUnregisterStopsDelivery` timed out there on 2026-08-04 and
+	// has not reproduced in a hundred runs under full saturation with -race,
+	// which is the signature of a deadline that is too tight rather than of a
+	// message that never came.
+	//
+	// It costs nothing when the hub is healthy: this returns the instant the
+	// condition holds. And it cannot hide a dropped publish — no deadline makes a
+	// message that was never sent arrive — so lengthening it trades only against
+	// how long a genuine failure takes to report.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
