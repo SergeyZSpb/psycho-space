@@ -51,20 +51,34 @@ function has(v: unknown): v is number {
 }
 
 /**
- * Russian days, agreeing with the number in front of them: 1 день, 3 дня,
- * 7 дней, 11 дней.
+ * Russian numeral agreement: the three forms a word takes after a number.
  *
- * Here rather than as a general pluraliser because there is exactly one word to
- * decline in this whole game, and a table of forms for a single use would be an
- * abstraction with no second caller. When a second one arrives, that is the
- * moment to generalise it.
+ * GENERALISED WHEN THE SECOND CALLER ARRIVED, which is exactly what the
+ * single-word version of this said to do. It declined «день» for the board
+ * window and nothing else; the control room's rebuild has to decline «человек»,
+ * «смена» and the verb that agrees with it, so the table of forms now has four
+ * callers rather than one.
+ *
+ * Exported because those callers live in `fintechAdmin.ts` — the same game's
+ * other half, which already reuses this game's placement helpers for the same
+ * reason. A second implementation of the modulo rule is how two screens of one
+ * game start disagreeing about what «21 смена» is.
+ *
+ * The teens are the exception the modulo carves out: 11–14 take the many form
+ * however they end, so «11 дней» and «21 день» are both right.
  */
+export function plural(n: number, one: string, few: string, many: string): string {
+  const mod100 = Math.abs(n) % 100;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  const mod10 = mod100 % 10;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
+}
+
+/** «1 день», «3 дня», «7 дней» — a number and the form of «день» that agrees. */
 function days(n: number): string {
-  const teen = n % 100 >= 11 && n % 100 <= 14;
-  const last = n % 10;
-  if (teen || last === 0 || last >= 5) return `${n} дней`;
-  if (last === 1) return `${n} день`;
-  return `${n} дня`;
+  return `${n} ${plural(n, 'день', 'дня', 'дней')}`;
 }
 
 /**

@@ -14,6 +14,7 @@ import type {
   GameKhimkiStats,
   GameKhimkiTurnResult,
   FintechAdminFloor,
+  FintechAdminRebuild,
   FintechConfig,
   FintechShift,
   FintechShiftRow,
@@ -277,6 +278,23 @@ export const gameFintechAdminApi = {
   // first, so this is the second lock rather than the first), 401 `unauthorized`
   // with no session, 503 `game_unavailable` when the game is unwired.
   layout: () => apiFetch<FintechAdminFloor>('/api/game-fintech/admin/layout'),
+
+  // Draws a new floor, installs it, and ends every shift standing on the old one
+  // with the «РЕМОНТ» ending — the salary counts and the row is written, so this
+  // is destructive to somebody's shift rather than to their work. The page puts a
+  // confirmation naming the live occupant count in front of it.
+  //
+  // NO BODY, deliberately: there is nothing to say about a floor drawn at random,
+  // and a request that carried one would be a second way to install geometry.
+  //
+  // IT ANSWERS THE READ'S OWN PAYLOAD plus `ended`, which is what lets the page
+  // redraw from the response rather than fetching again — see FintechAdminRebuild.
+  //
+  // 403 `forbidden` for an approved non-admin, 503 `game_unavailable` when the
+  // game is unwired, 500 `internal` when the new floor could not be stored — and
+  // then nothing moved, so the page keeps drawing the floor it already has.
+  reroll: () =>
+    apiFetch<FintechAdminRebuild>('/api/game-fintech/admin/layout/reroll', { method: 'POST' }),
 };
 
 export const adminApi = {

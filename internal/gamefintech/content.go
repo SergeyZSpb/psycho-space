@@ -90,12 +90,15 @@ type Vec2 struct {
 // StartingLayout is the office a fresh database opens with: the two rows of four
 // this game shipped on, plus the greenery and the glazing.
 //
-// A CHECKED-IN FLOOR AND NOT A GENERATED ONE, for exactly as long as there is no
-// generator. It is what makes the layout being data provable end to end — the row
-// is written, loaded back, served, drawn and collided against — while the office
-// a player walks into is the one they already know. The moment the generator
-// lands this constant is deleted and the boot path draws instead; it is named
-// here so that deletion is a planned step rather than something to notice later.
+// A CHECKED-IN FLOOR EVEN THOUGH THERE IS A GENERATOR, and the reason is
+// reproducibility rather than history. A fresh database — a new deployment, a
+// developer's first run, every full-stack test run — opens on a floor somebody
+// can name, so «what does the office look like when you start from nothing» has
+// one answer instead of a draw. The generator is reached by rebuilding the office
+// (Service.Renovate), which is a thing somebody asks for.
+//
+// So this is not a step on the way to something: it is the fresh-database floor,
+// and the office stops being it the first time anybody rebuilds.
 //
 // Every rule in ValidateLayout holds of it, and TestTheStartingLayoutIsALegalOffice
 // is what says so rather than this comment.
@@ -297,7 +300,19 @@ const (
 	CausePromoted = "promoted"
 	// CauseLeft is walking out — the shift counts, and nobody noticed.
 	CauseLeft = "left"
+	// CauseRenovated is the office being rebuilt underneath you. The shift is
+	// ENDED AND RECORDED: the salary was earned standing on a floor that no
+	// longer exists, which is nobody's fault but the building's.
+	CauseRenovated = "renovated"
 )
+
+// AllCauses is every cause the simulation can write.
+//
+// A LIST RATHER THAN A HAND-TYPED ONE IN THE TEST, because the test that matters
+// — every cause has an ending, or the over screen is blank — was iterating a
+// literal, so a fourth cause would have been covered by nothing at all until
+// somebody remembered to add it in two places.
+var AllCauses = []string{CausePromoted, CauseLeft, CauseRenovated}
 
 // Ending is one way a shift can end, as the over screen renders it.
 type Ending struct {
@@ -306,10 +321,11 @@ type Ending struct {
 	Sub   string `json:"sub"`
 }
 
-// Endings is the whole set. Two in iteration 1 (§1 decision 12).
+// Endings is the whole set, one per cause.
 var Endings = []Ending{
 	{Key: CausePromoted, Title: "ТЕБЯ ПОВЫСИЛИ", Sub: "поздравляем. теперь ты за это отвечаешь."},
 	{Key: CauseLeft, Title: "ТЫ ПРОСТО УШЁЛ", Sub: "смена засчитана. никто не заметил."},
+	{Key: CauseRenovated, Title: "РЕМОНТ", Sub: "офис пересобрали прямо под тобой. смена засчитана, зарплата тоже."},
 }
 
 // The balloons. Both figures always have one over their head, and WHICH one is

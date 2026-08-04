@@ -53,7 +53,7 @@ func TestEveryCauseTheCodeCanProduceHasAnEnding(t *testing.T) {
 		}
 		return Ending{}, false
 	}
-	for _, cause := range []string{CausePromoted, CauseLeft} {
+	for _, cause := range AllCauses {
 		e, ok := find(cause)
 		if !ok {
 			t.Fatalf("nothing in the catalogue describes the ending %q", cause)

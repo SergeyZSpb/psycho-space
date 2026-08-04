@@ -6,6 +6,7 @@ import {
   buffsFor,
   buildRules,
   endingFor,
+  plural,
   tempoFor,
 } from '../lib/fintechRules';
 import type { FintechConfig } from '../api/types';
@@ -439,5 +440,39 @@ describe('the board window', () => {
     expect(boardWindowLabel({ ...config, board: { window_days: 0 } })).toBeNull();
     const blocks = buildRules({ ...config, board: undefined });
     expect(blocks.some((b) => b.title === 'Доска')).toBe(false);
+  });
+});
+
+describe('plural', () => {
+  // The board window used to own a private «день» decliner; the control room's
+  // rebuild needs «человек», «смена» and a verb, so the rule was generalised
+  // rather than copied. These are the cases the modulo exists for.
+  const shifts = (n: number) => plural(n, 'смена', 'смены', 'смен');
+
+  it('takes the singular for one, and for every number ending in one', () => {
+    expect(shifts(1)).toBe('смена');
+    expect(shifts(21)).toBe('смена');
+    expect(shifts(101)).toBe('смена');
+  });
+
+  it('takes the few form for two, three and four', () => {
+    expect(shifts(2)).toBe('смены');
+    expect(shifts(4)).toBe('смены');
+    expect(shifts(22)).toBe('смены');
+  });
+
+  it('takes the many form from five, and for nought', () => {
+    expect(shifts(0)).toBe('смен');
+    expect(shifts(5)).toBe('смен');
+    expect(shifts(20)).toBe('смен');
+  });
+
+  it('makes the teens the exception they are', () => {
+    // 11–14 take the many form however they end, which is the whole reason this
+    // cannot be a modulo-ten table.
+    expect(shifts(11)).toBe('смен');
+    expect(shifts(12)).toBe('смен');
+    expect(shifts(14)).toBe('смен');
+    expect(shifts(111)).toBe('смен');
   });
 });

@@ -509,6 +509,36 @@ func (o *Office) Leave(accountID string) (*Occupant, bool) {
 	return occ, true
 }
 
+// EvictAll ends every shift in the office and returns everybody it ended.
+//
+// THE OFFICE IS BEING REBUILT UNDERNEATH THEM, which is the one ending nobody
+// chose and nobody earned — so it is recorded exactly as walking out is, and the
+// salary counts. The alternative, discarding the shift, punishes the player for
+// something the building did.
+//
+// IN keys() ORDER, like everything here that produces a value: a map's iteration
+// order is randomised, and the caller turns this into one frame per occupant. A
+// test that could not predict the order of those frames would have to sort them,
+// which is a test working around a determinism this game otherwise has.
+//
+// It leaves the office EMPTY rather than usable. The caller drops it entirely —
+// the лысый, Claude, the two colleagues and one prop per spot were all placed
+// against the floor that is going away, so an office retrofitted with a new plan
+// would have its whole cast standing in the wrong room.
+func (o *Office) EvictAll() []*Occupant {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]*Occupant, 0, len(o.occupants))
+	for _, k := range o.keys() {
+		occ := o.occupants[k]
+		occ.Ended, occ.Cause = true, CauseRenovated
+		occ.State.Alive = false
+		delete(o.occupants, k)
+		out = append(out, occ)
+	}
+	return out
+}
+
 // Seen records that an account still has a connection. It is what AbandonGrace
 // is measured against.
 func (o *Office) Seen(accountID string, now time.Time) {

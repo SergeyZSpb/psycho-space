@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import type { Locator, Page } from '@playwright/test';
+import type { Locator, Page, Route } from '@playwright/test';
 import { seedClient, stubBackend } from './fixtures';
 
 /**
@@ -75,6 +75,31 @@ const FLOOR = {
 
 type Floor = typeof FLOOR;
 
+/**
+ * The floor the REBUILD answers with, and every visible number in it differs
+ * from `FLOOR`'s.
+ *
+ * A DIFFERENT COUNT OF EVERYTHING, a different id and a different source, because
+ * that is what tells «the page redrew from the response» apart from «the page
+ * left the old floor on the screen». The office is empty afterwards — a rebuild
+ * throws everybody out — and `ended` is the two shifts it threw.
+ */
+const REBUILT: Floor & { ended: number } = {
+  ...FLOOR,
+  layout: {
+    id: 'fedcba9876543210',
+    solids: [
+      { x: 4, y: 6, w: 2, h: 1, kind: 'desk' },
+      { x: 8, y: 13, w: 0.9, h: 0.9, kind: 'tree' },
+    ],
+    windows: [{ wall: 'top', at: 2, len: 4 }],
+  },
+  source: 'generated',
+  installed_at: '2026-08-04T18:02:11.000000Z',
+  occupants: 0,
+  ended: 2,
+};
+
 interface StubOptions {
   /** Serve this floor instead of `FLOOR`. */
   floor?: Floor;
@@ -82,44 +107,70 @@ interface StubOptions {
   status?: number;
   /** The machine code the refusal carries. */
   code?: string;
+  /** Refuse the REBUILD with this status instead of answering `REBUILT`. */
+  rerollStatus?: number;
+  /** The machine code that refusal carries. */
+  rerollCode?: string;
+}
+
+/** What the test can ask about the stub after the fact. */
+interface FloorStub {
+  /** How many rebuilds have actually reached the server. */
+  rerolls: () => number;
 }
 
 /**
- * The one endpoint this page reads.
+ * The two endpoints this page has.
  *
  * Registered AFTER the shared fixture's catch-all and therefore ahead of it —
  * Playwright matches handlers in reverse registration order — so everything else
  * (`/api/auth/me`, above all) keeps answering exactly as it does for every other
  * suite, and only the floor is this file's business. `fallback()` is what hands
  * the rest back.
+ *
+ * THE READ AND THE REBUILD ARE SEPARATE PATTERNS, and the read's does not match
+ * the rebuild's path: `**` ends the glob, so `…/layout` matches only a URL that
+ * ends there. Counting the rebuilds is what lets a test say «cancelling sent
+ * nothing», which is a claim about the network rather than about the screen.
  */
-async function stubFloor(page: Page, opts: StubOptions = {}): Promise<void> {
-  await page.route('**/api/game-fintech/admin/layout', async (route) => {
-    if (opts.status) {
-      return route.fulfill({
-        status: opts.status,
-        contentType: 'application/json; charset=utf-8',
-        headers: { 'X-Trace-Id': 'e2e-trace-id' },
-        body: JSON.stringify({ error: opts.code ?? 'forbidden', trace_id: 'e2e-trace-id' }),
-      });
-    }
-    return route.fulfill({
-      status: 200,
+async function stubFloor(page: Page, opts: StubOptions = {}): Promise<FloorStub> {
+  let rerolls = 0;
+  const json = (route: Route, status: number, body: unknown) =>
+    route.fulfill({
+      status,
       contentType: 'application/json; charset=utf-8',
       headers: { 'X-Trace-Id': 'e2e-trace-id' },
-      body: JSON.stringify(opts.floor ?? FLOOR),
+      body: JSON.stringify(body),
     });
+
+  await page.route('**/api/game-fintech/admin/layout/reroll', async (route) => {
+    rerolls += 1;
+    if (opts.rerollStatus) {
+      return json(route, opts.rerollStatus, {
+        error: opts.rerollCode ?? 'internal',
+        trace_id: 'e2e-trace-id',
+      });
+    }
+    return json(route, 200, REBUILT);
+  });
+  await page.route('**/api/game-fintech/admin/layout', async (route) => {
+    if (opts.status) {
+      return json(route, opts.status, { error: opts.code ?? 'forbidden', trace_id: 'e2e-trace-id' });
+    }
+    return json(route, 200, opts.floor ?? FLOOR);
   });
   await page.route('**/api/**', (route) => route.fallback());
+  return { rerolls: () => rerolls };
 }
 
 /** Opens the control room as an admin, with the plan drawn. */
-async function openPlan(page: Page, opts: StubOptions = {}): Promise<void> {
+async function openPlan(page: Page, opts: StubOptions = {}): Promise<FloorStub> {
   await stubBackend(page, 'admin');
-  await stubFloor(page, opts);
+  const stub = await stubFloor(page, opts);
   await seedClient(page, 'dark');
   await page.goto('/app/game-fintech-admin');
   await expect(page.getByTestId('fintech-admin-plan')).toBeVisible();
+  return stub;
 }
 
 /** Phone width, where the primary pointer is a thumb rather than a mouse. */
@@ -335,6 +386,97 @@ test('an unwired game says so, and a failure quotes its code', async ({ page }) 
   await expect(page.getByTestId('fintech-admin-error')).toContainText('не подключена');
 });
 
+// --- rebuilding it ------------------------------------------------------------
+
+test('the rebuild is behind a confirmation that names who is in the office', async ({ page }) => {
+  // THE COUNT IS THE WHOLE POINT OF THE DIALOG. «Пересобрать офис?» on its own is
+  // a question about geometry; the same question carrying the live occupant count
+  // is a question about three people's shifts. The stub says three, so a page that
+  // typed a number or dropped it cannot pass.
+  const stub = await openPlan(page);
+
+  await expect(page.getByTestId('fintech-admin-reroll-dialog')).toHaveCount(0);
+  await page.getByTestId('fintech-admin-reroll').click();
+
+  const warning = page.getByTestId('fintech-admin-reroll-warning');
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText('3 человека');
+  await expect(warning).toContainText('их смены закончатся');
+  // Asking is not doing: nothing has reached the server yet.
+  expect(stub.rerolls()).toBe(0);
+});
+
+test('cancelling the confirmation sends nothing and changes nothing', async ({ page }) => {
+  const stub = await openPlan(page);
+
+  await page.getByTestId('fintech-admin-reroll').click();
+  await expect(page.getByTestId('fintech-admin-reroll-dialog')).toBeVisible();
+  await page.getByTestId('fintech-admin-reroll-cancel').click();
+
+  await expect(page.getByTestId('fintech-admin-reroll-dialog')).toBeHidden();
+  expect(stub.rerolls(), 'cancelling rebuilt the office').toBe(0);
+  // And the floor on the screen is the one that was always there.
+  await expect(page.getByTestId('fintech-admin-id')).toHaveText(FLOOR.layout.id);
+  await expect(page.getByTestId('fintech-admin-solid')).toHaveCount(FLOOR.layout.solids.length);
+  await expect(page.getByTestId('fintech-admin-rebuild-result')).toHaveCount(0);
+});
+
+test('confirming rebuilds the floor and redraws the page from the answer', async ({ page }) => {
+  // THE POINT OF THE IDENTICAL PAYLOAD. The rebuild replies with the read's own
+  // shape plus the count, so the page must draw the NEW floor without a second
+  // request — this stub answers the read exactly once, and the plan below is the
+  // rebuilt one.
+  const stub = await openPlan(page);
+
+  await page.getByTestId('fintech-admin-reroll').click();
+  await page.getByTestId('fintech-admin-reroll-confirm').click();
+
+  await expect(page.getByTestId('fintech-admin-reroll-dialog')).toBeHidden();
+  expect(stub.rerolls()).toBe(1);
+
+  // Every visible fact about the floor moved, and each of them differs from
+  // `FLOOR`'s, so a page that redrew half of it fails here.
+  await expect(page.getByTestId('fintech-admin-id')).toHaveText(REBUILT.layout.id);
+  await expect(page.getByTestId('fintech-admin-solid')).toHaveCount(REBUILT.layout.solids.length);
+  await expect(page.getByTestId('fintech-admin-window')).toHaveCount(REBUILT.layout.windows.length);
+  await expect(page.getByTestId('fintech-admin-source')).toHaveText('сгенерированный');
+  await expect(page.getByTestId('fintech-admin-occupants')).toHaveText('0');
+
+  // AND IT SAYS WHAT IT COST, which is the half nobody can see: the new floor is
+  // on the screen and the people thrown off the old one are somewhere else.
+  const result = page.getByTestId('fintech-admin-rebuild-result');
+  await expect(result).toBeVisible();
+  await expect(result).toContainText('Закончились 2 смены');
+  await expect(page.getByTestId('fintech-admin-rebuild-error')).toHaveCount(0);
+
+  // The confirmation now names the office it has just emptied, not the old one.
+  await page.getByTestId('fintech-admin-reroll').click();
+  await expect(page.getByTestId('fintech-admin-reroll-warning')).toContainText('никого');
+});
+
+test('a refused rebuild says so and leaves the floor exactly as it was', async ({ page }) => {
+  // A REFUSED INSTALL CHANGES NOTHING ON THE SERVER — the people working carry on,
+  // on the floor they are standing on — so the page must not redraw, and the
+  // message has to say that rather than leaving somebody wondering.
+  const stub = await openPlan(page, { rerollStatus: 500, rerollCode: 'internal' });
+
+  await page.getByTestId('fintech-admin-reroll').click();
+  await page.getByTestId('fintech-admin-reroll-confirm').click();
+
+  const err = page.getByTestId('fintech-admin-rebuild-error');
+  await expect(err).toBeVisible();
+  await expect(err).toContainText('internal');
+  await expect(err).toContainText('прежним');
+
+  expect(stub.rerolls()).toBe(1);
+  await expect(page.getByTestId('fintech-admin-id')).toHaveText(FLOOR.layout.id);
+  await expect(page.getByTestId('fintech-admin-solid')).toHaveCount(FLOOR.layout.solids.length);
+  await expect(page.getByTestId('fintech-admin-occupants')).toHaveText(String(FLOOR.occupants));
+  await expect(page.getByTestId('fintech-admin-rebuild-result')).toHaveCount(0);
+  // The button is usable again: a failure is not a dead end.
+  await expect(page.getByTestId('fintech-admin-reroll')).toBeEnabled();
+});
+
 // --- the phone ----------------------------------------------------------------
 
 test('the whole page fits a 360 px screen', async ({ page }) => {
@@ -382,6 +524,25 @@ test('everything you can tap clears 44 px', async ({ page }) => {
     if (!b) continue;
     expect(Math.round(Math.min(b.width, b.height))).toBeGreaterThanOrEqual(44);
   }
+});
+
+test('the confirmation is a thumb-sized decision and fits a 360 px screen', async ({ page }) => {
+  test.skip(!isMobile(page), 'a tap-target floor is a rule about thumbs');
+  // THE DIALOG IS TELEPORTED OUT OF `main`, so the sweep above cannot see either
+  // of its buttons — and they are the two that matter most: one of them is
+  // destructive and the other is the way out of it.
+  await openPlan(page);
+  await page.getByTestId('fintech-admin-reroll').click();
+  await expect(page.getByTestId('fintech-admin-reroll-dialog')).toBeVisible();
+
+  for (const id of ['fintech-admin-reroll-confirm', 'fintech-admin-reroll-cancel']) {
+    const box = await page.getByTestId(id).boundingBox();
+    expect(box, `${id} has no box at all`).not.toBeNull();
+    expect(Math.round(Math.min(box!.width, box!.height)), id).toBeGreaterThanOrEqual(44);
+  }
+
+  const diff = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(diff, `the open dialog overflows by ${diff}px`).toBeLessThanOrEqual(1);
 });
 
 test('the plan is drawn in the page’s own ink, so both themes work', async ({ page }) => {

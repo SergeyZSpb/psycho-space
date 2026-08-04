@@ -2,7 +2,7 @@
   <v-container class="py-6" style="max-width: 900px" data-testid="fintech-admin">
     <h1 class="text-h5 mb-1">АДМИН ФИНТЕХА</h1>
     <p class="text-body-2 text-medium-emphasis mb-4 ps-wrap">
-      Этаж, на котором сейчас работают. Пока только смотрим — ничего отсюда не меняется.
+      Этаж, на котором сейчас работают. Отсюда его можно пересобрать — целиком и сразу.
     </p>
 
     <div v-if="loading" class="text-center py-8" data-testid="fintech-admin-loading">
@@ -156,6 +156,93 @@
           Точки — места, которые мебель обязана обходить: старты, бутылки и кальяны.
         </p>
       </v-card>
+
+      <!-- THE ONE DESTRUCTIVE THING THIS PAGE CAN DO, and it is last on purpose:
+           the plan above is what somebody is deciding about, so the button sits
+           under the floor rather than over it. -->
+      <v-card class="pa-4 mt-4" data-testid="fintech-admin-rebuild">
+        <h2 class="text-subtitle-1 mb-1">Пересобрать офис</h2>
+        <p class="text-body-2 text-medium-emphasis mb-3 ps-wrap">
+          Игра нарисует новый этаж и поставит его вместо этого. Все, кто сейчас
+          работает, выйдут с концовкой «РЕМОНТ» — смена и зарплата им засчитаются.
+        </p>
+        <!-- The 48 px floor is inline for the same reason the dialog's is: this
+             is a destructive control and it deserves the bigger target, and
+             Vuetify's own borders shave a pixel or two off a box asked for at
+             exactly 44. -->
+        <v-btn
+          color="error"
+          variant="tonal"
+          size="large"
+          :style="{ minHeight: '48px' }"
+          data-testid="fintech-admin-reroll"
+          :loading="rebuilding"
+          :disabled="rebuilding"
+          @click="confirmOpen = true"
+        >
+          ПЕРЕСОБРАТЬ ОФИС
+        </v-btn>
+
+        <!-- WHAT HAPPENED, and the failure wins the slot: a refusal is the one
+             of the two that needs acting on, and a stale success line under it
+             would read as though the rebuild had half worked. -->
+        <p
+          v-if="rebuildError"
+          class="text-body-2 text-error mt-3 mb-0 ps-wrap"
+          data-testid="fintech-admin-rebuild-error"
+        >
+          {{ rebuildError }}
+        </p>
+        <p
+          v-else-if="rebuildResult"
+          class="text-body-2 mt-3 mb-0 ps-wrap"
+          data-testid="fintech-admin-rebuild-result"
+        >
+          {{ rebuildResult }}
+        </p>
+      </v-card>
+
+      <!-- THE CONFIRMATION NAMES THE COST IN PEOPLE. «Пересобрать офис?» on its
+           own is a question about geometry; the same question carrying the live
+           occupant count is a question about somebody's shift, which is the
+           decision actually being taken. -->
+      <v-dialog v-model="confirmOpen" max-width="460">
+        <v-card data-testid="fintech-admin-reroll-dialog">
+          <v-card-title>Пересобрать офис?</v-card-title>
+          <v-card-text class="ps-wrap">
+            <p class="mb-2" data-testid="fintech-admin-reroll-warning">{{ occupantsText }}</p>
+            <p class="mb-0 text-caption">
+              Новый этаж рисуется случайно, и вернуть этот будет нечем — обратной кнопки нет.
+            </p>
+          </v-card-text>
+          <!-- Both buttons carry an inline min-height: Vuetify's default in a
+               dialog is 41 px, under the 44 px floor the layout suite enforces,
+               and a scoped class never reaches a dialog because its content is
+               teleported to the body. The way out gets it too — on a
+               one-way action the easy target should be «Отмена». -->
+          <v-card-actions>
+            <v-spacer />
+            <v-btn
+              variant="text"
+              :style="{ minHeight: '48px' }"
+              data-testid="fintech-admin-reroll-cancel"
+              @click="confirmOpen = false"
+            >
+              Отмена
+            </v-btn>
+            <v-btn
+              color="error"
+              variant="tonal"
+              :style="{ minHeight: '48px' }"
+              data-testid="fintech-admin-reroll-confirm"
+              :loading="rebuilding"
+              @click="rebuild"
+            >
+              Пересобрать
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
     </template>
   </v-container>
 </template>
@@ -170,9 +257,15 @@
  * group, and shares nothing with `AdminView` but the gate — which is generic and
  * knows nothing about any game.
  *
- * READ-ONLY ON PURPOSE. There is no rebuild button, no palette and no dragging,
- * because there is no endpoint behind any of them yet: a disabled control for a
- * thing that does not exist is scaffolding, and this project does not ship it.
+ * IT READS THE FLOOR AND IT CAN REPLACE IT, and that is the whole of what it
+ * does today. There is no palette and no dragging, because there is no endpoint
+ * behind either of them yet: a disabled control for a thing that does not exist
+ * is scaffolding, and this project does not ship it.
+ *
+ * THE REBUILD REDRAWS FROM ITS OWN ANSWER. `POST …/layout/reroll` replies with
+ * exactly what the read replies with, plus how many shifts it threw out — so
+ * pressing the button costs one round trip rather than two, and there is no
+ * moment in which this page draws the floor it has just replaced.
  *
  * NOTHING IS COMPUTED IN THE TEMPLATE. Every position, label and sentence comes
  * from `lib/fintechAdmin.ts`, which reuses the game's own `solidBox`,
@@ -185,10 +278,12 @@ import { gameFintechAdminApi } from '../api/endpoints';
 import {
   formatInstalled,
   formatRoom,
+  occupantsWarning,
   planBoxFor,
   planSolidStyle,
   planSpotStyle,
   planWindowStyle,
+  rerollReport,
   sourceLabel,
   spotLegend,
   type PlanStyle,
@@ -199,6 +294,11 @@ import type { FintechAdminFloor, FintechAdminSpot, FintechSolid } from '../api/t
 const floor = ref<FintechAdminFloor | null>(null);
 const loading = ref(true);
 const error = ref('');
+
+const confirmOpen = ref(false);
+const rebuilding = ref(false);
+const rebuildResult = ref('');
+const rebuildError = ref('');
 
 /**
  * What went wrong, in words rather than in a code.
@@ -217,6 +317,56 @@ function messageFor(err: unknown): string {
   }
   return 'Не открылось.';
 }
+
+/**
+ * What went wrong with the REBUILD, which is a different sentence from the one
+ * above even where the code is the same.
+ *
+ * Every branch ends by saying the floor is untouched, and that is the whole
+ * reason this is not `messageFor` with a different prefix: a refused install
+ * changes nothing on the server — the people working carry on, on the floor they
+ * are standing on — and somebody who has just pressed a destructive button and
+ * seen an error needs to be told that before anything else.
+ */
+function rebuildMessageFor(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'forbidden') return 'Нужны права администратора. Этаж не тронут.';
+    if (err.code === 'game_unavailable') return 'Игра сейчас не подключена. Этаж не тронут.';
+    return `Не пересобралось (${err.code}). Этаж остался прежним.`;
+  }
+  return 'Не пересобралось. Этаж остался прежним.';
+}
+
+/**
+ * Rebuilds the floor everybody is standing on.
+ *
+ * REDRAWN FROM THE ANSWER, never from a second read: the response is the read's
+ * own payload plus the count, so fetching again would be a round trip spent to
+ * learn what is already in hand — and a window in which this page draws the floor
+ * it has just replaced.
+ *
+ * A FAILURE LEAVES THE PAGE EXACTLY AS IT WAS, because the server does too. The
+ * dialog closes either way: an error belongs on the page, next to the button that
+ * produced it, rather than under a modal somebody now has to dismiss twice.
+ */
+async function rebuild(): Promise<void> {
+  if (rebuilding.value) return;
+  rebuilding.value = true;
+  rebuildError.value = '';
+  try {
+    const next = await gameFintechAdminApi.reroll();
+    floor.value = next;
+    rebuildResult.value = rerollReport(next.ended);
+  } catch (err) {
+    rebuildError.value = rebuildMessageFor(err);
+    rebuildResult.value = '';
+  } finally {
+    rebuilding.value = false;
+    confirmOpen.value = false;
+  }
+}
+
+const occupantsText = computed(() => occupantsWarning(floor.value?.occupants ?? 0));
 
 const box = computed(() => planBoxFor(floor.value?.office.w ?? 0, floor.value?.office.h ?? 0));
 

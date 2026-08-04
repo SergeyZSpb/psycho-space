@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { loginAs } from './fixtures';
 
 /**
@@ -30,6 +31,68 @@ interface AdminFloor {
   occupants: number;
   kinds: { key: string; label: string }[];
   spots: { x: number; y: number; what: string }[];
+  /** Only on a rebuild's answer: how many shifts it just threw out. */
+  ended?: number;
+}
+
+/**
+ * How long a shift has to last before the server keeps it.
+ *
+ * `MinShiftSeconds` in `internal/gamefintech`. It applies to EVERY ending,
+ * including this one — a rebuild during the first three seconds of somebody's
+ * shift throws them out and writes nothing — so the row this file looks for in
+ * `shifts/me` only exists if the shift was worth keeping first. The rule IS a
+ * duration and there is no condition to poll that would make it true sooner,
+ * which is the same reasoning `gamefintech.spec.ts` states for its own copy.
+ */
+const MIN_SHIFT_MS = 3_000;
+const SLACK_MS = 300;
+
+/**
+ * The clearance `gamefintech.spec.ts`'s `clearKey` needs somewhere to find, in
+ * metres. See the afterAll hook.
+ */
+const WALK_M = 0.1;
+
+/** Which layout the game is currently serving to players. */
+async function servedOfficeID(page: Page): Promise<string> {
+  const res = await page.request.get('/api/game-fintech/config');
+  expect(res.status()).toBe(200);
+  return ((await res.json()) as { office: { id: string } }).office.id;
+}
+
+/**
+ * Can somebody dropped anywhere legal on this floor take a step?
+ *
+ * A GENERATED FLOOR IS VALIDATED, NOT CHOSEN, and this suite's other fintech spec
+ * picks its movement key by measuring the room around wherever the spawn landed —
+ * throwing outright when no direction has anywhere to go. The validator's own
+ * rules (every solid `min_gap` from every wall and from its neighbours, free
+ * space one connected region) make that vanishingly unlikely, and this is the
+ * check that turns «unlikely» into «this file left behind a floor it looked at».
+ *
+ * The grid is a quarter of a metre, which is finer than any gap the validator
+ * permits, and `free` is deliberately the same predicate `clearKey` uses.
+ */
+function walkableEverywhere(floor: AdminFloor): boolean {
+  const { w, h, player_radius: r } = floor.office;
+  const solids = floor.layout.solids;
+  const free = (x: number, y: number) =>
+    x >= r &&
+    y >= r &&
+    x <= w - r &&
+    y <= h - r &&
+    !solids.some((d) => x > d.x - r && x < d.x + d.w + r && y > d.y - r && y < d.y + d.h + r);
+
+  for (let x = r; x <= w - r; x += 0.25) {
+    for (let y = r; y <= h - r; y += 0.25) {
+      if (!free(x, y)) continue;
+      const somewhere =
+        free(x + WALK_M, y) || free(x - WALK_M, y) || free(x, y + WALK_M) || free(x, y - WALK_M);
+      if (!somewhere) return false;
+    }
+  }
+  return true;
 }
 
 test.describe('«АДМИН ФИНТЕХА»', () => {
@@ -108,6 +171,71 @@ test.describe('«АДМИН ФИНТЕХА»', () => {
     await expect(page.getByTestId('fintech-admin-occupants')).toHaveText(String(floor.occupants));
   });
 
+  test('rebuilding the office throws out the shift standing on it', async ({
+    browser,
+    context,
+    page,
+  }) => {
+    // THE LEG NO STUB CAN MAKE. Everything about how the control looks is asserted
+    // in `web/e2e/gamefintechAdmin.spec.ts`; what only a real binary can say is
+    // that pressing it reaches the simulation somebody else is standing in — the
+    // eviction travels over the real socket, the ending comes from the real
+    // catalogue, and the row reaches Postgres.
+    //
+    // TWO CONTEXTS, because the whole point of the button is that it ends
+    // SOMEBODY ELSE'S shift. The player is an ordinary approved user; the rebuild
+    // comes from the superadmin, who stands in for the admin here because the
+    // seeded set carries no plain admin — the same stand-in the read test uses.
+    await loginAs(context, 'user');
+    await page.goto('/app/game-fintech');
+    await expect(page.getByTestId('fintech-splash')).toBeVisible();
+
+    const before = await servedOfficeID(page);
+
+    await page.getByTestId('fintech-start').click();
+    await expect(page.getByTestId('fintech-play')).toBeVisible();
+    await page.waitForTimeout(MIN_SHIFT_MS + SLACK_MS);
+
+    const adminCtx = await browser.newContext();
+    try {
+      await loginAs(adminCtx, 'superadmin');
+      // The context's own request object, which shares its cookies — NOT the bare
+      // `request` fixture, which is a separate context with none and would
+      // silently test the anonymous path.
+      const res = await adminCtx.request.post('/api/game-fintech/admin/layout/reroll');
+      expect(res.status()).toBe(200);
+      const rebuilt = (await res.json()) as AdminFloor;
+
+      // It drew a new floor, and it says how many people it cost.
+      expect(rebuilt.layout.id).not.toBe(before);
+      expect(rebuilt.source).toBe('generated');
+      expect(rebuilt.ended ?? 0).toBeGreaterThanOrEqual(1);
+      // The office it answers with is empty, because it just emptied it.
+      expect(rebuilt.occupants).toBe(0);
+
+      // THE PLAYER IS OUT AND WAS TOLD SO, over the socket the office really
+      // holds — and the words are the real `content.go`'s rather than a stub's.
+      await expect(page.getByTestId('fintech-over-title')).toHaveText('РЕМОНТ');
+
+      // AND EVERYBODY IS SERVED THE NEW FLOOR NOW, which is what makes the
+      // rebuild's answer safe to redraw the control room from: the two endpoints
+      // describe one floor before and after.
+      expect(await servedOfficeID(page)).toBe(rebuilt.layout.id);
+
+      // AND THE SHIFT REACHED POSTGRES with the ending that ended it. The salary
+      // counted, so this is a row rather than a shift thrown away.
+      const mine = await page.request.get('/api/game-fintech/shifts/me');
+      expect(mine.status()).toBe(200);
+      const shifts = ((await mine.json()) as { shifts: { cause: string }[] }).shifts;
+      expect(
+        shifts.some((s) => s.cause === 'renovated'),
+        `no rebuilt shift in ${JSON.stringify(shifts)}`,
+      ).toBe(true);
+    } finally {
+      await adminCtx.close();
+    }
+  });
+
   test('an approved user is refused the control room', async ({ context, page }) => {
     // The router's guard turns them back at the door, so this is the SECOND lock:
     // a browser that never loaded this SPA — or a role that changed under a tab
@@ -118,5 +246,41 @@ test.describe('«АДМИН ФИНТЕХА»', () => {
     const res = await page.request.get('/api/game-fintech/admin/layout');
     expect(res.status()).toBe(403);
     expect((await res.json()).error).toBe('forbidden');
+  });
+
+  test.afterAll(async ({ browser }) => {
+    // A REBUILD IS PROCESS-GLOBAL. This suite shares one server and one database
+    // with every other spec at `workers: 1`, so the floor this file leaves behind
+    // is the floor `gamefintech.spec.ts` plays on — and its `clearKey` throws
+    // outright on a floor where the spawn has nowhere to walk.
+    //
+    // There is no «install exactly this layout» endpoint until the editor lands,
+    // so the only lever is another draw. This keeps drawing until it has one it
+    // has actually looked at, bounded by a DEADLINE rather than by a number of
+    // attempts: what matters is how long we are willing to wait, not how many
+    // tries fit into it, and a loaded runner changes only the latter.
+    const admin = await browser.newContext();
+    try {
+      await loginAs(admin, 'superadmin');
+      const deadline = Date.now() + 30_000;
+      let last = '';
+      for (;;) {
+        const res = await admin.request.get('/api/game-fintech/admin/layout');
+        if (res.status() === 200) {
+          const floor = (await res.json()) as AdminFloor;
+          last = floor.layout.id;
+          if (walkableEverywhere(floor)) return;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `no walkable floor could be installed within 30s (last was ${last || 'unreadable'}) — ` +
+              'the next fintech spec will fail on a floor it cannot walk in',
+          );
+        }
+        await admin.request.post('/api/game-fintech/admin/layout/reroll');
+      }
+    } finally {
+      await admin.close();
+    }
   });
 });

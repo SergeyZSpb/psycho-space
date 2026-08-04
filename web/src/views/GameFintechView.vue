@@ -468,11 +468,21 @@
     <section v-else class="fintech-splash" data-testid="fintech-over">
       <h1 class="fintech-title" data-testid="fintech-over-title">{{ overTitle }}</h1>
       <p class="fintech-lore">{{ overSub }}</p>
-      <p class="fintech-over-salary" data-testid="fintech-over-salary">{{ money(over?.pay ?? 0) }}</p>
-      <!-- The same clock the strip counted up and the boards rank by, so the
-           number a player just watched is the number they are scored on. -->
-      <p class="fintech-over-secs" data-testid="fintech-over-secs">
-        за {{ formatClock(over?.secs ?? 0) }}
+      <!-- THE NUMBERS, WHEN ANYBODY TOLD US ANY. A shift the office ended while
+           this tab's socket was away arrives with no frame carrying them, and
+           «0 ₽» for a shift that earned something is a lie the player has no way
+           to check. The same clock the strip counted up and the boards rank by,
+           so the number a player just watched is the number they are scored on. -->
+      <template v-if="overNumbers">
+        <p class="fintech-over-salary" data-testid="fintech-over-salary">
+          {{ money(overNumbers.pay) }}
+        </p>
+        <p class="fintech-over-secs" data-testid="fintech-over-secs">
+          за {{ formatClock(overNumbers.secs) }}
+        </p>
+      </template>
+      <p v-else class="fintech-over-secs ps-wrap" data-testid="fintech-over-unknown">
+        Смену закрыл офис, пока связь висела. Сколько накапало — видно в «Твоих сменах».
       </p>
       <!-- WHO WAS WORKING. The ending is the one screen where the persona is worth
            repeating: the shift is over, the figure is gone, and «ты был Саня К» is the
@@ -721,7 +731,16 @@ const meLine = ref(0);
 const bossLine = ref(0);
 const claudeLine = ref(0);
 const link = ref<'connecting' | 'open' | 'lost'>('connecting');
-const over = ref<{ cause: string; pay: number; secs: number } | null>(null);
+/**
+ * How the shift ended, and — when anybody said so — what it earned.
+ *
+ * THE NUMBERS ARE OPTIONAL AND THE CAUSE IS NOT. Every ordinary ending carries
+ * both: `fintech_over` states them and walking out reads them off the last
+ * snapshot. The one ending that carries neither is the shift this tab discovers
+ * is already gone (see checkStranded) — and inventing a nought there would print
+ * a salary the player can disprove by scrolling down one screen.
+ */
+const over = ref<{ cause: string; pay?: number; secs?: number } | null>(null);
 
 /**
  * The other people in the office.
@@ -1097,6 +1116,19 @@ const bossSays = computed(() => {
 const overTitle = computed(() => endingFor(config.value, over.value?.cause ?? '')?.title ?? 'СМЕНА ОКОНЧЕНА');
 const overSub = computed(() => endingFor(config.value, over.value?.cause ?? '')?.sub ?? '');
 
+/**
+ * The pair of numbers the ending may print, or null when nobody sent them.
+ *
+ * A computed rather than two template conditions, because the screen shows both
+ * or neither: a salary with no length beside it would read as a shift that took
+ * no time.
+ */
+const overNumbers = computed(() => {
+  const o = over.value;
+  if (!o || o.pay === undefined || o.secs === undefined) return null;
+  return { pay: o.pay, secs: o.secs };
+});
+
 const meEl = ref<HTMLElement | null>(null);
 const bossEl = ref<HTMLElement | null>(null);
 const claudeEl = ref<HTMLElement | null>(null);
@@ -1116,6 +1148,15 @@ let lastFrameMs = 0;
 let seenTick = 0;
 /** Wall clock at clock-in, so walking out can say how long the shift was. */
 let startedAtMs = 0;
+/**
+ * WHEN THE OFFICE LAST SAID ANYTHING, whether its socket is up, and whether this
+ * tab has already asked why it went quiet. All three are read by checkStranded
+ * and by nothing else.
+ */
+let lastHeardMs = 0;
+let socketOpen = false;
+let strandedAsked = false;
+let strandTimer: number | undefined;
 /** A dash asked for and not yet carried by a command. Cleared when one takes it. */
 let dashPending = false;
 // The last way the thumb actually went, and where the лысый was on the last
@@ -1176,7 +1217,11 @@ const money = (v: number) => formatMoney(v);
 
 /** How a finished shift is marked in the list. Presentation, not a rule. */
 function causeIcon(cause: string): string {
-  return cause === 'promoted' ? '🎉' : '🚪';
+  if (cause === 'promoted') return '🎉';
+  // The office rebuilt underneath you: not a door you walked out of, and not a
+  // promotion either — the shift counted, and somebody else decided it was over.
+  if (cause === 'renovated') return '🚧';
+  return '🚪';
 }
 
 function solidStyle(d: FintechRect): Record<string, string> {
@@ -1370,6 +1415,10 @@ function enterPlay(): void {
   dashPending = false;
   bossGrin = '';
   startedAtMs = Date.now();
+  // The silence clock starts now and the socket is not open until it says so.
+  lastHeardMs = Date.now();
+  socketOpen = false;
+  strandedAsked = false;
 
   constants = stepConstants(config.value);
   // NO PREDICTOR YET, AND THAT IS DELIBERATE. The catalogue does not publish
@@ -1396,6 +1445,11 @@ function enterPlay(): void {
   bossInterp = createInterpolator(renderDelayMs(), tickMs());
   claudeInterp = createInterpolator(renderDelayMs(), tickMs());
   sendTimer = window.setInterval(sendInput, Math.round(1000 / config.value.move.input_hz));
+  // A TIMER RATHER THAN THE DRAW LOOP, because the case it exists for is a tab
+  // nobody is looking at: a browser stops `requestAnimationFrame` outright for a
+  // backgrounded page, and that is exactly the tab most likely to have missed the
+  // frame that ended its shift. Timers are throttled there, never stopped.
+  strandTimer = window.setInterval(() => void checkStranded(), STRAND_CHECK_MS);
   lastFrameMs = performance.now();
   frameHandle = requestAnimationFrame(drawFrame);
 }
@@ -1403,6 +1457,10 @@ function enterPlay(): void {
 function teardownPlay(): void {
   if (sendTimer !== undefined) window.clearInterval(sendTimer);
   sendTimer = undefined;
+  if (strandTimer !== undefined) window.clearInterval(strandTimer);
+  strandTimer = undefined;
+  socketOpen = false;
+  strandedAsked = false;
   if (frameHandle) cancelAnimationFrame(frameHandle);
   frameHandle = 0;
   release?.();
@@ -1684,6 +1742,7 @@ function onFrame(frame: RealtimeFrame): void {
       // occupant is not yet attached, which is a different thing and is what the
       // link line is honestly reporting.
       link.value = 'open';
+      heard();
       // AND WHO WE ARE, which a second device or a reconnect would not otherwise
       // know: this tab may be attaching to a shift it did not start.
       if (typeof frame.persona === 'number') persona.value = frame.persona;
@@ -1694,6 +1753,7 @@ function onFrame(frame: RealtimeFrame): void {
       if (typeof frame.k0 === 'number') startTick.value = frame.k0;
       break;
     case 'fintech_snap':
+      heard();
       applySnapshot(frame);
       break;
     case 'fintech_over':
@@ -1958,7 +2018,7 @@ function applyPeers(raw: unknown, tick: number): void {
   if (!sameRoster(peers.value, roster) || !sameFaces(peers.value, roster)) peers.value = roster;
 }
 
-function finish(result: { cause: string; pay: number; secs: number }): void {
+function finish(result: { cause: string; pay?: number; secs?: number }): void {
   over.value = result;
   teardownPlay();
   shift = null;
@@ -1967,6 +2027,7 @@ function finish(result: { cause: string; pay: number; secs: number }): void {
 }
 
 function onStatus(status: ConnectionStatus): void {
+  socketOpen = status === 'open';
   if (status === 'open') {
     // Every open, not just the first. `send` DROPS anything written before the
     // socket is OPEN rather than queueing it, so a hello sent at subscribe time
@@ -1974,10 +2035,65 @@ function onStatus(status: ConnectionStatus): void {
     // reconnecting client has to say hello again to be re-attached to the shift
     // it is already in.
     if (shift) realtimeClient(shift.room).send({ t: 'fintech_hello' });
+    // A FRESH SOCKET GETS THE WHOLE WINDOW to say hello and be answered, so the
+    // reconnect's own backoff never counts as the office having gone quiet.
+    lastHeardMs = Date.now();
     // Still 'connecting' until fintech_ready: an open socket is not yet a desk.
     if (link.value === 'lost') link.value = 'connecting';
   } else {
     link.value = status === 'connecting' ? 'connecting' : 'lost';
+  }
+}
+
+/**
+ * How long an OPEN socket may say nothing before this tab asks whether it still
+ * has a shift, and how often that silence is measured.
+ *
+ * THE BUG THIS EXISTS FOR. An eviction is one `fintech_over` per CONNECTION, so a
+ * tab whose socket happens to be mid-reconnect at that instant is sent nothing at
+ * all — and the office answers the `fintech_hello` that follows with silence, by
+ * design, because a socket with no shift behind it is indistinguishable from an
+ * idle one. That tab then sits on a frozen office for ever. It was a rare solo
+ * accident until the control room could rebuild the floor; a rebuild evicts
+ * everybody at once, which makes it the ordinary case.
+ *
+ * FOUR SECONDS, generously. The office snapshots twenty times a second, so this
+ * is eighty missed frames — far past any hiccup — and the clock restarts on every
+ * socket open, so nothing but real silence on a live connection counts.
+ *
+ * ONE REQUEST, NOT A POLL. `strandedAsked` is re-armed only when a frame actually
+ * arrives, so however long a silence lasts it costs exactly one GET.
+ */
+const STRANDED_MS = 4000;
+const STRAND_CHECK_MS = 1000;
+
+/** The office said something, so the silence clock restarts and the ask re-arms. */
+function heard(): void {
+  lastHeardMs = Date.now();
+  strandedAsked = false;
+}
+
+/**
+ * Asks the office, once, whether this tab still has a shift.
+ *
+ * A 404 IS THE ANSWER THAT MATTERS: the shift is over and no frame ever said so.
+ * The cause is genuinely unknown here — the frame that carried it is the one that
+ * went missing — so the ending falls back to the catalogue's own «СМЕНА
+ * ОКОНЧЕНА» and claims no salary at all, rather than inventing a nought.
+ *
+ * Anything else is left alone. A 200 means the silence is the office's and the
+ * shift is still ours, and a second question would be the poll this is not.
+ */
+async function checkStranded(): Promise<void> {
+  if (phase.value !== 'playing' || !socketOpen || strandedAsked) return;
+  if (Date.now() - lastHeardMs < STRANDED_MS) return;
+  strandedAsked = true;
+  try {
+    await gameFintechApi.current();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404 && phase.value === 'playing') {
+      finish({ cause: '' });
+    }
   }
 }
 

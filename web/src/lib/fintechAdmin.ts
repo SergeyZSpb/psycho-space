@@ -9,9 +9,15 @@
  * whole job is to be believable about a floor somebody is about to change.
  *
  * WHAT IS NEW HERE IS EVERYTHING THAT IS NOT GEOMETRY: the Russian for a source,
- * for a spot, the way an installation time is written, and the roll-up the legend
- * draws. All of it is pure and unit-tested, for the reason the rest of this
- * client's derivations are: the template renders rows and never builds a sentence.
+ * for a spot, the way an installation time is written, the roll-up the legend
+ * draws, and the two sentences the rebuild is wrapped in — what it will cost in
+ * people, and what it cost. All of it is pure and unit-tested, for the reason the
+ * rest of this client's derivations are: the template renders rows and never
+ * builds a sentence.
+ *
+ * The numeral agreement in those two comes from `fintechRules`, which already
+ * declined «день» for the board window — one modulo rule for the whole game, on
+ * the same principle as the placement helpers above.
  *
  * THE PLAN IS NOT THE GAME. It shows the room from directly above with nothing
  * standing in it — no figures, no depth bands, no HUD — so none of the play view's
@@ -22,6 +28,7 @@
  */
 
 import { floorStripe, solidBox, toPlane, windowBand } from './fintechPlane';
+import { plural } from './fintechRules';
 import type { FintechAdminSpot, FintechRect, FintechWindow } from '../api/types';
 
 /**
@@ -237,6 +244,62 @@ export function planBoxFor(w: number, h: number): PlanBox {
     rowStripe: floorStripe(h),
     columnStripe: floorStripe(w),
   };
+}
+
+/**
+ * A count off the wire, made safe to put in a sentence.
+ *
+ * Both numbers this file declines are facts about an instant rather than
+ * properties of a stored row, and a payload from a server this build has never
+ * met could carry anything at all. «NaN человек» is worse than «никого», and a
+ * negative occupant count is not a state to describe honestly — it is a state to
+ * round away.
+ */
+function count(v: number): number {
+  return Number.isFinite(v) && v > 0 ? Math.round(v) : 0;
+}
+
+/**
+ * What rebuilding the floor will cost, as the confirmation puts it.
+ *
+ * THE NUMBER IS THE WHOLE POINT. «Пересобрать офис?» on its own is a question
+ * about geometry; the same question with «сейчас в офисе 3 человека» in it is a
+ * question about three people's shifts, which is the decision actually being
+ * taken. The count is the live one from the payload the page is drawn from, so
+ * it describes the office as it stands rather than as it stood at load.
+ *
+ * The pronoun declines with the number as well as the noun does: «21 человек»
+ * takes «его смена», which is the case a naive «их смены» gets visibly wrong.
+ */
+export function occupantsWarning(occupants: number): string {
+  const n = count(occupants);
+  if (n === 0) {
+    return 'Сейчас в офисе никого — прерывать нечего.';
+  }
+  const who = plural(n, 'человек', 'человека', 'человек');
+  const what = plural(n, 'его смена закончится', 'их смены закончатся', 'их смены закончатся');
+  return `Сейчас в офисе ${n} ${who} — ${what}.`;
+}
+
+/**
+ * What the rebuild actually did, as the page reports it afterwards.
+ *
+ * IT SAYS HOW MANY SHIFTS WENT, because that is the part nobody can see: the new
+ * floor is drawn on the screen the moment the answer lands, and the people who
+ * were thrown off the old one are somewhere else entirely. The server counts them
+ * and sends the number precisely so this line can be true rather than hopeful.
+ *
+ * Nought is its own sentence rather than «Закончилось 0 смен», which is
+ * grammatical and reads like a failure.
+ */
+export function rerollReport(ended: number): string {
+  const n = count(ended);
+  if (n === 0) {
+    return 'Офис пересобран. В нём никого не было.';
+  }
+  const verb = plural(n, 'Закончилась', 'Закончились', 'Закончилось');
+  const noun = plural(n, 'смена', 'смены', 'смен');
+  return `Офис пересобран. ${verb} ${n} ${noun}.`;
 }
 
 /** The room's size as the status card writes it: «16 × 22 м». */

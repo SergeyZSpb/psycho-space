@@ -1408,3 +1408,18 @@ export interface FintechAdminFloor {
   kinds: FintechAdminKind[];
   spots: FintechAdminSpot[];
 }
+
+/**
+ * The floor in force AFTER a rebuild, and what the rebuild cost.
+ *
+ * DELIBERATELY THE READ'S PAYLOAD PLUS ONE FIELD. The page that pressed the
+ * button redraws from this answer instead of fetching again — one round trip
+ * rather than two, and no window in which the control room draws the floor it
+ * has just replaced. The extra field is a REPORT of what just happened rather
+ * than a fact about the floor, which is why it is absent from the plain read
+ * instead of being nought there.
+ */
+export interface FintechAdminRebuild extends FintechAdminFloor {
+  /** How many shifts in progress the rebuild threw out. */
+  ended: number;
+}

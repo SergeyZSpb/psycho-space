@@ -2485,3 +2485,37 @@ func bits(mask int) int {
 	}
 	return n
 }
+
+func TestEvictingEverybodyIsInAccountOrderAndLeavesNobodyBehind(t *testing.T) {
+	// A map's iteration order is randomised, and the caller turns this list into
+	// one frame per occupant — so a test that could not predict the order would
+	// have to sort, which is a test working around a determinism this game
+	// otherwise has everywhere.
+	o := newTestOffice()
+	for _, acc := range []string{"c-third", "a-first", "b-second"} {
+		join(t, o, acc, "shift-"+acc)
+	}
+
+	ended := o.EvictAll()
+	if len(ended) != 3 {
+		t.Fatalf("three people were working and %d were evicted", len(ended))
+	}
+	for i, want := range []string{"a-first", "b-second", "c-third"} {
+		if ended[i].AccountID != want {
+			t.Fatalf("evicted %d is %q, want %q", i, ended[i].AccountID, want)
+		}
+	}
+	for _, occ := range ended {
+		if !occ.Ended || occ.Cause != CauseRenovated || occ.State.Alive {
+			t.Fatalf("%q was evicted as %+v", occ.AccountID, occ)
+		}
+	}
+	if !o.Empty() {
+		t.Fatal("somebody is still in an office that was emptied")
+	}
+	// And it is idempotent, because the install path calls it under its own lock
+	// and a second caller finding people again would evict them twice.
+	if again := o.EvictAll(); len(again) != 0 {
+		t.Fatalf("evicting an empty office produced %d people", len(again))
+	}
+}

@@ -1961,3 +1961,74 @@ func TestFintechTheAdminFloorIsAdminOnlyAndAgreesWithTheCatalogue(t *testing.T) 
 		t.Fatalf("the admin page draws %d solids and the game serves %d", len(solids), len(served))
 	}
 }
+
+func TestFintechRerollingRebuildsTheOfficeAndThrowsEverybodyOut(t *testing.T) {
+	// THE CONTROL THE OWNER ASKED FOR, end to end against a real database: an
+	// admin presses it, the floor changes, and everybody who was working is out.
+	app, _, _ := buildAppFintech(t, fintechVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	player := loginAs(t, srv.URL, "920320", "user")
+	admin := loginAs(t, srv.URL, "920321", "admin")
+
+	// A player is not allowed to rebuild the office he is standing in.
+	if status, body := doJSON(t, player, http.MethodPost,
+		srv.URL+"/api/game-fintech/admin/layout/reroll", nil); status != http.StatusForbidden {
+		t.Fatalf("a player rebuilding the office got %d %v, want 403", status, body)
+	}
+
+	before := servedOfficeID(t, admin, srv.URL)
+	startShift(t, player, srv.URL)
+
+	status, got := doJSON(t, admin, http.MethodPost, srv.URL+"/api/game-fintech/admin/layout/reroll", nil)
+	if status != http.StatusOK {
+		t.Fatalf("rebuilding the office got %d %v", status, got)
+	}
+	if ended, _ := got["ended"].(float64); ended != 1 {
+		t.Fatalf("one person was working and the rebuild reports %v ended", got["ended"])
+	}
+	if got["source"] != gamefintech.SourceGenerated {
+		t.Fatalf("the new floor says it came from %v", got["source"])
+	}
+
+	// The floor CHANGED, and the payload the admin got back describes the floor
+	// the game is now serving — which is why the page redraws from it rather than
+	// fetching again.
+	after := servedOfficeID(t, admin, srv.URL)
+	if after == before {
+		t.Fatalf("the office was rebuilt and its id is still %q", before)
+	}
+	layout, _ := got["layout"].(map[string]any)
+	if id, _ := layout["id"].(string); id != after {
+		t.Fatalf("the rebuild answered office %v and the catalogue now serves %q", layout["id"], after)
+	}
+	if solids, _ := layout["solids"].([]any); len(solids) == 0 {
+		t.Fatalf("the office was rebuilt with nothing in it: %v", layout)
+	}
+
+	// And the player is out. The shift lasted under MinShiftSeconds so no row is
+	// written — that rule is about noise and applies to every ending — but the
+	// shift itself is gone, which is what the client is told over the socket.
+	resp, err := player.Get(srv.URL + "/api/game-fintech/shifts/current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the player is still working after the office was rebuilt: %d", resp.StatusCode)
+	}
+
+	// The new floor is playable, which is the invariant the generator is only
+	// allowed to produce and the install path refuses to accept anything else for.
+	stored, err := gamefintech.NewPostgresRepository().CurrentLayout(context.Background(), pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := gamefintech.ValidateLayout(stored.Layout); len(issues) > 0 {
+		t.Fatalf("a generated floor reached the database unplayable: %+v", issues)
+	}
+	if stored.Layout.ID != after {
+		t.Fatalf("the stored floor is %q and the served one is %q", stored.Layout.ID, after)
+	}
+}

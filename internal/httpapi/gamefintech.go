@@ -88,6 +88,10 @@ type fintechAdminLayout struct {
 	// drawn on the plan because «spot_blocked» otherwise names a place with
 	// nothing on it, and the only fix available to an admin is dragging at random.
 	Spots []fintechAdminSpot `json:"spots"`
+	// Ended is how many shifts the request that produced this payload threw out.
+	// Absent on a plain read, which is what makes it a report of what just
+	// happened rather than a fact about the floor.
+	Ended *int `json:"ended,omitempty"`
 }
 
 // fintechAdminOffice is the room and the rules that bound what may stand in it.
@@ -125,8 +129,42 @@ func (s *Server) handleGameFintechAdminLayout(w http.ResponseWriter, r *http.Req
 	if !s.gameFintechAvailable(w, r) {
 		return
 	}
-	floor := s.d.GameFintech.Floor()
-	writeJSON(w, http.StatusOK, fintechAdminLayout{
+	writeJSON(w, http.StatusOK, fintechAdminPayload(s.d.GameFintech.Floor(), nil))
+}
+
+// handleGameFintechAdminReroll rebuilds the office and throws everybody out.
+//
+// It answers with the SAME payload the read does, plus how many shifts it ended —
+// so the page that pressed it redraws from the response rather than fetching
+// again, and cannot briefly show the floor it has just replaced.
+//
+// The actor is logged, which is the one audit precedent this codebase has (see
+// the forget path in admin.go). This is a destructive action taken on behalf of
+// everybody who was working at the time, and «who rebuilt the office at 3am» is a
+// question somebody will eventually ask.
+func (s *Server) handleGameFintechAdminReroll(w http.ResponseWriter, r *http.Request) {
+	if !s.gameFintechAvailable(w, r) {
+		return
+	}
+	actor, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, r, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	ended, err := s.d.GameFintech.Renovate(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "gamefintech: renovate", "err", err, "actor_id", actor.ID)
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+	slog.InfoContext(r.Context(), "gamefintech: office rebuilt by hand", "actor_id", actor.ID, "ended", ended)
+	writeJSON(w, http.StatusOK, fintechAdminPayload(s.d.GameFintech.Floor(), &ended))
+}
+
+// fintechAdminPayload is the admin section's view of a floor. One assembler for
+// both the read and the rebuild, so the page is written against one shape.
+func fintechAdminPayload(floor gamefintech.Floor, ended *int) fintechAdminLayout {
+	return fintechAdminLayout{
 		Office: fintechAdminOffice{
 			W: gamefintech.OfficeW, H: gamefintech.OfficeH,
 			PlayerRadius: gamefintech.PlayerRadius,
@@ -139,7 +177,8 @@ func (s *Server) handleGameFintechAdminLayout(w http.ResponseWriter, r *http.Req
 		Occupants:   floor.Occupants,
 		Kinds:       fintechAdminKinds,
 		Spots:       fintechAdminSpots(),
-	})
+		Ended:       ended,
+	}
 }
 
 // fintechAdminSpots is every fixed catalogue point, labelled with what it is.

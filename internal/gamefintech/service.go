@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -226,6 +227,111 @@ func (s *Service) Floor() Floor {
 	return f
 }
 
+// LayoutInvalidError is a floor that may not be installed, and which of its rules
+// it broke. The handler turns the issues into codes the editor highlights; it
+// never turns this into a sentence for a client.
+type LayoutInvalidError struct{ Issues []LayoutIssue }
+
+func (e LayoutInvalidError) Error() string { return "gamefintech: the layout is not playable" }
+
+// Renovate rebuilds the office: a new floor, drawn at random, and everybody
+// currently working thrown out with the «РЕМОНТ» ending. It answers how many
+// shifts it ended.
+//
+// The seed comes from crypto/rand rather than from a clock or a counter, for the
+// reason «ВАНЯДУМ» gives about its буildings: a clock seed makes two offices
+// generated in the same second identical, and a counter makes them ordered.
+func (s *Service) Renovate(ctx context.Context) (int, error) {
+	l, err := Generate(cryptoSeed())
+	if err != nil {
+		return 0, err
+	}
+	return s.Install(ctx, l, SourceGenerated)
+}
+
+// Install puts a floor in force: it validates, stores it, throws everybody out,
+// and leaves the next shift to open an office on it. It answers how many shifts
+// it ended.
+//
+// THE ORDER IS THE DESIGN. Validation and the INSERT both happen with no lock
+// held, because the simulation takes that mutex twenty times a second and this
+// package's whole persistence design — the buffered saves channel, the single
+// writer — exists to keep Postgres off it. Only the swap itself is under the
+// lock, and the frames it produces are published after it is released, exactly as
+// the tick does.
+//
+// A REFUSED FLOOR CHANGES NOTHING. Neither an invalid layout nor a failed write
+// touches the office: the people working carry on, on the floor they are standing
+// on, and the caller is told why.
+//
+// It DROPS the office rather than retrofitting the new plan into it. See
+// Office.EvictAll: the лысый, Claude, the colleagues and the props were placed
+// against the floor that is going away.
+func (s *Service) Install(ctx context.Context, l Layout, source string) (int, error) {
+	if issues := ValidateLayout(l); len(issues) > 0 {
+		return 0, LayoutInvalidError{Issues: issues}
+	}
+	l = l.WithID()
+	plan := NewPlan(l)
+	now := time.Now()
+
+	// Both before the lock: one is a database round trip and the other is a hub
+	// call, and neither may happen with the simulation's mutex held.
+	if err := s.repo.InsertLayout(ctx, s.q, l, source); err != nil {
+		return 0, err
+	}
+	conns := s.connsByAccount(ctx)
+
+	s.mu.Lock()
+	s.plan, s.source, s.installedAt = plan, source, now
+	var (
+		out   []outbound
+		ended int
+	)
+	if s.office != nil {
+		for _, occ := range s.office.EvictAll() {
+			ended++
+			s.finish(occ, now)
+			over, err := overFrame(occ, now)
+			if err != nil {
+				continue
+			}
+			for _, c := range conns[occ.AccountID] {
+				out = append(out, outbound{c, over})
+			}
+		}
+		s.office = nil
+	}
+	s.mu.Unlock()
+
+	// A SILENT MASS EVICTION IS THE FAILURE MODE WORTH A LOG LINE. Members can
+	// answer an error, which yields a nil map — and then every one of those people
+	// is left watching an office that has stopped moving, with no frame to tell
+	// them why. It is unlikely and it is invisible from the outside, so it says so
+	// here rather than nowhere.
+	if ended > 0 && len(out) == 0 {
+		slog.WarnContext(ctx, "gamefintech: office renovated with nobody told", "ended", ended)
+	}
+	slog.InfoContext(ctx, "gamefintech: office renovated",
+		"layout_id", l.ID, "source", source, "ended", ended)
+	s.publish(ctx, out)
+	return ended, nil
+}
+
+// cryptoSeed draws the seed a generated floor comes from.
+//
+// Masked to 63 bits so the value is non-negative and reads sanely in a log line;
+// a negative seed would work perfectly well, and looking like a bug is the only
+// thing wrong with it.
+func cryptoSeed() int64 {
+	var b [8]byte
+	// crypto/rand.Read is documented never to fail and panics internally if the
+	// system source is broken, so there is nothing here to handle.
+	_, _ = rand.Read(b[:])
+	n := binary.BigEndian.Uint64(b[:]) >> 1
+	return int64(n) //nolint:gosec // masked to 63 bits above, so it cannot be negative.
+}
+
 // Config is the served catalogue, including the floor in force.
 //
 // Under the lock, because the floor can be replaced while a request is being
@@ -323,12 +429,7 @@ func (s *Service) step(ctx context.Context, now time.Time) {
 	var out []outbound
 	for _, occ := range office.Advance(SimStep.Seconds(), now) {
 		s.finish(occ, now)
-		over, err := json.Marshal(Over{
-			T:     TypeOver,
-			Cause: occ.Cause,
-			Pay:   rub(occ.State.Salary),
-			Secs:  int(occ.Elapsed(now)),
-		})
+		over, err := overFrame(occ, now)
 		if err != nil {
 			continue
 		}
@@ -358,6 +459,20 @@ func (s *Service) step(ctx context.Context, now time.Time) {
 	s.mu.Unlock()
 
 	s.publish(ctx, out)
+}
+
+// overFrame is the «your shift ended» payload, marshalled.
+//
+// EXTRACTED AT ITS THIRD CALL SITE and not before: the tick's end loop and the
+// quit button had built it inline, and a third copy in the install path is where
+// three literals start disagreeing about which fields an ending carries.
+func overFrame(occ *Occupant, now time.Time) ([]byte, error) {
+	return json.Marshal(Over{
+		T:     TypeOver,
+		Cause: occ.Cause,
+		Pay:   rub(occ.State.Salary),
+		Secs:  int(occ.Elapsed(now)),
+	})
 }
 
 // publish writes every queued frame, giving up on a hub that has gone away.
@@ -528,12 +643,7 @@ func (s *Service) LeaveShift(ctx context.Context, accountID string) error {
 	}
 	s.mu.Unlock()
 
-	over, err := json.Marshal(Over{
-		T:     TypeOver,
-		Cause: occ.Cause,
-		Pay:   rub(occ.State.Salary),
-		Secs:  int(occ.Elapsed(now)),
-	})
+	over, err := overFrame(occ, now)
 	if err != nil {
 		return nil
 	}

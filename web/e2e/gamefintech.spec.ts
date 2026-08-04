@@ -103,6 +103,11 @@ const CONFIG = {
   endings: [
     { key: 'promoted', title: 'ТЕБЯ ПОВЫСИЛИ, СТЕНД', sub: 'теперь ты за это отвечаешь.' },
     { key: 'left', title: 'ТЫ ПРОСТО УШЁЛ, СТЕНД', sub: 'никто не заметил.' },
+    // The third one, which nobody in the office chooses: an admin rebuilt the
+    // floor underneath everybody. It reaches this client on the same
+    // `fintech_over` frame the other two do and needs no code of its own — which
+    // is the claim the ending test below makes.
+    { key: 'renovated', title: 'РЕМОНТ, СТЕНД', sub: 'офис пересобрали прямо под тобой.' },
   ],
   // Marked like everything else here, so a client that hardcoded a balloon
   // instead of reading the catalogue cannot pass the assertions below.
@@ -454,11 +459,16 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» splash', () => {
     await expect(rules).toContainText('15 %');
   });
 
-  test('and it names both ways the shift can end, in the catalogue’s words', async ({ page }) => {
+  test('and it names every way the shift can end, in the catalogue’s words', async ({ page }) => {
+    // GENERATED FROM `endings`, WHICH IS WHY THE THIRD ONE IS HERE. The office
+    // being rebuilt under you arrived as a server change alone: the cheatsheet
+    // grew a line because the catalogue did, with nothing deployed here.
     await openSplash(page);
     const rules = page.getByTestId('fintech-rules');
     await expect(rules).toContainText('ТЕБЯ ПОВЫСИЛИ, СТЕНД');
     await expect(rules).toContainText('ТЫ ПРОСТО УШЁЛ, СТЕНД');
+    await expect(rules).toContainText('РЕМОНТ, СТЕНД');
+    await expect(rules).toContainText('офис пересобрали прямо под тобой.');
   });
 
   test('the controls are explained, because nothing else says how to move', async ({ page }) => {
@@ -1504,6 +1514,40 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» ending', () => {
     await expect(page.getByTestId('fintech-over-salary')).toContainText('3 100 ₽');
   });
 
+  test('the office being rebuilt under you is an ending like any other', async ({ page }) => {
+    // IT NEEDED NO CLIENT CODE and that is the assertion. A third `cause` arrives
+    // on the same frame the other two do, and both its words come from the served
+    // catalogue — so the whole of «РЕМОНТ» reaching the screen is a server change.
+    const socket = await enterOffice(page);
+    await socket.snapshot();
+    await socket.over({ cause: 'renovated', pay: 1500, secs: 40 });
+
+    await expect(page.getByTestId('fintech-over-title')).toHaveText('РЕМОНТ, СТЕНД');
+    await expect(page.getByTestId('fintech-over')).toContainText('офис пересобрали прямо под тобой.');
+    // THE SHIFT COUNTED: the salary is shown rather than written off, because the
+    // server records the row and pays for the time already stood.
+    await expect(page.getByTestId('fintech-over-salary')).toContainText('1 500 ₽');
+    await expect(page.getByTestId('fintech-over-secs')).toContainText('0:40');
+  });
+
+  test('and a rebuilt shift carries its own mark in the list', async ({ page }) => {
+    // The mark is presentation rather than a rule, but it is the only thing in
+    // the list that tells the three endings apart at a glance.
+    await openSplash(page, {
+      mine: [
+        { cause: 'renovated', salary: 1500, seconds: 40, created_at: '2026-08-04T10:00:00Z' },
+        { cause: 'promoted', salary: 51300, seconds: 91, created_at: '2026-07-29T10:00:00Z' },
+        { cause: 'left', salary: 300, seconds: 12, created_at: '2026-07-28T10:00:00Z' },
+      ],
+    });
+    const mine = page.getByTestId('fintech-runs');
+    await expect(mine).toBeVisible();
+    // Three endings, three different marks — a shared one would say nothing.
+    await expect(mine.locator('li').nth(0)).toContainText('🚧');
+    await expect(mine.locator('li').nth(1)).toContainText('🎉');
+    await expect(mine.locator('li').nth(2)).toContainText('🚪');
+  });
+
   test('НАЗАД goes back to the splash', async ({ page }) => {
     const socket = await enterOffice(page);
     await socket.over();
@@ -1528,6 +1572,48 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» resuming', () => {
     await stubSocket(page);
     await openSplash(page, { resume: true });
     await expect(page.getByTestId('fintech-play')).toBeVisible();
+  });
+
+  test('an office that has gone quiet is asked about once, and the shift ends', async ({
+    page,
+  }) => {
+    // THE BUG THIS EXISTS FOR, and the one an admin rebuilding the floor turned
+    // from rare into ordinary. An eviction is one `fintech_over` per CONNECTION,
+    // so a tab whose socket is mid-reconnect at that instant is sent nothing at
+    // all — and the office answers the `fintech_hello` that follows with silence,
+    // by design, because a socket with no shift behind it looks exactly like an
+    // idle one. That tab then sits on a frozen office for ever.
+    //
+    // Here the socket simply stops talking: no frames after the first, and
+    // `shifts/current` answering 404 because the shift really is gone.
+    let asked = 0;
+    page.on('request', (req) => {
+      if (req.method() === 'GET' && req.url().includes('/api/game-fintech/shifts/current')) {
+        asked += 1;
+      }
+    });
+
+    const socket = await enterOffice(page);
+    await socket.snapshot();
+    // One ask already happened, on mount, looking for a shift to resume.
+    expect(asked).toBe(1);
+
+    // Nothing else is pushed. Bounded by the assertion's own deadline rather than
+    // by a sleep of the fallback's length, per docs/RUNBOOK.md.
+    await expect(page.getByTestId('fintech-over')).toBeVisible();
+
+    // THE CAUSE IS GENUINELY UNKNOWN — the frame that carried it is the one that
+    // went missing — so the ending is the fallback and NOT one of the catalogue's
+    // three, and above all the salary is not invented.
+    await expect(page.getByTestId('fintech-over-title')).toHaveText('СМЕНА ОКОНЧЕНА');
+    await expect(page.getByTestId('fintech-over-unknown')).toBeVisible();
+    await expect(page.getByTestId('fintech-over-salary')).toHaveCount(0);
+    await expect(page.getByTestId('fintech-over-secs')).toHaveCount(0);
+
+    // EXACTLY ONE EXTRA ASK. A silence episode costs one GET however long it
+    // lasts — this is a fallback, not a poll, and a poll behind a frozen office
+    // is a request every second for as long as the tab is open.
+    expect(asked, 'the stranded tab polled instead of asking once').toBe(2);
   });
 });
 

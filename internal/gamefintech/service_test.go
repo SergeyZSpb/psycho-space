@@ -89,9 +89,12 @@ type fakeRepo struct {
 	// window — and the only way to see it is to look at the argument.
 	mu         sync.Mutex
 	boardSince time.Time
-	// layouts and sources are what InsertLayout was called with, in order.
-	layouts []Layout
-	sources []string
+	// layouts and sources are what InsertLayout was called with, in order, and
+	// failInsertLayout makes the next write fail — which is the only way to drive
+	// the branch where a floor is refused because Postgres would not take it.
+	layouts          []Layout
+	sources          []string
+	failInsertLayout bool
 }
 
 func newFakeRepo() *fakeRepo { return &fakeRepo{inserted: make(chan Shift, 16)} }
@@ -133,6 +136,9 @@ func (f *fakeRepo) CurrentLayout(context.Context, db.DBTX) (StoredLayout, error)
 func (f *fakeRepo) InsertLayout(_ context.Context, _ db.DBTX, l Layout, source string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failInsertLayout {
+		return errors.New("the database is having a moment")
+	}
 	f.layouts = append(f.layouts, l)
 	f.sources = append(f.sources, source)
 	return nil
@@ -911,5 +917,149 @@ func TestTheFloorInForceKnowsWhoIsStandingOnIt(t *testing.T) {
 	}
 	if got := h.svc.Floor().Occupants; got != 0 {
 		t.Fatalf("everybody went home and the floor says %d", got)
+	}
+}
+
+func TestRenovatingEndsEveryShiftRecordsThemAndDropsTheOffice(t *testing.T) {
+	// THE MASS EVICTION, which is the whole of iteration 3's risk. Everybody has
+	// to be TOLD — an eviction that empties the map without publishing leaves each
+	// browser watching an office that has stopped moving — and everybody's shift
+	// has to be RECORDED, because the salary was earned on a floor the building
+	// took away rather than lost to anything the player did.
+	a, b := uuid.New().String(), uuid.New().String()
+	h := start(t,
+		realtime.Member{ConnID: "ca", AccountID: a},
+		realtime.Member{ConnID: "cb", AccountID: b},
+	)
+	ctx := context.Background()
+	for _, acc := range []string{a, b} {
+		if _, err := h.svc.StartShift(ctx, acc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Long enough to be worth recording, backdated rather than waited out — the
+	// install path reads the real clock, exactly as the quit button does.
+	h.svc.mu.Lock()
+	h.svc.office.mu.Lock()
+	for _, acc := range []string{a, b} {
+		h.svc.office.occupants[acc].StartedAt = time.Now().Add(-time.Minute)
+		h.svc.office.occupants[acc].State.Salary = 1000
+	}
+	h.svc.office.mu.Unlock()
+	h.svc.mu.Unlock()
+
+	next := Layout{Solids: []Solid{
+		{Rect: Rect{X: 6, Y: 8, W: 3, H: 1}, Kind: KindDesk},
+	}}
+	ended, err := h.svc.Install(ctx, next, SourceGenerated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ended != 2 {
+		t.Fatalf("two people were working and the rebuild ended %d shifts", ended)
+	}
+
+	// One frame per CONNECTION, and every one of them says why.
+	over := h.tr.framesOfType(TypeOver)
+	if len(over) != 2 {
+		t.Fatalf("expected an over frame for each of the two connections, got %d", len(over))
+	}
+	for _, f := range over {
+		if f.Frame["cause"] != CauseRenovated {
+			t.Fatalf("a shift ended with cause %v, want %q", f.Frame["cause"], CauseRenovated)
+		}
+		if pay, _ := f.Frame["pay"].(float64); pay != 1000 {
+			t.Fatalf("the ending says %v was earned, the shift had 1000", f.Frame["pay"])
+		}
+	}
+
+	// Both are written, with the money that was earned.
+	for i := 0; i < 2; i++ {
+		select {
+		case written := <-h.repo.inserted:
+			if written.Cause != CauseRenovated || written.Salary != 1000 {
+				t.Fatalf("wrote %+v", written)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d of the two evicted shifts were written", i)
+		}
+	}
+
+	// And the office is GONE rather than re-floored: the лысый, Claude, the
+	// colleagues and the props were all placed against a floor that no longer
+	// exists, so the next shift opens a fresh one on the new plan.
+	h.svc.mu.Lock()
+	office, plan, source := h.svc.office, h.svc.plan, h.svc.source
+	h.svc.mu.Unlock()
+	if office != nil {
+		t.Fatal("the office survived the floor it was standing on")
+	}
+	if plan.Layout().ID != next.WithID().ID || source != SourceGenerated {
+		t.Fatalf("the floor in force is %q from %q", plan.Layout().ID, source)
+	}
+	if got := h.svc.Floor(); got.Occupants != 0 || len(got.Layout.Solids) != 1 {
+		t.Fatalf("the floor in force reads %+v", got)
+	}
+}
+
+func TestAFloorThatIsNotPlayableChangesNothing(t *testing.T) {
+	// A refusal has to be inert. The people working carry on, on the floor they
+	// are standing on, and nothing is written — which is what makes «press it and
+	// see» a safe thing for an admin to do with the editor in a later iteration.
+	acc := uuid.New().String()
+	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
+	ctx := context.Background()
+	if _, err := h.svc.StartShift(ctx, acc); err != nil {
+		t.Fatal(err)
+	}
+
+	// One solid, hard against the left wall: inside ResolverFloor, so a push-out
+	// would put a body through the wall.
+	bad := Layout{Solids: []Solid{{Rect: Rect{X: 0.1, Y: 8, W: 3, H: 1}, Kind: KindDesk}}}
+	ended, err := h.svc.Install(ctx, bad, SourceGenerated)
+	var invalid LayoutInvalidError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("installing a floor through a wall answered %v", err)
+	}
+	if len(invalid.Issues) == 0 || invalid.Issues[0].Problem != ProblemOffFloor {
+		t.Fatalf("the refusal does not say what is wrong: %+v", invalid.Issues)
+	}
+	if ended != 0 {
+		t.Fatalf("a refused floor ended %d shifts", ended)
+	}
+	if got := h.svc.Floor(); got.Layout.ID != testLayout.ID || got.Occupants != 1 {
+		t.Fatalf("a refused floor changed the office: %+v", got)
+	}
+	if len(h.tr.framesOfType(TypeOver)) != 0 {
+		t.Fatal("a refused floor told somebody their shift had ended")
+	}
+	h.repo.mu.Lock()
+	wrote := len(h.repo.layouts)
+	h.repo.mu.Unlock()
+	if wrote != 0 {
+		t.Fatalf("a refused floor was written down %d times", wrote)
+	}
+}
+
+func TestAFloorThatCannotBeStoredIsNotInstalled(t *testing.T) {
+	// The write comes BEFORE the swap, deliberately: a floor in memory that
+	// Postgres never heard of survives exactly until the next restart, and then
+	// the office silently changes back under whoever is playing.
+	acc := uuid.New().String()
+	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
+	ctx := context.Background()
+	if _, err := h.svc.StartShift(ctx, acc); err != nil {
+		t.Fatal(err)
+	}
+	h.repo.mu.Lock()
+	h.repo.failInsertLayout = true
+	h.repo.mu.Unlock()
+
+	next := Layout{Solids: []Solid{{Rect: Rect{X: 6, Y: 8, W: 3, H: 1}, Kind: KindDesk}}}
+	if _, err := h.svc.Install(ctx, next, SourceGenerated); err == nil {
+		t.Fatal("a floor that could not be stored was installed anyway")
+	}
+	if got := h.svc.Floor(); got.Layout.ID != testLayout.ID || got.Occupants != 1 {
+		t.Fatalf("a floor that could not be stored changed the office: %+v", got)
 	}
 }

@@ -46,6 +46,8 @@ type Shift struct {
 const (
 	// SourceStarting is the floor a fresh database opens with.
 	SourceStarting = "starting"
+	// SourceGenerated is a floor drawn at random.
+	SourceGenerated = "generated"
 )
 
 // StoredLayout is a floor as it sits in the table: the geometry, where it came

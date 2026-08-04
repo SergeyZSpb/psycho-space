@@ -252,6 +252,10 @@ func (s *Server) Handler() http.Handler {
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(s.requireAdmin)
 				r.Get("/layout", s.handleGameFintechAdminLayout)
+				// Destructive, and deliberately a POST with no body: there is
+				// nothing to say about a floor drawn at random, and a request
+				// that carried one would be a second way to install geometry.
+				r.Post("/layout/reroll", s.handleGameFintechAdminReroll)
 			})
 		})
 

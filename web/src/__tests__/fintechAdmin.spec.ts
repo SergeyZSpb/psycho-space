@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   formatInstalled,
   formatRoom,
+  occupantsWarning,
   planBoxFor,
   planSolidStyle,
   planSpotStyle,
   planWindowStyle,
+  rerollReport,
   sourceLabel,
   spotLabel,
   spotLegend,
@@ -215,6 +217,50 @@ describe('planBoxFor', () => {
     expect(box.ratio).toBe(16 / 22);
     expect(box.rowStripe).toBe('100%');
     expect(box.columnStripe).toBe('100%');
+  });
+});
+
+describe('occupantsWarning', () => {
+  it('declines the noun AND the pronoun with the number', () => {
+    // The four cases Russian actually distinguishes, plus the two the modulo is
+    // there for: 11 is a teen however it ends, and 21 is singular.
+    expect(occupantsWarning(1)).toBe('Сейчас в офисе 1 человек — его смена закончится.');
+    expect(occupantsWarning(2)).toBe('Сейчас в офисе 2 человека — их смены закончатся.');
+    expect(occupantsWarning(5)).toBe('Сейчас в офисе 5 человек — их смены закончатся.');
+    expect(occupantsWarning(11)).toBe('Сейчас в офисе 11 человек — их смены закончатся.');
+    expect(occupantsWarning(21)).toBe('Сейчас в офисе 21 человек — его смена закончится.');
+  });
+
+  it('says the office is empty rather than declining nought', () => {
+    // «0 человек — их смены закончатся» is grammatical and describes nobody's
+    // shift, which is the one thing this sentence exists to be precise about.
+    expect(occupantsWarning(0)).toBe('Сейчас в офисе никого — прерывать нечего.');
+  });
+
+  it('treats a count it cannot read as nobody', () => {
+    // A fact about an instant, off a payload a newer server wrote. «NaN человек»
+    // in a confirmation for a destructive action is worse than «никого».
+    expect(occupantsWarning(Number.NaN)).toBe('Сейчас в офисе никого — прерывать нечего.');
+    expect(occupantsWarning(-3)).toBe('Сейчас в офисе никого — прерывать нечего.');
+  });
+});
+
+describe('rerollReport', () => {
+  it('declines the verb AND the noun with the count', () => {
+    expect(rerollReport(1)).toBe('Офис пересобран. Закончилась 1 смена.');
+    expect(rerollReport(2)).toBe('Офис пересобран. Закончились 2 смены.');
+    expect(rerollReport(5)).toBe('Офис пересобран. Закончилось 5 смен.');
+    expect(rerollReport(11)).toBe('Офис пересобран. Закончилось 11 смен.');
+    expect(rerollReport(21)).toBe('Офис пересобран. Закончилась 21 смена.');
+  });
+
+  it('reports an empty office as a fact rather than as nought shifts', () => {
+    // «Закончилось 0 смен» is correct Russian and reads like a failure.
+    expect(rerollReport(0)).toBe('Офис пересобран. В нём никого не было.');
+  });
+
+  it('never claims a count it did not get', () => {
+    expect(rerollReport(Number.NaN)).toBe('Офис пересобран. В нём никого не было.');
   });
 });
 

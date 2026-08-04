@@ -446,6 +446,33 @@ The floor is a stored, validated `Layout` rather than a compile-time constant
 desks moved" **is** now a thing that can happen and there are two places to look.
 They answer different questions and disagreeing is itself a finding.
 
+**Rebuilding it on purpose.** The same page has a control that draws a new floor,
+stores it and **throws everybody currently working out** with the «РЕМОНТ» ending
+(`POST /api/game-fintech/admin/layout/reroll`, admin only). It is the one
+destructive thing an admin can do to people who are mid-shift, so:
+
+- their shifts are **ended and recorded** — the salary counts and can reach the
+  board — because it was earned on a floor the building took away;
+- a shift shorter than `MinShiftSeconds` is still dropped, exactly as it is for
+  every other ending; that rule is about noise, not about how a shift ended;
+- the office is **dropped rather than re-floored**: the лысый, Claude, the two
+  colleagues and the props were placed against the floor that is going away, so
+  the next person to clock in opens a fresh office on the new plan.
+
+Two log lines say what happened, and both are worth knowing before you go looking
+in the database:
+
+```
+gamefintech: office rebuilt by hand   actor_id=… ended=2
+gamefintech: office renovated         layout_id=… source=generated ended=2
+```
+
+`gamefintech: office renovated with nobody told` is the one to worry about: the
+floor changed, shifts ended, and **no frame reached anybody** — which means the
+hub could not be asked who was connected, and every one of those browsers is
+watching an office that has stopped moving. The client has its own bounded
+fallback for that case, but the line is how you find out it happened.
+
 **The quickest look is not either of them: it is the admin section.** «АДМИН
 ФИНТЕХА» in the drawer (any admin, `/app/game-fintech-admin`, reading
 `GET /api/game-fintech/admin/layout`) draws the floor in force as a plan, with

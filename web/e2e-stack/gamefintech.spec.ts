@@ -204,7 +204,12 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     // how it is drawn. Not pinned to a fixed set: the wire carries a plain string
     // precisely so the office can grow a fourth kind without a client deploy.
     for (const s of config.office.solids) expect(s.kind).not.toBe('');
-    expect(config.endings.map((e) => e.key).sort()).toEqual(['left', 'promoted']);
+    // THREE ENDINGS, and the third is the one nobody in the office chooses: an
+    // admin rebuilt the floor underneath everybody. Pinned as a set rather than
+    // as a count, because the client renders whatever is served and the only
+    // thing worth asserting is that the server really publishes all of them —
+    // the words themselves are `content.go`'s to change.
+    expect(config.endings.map((e) => e.key).sort()).toEqual(['left', 'promoted', 'renovated']);
     // The balloons live here too, for the same reason: the frame carries an
     // INDEX ten times a second and the words are fetched once (ADR-037). Index 0
     // of each is what an omitted index means, so the two defaults are a contract
