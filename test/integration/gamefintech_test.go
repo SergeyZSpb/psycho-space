@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SergeyZSpb/psycho-space/internal/config"
+	"github.com/SergeyZSpb/psycho-space/internal/db"
 	"github.com/SergeyZSpb/psycho-space/internal/gamefintech"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
 	"github.com/SergeyZSpb/psycho-space/internal/observability"
@@ -1894,6 +1895,131 @@ func TestFintechTheFloorSurvivesARestart(t *testing.T) {
 	// onto anything else for.
 	if issues := gamefintech.ValidateLayout(second.Layout); len(issues) > 0 {
 		t.Fatalf("the stored floor is not playable: %+v", issues)
+	}
+}
+
+// fintechLayoutTx begins a transaction the caller's floor writes live in, and
+// rolls it back when the test ends.
+//
+// EVERY OTHER TEST IN THIS FILE READS THE FLOOR A FRESH DATABASE INSTALLED FOR
+// ITSELF, and the two below are the only ones that write one — so they write it
+// somewhere nothing else can see. A transaction is what makes «I inserted a
+// floor and backdated it two days» a statement about this test rather than about
+// the rest of the package, and pgx.Tx satisfies db.DBTX, so EnsureLayout and the
+// repository run inside it unchanged.
+func fintechLayoutTx(t *testing.T, ctx context.Context) db.DBTX {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	return tx
+}
+
+func TestFintechAnOverrideWrittenTodayIsTheFloorABootComesBackOn(t *testing.T) {
+	// A STORED ROW IS AN OVERRIDE OF THE DAY'S OWN OFFICE — it wins, and it wins
+	// only until the next 21:00. This is the half of that rule an admin actually
+	// exercises: rebuild the office by hand at eight in the evening, restart the
+	// process, and everybody is still standing in the floor that was drawn rather
+	// than in the one the date implies.
+	ctx := context.Background()
+	repo := gamefintech.NewPostgresRepository()
+	tx := fintechLayoutTx(t, ctx)
+
+	drawn, err := gamefintech.Generate(20260804)
+	if err != nil {
+		t.Fatalf("draw a floor: %v", err)
+	}
+	if err := repo.InsertLayout(ctx, tx, drawn, gamefintech.SourceGenerated); err != nil {
+		t.Fatalf("store the override: %v", err)
+	}
+
+	got, err := gamefintech.EnsureLayout(ctx, tx, repo)
+	if err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	if got.Layout.ID != drawn.ID {
+		t.Fatalf("the boot came back on office %q, an override drawn today is %q", got.Layout.ID, drawn.ID)
+	}
+	if got.Source != gamefintech.SourceGenerated {
+		t.Fatalf("the floor in force says it came from %q, the override was %q",
+			got.Source, gamefintech.SourceGenerated)
+	}
+	if got.InstalledAt.IsZero() {
+		t.Fatalf("the override lost its installation time: %+v", got)
+	}
+}
+
+func TestFintechAnOverrideFromAnEarlierDayIsIgnoredForTheDaysOwnFloor(t *testing.T) {
+	// THE OTHER HALF, AND THE ONE THAT MAKES THE REBUILD DAILY RATHER THAN ONCE.
+	// A floor written before the last 21:00 lost to it, so a process starting
+	// afterwards derives the day's own office instead — and derives it WITHOUT
+	// writing anything, which is the claim the whole design rests on: nothing
+	// reaches Postgres because time passed.
+	ctx := context.Background()
+	repo := gamefintech.NewPostgresRepository()
+	tx := fintechLayoutTx(t, ctx)
+
+	var before int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM game_fintech_layouts WHERE deleted_at IS NULL`).Scan(&before); err != nil {
+		t.Fatalf("count layouts: %v", err)
+	}
+
+	stale, err := gamefintech.Generate(20260803)
+	if err != nil {
+		t.Fatalf("draw a floor: %v", err)
+	}
+	if err := repo.InsertLayout(ctx, tx, stale, gamefintech.SourceGenerated); err != nil {
+		t.Fatalf("store the override: %v", err)
+	}
+	// Two days back rather than one, which is the only way to be sure of landing
+	// on the far side of a 21:00 whatever hour this test runs at — and applied to
+	// every row, so nothing older is current either.
+	if _, err := tx.Exec(ctx,
+		`UPDATE game_fintech_layouts SET created_at = created_at - interval '48 hours'
+		  WHERE deleted_at IS NULL`); err != nil {
+		t.Fatalf("backdate the override: %v", err)
+	}
+
+	got, err := gamefintech.EnsureLayout(ctx, tx, repo)
+	if err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	if got.Layout.ID == stale.ID {
+		t.Fatalf("a floor written two days ago is still the office (%q)", got.Layout.ID)
+	}
+	if got.Source != gamefintech.SourceDaily {
+		t.Fatalf("the floor in force says it came from %q, a derived one is %q",
+			got.Source, gamefintech.SourceDaily)
+	}
+	// It is playable, because nothing chose it: whatever the date produced is what
+	// everybody would have been standing in.
+	if issues := gamefintech.ValidateLayout(got.Layout); len(issues) > 0 {
+		t.Fatalf("the day's own floor is not playable: %+v", issues)
+	}
+	// AND IT CAME INTO FORCE AT THE 21:00 THAT TOOK THE OVERRIDE AWAY, not at the
+	// moment this process happened to start — which is what makes a restart
+	// invisible on the admin page.
+	at := got.InstalledAt.UTC()
+	if at.Hour() != gamefintech.RenovationHourUTC || at.Minute() != 0 || at.Second() != 0 {
+		t.Fatalf("the day's floor says it arrived at %v, days begin at %02d:00:00 UTC",
+			at, gamefintech.RenovationHourUTC)
+	}
+	if at.After(time.Now()) {
+		t.Fatalf("the day's floor arrived at %v, which has not happened yet", at)
+	}
+
+	// Nothing was written: the override row is still the only thing this test
+	// added.
+	var after int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM game_fintech_layouts WHERE deleted_at IS NULL`).Scan(&after); err != nil {
+		t.Fatalf("count layouts: %v", err)
+	}
+	if after != before+1 {
+		t.Fatalf("deriving the day's floor stored %d rows", after-before-1)
 	}
 }
 

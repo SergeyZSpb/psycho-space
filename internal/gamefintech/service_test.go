@@ -189,6 +189,22 @@ func start(t *testing.T, members ...realtime.Member) *harness {
 		base: time.Now(),
 	}
 	h.svc = NewService(h.tr, Room, nil, h.repo, fakeProfiles{}, testFloor)
+	// THE OFFICE IS PINNED PAST TONIGHT'S 21:00, AND THAT IS NOT TIDINESS.
+	//
+	// Every tick this harness fires carries a wall-clock instant (see stepAt,
+	// which jumps the clock by up to AbandonGrace + 1s = 91 s), and the first
+	// thing a tick does is rotate the office if the renovation day has turned
+	// over. Without this line every test in this file crosses 21:00 UTC once a
+	// day: the shift being asserted on ends as `renovated` instead of `left` or
+	// `promoted`, and a suite that passes all afternoon goes red at midnight
+	// Moscow — a flake no sanctioned mechanism can fix, because the trigger is
+	// the wall clock inside a production path.
+	//
+	// So the harness says «tomorrow's rebuild has already been dealt with», which
+	// makes the guard (`day > installedDay`) false for every instant any test
+	// here can reach. The rotation's own tests set this themselves, to the day
+	// either side of the boundary they are driving.
+	h.svc.installedDay = renovationDay(h.base) + 1
 	ctx, cancel := context.WithCancel(context.Background())
 	go h.svc.Run(ctx, h.tick)
 	t.Cleanup(func() {
@@ -217,6 +233,21 @@ func (h *harness) stepAt(t *testing.T, extra time.Duration) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the service stopped consuming ticks")
 	}
+}
+
+// tickAt runs ONE simulation step at an instant the test chooses, rather than at
+// the harness's own clock — which is what lets a test stand the office either
+// side of 21:00 UTC without waiting a day for it.
+//
+// IT CALLS step DIRECTLY RATHER THAN FIRING THE CHANNEL, and that is the whole
+// reason it exists next to stepAt. A tick sent over the channel returns as soon
+// as Run has RECEIVED it, so "one tick" is a thing a test can ask for but not a
+// thing it can then assert against without a second synchronisation. step is
+// serialised by the service's own mutex and Run sits parked on an empty channel
+// throughout, so this is exactly one step, finished by the time it returns.
+func (h *harness) tickAt(t *testing.T, at time.Time) {
+	t.Helper()
+	h.svc.step(context.Background(), at)
 }
 
 // pump fires ticks until cond holds or the deadline passes. BOUNDED BY A

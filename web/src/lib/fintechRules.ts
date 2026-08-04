@@ -82,6 +82,24 @@ function days(n: number): string {
 }
 
 /**
+ * How far ahead of UTC Moscow is.
+ *
+ * A CONSTANT AND NOT A TIMEZONE LOOKUP, and not a served number either. Moscow
+ * has been a permanent UTC+3 since October 2014 — no daylight saving, no
+ * seasonal change — so the conversion is an addition, and pulling in `Intl` to
+ * add three would be a timezone database shipped to answer a question with one
+ * possible answer. The server publishes the hour in UTC because UTC is the one
+ * clock it owns (ADR-038); this is the only thing the browser has to know to
+ * render it in the clock the audience actually reads.
+ */
+const MOSCOW_UTC_OFFSET_HOURS = 3;
+
+/** An hour of the day as «21:00», wrapping past midnight. */
+function clock(hour: number): string {
+  return `${String(((hour % 24) + 24) % 24).padStart(2, '0')}:00`;
+}
+
+/**
  * How far back the leaderboards look, in words — «за последние 7 дней» — or null
  * when the server did not say.
  *
@@ -402,6 +420,35 @@ export function buildRules(config: FintechConfig | null): RuleBlock[] {
         {
           label: '🗂 но не пропадает',
           text: 'Сама смена остаётся в твоём списке внизу. Уходит только место в топе.',
+        },
+      ],
+    });
+  }
+
+  // THE OFFICE IS REBUILT EVERY NIGHT, and this is the one rule of the game a
+  // player cannot discover by playing it — they can only be told, or be thrown
+  // out once and not know why. «What happens while you are away» is exactly what
+  // `CLAUDE.md` names as belonging on a splash screen.
+  //
+  // Both times are DERIVED from the one served number rather than typed: the hour
+  // in UTC as published, and the same hour in Moscow, which is what the audience
+  // actually reads a clock in.
+  const hourUTC = config.renovation?.hour_utc;
+  if (has(hourUTC) && hourUTC >= 0 && hourUTC <= 23) {
+    blocks.push({
+      title: 'Ремонт',
+      lines: [
+        {
+          label: '🏗 каждую ночь',
+          text:
+            `В ${clock(hourUTC + MOSCOW_UTC_OFFSET_HOURS)} по Москве (${clock(hourUTC)} UTC) ` +
+            `офис пересобирают: новая планировка, новая мебель, всё в других местах.`,
+        },
+        {
+          label: '🚪 и всех выгоняют',
+          text:
+            'Если ты в этот момент на смене — она кончается «РЕМОНТОМ». ' +
+            'Зарплата и время засчитываются: ты их заработал, этаж просто увезли.',
         },
       ],
     });

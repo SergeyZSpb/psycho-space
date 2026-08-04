@@ -179,6 +179,7 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
       personas: string[];
       claude_lines: string[];
       npcs: { key: string; name: string; lines: string[] }[];
+      renovation: { hour_utc: number };
     };
     // The load-bearing simplification: the office is STATIC and lives here, so
     // starting a shift sends no level and the client draws from this alone.
@@ -227,6 +228,14 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     }
     expect(config.claude_lines[0]).toBe('Я КЛОД');
     expect(config.personas[0]).toBe('Карен');
+    // AND WHEN THE BUILDING REBUILDS THE OFFICE, which is the one rule of this
+    // game a player cannot discover by playing. The splash derives both the UTC
+    // and the Moscow wording from this number, so an hour that never reached the
+    // wire would be a screen that says nothing about being thrown out at
+    // midnight — pinned as a real hour rather than as the literal 21, which is
+    // `content.go`'s to retune.
+    expect(config.renovation.hour_utc).toBeGreaterThanOrEqual(0);
+    expect(config.renovation.hour_utc).toBeLessThanOrEqual(23);
   });
 
   test('the office a real browser opens has the whole cast in it, and names you', async ({

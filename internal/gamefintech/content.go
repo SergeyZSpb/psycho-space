@@ -1248,6 +1248,27 @@ type Config struct {
 	Hookah HookahConfig `json:"hookah"`
 	Tempo  TempoConfig  `json:"tempo"`
 	Board  BoardConfig  `json:"board"`
+	// Renovation is when the building rebuilds the office out from under
+	// everybody, which is a rule of the game rather than a maintenance window.
+	Renovation RenovationConfig `json:"renovation"`
+}
+
+// RenovationConfig is the daily rebuild's one published rule: the hour it
+// happens at, UTC.
+//
+// PUBLISHED BECAUSE THE SPLASH SCREEN HAS TO STATE IT. «What happens while you
+// are away» is exactly what a cheatsheet is for, and «you will be thrown out at
+// midnight» is the one rule of this game a player cannot discover by playing —
+// they can only be told, or be surprised by it once. The client derives both the
+// UTC and the Moscow wording from this number rather than typing either, so
+// moving the hour is a backend deploy.
+//
+// THE HOUR AND NOT THE WHOLE SCHEDULE, because there is no schedule: the day's
+// office is a function of the day (renovation.go), and the only thing about it a
+// client could not compute for itself is where the boundary falls.
+type RenovationConfig struct {
+	// HourUTC is RenovationHourUTC: the hour, UTC, the office is rebuilt at.
+	HourUTC int `json:"hour_utc"`
 }
 
 // BoardConfig is the leaderboard's one published rule: how far back it looks.
@@ -1492,7 +1513,8 @@ func BuildConfig(layout Layout) Config {
 			EveryMs: int(LevelSeconds * 1000),
 			StepPct: int(math.Round(LevelSpeedStep * 100)),
 		},
-		Board: BoardConfig{WindowDays: BoardWindowDays},
+		Board:      BoardConfig{WindowDays: BoardWindowDays},
+		Renovation: RenovationConfig{HourUTC: RenovationHourUTC},
 		Redirect: VerbConfig{
 			Label:      "ЭТО К НЕМУ",
 			Say:        redirectLines[0],

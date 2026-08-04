@@ -55,8 +55,9 @@
 // «ВАНЯДУМ» builds an arena per run because a run is a freshly generated
 // заброшка. This game has ONE office that everybody shares, torn down when the
 // last person leaves — and its floor is data rather than a per-run draw: a
-// layout, stored and validated, that changes on a schedule and on an admin's say
-// so rather than per shift. So there is one process-wide Office with a slot per
+// layout, validated before anything may stand on it, that changes on an admin's
+// say so and — every night at 21:00 UTC, because the date did — of its own accord
+// (renovation.go). Not per shift, and not per player. So there is one process-wide Office with a slot per
 // account, and the floor it stands on is decided above it, once, by the service.
 //
 // # Authority

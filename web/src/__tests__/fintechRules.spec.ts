@@ -55,6 +55,7 @@ const config: FintechConfig = {
   boss_lines: ['А ГДЕ?'],
   personas: ['Карен', 'Андрюха', 'Саня К', 'Темирлан'],
   board: { window_days: 7 },
+  renovation: { hour_utc: 21 },
   player_lines: ['Я КАРЕН', 'Я ПРОСТО ВОДЫ ПОПИТЬ', 'Я НА ВСТРЕЧУ'],
   max_occupants: 3,
 };
@@ -146,8 +147,9 @@ describe('buildRules', () => {
     // «Коллеги» survives because ITS half of the catalogue did: the block is
     // derived from max_occupants, which is still here. That is the claim — a
     // block is dropped when its own input is missing, not when a neighbour's is.
-    // «Доска» survives for the same reason: its own input, `board`, is still here.
-    expect(blocks.map((b) => b.title)).toEqual(['Ноги', 'Коллеги', 'Доска', 'Коротко']);
+    // «Доска» and «Ремонт» survive for the same reason: their own inputs,
+    // `board` and `renovation`, are still here.
+    expect(blocks.map((b) => b.title)).toEqual(['Ноги', 'Коллеги', 'Доска', 'Ремонт', 'Коротко']);
   });
 
   it('still says how to play when the catalogue says nothing at all', () => {
@@ -440,6 +442,55 @@ describe('the board window', () => {
     expect(boardWindowLabel({ ...config, board: { window_days: 0 } })).toBeNull();
     const blocks = buildRules({ ...config, board: undefined });
     expect(blocks.some((b) => b.title === 'Доска')).toBe(false);
+  });
+});
+
+describe('the nightly rebuild', () => {
+  const block = (hour_utc: number | undefined) =>
+    buildRules(
+      hour_utc === undefined
+        ? { ...config, renovation: undefined }
+        : { ...config, renovation: { hour_utc } },
+    ).find((b) => b.title === 'Ремонт');
+
+  const text = (hour_utc: number) =>
+    block(hour_utc)!
+      .lines.map((l) => `${l.label} ${l.text}`)
+      .join(' | ');
+
+  it('states the hour in both clocks, from the one served number', () => {
+    // The server publishes 21:00 UTC because UTC is the one clock it owns; the
+    // audience reads a Moscow clock, so the screen has to say both — and both are
+    // computed from the served number rather than typed, or moving the hour would
+    // be a two-repository change.
+    expect(text(21)).toContain('00:00 по Москве');
+    expect(text(21)).toContain('21:00 UTC');
+  });
+
+  it('follows the hour the server actually publishes', () => {
+    expect(text(9)).toContain('12:00 по Москве');
+    expect(text(9)).toContain('09:00 UTC');
+    // And past midnight it wraps rather than printing «24:00».
+    expect(text(22)).toContain('01:00 по Москве');
+    expect(text(0)).toContain('03:00 по Москве');
+    expect(text(0)).toContain('00:00 UTC');
+  });
+
+  it('says what it costs the shift you are standing in', () => {
+    // The rebuild is the one rule of this game a player cannot discover by
+    // playing, and the half that matters is that the money is not lost with the
+    // floor.
+    expect(text(21)).toContain('РЕМОНТОМ');
+    expect(text(21)).toContain('засчитываются');
+  });
+
+  it('says nothing at all when the server did not publish an hour', () => {
+    // An older client against a newer server, or the other way about: a block
+    // that rendered «NaN:00 по Москве» would be worse than no block.
+    expect(block(undefined)).toBeUndefined();
+    expect(buildRules({ ...config, renovation: { hour_utc: 24 } } as FintechConfig)).not.toContainEqual(
+      expect.objectContaining({ title: 'Ремонт' }),
+    );
   });
 });
 

@@ -121,6 +121,16 @@ type Service struct {
 	// else: neither is derivable from the geometry.
 	source      string
 	installedAt time.Time
+	// installedDay is the renovation day whose rotation has already been dealt
+	// with — see renovation.go. It is the ENTIRE durable-looking state of the
+	// daily rebuild, and it is not durable at all: the day's office is a function
+	// of the day, so this only says «this process has already reacted to that
+	// boundary», which is exactly what stops one tick evicting a room twice.
+	//
+	// It advances on a rotation that produced a floor AND on one whose draw was
+	// refused, because a pure function of the day cannot answer differently on
+	// the next tick.
+	installedDay int64
 	// office is nil when nobody is working. It is built by the first StartShift
 	// and dropped when the last person leaves, so an idle process simulates
 	// nothing at all and the bald man is always back at the far wall for the
@@ -142,6 +152,15 @@ type Service struct {
 // constructor takes no context: the composition root reads it once, at boot, with
 // EnsureLayout, and hands it over. That also makes the failure mode obvious —
 // there is no state in which this service is running without a floor.
+//
+// THE RENOVATION DAY IS SEEDED FROM THE CLOCK AND NOT FROM THE FLOOR, which is
+// what makes a spurious eviction on the first tick structurally impossible
+// rather than merely unlikely. EnsureLayout guarantees the floor it hands over
+// belongs to today, so `renovationDay(floor.InstalledAt)` would say the same
+// thing — but only for as long as that guarantee holds, and a bug there would
+// present as everybody being thrown out of the office fifty milliseconds after a
+// deploy. Reading the clock here means the first tick's day can only be the day
+// this service was built in, and a rotation needs 21:00 to pass while it runs.
 func NewService(t Transport, room string, q db.DBTX, repo Repository, profiles Profiles, floor StoredLayout) *Service {
 	return &Service{
 		transport:    t,
@@ -152,6 +171,7 @@ func NewService(t Transport, room string, q db.DBTX, repo Repository, profiles P
 		plan:         NewPlan(floor.Layout),
 		source:       floor.Source,
 		installedAt:  floor.InstalledAt,
+		installedDay: renovationDay(time.Now()),
 		saves:        make(chan Shift, savesBuffer),
 		done:         make(chan struct{}),
 		pseudonymKey: randomKey(),
@@ -272,23 +292,54 @@ func (s *Service) Install(ctx context.Context, l Layout, source string) (int, er
 		return 0, LayoutInvalidError{Issues: issues}
 	}
 	l = l.WithID()
-	plan := NewPlan(l)
 	now := time.Now()
 
-	// Both before the lock: one is a database round trip and the other is a hub
-	// call, and neither may happen with the simulation's mutex held.
+	// Before the lock, because it is a database round trip and the simulation
+	// takes that mutex twenty times a second.
 	if err := s.repo.InsertLayout(ctx, s.q, l, source); err != nil {
 		return 0, err
 	}
+	return s.putInForce(ctx, l, source, now), nil
+}
+
+// putInForce swaps the floor and empties the office onto it, telling everybody
+// who was standing there why. It answers how many shifts it ended.
+//
+// SHARED BY THE TWO THINGS THAT CAN REPLACE A FLOOR — an admin pressing the
+// button, and the clock reaching 21:00 — and it deliberately does NOT write.
+// Install stores its floor first and passes the result here; the daily rotation
+// stores nothing at all, because the day's office is a function of the day
+// (renovation.go). What the two genuinely have in common is the eviction, which
+// is the part with all of the risk in it, so that is what is shared.
+//
+// `at` is when this floor came into force, and it is not always `time.Now()`: a
+// rotation passes the 21:00 the day began at, so that a process which boots at
+// 22:00 and one that was running through 21:00 report the same installation time
+// for the same floor.
+//
+// THE ORDER IS THE DESIGN. The hub call happens with no lock held, only the swap
+// itself is under the mutex, and the frames it produces are published after it is
+// released — exactly as the tick does.
+func (s *Service) putInForce(ctx context.Context, l Layout, source string, at time.Time) int {
+	plan := NewPlan(l)
+	// Before the lock: PublishTo and Members hand work to the hub's own
+	// goroutines, and coupling the simulation to the hub's queue is what this
+	// package's whole locking discipline exists to avoid.
 	conns := s.connsByAccount(ctx)
 
 	s.mu.Lock()
-	s.plan, s.source, s.installedAt = plan, source, now
+	s.plan, s.source, s.installedAt = plan, source, at
+	s.installedDay = renovationDay(at)
 	var (
 		out   []outbound
 		ended int
 	)
 	if s.office != nil {
+		// The shift's LENGTH is measured against the real clock the handler
+		// started it on, so it is ended at the wall-clock present rather than at
+		// `at` — which for a rotation is the 21:00 boundary and would otherwise
+		// backdate every eviction to it.
+		now := time.Now()
 		for _, occ := range s.office.EvictAll() {
 			ended++
 			s.finish(occ, now)
@@ -315,7 +366,7 @@ func (s *Service) Install(ctx context.Context, l Layout, source string) (int, er
 	slog.InfoContext(ctx, "gamefintech: office renovated",
 		"layout_id", l.ID, "source", source, "ended", ended)
 	s.publish(ctx, out)
-	return ended, nil
+	return ended
 }
 
 // cryptoSeed draws the seed a generated floor comes from.
@@ -343,38 +394,57 @@ func (s *Service) Config() Config {
 	return BuildConfig(s.plan.Layout())
 }
 
-// EnsureLayout is the boot path: the floor in force, or the starting one written
-// and returned when there is nothing stored yet.
+// EnsureLayout is the boot path: which floor this process stands up on.
+//
+// IT RUNS THE SAME ARITHMETIC THE TICK DOES, and that is the point rather than a
+// convenience. A stored row is an OVERRIDE of the day's own office — the floor a
+// fresh database installs for itself, or one an admin rebuilt or drew — and it
+// is in force only while it belongs to the CURRENT renovation day. Anything
+// older lost to the 21:00 that has passed since it was written, so the floor is
+// dailyLayout(today), derived and never stored. A process that starts at 22:00
+// therefore computes exactly what a process that ran through 21:00 computed,
+// which is what makes a restart, a deploy and a missed boundary all produce the
+// same room. THERE IS NO CATCH-UP: a process that was down for three days
+// installs today's office, not four in a row, because the day's office was never
+// a queue of events.
 //
 // A MISSING FLOOR IS A STATE AND A BROKEN ONE IS NOT. An empty table is what a
-// fresh database looks like, so it installs the starting floor and says so. A row
-// that does not validate is a different matter — an older or hand-mangled
-// geometry the simulation's single-pass resolver has no answer for — so it is
-// refused in favour of the starting floor rather than served, and the log line is
-// what makes that visible.
+// fresh database looks like, so it installs the starting floor — the hand-made
+// eight desks this game shipped with — and says so; that write happens because
+// the table was empty, not because time passed, and it is the only floor this
+// path ever stores. A row that does not validate is a different matter — an older
+// or hand-mangled geometry the simulation's single-pass resolver has no answer
+// for — so it is refused in favour of the day's own floor rather than served, and
+// the log line is what makes that visible.
 func EnsureLayout(ctx context.Context, q db.DBTX, repo Repository) (StoredLayout, error) {
-	l, err := repo.CurrentLayout(ctx, q)
+	now := time.Now()
+	stored, err := repo.CurrentLayout(ctx, q)
 	switch {
-	case err == nil:
-		if issues := ValidateLayout(l.Layout); len(issues) > 0 {
-			slog.ErrorContext(ctx, "gamefintech: stored layout is not playable, using the starting one",
-				"problem", issues[0].Problem, "index", issues[0].Index)
-			break
+	case errors.Is(err, ErrNoLayout):
+		l := StoredLayout{Layout: StartingLayout.WithID(), Source: SourceStarting, InstalledAt: now}
+		if err := repo.InsertLayout(ctx, q, l.Layout, SourceStarting); err != nil {
+			// Standing up on the in-memory floor beats refusing to boot: this table
+			// is one game's furniture, and the landing page, the wishlist and three
+			// other games have nothing to do with it.
+			slog.ErrorContext(ctx, "gamefintech: could not store the starting layout", "err", err)
 		}
 		return l, nil
-	case errors.Is(err, ErrNoLayout):
-	default:
+	case err != nil:
 		return StoredLayout{}, err
 	}
 
-	l = StoredLayout{Layout: StartingLayout.WithID(), Source: SourceStarting, InstalledAt: time.Now()}
-	if err := repo.InsertLayout(ctx, q, l.Layout, SourceStarting); err != nil {
-		// Standing up on the in-memory floor beats refusing to boot: this table is
-		// one game's furniture, and the landing page, the wishlist and three other
-		// games have nothing to do with it.
-		slog.ErrorContext(ctx, "gamefintech: could not store the starting layout", "err", err)
+	issues := ValidateLayout(stored.Layout)
+	switch {
+	case len(issues) > 0:
+		slog.ErrorContext(ctx, "gamefintech: stored layout is not playable, using the day's own",
+			"problem", issues[0].Problem, "index", issues[0].Index)
+	case renovationDay(stored.InstalledAt) != renovationDay(now):
+		slog.InfoContext(ctx, "gamefintech: the stored floor belongs to an earlier day, using the day's own",
+			"stored_at", stored.InstalledAt, "source", stored.Source)
+	default:
+		return stored, nil
 	}
-	return l, nil
+	return dailyFloor(now), nil
 }
 
 // Run advances the office on the injected tick.
@@ -410,6 +480,14 @@ type outbound struct {
 // that would couple the simulation to the hub's queue — so the locked section
 // only ever builds bytes.
 func (s *Service) step(ctx context.Context, now time.Time) {
+	// FIRST, AND ABOVE THE EMPTY-OFFICE RETURN BELOW. The tick is what observes
+	// the day turning over (renovation.go), and it has to do it whether or not
+	// anybody is working: the plan this reads is the one a splash screen is
+	// served, so a floor that only rotated while somebody was inside would hand a
+	// stale office to the next person to clock in. On all but one tick a day it
+	// is two integers and a mutex the line below was going to take anyway.
+	s.rotateIfDue(ctx, now)
+
 	conns := s.connsByAccount(ctx)
 
 	s.mu.Lock()

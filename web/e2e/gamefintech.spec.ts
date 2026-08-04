@@ -176,6 +176,11 @@ const CONFIG = {
   // caption or a cheatsheet line that hardcoded «7 дней» cannot pass here. It also
   // exercises the other declension — «3 дня», not «дней».
   board: { window_days: 3 },
+  // Six in the morning rather than production's twenty-one, marked like every
+  // other number in this stub: a cheatsheet that typed «21:00» or «00:00 по
+  // Москве» cannot pass below, and 6 + 3 exercises the Moscow conversion without
+  // wrapping past midnight.
+  renovation: { hour_utc: 6 },
   // «РОУТЕР УПАЛ», marked like everything else in this stub — 9 s and 45 s are not
   // production's 12 and 30, and the label carries the СТЕНД marker so a client
   // that hardcoded the button's words cannot pass.
@@ -457,6 +462,12 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» splash', () => {
     // The ramp, from the stub's own numbers rather than production's 20 s / 10 %.
     await expect(rules).toContainText('25 с');
     await expect(rules).toContainText('15 %');
+    // The nightly rebuild, in both clocks and from the stub's own hour rather
+    // than production's — it is the one rule of this game a player cannot
+    // discover by playing, so it has to be on the screen before they start.
+    await expect(rules).toContainText('09:00 по Москве');
+    await expect(rules).toContainText('06:00 UTC');
+    await expect(rules).toContainText('РЕМОНТОМ');
   });
 
   test('and it names every way the shift can end, in the catalogue’s words', async ({ page }) => {

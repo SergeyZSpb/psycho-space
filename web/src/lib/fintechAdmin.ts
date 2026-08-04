@@ -35,11 +35,15 @@ import type { FintechAdminSpot, FintechRect, FintechWindow } from '../api/types'
  * Where a floor came from, in Russian.
  *
  * EXHAUSTIVE TODAY AND STILL TOTAL TOMORROW. `source` is a plain string on the
- * wire for the same reason a solid's `kind` is: the server may learn a fourth
+ * wire for the same reason a solid's `kind` is: the server may learn a fifth
  * value, and a client already sitting in somebody's browser must not answer that
- * with a blank. `starting` is the only one the server sends today; `generated`
- * and `edited` arrive with the generator and the editor, and are answered here
- * now so that landing them is a server change rather than a two-repository one.
+ * with a blank. `starting`, `generated` and `daily` are what the server sends
+ * today; `edited` arrives with the editor and is answered here now, so that
+ * landing it is a server change rather than a two-repository one.
+ *
+ * `daily` is the one that matters most on this page: it is the floor the DATE
+ * produced at 21:00 and the only source that is never stored, so seeing it is
+ * how an admin knows nobody has overridden today's office.
  *
  * The fallback shows the raw key rather than a guess or an empty string: an admin
  * seeing `сгенерированный` for a source this build has never heard of would be
@@ -51,6 +55,8 @@ export function sourceLabel(source: string): string {
       return 'стартовый';
     case 'generated':
       return 'сгенерированный';
+    case 'daily':
+      return 'ежедневный';
     case 'edited':
       return 'изменённый вручную';
     default:

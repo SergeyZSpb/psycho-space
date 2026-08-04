@@ -29,10 +29,17 @@ describe('sourceLabel', () => {
     expect(sourceLabel('starting')).toBe('стартовый');
   });
 
-  it('already answers the two sources later iterations will send', () => {
-    // Landing the generator and the editor has to be a server change, not a
-    // two-repository one — see the comment on sourceLabel.
+  it('names a floor somebody drew and a floor the date drew', () => {
+    // The distinction the control room is read for: `generated` means an admin
+    // pressed the button since the last 21:00, `daily` means nobody has and the
+    // office is whatever the date produced.
     expect(sourceLabel('generated')).toBe('сгенерированный');
+    expect(sourceLabel('daily')).toBe('ежедневный');
+  });
+
+  it('already answers the source the editor will send', () => {
+    // Landing the editor has to be a server change, not a two-repository one —
+    // see the comment on sourceLabel.
     expect(sourceLabel('edited')).toBe('изменённый вручную');
   });
 

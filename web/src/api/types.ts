@@ -1254,6 +1254,21 @@ export interface FintechConfig {
   board?: {
     window_days: number;
   };
+  /**
+   * When the building rebuilds the office out from under everybody: every day at
+   * this hour, UTC, the floor is redrawn and every shift in progress ends with
+   * «РЕМОНТ».
+   *
+   * SERVED BECAUSE IT IS THE ONE RULE OF THIS GAME A PLAYER CANNOT DISCOVER BY
+   * PLAYING — they can only be told it, or be surprised by it once. The splash
+   * screen derives both the UTC and the Moscow wording from this number
+   * (`buildRules` in `lib/fintechRules.ts`), so moving the hour is a backend
+   * deploy. Optional for the same reason every other block is: an older client
+   * against a newer server drops the block rather than rendering `NaN:00`.
+   */
+  renovation?: {
+    hour_utc: number;
+  };
 }
 
 /** A started or resumed shift. No level — the office is in the catalogue. */

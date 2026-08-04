@@ -46,8 +46,18 @@ type Shift struct {
 const (
 	// SourceStarting is the floor a fresh database opens with.
 	SourceStarting = "starting"
-	// SourceGenerated is a floor drawn at random.
+	// SourceGenerated is a floor drawn at random, which today means an admin
+	// pressed «пересобрать».
 	SourceGenerated = "generated"
+	// SourceDaily is the floor the DAY produced: drawn from the date rather than
+	// from a die, at 21:00 UTC, and — alone among these — never stored.
+	//
+	// IT IS HOW «IS AN OVERRIDE IN FORCE?» IS ANSWERED, which is the whole reason
+	// it is not just SourceGenerated. Both are output of the same generator, but
+	// one is what the building does every night and the other is somebody having
+	// pressed a button since; an admin looking at the control room needs to be
+	// able to tell those apart, and so does anybody reading the log line.
+	SourceDaily = "daily"
 )
 
 // StoredLayout is a floor as it sits in the table: the geometry, where it came
