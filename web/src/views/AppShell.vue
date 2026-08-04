@@ -39,6 +39,18 @@
           title="Админка"
           value="admin"
         />
+        <!-- The office's own control room. Beside «Админка» rather than inside
+             it, because it belongs to the game and not to the account admin
+             surface — and after it rather than before, because the sections
+             above are what everybody comes here for and the front door has to
+             stay the first item in this list. -->
+        <v-list-item
+          v-if="auth.isAdmin"
+          :to="{ name: 'game-fintech-admin' }"
+          prepend-icon="mdi-floor-plan"
+          title="АДМИН ФИНТЕХА"
+          value="game-fintech-admin"
+        />
 
         <v-divider class="my-2" />
 

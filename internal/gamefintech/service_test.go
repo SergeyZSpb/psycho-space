@@ -118,13 +118,16 @@ func (f *fakeRepo) InsertShift(_ context.Context, _ db.DBTX, s Shift) error {
 // The floor. The service reads it once at boot through EnsureLayout rather than
 // through this fake — every test here builds a service on an explicit layout —
 // so what these two owe is a plausible answer and a record of the write.
-func (f *fakeRepo) CurrentLayout(context.Context, db.DBTX) (Layout, error) {
+func (f *fakeRepo) CurrentLayout(context.Context, db.DBTX) (StoredLayout, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.layouts) == 0 {
-		return Layout{}, ErrNoLayout
+		return StoredLayout{}, ErrNoLayout
 	}
-	return f.layouts[len(f.layouts)-1], nil
+	return StoredLayout{
+		Layout: f.layouts[len(f.layouts)-1],
+		Source: f.sources[len(f.sources)-1],
+	}, nil
 }
 
 func (f *fakeRepo) InsertLayout(_ context.Context, _ db.DBTX, l Layout, source string) error {
@@ -179,7 +182,7 @@ func start(t *testing.T, members ...realtime.Member) *harness {
 		tick: make(chan time.Time),
 		base: time.Now(),
 	}
-	h.svc = NewService(h.tr, Room, nil, h.repo, fakeProfiles{}, testLayout)
+	h.svc = NewService(h.tr, Room, nil, h.repo, fakeProfiles{}, testFloor)
 	ctx, cancel := context.WithCancel(context.Background())
 	go h.svc.Run(ctx, h.tick)
 	t.Cleanup(func() {
@@ -754,7 +757,7 @@ func TestAFullSaveQueueDropsRatherThanBlocking(t *testing.T) {
 	// Stalling a twenty-hertz simulation for everybody in order to record one
 	// summary row is the wrong trade. The log line is what stops the loss being
 	// silent.
-	s := NewService(newFakeTransport(), Room, nil, newFakeRepo(), fakeProfiles{}, testLayout)
+	s := NewService(newFakeTransport(), Room, nil, newFakeRepo(), fakeProfiles{}, testFloor)
 	for i := 0; i < savesBuffer; i++ {
 		s.saves <- Shift{ID: uuid.New()}
 	}
@@ -783,7 +786,7 @@ func TestTheWriterDrainsOnShutdown(t *testing.T) {
 	// A deploy in the middle of somebody's best shift should still record it.
 	// The context is gone by then, so the writes get a fresh short-lived one.
 	repo := newFakeRepo()
-	s := NewService(newFakeTransport(), Room, nil, repo, fakeProfiles{}, testLayout)
+	s := NewService(newFakeTransport(), Room, nil, repo, fakeProfiles{}, testFloor)
 	queued := Shift{ID: uuid.New(), AccountID: uuid.New(), Cause: CauseLeft, Salary: 1234, Seconds: 42}
 	s.saves <- queued
 
@@ -865,4 +868,48 @@ type countingProfiles struct{ n atomic.Int64 }
 func (c *countingProfiles) AvatarURL(context.Context, string) (string, error) {
 	c.n.Add(1)
 	return "https://cdn.example/face.jpg", nil
+}
+
+func TestTheFloorInForceKnowsWhoIsStandingOnIt(t *testing.T) {
+	// What the admin section reads. The occupant count is the half of it that is
+	// not a property of the stored row — it is what makes «rebuild the office» a
+	// decision rather than a button — so it has to follow the office rather than
+	// the layout.
+	h := start(t)
+	ctx := context.Background()
+
+	floor := h.svc.Floor()
+	if floor.Layout.ID != testLayout.ID {
+		t.Fatalf("the floor in force is %q, the service was built on %q", floor.Layout.ID, testLayout.ID)
+	}
+	if floor.Occupants != 0 {
+		t.Fatalf("nobody has clocked in and the floor says %d", floor.Occupants)
+	}
+
+	if _, err := h.svc.StartShift(ctx, uuid.New().String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.StartShift(ctx, uuid.New().String()); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.svc.Floor().Occupants; got != 2 {
+		t.Fatalf("two people are working and the floor says %d", got)
+	}
+	// And it follows them out again: an office nobody is in is dropped entirely,
+	// so this also pins that Floor survives a nil office rather than panicking on
+	// the one path an admin is most likely to open the page on.
+	h.svc.mu.Lock()
+	accounts := make([]string, 0, 2)
+	for k := range h.svc.office.occupants {
+		accounts = append(accounts, k)
+	}
+	h.svc.mu.Unlock()
+	for _, acc := range accounts {
+		if err := h.svc.LeaveShift(ctx, acc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := h.svc.Floor().Occupants; got != 0 {
+		t.Fatalf("everybody went home and the floor says %d", got)
+	}
 }

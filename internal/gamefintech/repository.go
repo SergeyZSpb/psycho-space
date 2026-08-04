@@ -48,6 +48,18 @@ const (
 	SourceStarting = "starting"
 )
 
+// StoredLayout is a floor as it sits in the table: the geometry, where it came
+// from, and when it was installed.
+//
+// The two extra fields exist because the admin section says them out loud — «офис:
+// стартовый, поставлен вчера в 21:00» is the first thing somebody looking at that
+// page wants to know, and neither is derivable from the geometry.
+type StoredLayout struct {
+	Layout      Layout
+	Source      string
+	InstalledAt time.Time
+}
+
 // Repository is this game's persistence. Everything else about a shift lives in
 // memory for the few minutes it exists; the floor lives here because a floor
 // somebody drew has to survive a deploy.
@@ -55,7 +67,7 @@ type Repository interface {
 	// CurrentLayout reads the floor in force — the newest row that has not been
 	// deleted. It answers ErrNoLayout on an empty table, which is a state rather
 	// than a failure: it is what a fresh database looks like.
-	CurrentLayout(ctx context.Context, q db.DBTX) (Layout, error)
+	CurrentLayout(ctx context.Context, q db.DBTX) (StoredLayout, error)
 	// InsertLayout writes a floor and makes it the current one.
 	InsertLayout(ctx context.Context, q db.DBTX, l Layout, source string) error
 	// InsertShift records a finished shift. It is the only write this game

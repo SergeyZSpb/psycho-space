@@ -63,6 +63,108 @@ func (s *Server) handleGameFintechConfig(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, s.d.GameFintech.Config())
 }
 
+// The admin section's one read: the floor in force, everything needed to draw it,
+// and the two facts about it that are not in the geometry.
+//
+// UNDER THE GAME'S OWN ROUTE GROUP AND NOT UNDER /api/admin, which is the whole
+// of ADR-028 applied to a control panel: deleting this game has to stay «remove
+// its package, its migration, its routes and its views», and a level editor
+// hanging off the account-administration surface would leave a game-shaped hole in
+// admin.go. The direction that IS allowed is this one — a game depending on the
+// generic requireAdmin middleware, which knows nothing about any game.
+type fintechAdminLayout struct {
+	Office fintechAdminOffice `json:"office"`
+	Layout gamefintech.Layout `json:"layout"`
+	// Source is where this floor came from and InstalledAt is when it arrived.
+	Source      string    `json:"source"`
+	InstalledAt time.Time `json:"installed_at"`
+	// Occupants is how many people are standing on it right now, which is what
+	// makes «rebuild the office» a decision rather than a button.
+	Occupants int `json:"occupants"`
+	// Kinds is the taxonomy with its Russian labels, so the plan's legend names
+	// what it is drawing rather than colouring three anonymous squares.
+	Kinds []fintechAdminKind `json:"kinds"`
+	// Spots are the fixed catalogue points furniture has to keep off. They are
+	// drawn on the plan because «spot_blocked» otherwise names a place with
+	// nothing on it, and the only fix available to an admin is dragging at random.
+	Spots []fintechAdminSpot `json:"spots"`
+}
+
+// fintechAdminOffice is the room and the rules that bound what may stand in it.
+type fintechAdminOffice struct {
+	W            float64 `json:"w"`
+	H            float64 `json:"h"`
+	PlayerRadius float64 `json:"player_radius"`
+	BossRadius   float64 `json:"boss_radius"`
+	MinGap       float64 `json:"min_gap"`
+}
+
+type fintechAdminKind struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+type fintechAdminSpot struct {
+	X    float64 `json:"x"`
+	Y    float64 `json:"y"`
+	What string  `json:"what"`
+}
+
+// fintechAdminKinds pairs each kind with the Russian the legend shows. The pairs
+// live here rather than in the game's catalogue because they are labels for an
+// ADMIN surface — nothing a player ever sees — and the catalogue is what the game
+// itself is made of.
+var fintechAdminKinds = []fintechAdminKind{
+	{Key: string(gamefintech.KindDesk), Label: "стол"},
+	{Key: string(gamefintech.KindFlower), Label: "цветок"},
+	{Key: string(gamefintech.KindTree), Label: "фикус"},
+}
+
+// handleGameFintechAdminLayout serves the floor in force to an admin.
+func (s *Server) handleGameFintechAdminLayout(w http.ResponseWriter, r *http.Request) {
+	if !s.gameFintechAvailable(w, r) {
+		return
+	}
+	floor := s.d.GameFintech.Floor()
+	writeJSON(w, http.StatusOK, fintechAdminLayout{
+		Office: fintechAdminOffice{
+			W: gamefintech.OfficeW, H: gamefintech.OfficeH,
+			PlayerRadius: gamefintech.PlayerRadius,
+			BossRadius:   gamefintech.BossRadius,
+			MinGap:       gamefintech.MinGap,
+		},
+		Layout:      floor.Layout,
+		Source:      floor.Source,
+		InstalledAt: floor.InstalledAt,
+		Occupants:   floor.Occupants,
+		Kinds:       fintechAdminKinds,
+		Spots:       fintechAdminSpots(),
+	})
+}
+
+// fintechAdminSpots is every fixed catalogue point, labelled with what it is.
+//
+// Assembled from the game's own exported catalogue rather than from a second list:
+// these are the same points ValidateLayout keeps furniture off, and a copy would
+// be a plan that marks somewhere the validator does not care about.
+func fintechAdminSpots() []fintechAdminSpot {
+	out := []fintechAdminSpot{
+		{X: gamefintech.PlayerSpawnX, Y: gamefintech.PlayerSpawnY, What: "player"},
+		{X: gamefintech.BossSpawnX, Y: gamefintech.BossSpawnY, What: "boss"},
+		{X: gamefintech.ChaserSpawnX, Y: gamefintech.ChaserSpawnY, What: "chaser"},
+	}
+	for _, n := range gamefintech.NPCCast {
+		out = append(out, fintechAdminSpot{X: n.Spawn.X, Y: n.Spawn.Y, What: "npc"})
+	}
+	for _, at := range gamefintech.BottleSpots {
+		out = append(out, fintechAdminSpot{X: at.X, Y: at.Y, What: "bottle"})
+	}
+	for _, at := range gamefintech.HookahSpots {
+		out = append(out, fintechAdminSpot{X: at.X, Y: at.Y, What: "hookah"})
+	}
+	return out
+}
+
 // fintechShift is a started or resumed shift as the browser receives it.
 //
 // The room travels with it rather than being hardcoded in the view, so the name

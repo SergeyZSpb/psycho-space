@@ -1856,7 +1856,7 @@ func TestFintechTheFloorSurvivesARestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first boot: %v", err)
 	}
-	if len(first.Solids) == 0 || first.ID == "" {
+	if len(first.Layout.Solids) == 0 || first.Layout.ID == "" {
 		t.Fatalf("the first boot produced no floor: %+v", first)
 	}
 
@@ -1864,12 +1864,19 @@ func TestFintechTheFloorSurvivesARestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second boot: %v", err)
 	}
-	if second.ID != first.ID {
-		t.Fatalf("a restart came back on office %q, having been running %q", second.ID, first.ID)
+	if second.Layout.ID != first.Layout.ID {
+		t.Fatalf("a restart came back on office %q, having been running %q", second.Layout.ID, first.Layout.ID)
 	}
-	if len(second.Solids) != len(first.Solids) || len(second.Windows) != len(first.Windows) {
+	if len(second.Layout.Solids) != len(first.Layout.Solids) ||
+		len(second.Layout.Windows) != len(first.Layout.Windows) {
 		t.Fatalf("the floor changed shape across a restart: %d/%d against %d/%d",
-			len(second.Solids), len(second.Windows), len(first.Solids), len(first.Windows))
+			len(second.Layout.Solids), len(second.Layout.Windows),
+			len(first.Layout.Solids), len(first.Layout.Windows))
+	}
+	// And it remembers where it came from, which is what the admin page says out
+	// loud and what a later iteration's «rebuild» has to overwrite honestly.
+	if second.Source != gamefintech.SourceStarting || second.InstalledAt.IsZero() {
+		t.Fatalf("the stored floor lost its provenance: %+v", second)
 	}
 
 	// And booting twice did not write twice: the starting floor is installed when
@@ -1885,7 +1892,72 @@ func TestFintechTheFloorSurvivesARestart(t *testing.T) {
 
 	// The stored floor is playable, which is what EnsureLayout refuses to boot
 	// onto anything else for.
-	if issues := gamefintech.ValidateLayout(second); len(issues) > 0 {
+	if issues := gamefintech.ValidateLayout(second.Layout); len(issues) > 0 {
 		t.Fatalf("the stored floor is not playable: %+v", issues)
+	}
+}
+
+func TestFintechTheAdminFloorIsAdminOnlyAndAgreesWithTheCatalogue(t *testing.T) {
+	// THE GAME'S OWN CONTROL ROOM, and the two things worth pinning about it: who
+	// may open it, and that it describes the floor the game is actually being
+	// played on rather than a second copy of it.
+	//
+	// The routes are nested inside /api/game-fintech/admin/* rather than under
+	// /api/admin, which is ADR-028 applied to a control panel — deleting this game
+	// has to stay «remove its package, its migration, its routes and its views».
+	app, _, _ := buildAppFintech(t, fintechVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	player := loginAs(t, srv.URL, "920310", "user")
+	admin := loginAs(t, srv.URL, "920311", "admin")
+
+	// An approved player is not an admin, and the answer is a stable code rather
+	// than a redirect or an empty body.
+	status, body := doJSON(t, player, http.MethodGet, srv.URL+"/api/game-fintech/admin/layout", nil)
+	if status != http.StatusForbidden || body["error"] != "forbidden" {
+		t.Fatalf("a player reading the admin floor got %d %v, want 403 forbidden", status, body)
+	}
+
+	status, got := doJSON(t, admin, http.MethodGet, srv.URL+"/api/game-fintech/admin/layout", nil)
+	if status != http.StatusOK {
+		t.Fatalf("an admin reading the floor got %d %v", status, got)
+	}
+
+	layout, _ := got["layout"].(map[string]any)
+	solids, _ := layout["solids"].([]any)
+	windows, _ := layout["windows"].([]any)
+	if len(solids) == 0 || len(windows) == 0 {
+		t.Fatalf("the admin floor has nothing on it: %v", got)
+	}
+	if got["source"] != gamefintech.SourceStarting {
+		t.Fatalf("the floor says it came from %v, a fresh database installs %q", got["source"], gamefintech.SourceStarting)
+	}
+	if _, ok := got["installed_at"].(string); !ok {
+		t.Fatalf("the floor does not say when it was installed: %v", got)
+	}
+	if occ, ok := got["occupants"].(float64); !ok || occ != 0 {
+		t.Fatalf("nobody has clocked in and the office says %v", got["occupants"])
+	}
+	// The legend and the markers the plan draws: the taxonomy with its labels, and
+	// every fixed point the validator keeps furniture off.
+	if kinds, _ := got["kinds"].([]any); len(kinds) != len(gamefintech.Kinds) {
+		t.Fatalf("the admin page is told about %d kinds, the game has %d", len(kinds), len(gamefintech.Kinds))
+	}
+	if spots, _ := got["spots"].([]any); len(spots) != len(gamefintech.FixedPoints()) {
+		t.Fatalf("the plan marks %d spots, the validator keeps furniture off %d",
+			len(spots), len(gamefintech.FixedPoints()))
+	}
+
+	// AND IT IS THE SAME FLOOR THE GAME SERVES. Two reads of one truth: if the
+	// admin page could describe a different office from the one a player walks
+	// into, every later iteration's «rebuild» button would be lying about what it
+	// rebuilt.
+	if id, _ := layout["id"].(string); id != servedOfficeID(t, admin, srv.URL) {
+		t.Fatalf("the admin floor is %v and the catalogue serves %q", layout["id"], servedOfficeID(t, admin, srv.URL))
+	}
+	served := servedSolids(t, admin, srv.URL)
+	if len(served) != len(solids) {
+		t.Fatalf("the admin page draws %d solids and the game serves %d", len(solids), len(served))
 	}
 }

@@ -3,7 +3,12 @@ import type { Page, Route } from '@playwright/test';
 // Realistic backend fixtures + Playwright route interception, so the authed views
 // render without a real backend or VK. The stubbing lives ONLY here in the tests.
 
-export type StubRole = 'user' | 'superadmin' | 'pending' | 'blocked' | 'anon';
+// `admin` and `superadmin` are two different roles and not two names for one:
+// everything admin-gated is open to both, while a handful of things (promote,
+// demote, forget, open registration) are the superadmin's alone. A suite that
+// only ever stubbed the superadmin could not tell a rule about admins from a
+// rule about that one account.
+export type StubRole = 'user' | 'admin' | 'superadmin' | 'pending' | 'blocked' | 'anon';
 
 // Inline SVG data-uri avatar — "loads" offline so avatar layout is deterministic.
 const AVATAR =
@@ -20,11 +25,12 @@ const LONG_UNBROKEN = 'этооооченьдлинноесловобезпро�
 // `provider` + `profile_url` — the pair that replaced `vk_url` when Яндекс ID
 // became a second way in.
 function account(kind: Exclude<StubRole, 'anon'>) {
-  const role = kind === 'superadmin' ? 'superadmin' : 'user';
+  const role = kind === 'superadmin' ? 'superadmin' : kind === 'admin' ? 'admin' : 'user';
   const status = kind === 'pending' ? 'pending' : kind === 'blocked' ? 'blocked' : 'approved';
   return {
     id: 'me-1',
-    display_name: kind === 'superadmin' ? 'Сергей Зобнин' : 'Тест Пользователь',
+    display_name:
+      kind === 'superadmin' ? 'Сергей Зобнин' : kind === 'admin' ? 'Обычный Админ' : 'Тест Пользователь',
     avatar_url: AVATAR,
     provider: 'vk',
     profile_url: 'https://vk.com/id1',

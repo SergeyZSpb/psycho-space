@@ -940,7 +940,7 @@ func TestAPeerIsAPseudonymAndNeverAnAccountID(t *testing.T) {
 	// ADR-037. An account id is a durable identifier for a person, and it must
 	// not reach somebody else's browser — the handle is minted per process from
 	// a key held only in memory.
-	svc := NewService(nil, Room, nil, nil, nil, testLayout)
+	svc := NewService(nil, Room, nil, nil, nil, testFloor)
 	account := "0195f0c2-1111-2222-3333-444455556666"
 	handle := svc.pseudonym(account)
 	if handle == account || strings.Contains(handle, account) {
@@ -954,7 +954,7 @@ func TestAPeerIsAPseudonymAndNeverAnAccountID(t *testing.T) {
 	}
 	// A second process means a second key, so the handle is meaningless once
 	// this office is gone — which is the property that makes it not an identity.
-	if NewService(nil, Room, nil, nil, nil, testLayout).pseudonym(account) == handle {
+	if NewService(nil, Room, nil, nil, nil, testFloor).pseudonym(account) == handle {
 		t.Fatal("the handle survived a restart, so it is a durable identifier")
 	}
 }

@@ -446,6 +446,14 @@ The floor is a stored, validated `Layout` rather than a compile-time constant
 desks moved" **is** now a thing that can happen and there are two places to look.
 They answer different questions and disagreeing is itself a finding.
 
+**The quickest look is not either of them: it is the admin section.** «АДМИН
+ФИНТЕХА» in the drawer (any admin, `/app/game-fintech-admin`, reading
+`GET /api/game-fintech/admin/layout`) draws the floor in force as a plan, with
+every fixed catalogue point marked, and says where it came from, when it was
+installed and how many people are standing on it right now. Use the two commands
+below when you need the raw values, when the page itself is what you suspect, or
+when you are on a machine with no session.
+
 **1. What the running process is actually serving.** This is the authority on what
 a player sees, because the office in memory was opened on the floor this describes:
 

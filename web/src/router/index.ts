@@ -121,6 +121,20 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/AdminView.vue'),
         meta: { requiresAdmin: true },
       },
+      {
+        // «АДМИН ФИНТЕХА» — the office's own control room.
+        //
+        // A CHILD OF /app LIKE EVERY OTHER SECTION, and admin-gated by the same
+        // `meta.requiresAdmin` the account admin page uses: the guard above
+        // already turns a non-admin back to the front door, so there is nothing
+        // game-specific to add. It is a route of the GAME rather than of the
+        // admin section (ADR-028), which is why it sits here under its own name
+        // instead of becoming a tab inside AdminView.
+        path: 'game-fintech-admin',
+        name: 'game-fintech-admin',
+        component: () => import('../views/GameFintechAdminView.vue'),
+        meta: { requiresAdmin: true },
+      },
     ],
   },
   // Unknown paths bounce to the landing.

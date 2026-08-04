@@ -1315,3 +1315,96 @@ export interface FintechTopBoards {
   salary: FintechTopRow[];
   seconds: FintechTopRow[];
 }
+
+// ---------------------------------------------------------------------------
+// The game's own control room — «АДМИН ФИНТЕХА», admin-only, read-only.
+//
+// IT IS THE GAME'S SURFACE AND NOT THE ADMIN SECTION'S, which is why these types
+// live in the game's block of this file and the call lives in the game's own API
+// object. Deleting this game has to stay «remove its package, its migration, its
+// routes and its views» (ADR-028), and a floor plan hanging off the account
+// administration surface would leave a game-shaped hole in it. The dependency
+// that IS allowed runs the other way: the game's route group uses the generic
+// admin gate, which knows nothing about any game.
+//
+// WHY THIS IS NOT `FintechConfig` WITH A FEW EXTRA FIELDS. The catalogue answers
+// «what is this game», is fetched by every player, and carries the whole of the
+// rules; this answers «what is the floor in force and who is standing on it»,
+// carries facts no player is served (where it came from, when it arrived, how
+// many people it currently holds), and is refused to everybody but an admin. Two
+// audiences and two lifetimes, so two shapes.
+// ---------------------------------------------------------------------------
+
+/**
+ * The room and the rules that bound what may stand in it.
+ *
+ * NO `id` AND NO GEOMETRY, unlike `FintechOfficeConfig`. The id belongs to the
+ * LAYOUT, because the layout is the thing that changes — the room's size and the
+ * separation every solid keeps are constants of the game, and putting them in
+ * the same object as the furniture would suggest an editor could move them.
+ */
+export interface FintechAdminOffice {
+  w: number;
+  h: number;
+  player_radius: number;
+  boss_radius: number;
+  min_gap: number;
+}
+
+/** The floor itself: which one it is, and everything standing on it. */
+export interface FintechAdminLayout {
+  /** The content hash — the same sixteen hex characters `office.id` carries. */
+  id: string;
+  solids: FintechSolid[];
+  windows: FintechWindow[];
+}
+
+/**
+ * One kind of solid, with the Russian the legend names it by.
+ *
+ * SERVED RATHER THAN TYPED HERE, so the plan colours three named things instead
+ * of three anonymous squares, and so the day the office grows a fourth kind the
+ * legend grows with it without a frontend deploy. `key` is a plain string for
+ * `FintechSolid.kind`'s reason.
+ */
+export interface FintechAdminKind {
+  key: string;
+  label: string;
+}
+
+/**
+ * A fixed catalogue point furniture has to keep off: both spawns, Claude's, the
+ * two colleagues', and every bottle and кальян.
+ *
+ * DRAWN ON THE PLAN BECAUSE THE VALIDATOR REPORTS AGAINST THEM. A layout that
+ * covers one is refused with «spot_blocked», and a plan that did not show them
+ * would be naming a place with nothing on it — leaving an admin nothing to do
+ * but move furniture at random until the refusal stops.
+ *
+ * `what` is a plain string, like every other taxonomy on this wire.
+ */
+export interface FintechAdminSpot {
+  x: number;
+  y: number;
+  what: string;
+}
+
+/** The floor in force, as the admin page reads it. */
+export interface FintechAdminFloor {
+  office: FintechAdminOffice;
+  layout: FintechAdminLayout;
+  /** Where this floor came from: `starting` today, `generated`/`edited` later. */
+  source: string;
+  /** When it was installed, RFC3339. Rendered in Moscow time — see fintechAdmin.ts. */
+  installed_at: string;
+  /**
+   * How many people are standing on it right now.
+   *
+   * A FACT ABOUT THIS INSTANT rather than a property of the stored row, and the
+   * reason it is on this payload at all: it is what turns «rebuild the office»
+   * from a button into a decision.
+   */
+  occupants: number;
+  kinds: FintechAdminKind[];
+  spots: FintechAdminSpot[];
+}

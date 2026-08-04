@@ -115,6 +115,11 @@ type Service struct {
 	// changes underneath a shift in progress: it changes what the NEXT office is
 	// built on.
 	plan *Plan
+	// source and installedAt are where the floor came from and when it arrived.
+	// Carried for the admin section, which says both out loud, and for nothing
+	// else: neither is derivable from the geometry.
+	source      string
+	installedAt time.Time
 	// office is nil when nobody is working. It is built by the first StartShift
 	// and dropped when the last person leaves, so an idle process simulates
 	// nothing at all and the bald man is always back at the far wall for the
@@ -136,14 +141,16 @@ type Service struct {
 // constructor takes no context: the composition root reads it once, at boot, with
 // EnsureLayout, and hands it over. That also makes the failure mode obvious —
 // there is no state in which this service is running without a floor.
-func NewService(t Transport, room string, q db.DBTX, repo Repository, profiles Profiles, layout Layout) *Service {
+func NewService(t Transport, room string, q db.DBTX, repo Repository, profiles Profiles, floor StoredLayout) *Service {
 	return &Service{
 		transport:    t,
 		room:         room,
 		q:            q,
 		repo:         repo,
 		profiles:     profiles,
-		plan:         NewPlan(layout),
+		plan:         NewPlan(floor.Layout),
+		source:       floor.Source,
+		installedAt:  floor.InstalledAt,
 		saves:        make(chan Shift, savesBuffer),
 		done:         make(chan struct{}),
 		pseudonymKey: randomKey(),
@@ -194,6 +201,31 @@ func (s *Service) AvatarFor(handle string) (string, bool) {
 // silently loses the final flush.
 func (s *Service) Done() <-chan struct{} { return s.done }
 
+// Floor is the office in force, as the admin section reads it: the geometry,
+// where it came from, when it arrived, and how many people are standing on it.
+//
+// A SEPARATE TYPE FROM StoredLayout because the occupant count is not a property
+// of the stored row — it is a fact about right now, and it is the one thing on
+// the admin page that answers «what happens to somebody if I press this».
+type Floor struct {
+	Layout      Layout
+	Source      string
+	InstalledAt time.Time
+	Occupants   int
+}
+
+// Floor reports the office in force. Read under the lock, in one pass, so the
+// count and the geometry describe the same instant.
+func (s *Service) Floor() Floor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := Floor{Layout: s.plan.Layout(), Source: s.source, InstalledAt: s.installedAt}
+	if s.office != nil {
+		f.Occupants = s.office.Occupants()
+	}
+	return f
+}
+
 // Config is the served catalogue, including the floor in force.
 //
 // Under the lock, because the floor can be replaced while a request is being
@@ -214,11 +246,11 @@ func (s *Service) Config() Config {
 // geometry the simulation's single-pass resolver has no answer for — so it is
 // refused in favour of the starting floor rather than served, and the log line is
 // what makes that visible.
-func EnsureLayout(ctx context.Context, q db.DBTX, repo Repository) (Layout, error) {
+func EnsureLayout(ctx context.Context, q db.DBTX, repo Repository) (StoredLayout, error) {
 	l, err := repo.CurrentLayout(ctx, q)
 	switch {
 	case err == nil:
-		if issues := ValidateLayout(l); len(issues) > 0 {
+		if issues := ValidateLayout(l.Layout); len(issues) > 0 {
 			slog.ErrorContext(ctx, "gamefintech: stored layout is not playable, using the starting one",
 				"problem", issues[0].Problem, "index", issues[0].Index)
 			break
@@ -226,11 +258,11 @@ func EnsureLayout(ctx context.Context, q db.DBTX, repo Repository) (Layout, erro
 		return l, nil
 	case errors.Is(err, ErrNoLayout):
 	default:
-		return Layout{}, err
+		return StoredLayout{}, err
 	}
 
-	l = StartingLayout.WithID()
-	if err := repo.InsertLayout(ctx, q, l, SourceStarting); err != nil {
+	l = StoredLayout{Layout: StartingLayout.WithID(), Source: SourceStarting, InstalledAt: time.Now()}
+	if err := repo.InsertLayout(ctx, q, l.Layout, SourceStarting); err != nil {
 		// Standing up on the in-memory floor beats refusing to boot: this table is
 		// one game's furniture, and the landing page, the wishlist and three other
 		// games have nothing to do with it.

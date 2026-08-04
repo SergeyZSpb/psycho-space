@@ -242,6 +242,17 @@ func (s *Server) Handler() http.Handler {
 			// frame already carried. A redirect or a 404 — never a URL on the
 			// socket, which is what ADR-037 is for.
 			r.Get("/avatar/{peer}", s.handleGameFintechAvatar)
+
+			// The game's own control room, gated on admin rather than
+			// superadmin at the owner's direction. It is nested HERE and not
+			// under /api/admin: deleting this game has to stay «remove its
+			// package, its migration, its routes and its views» (ADR-028), and
+			// requireAdmin knows nothing about any game, which is the direction
+			// of dependency that is allowed.
+			r.Route("/admin", func(r chi.Router) {
+				r.Use(s.requireAdmin)
+				r.Get("/layout", s.handleGameFintechAdminLayout)
+			})
 		})
 
 		// Game art — shared infrastructure, NOT a game. The blob store has

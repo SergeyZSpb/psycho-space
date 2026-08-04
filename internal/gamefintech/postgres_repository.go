@@ -35,24 +35,32 @@ type layoutBody struct {
 }
 
 // CurrentLayout reads the floor in force: the newest row still standing.
-func (PostgresRepository) CurrentLayout(ctx context.Context, q db.DBTX) (Layout, error) {
-	var body []byte
+func (PostgresRepository) CurrentLayout(ctx context.Context, q db.DBTX) (StoredLayout, error) {
+	var (
+		body    []byte
+		source  string
+		created time.Time
+	)
 	err := q.QueryRow(ctx,
-		`SELECT body FROM game_fintech_layouts
+		`SELECT body, source, created_at FROM game_fintech_layouts
 		 WHERE deleted_at IS NULL
 		 ORDER BY created_at DESC, id DESC
-		 LIMIT 1`).Scan(&body)
+		 LIMIT 1`).Scan(&body, &source, &created)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Layout{}, ErrNoLayout
+		return StoredLayout{}, ErrNoLayout
 	}
 	if err != nil {
-		return Layout{}, fmt.Errorf("gamefintech: read layout: %w", err)
+		return StoredLayout{}, fmt.Errorf("gamefintech: read layout: %w", err)
 	}
 	var lb layoutBody
 	if err := json.Unmarshal(body, &lb); err != nil {
-		return Layout{}, fmt.Errorf("gamefintech: decode layout: %w", err)
+		return StoredLayout{}, fmt.Errorf("gamefintech: decode layout: %w", err)
 	}
-	return Layout{Solids: lb.Solids, Windows: lb.Windows}.WithID(), nil
+	return StoredLayout{
+		Layout:      Layout{Solids: lb.Solids, Windows: lb.Windows}.WithID(),
+		Source:      source,
+		InstalledAt: created,
+	}, nil
 }
 
 // InsertLayout writes a floor and makes it the current one.

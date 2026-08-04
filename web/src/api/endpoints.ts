@@ -13,6 +13,7 @@ import type {
   GameKhimkiRun,
   GameKhimkiStats,
   GameKhimkiTurnResult,
+  FintechAdminFloor,
   FintechConfig,
   FintechShift,
   FintechShiftRow,
@@ -252,6 +253,30 @@ export const gameFintechApi = {
   // and a board long enough to scroll past is a board nobody reads.
   topShifts: (limit = 5) =>
     apiFetch<FintechTopBoards>(`/api/game-fintech/shifts/top?limit=${limit}`),
+};
+
+// «АДМИН ФИНТЕХА» — the same game's control room, admin-only.
+//
+// ITS OWN OBJECT, AND UNDER THE GAME'S OWN ROUTE GROUP rather than beside
+// `adminApi` below. A game owns everything about itself (ADR-028), so deleting
+// this one stays «remove its package, its migration, its routes and its views» —
+// which a floor plan filed under the account-administration surface would not be.
+// The gate is the generic admin middleware, which knows nothing about any game.
+export const gameFintechAdminApi = {
+  // The floor in force: the room's bounds, the layout with everything standing on
+  // it, where that layout came from, when it arrived, how many people are on it
+  // right now, the kind taxonomy with its Russian labels, and every fixed point
+  // furniture has to keep off.
+  //
+  // ONE REQUEST FOR ONE SCREEN. The page draws a plan, a status card and a
+  // legend, and none of the three is worth a round trip of its own — a screen
+  // that needed three would be exactly the chattiness this project's
+  // client–server rule forbids.
+  //
+  // 403 `forbidden` for an approved non-admin (the router's guard turns them back
+  // first, so this is the second lock rather than the first), 401 `unauthorized`
+  // with no session, 503 `game_unavailable` when the game is unwired.
+  layout: () => apiFetch<FintechAdminFloor>('/api/game-fintech/admin/layout'),
 };
 
 export const adminApi = {
