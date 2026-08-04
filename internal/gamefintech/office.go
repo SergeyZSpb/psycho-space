@@ -680,6 +680,12 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// leave him standing on you, and the tick after the cloud cleared would end the
 	// shift. Excluded, he loses interest and walks at somebody else — or goes home.
 	targets := make([]Vec2, 0, len(keys))
+	// EVERY BODY ON THE FLOOR, which is a different list from the targets and is
+	// why it is built rather than reused: a cloud takes a man out of the pursuit,
+	// not out of the room. Claude is kept out of these (see Separate); nobody is
+	// kept out of anybody else, because the players are the only things here whose
+	// positions are predicted in a browser.
+	bodies := make([]Vec2, 0, len(keys))
 	standing := 0
 	for _, k := range keys {
 		occ := o.occupants[k]
@@ -687,6 +693,7 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 			continue
 		}
 		standing++
+		bodies = append(bodies, occ.State.Pos)
 		if occ.Invincible > 0 {
 			continue
 		}
@@ -799,13 +806,14 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		o.claude = StepChaser(Desks, o.claude, targets, dt, elapsed)
 	}
 
-	// AND THEN HE STEPS ASIDE IF HE HAS WALKED INTO THE ЛЫСЫЙ. The two of them
-	// share a pursuit rule, a navigator and a speed, so their paths do not cross —
-	// they MERGE, and the floor shows one figure where there are two. Claude is the
-	// one who gives way, so the лысый's position is untouched and nothing about the
-	// chase, the catch or its rewind moves. See Separate.
+	// AND THEN HE STEPS ASIDE IF HE HAS WALKED INTO SOMEBODY — the лысый, whose
+	// pursuit rule, navigator and speed are his, so their paths do not cross but
+	// MERGE; or a player, whose centre he walks at and does not stop on arrival,
+	// so against somebody standing still he ends up inside him and invisible under
+	// him. Claude is the one who gives way in both cases, so neither the лысый's
+	// position nor a player's is a function of his. See Separate.
 	if o.routerAway <= 0 {
-		o.claude = Separate(o.boss.Pos, o.claude, Desks)
+		o.claude = Separate(o.boss.Pos, bodies, o.claude, Desks)
 	}
 
 	// AND THE TWO WHO ARE NOT PLAYING. Stepped after both men and against neither of

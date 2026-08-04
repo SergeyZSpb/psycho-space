@@ -1753,7 +1753,7 @@ func TestSteppingAsideKeepsHimOnTheFloorAndOutOfTheFurniture(t *testing.T) {
 		{X: OfficeW - ChaserRadius, Y: OfficeH - ChaserRadius},
 		{X: BossSpawnX, Y: BossSpawnY},
 	}, deskCorners()...) {
-		c := Separate(at, Chaser{Pos: at}, Desks)
+		c := Separate(at, []Vec2{at}, Chaser{Pos: at}, Desks)
 		if c.Pos.X < ChaserRadius-1e-9 || c.Pos.X > OfficeW-ChaserRadius+1e-9 ||
 			c.Pos.Y < ChaserRadius-1e-9 || c.Pos.Y > OfficeH-ChaserRadius+1e-9 {
 			t.Fatalf("stepping aside from %+v put him off the floor at %+v", at, c.Pos)
@@ -1771,8 +1771,123 @@ func TestSteppingAsideDoesNothingWhenThereIsRoom(t *testing.T) {
 	// metre apart, and nudging them every tick would be a permanent wobble on a
 	// figure the player is reading for direction.
 	far := Chaser{Pos: Vec2{X: 8, Y: 8}}
-	if got := Separate(Vec2{X: 8, Y: 12}, far, Desks); got.Pos != far.Pos {
+	bodies := []Vec2{{X: 4, Y: 8}, {X: 8, Y: 4}}
+	if got := Separate(Vec2{X: 8, Y: 12}, bodies, far, Desks); got.Pos != far.Pos {
 		t.Fatalf("a man four metres away was moved: %+v → %+v", far.Pos, got.Pos)
+	}
+}
+
+func TestClaudeStepsOutOfAPlayerRatherThanStandingInHim(t *testing.T) {
+	// He walks at the man's centre and landing does not stop him, so against
+	// somebody standing still — which is what this game pays you to do — he closed
+	// the last half-metre and parked on top of him. Same point, same depth band, so
+	// the document order decided which figure was visible and Claude vanished under
+	// the player who was being slowed by him.
+	const gap = PlayerRadius + ChaserRadius
+	at := Vec2{X: 8, Y: 11}
+	for _, from := range []Vec2{
+		at,                        // exactly on top: the state with no direction in it
+		{X: at.X + 0.05, Y: at.Y}, // and a hair off it, from each side
+		{X: at.X - 0.05, Y: at.Y},
+		{X: at.X, Y: at.Y + 0.05},
+		{X: at.X, Y: at.Y - 0.05},
+	} {
+		c := Separate(Vec2{X: 2, Y: 2}, []Vec2{at}, Chaser{Pos: from}, Desks)
+		if d := math.Hypot(c.Pos.X-at.X, c.Pos.Y-at.Y); d < gap-1e-6 {
+			t.Fatalf("from %+v he is %.3f m into the player, two bodies need %.3f", from, d, gap)
+		}
+		// And being kept out of him must not put him out of reach: the standoff is
+		// two bodies touching, which is well inside the reach he lands from.
+		if !Landed(c.Pos, at) {
+			t.Fatalf("from %+v stepping out of the player put him out of landing reach at %+v", from, c.Pos)
+		}
+	}
+}
+
+func TestClaudeNeverEndsATickInsideAStandingPlayer(t *testing.T) {
+	// The office-level version of the above: a player who stands perfectly still,
+	// which is the whole game, and a man walking at him for as long as it takes.
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(t, o, "a", Vec2{X: 8, Y: 11})
+	o.mu.Lock()
+	// Next to him already, so this is about the ticks after he arrives rather than
+	// about the walk across the office — and the лысый is parked in a far corner so
+	// he is not the one ending the test.
+	o.claude.Pos = Vec2{X: 8.4, Y: 11}
+	o.boss.Pos = Vec2{X: OfficeW - BossRadius, Y: BossRadius}
+	o.mu.Unlock()
+
+	const gap = PlayerRadius + ChaserRadius
+	landed := false
+	for i := 0; i < 60; i++ {
+		advance(o, 1)
+		o.mu.Lock()
+		occ, ok := o.occupants["a"]
+		if !ok {
+			o.mu.Unlock()
+			t.Fatal("the shift ended, which is a different test's business")
+		}
+		d := math.Hypot(o.claude.Pos.X-occ.State.Pos.X, o.claude.Pos.Y-occ.State.Pos.Y)
+		landed = landed || occ.State.SlowLeft > 0
+		o.mu.Unlock()
+		if d < gap-1e-6 {
+			t.Fatalf("tick %d: he is %.3f m into the player, two bodies need %.3f", i+1, d, gap)
+		}
+	}
+	if !landed {
+		t.Fatal("he never landed, so this proved nothing about a man who has arrived")
+	}
+}
+
+func TestOnlyClaudeGivesWayToAPlayerToo(t *testing.T) {
+	// A player's position is predicted in his own browser, so a server-side shove he
+	// never asked for is a correction that snaps him sideways. He must be exactly
+	// where he steered himself, with a man standing in him or without one.
+	a := NewOffice()
+	join(t, a, "x", "s1")
+	b := NewOffice()
+	join(t, b, "x", "s2")
+	place(t, a, "x", Vec2{X: 8, Y: 11})
+	place(t, b, "x", Vec2{X: 8, Y: 11})
+	// Same office twice, except that in one of them Claude is standing in him.
+	b.mu.Lock()
+	b.claude.Pos = Vec2{X: 8, Y: 11}
+	b.mu.Unlock()
+
+	for i := 0; i < 10; i++ {
+		advance(a, 1)
+		advance(b, 1)
+	}
+	a.mu.Lock()
+	b.mu.Lock()
+	defer a.mu.Unlock()
+	defer b.mu.Unlock()
+	if a.occupants["x"].State.Pos != b.occupants["x"].State.Pos {
+		t.Fatalf("Claude moved the player: %+v against %+v",
+			a.occupants["x"].State.Pos, b.occupants["x"].State.Pos)
+	}
+}
+
+func TestACloudDoesNotMakeAPlayerIncorporeal(t *testing.T) {
+	// A кальян takes a man out of the pursuit, not out of the room. Claude walks at
+	// somebody else — or nobody — but a hidden player is still a body, and a man
+	// standing inside one is the same bug whether or not he can land on him.
+	const gap = PlayerRadius + ChaserRadius
+	at := Vec2{X: 8, Y: 11}
+	o := NewOffice()
+	join(t, o, "a", "s1")
+	place(t, o, "a", at)
+	o.mu.Lock()
+	o.occupants["a"].Invincible = InvincibleSeconds
+	o.claude.Pos = at
+	o.mu.Unlock()
+
+	advance(o, 1)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if d := math.Hypot(o.claude.Pos.X-at.X, o.claude.Pos.Y-at.Y); d < gap-1e-6 {
+		t.Fatalf("he is %.3f m inside a clouded player, two bodies need %.3f", d, gap)
 	}
 }
 

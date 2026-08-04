@@ -72,52 +72,63 @@ func StepChaser(desks []Rect, c Chaser, targets []Vec2, dt float64, elapsed floa
 	return c
 }
 
-// Separate moves Claude clear of the лысый when the two are standing in the same
-// place, and returns him.
+// Separate moves Claude clear of anybody he is standing inside — the лысый, or a
+// player — and returns him.
 //
-// THEY CONVERGE BY CONSTRUCTION, WHICH IS WHY THIS IS NOT AN EDGE CASE. Both men
-// walk at the nearest of the same target list, through the same `navAimAt`, at
-// the same speed — `ChaserSpeed` IS `BossSpeed` — so from the moment their paths
-// meet they compute an identical heading and cover an identical distance every
-// tick, for ever. They do not merely brush past each other: they lock together
-// and the floor shows one figure where there are two, with the лысый's sprite
-// drawn over Claude's or the other way about depending on the depth band. A
-// player then reads one man walking at him and is slowed by something that is not
-// there.
+// HE CONVERGES ON BOTH BY CONSTRUCTION, WHICH IS WHY NEITHER IS AN EDGE CASE, and
+// the two cases have the same cure for different reasons.
 //
-// CLAUDE YIELDS AND THE ЛЫСЫЙ NEVER MOVES, which is the whole design of this
-// function rather than an implementation detail. Splitting the overlap between
-// them would make the лысый's position a function of Claude's — so how long a
-// player has before the shift ends would depend on where a second man happened to
-// be, and the catch, its rewind ring and every test of the chase would all shift
-// underneath. Only the man whose arrival is survivable gives way.
+// The лысый: both men walk at the nearest of the same target list, through the
+// same `navAimAt`, at the same speed — `ChaserSpeed` IS `BossSpeed` — so from the
+// moment their paths meet they compute an identical heading and cover an identical
+// distance every tick, for ever. They do not merely brush past each other: they
+// lock together and the floor shows one figure where there are two.
+//
+// A player: Claude walks at the man's CENTRE and arriving does not stop him,
+// because landing is not catching — he applies a slow and keeps coming. So against
+// somebody standing still, which is what this game pays you to do, he closes the
+// last half-metre and parks exactly on top of him and stays there. The floor draws
+// both figures at the same point, in the same depth band, so which one is visible
+// is down to the order the elements happen to sit in the document: Claude
+// disappears UNDER the player, and the player is being slowed by a man he cannot
+// see. The лысый has no such state — his arrival ends the shift a metre out, at
+// `CatchRadius` — so this is Claude's alone.
+//
+// CLAUDE YIELDS AND NOBODY ELSE MOVES, which is the whole design of this function
+// rather than an implementation detail, and it holds for both. Splitting the
+// overlap with the лысый would make his position a function of Claude's — so how
+// long a player has before the shift ends would depend on where a second man
+// happened to be, and the catch, its rewind ring and every test of the chase would
+// shift underneath. Moving a PLAYER is worse still: his position is predicted in
+// the browser from his own commands, so a server-side shove he never asked for is
+// a correction that snaps him sideways. Only the man whose arrival is survivable
+// gives way.
 //
 // He is moved SIDEWAYS rather than backwards: pushing him along the line between
-// them keeps his distance to the target unchanged, so he still lands on the same
-// tick he would have. Backwards would make him permanently the лысый's shadow and
-// he would never arrive at all.
+// them keeps his distance to whoever he was walking at unchanged, so he still
+// lands on the same tick he would have. The standoff is two bodies touching, which
+// is well inside `ChaserReach` — being kept out of somebody costs him nothing, he
+// simply stands next to them instead of in them.
+//
+// BODIES ARE BODIES, so an invincible player is separated from too. The cloud
+// makes him uncatchable and unchaseable, not incorporeal, and a man hidden under a
+// player is the same bug whether or not the player can be landed on.
 //
 // Pure, like everything else in this file, and deterministic in the degenerate
-// case: two discs exactly coincident have no line between them, so the fallback
-// is a fixed axis rather than a draw — this function is stepped twenty times a
-// second and must produce the same office on every process.
-func Separate(bossPos Vec2, c Chaser, desks []Rect) Chaser {
-	const gap = BossRadius + ChaserRadius
-	dx, dy := c.Pos.X-bossPos.X, c.Pos.Y-bossPos.Y
-	dist := math.Hypot(dx, dy)
-	if dist >= gap {
-		return c
-	}
-	if dist < 1e-9 {
-		// Exactly on top of him, which is the state this exists for and the one
-		// with no direction in it. +X, always, so two processes replaying the same
-		// office agree — and the wall and desk resolution below is what stops it
-		// mattering that the axis is arbitrary.
-		dx, dy, dist = 1, 0, 1
-	}
-	c.Pos = Vec2{
-		X: bossPos.X + dx/dist*gap,
-		Y: bossPos.Y + dy/dist*gap,
+// case: two discs exactly coincident have no line between them, so the fallback is
+// a fixed axis rather than a draw — this function is stepped twenty times a second
+// and must produce the same office on every process. The bodies are resolved in
+// the order given, which the office fixes as ascending account order for the same
+// reason it fixes his choice of victim.
+func Separate(bossPos Vec2, bodies []Vec2, c Chaser, desks []Rect) Chaser {
+	// The лысый first and the players second, so the last word belongs to the
+	// overlap a player is actually looking at. One pass rather than a settle: in a
+	// crowd, yielding from one man can leave him touching another, and the tick
+	// after resolves that — a loop here would be a repulsor with a fixed point
+	// nobody has asked for.
+	c.Pos = yieldFrom(c.Pos, bossPos, BossRadius+ChaserRadius)
+	for _, b := range bodies {
+		c.Pos = yieldFrom(c.Pos, b, PlayerRadius+ChaserRadius)
 	}
 	// The same treatment every move in this game gets, and it is needed here:
 	// stepping aside can step into a desk or through a wall.
@@ -126,6 +137,25 @@ func Separate(bossPos Vec2, c Chaser, desks []Rect) Chaser {
 		c.Pos = pushOut(d, c.Pos, ChaserRadius)
 	}
 	return c
+}
+
+// yieldFrom pushes `p` out along the line from `other` until the two are `gap`
+// apart, and leaves it alone when they already are.
+//
+// It is a resolver and not a repulsor — a man who is clear is not nudged — and the
+// coincident case picks +X rather than a random direction, so two processes
+// replaying the same office agree. The wall and desk resolution its caller applies
+// afterwards is what stops it mattering that the axis is arbitrary.
+func yieldFrom(p, other Vec2, gap float64) Vec2 {
+	dx, dy := p.X-other.X, p.Y-other.Y
+	dist := math.Hypot(dx, dy)
+	if dist >= gap {
+		return p
+	}
+	if dist < 1e-9 {
+		dx, dy, dist = 1, 0, 1
+	}
+	return Vec2{X: other.X + dx/dist*gap, Y: other.Y + dy/dist*gap}
 }
 
 // Landed reports whether he has reached a player.
