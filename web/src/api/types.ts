@@ -1425,6 +1425,42 @@ export interface FintechAdminFloor {
 }
 
 /**
+ * A floor as the EDITOR sends one: geometry and nothing else.
+ *
+ * NO `id`, and that is the difference from `FintechAdminLayout` rather than an
+ * omission. The id is a content hash the server computes from exactly these two
+ * lists, so a client that sent one would be sending a claim about a value it
+ * does not own — and the two would disagree the instant somebody dragged
+ * anything. Both editor endpoints take this shape: the check, which changes
+ * nothing, and the save, which installs it.
+ */
+export interface FintechLayoutDraft {
+  solids: FintechSolid[];
+  windows: FintechWindow[];
+}
+
+/**
+ * One thing wrong with a draft floor, as the validator reports it.
+ *
+ * A CODE AND AN INDEX, NEVER A SENTENCE. This project does not return an error's
+ * text to a client, so the Russian for each code is written once in the browser
+ * (`problemText` in `lib/fintechEditor.ts`) and the wire carries the stable
+ * snake_case name the server's own constants are spelled with.
+ *
+ * `index` addresses the SOLIDS array, or the WINDOWS array when `problem` is
+ * `bad_window`, or is −1 when the problem belongs to the whole floor. One index
+ * across two lists is unambiguous because exactly one code is about a window.
+ *
+ * `problem` is a plain string for `FintechSolid.kind`'s reason: a server that
+ * learns a ninth way for a floor to be wrong must not blank the panel in a
+ * browser somebody is already holding.
+ */
+export interface FintechLayoutProblem {
+  problem: string;
+  index: number;
+}
+
+/**
  * The floor in force AFTER a rebuild, and what the rebuild cost.
  *
  * DELIBERATELY THE READ'S PAYLOAD PLUS ONE FIELD. The page that pressed the

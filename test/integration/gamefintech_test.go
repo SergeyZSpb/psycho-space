@@ -2158,3 +2158,113 @@ func TestFintechRerollingRebuildsTheOfficeAndThrowsEverybodyOut(t *testing.T) {
 		t.Fatalf("the stored floor is %q and the served one is %q", stored.Layout.ID, after)
 	}
 }
+
+func TestFintechTheEditorDrawsChecksAndInstallsAFloor(t *testing.T) {
+	// THE CONSTRUCTOR'S THREE ENDPOINTS, end to end: draw one to start from,
+	// ask what is wrong with a draft, install one drawn by hand. The first two
+	// must change NOTHING — an admin trying three offices before keeping one
+	// cannot be throwing three rooms full of people out on the way.
+	app, _, _ := buildAppFintech(t, fintechVK(t))
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	player := loginAs(t, srv.URL, "920330", "user")
+	admin := loginAs(t, srv.URL, "920331", "admin")
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/game-fintech/admin/layout/proposal"},
+		{http.MethodPost, "/api/game-fintech/admin/layout/check"},
+		{http.MethodPut, "/api/game-fintech/admin/layout"},
+	} {
+		if status, _ := doJSON(t, player, tc.method, srv.URL+tc.path, map[string]any{}); status != http.StatusForbidden {
+			t.Fatalf("%s %s as a player: %d, want 403", tc.method, tc.path, status)
+		}
+	}
+
+	before := servedOfficeID(t, admin, srv.URL)
+
+	// A PROPOSAL IS A DRAW AND NOTHING ELSE.
+	status, drawn := doJSON(t, admin, http.MethodGet, srv.URL+"/api/game-fintech/admin/layout/proposal", nil)
+	if status != http.StatusOK {
+		t.Fatalf("drawing a proposal: %d %v", status, drawn)
+	}
+	proposal, _ := drawn["layout"].(map[string]any)
+	solids, _ := proposal["solids"].([]any)
+	if len(solids) == 0 {
+		t.Fatalf("the proposal is an empty room: %v", drawn)
+	}
+	if after := servedOfficeID(t, admin, srv.URL); after != before {
+		t.Fatalf("drawing a proposal installed it: the office went from %q to %q", before, after)
+	}
+
+	// A CHECK IS AN ANSWER, NOT A REFUSAL. A legal draft answers 200 with an
+	// empty list; an illegal one answers 200 with what is wrong and where.
+	status, ok := doJSON(t, admin, http.MethodPost, srv.URL+"/api/game-fintech/admin/layout/check", proposal)
+	if status != http.StatusOK {
+		t.Fatalf("checking a legal draft: %d %v", status, ok)
+	}
+	// AN EMPTY LIST AND NOT A NULL. A clean floor has two states on the wire, not
+	// three, and a client should not have to decide what an absent list means
+	// while somebody is dragging a desk.
+	problems, ok2 := ok["problems"].([]any)
+	if !ok2 {
+		t.Fatalf("a clean check answered %#v rather than an empty list", ok["problems"])
+	}
+	if len(problems) != 0 {
+		t.Fatalf("a drawn floor was reported unplayable: %v", problems)
+	}
+
+	illegal := map[string]any{
+		"solids": []any{
+			map[string]any{"x": 0.1, "y": 8.0, "w": 3.0, "h": 1.0, "kind": "desk"},
+		},
+	}
+	status, bad := doJSON(t, admin, http.MethodPost, srv.URL+"/api/game-fintech/admin/layout/check", illegal)
+	if status != http.StatusOK {
+		t.Fatalf("checking an illegal draft: %d %v", status, bad)
+	}
+	badProblems, _ := bad["problems"].([]any)
+	if len(badProblems) == 0 {
+		t.Fatalf("a desk through the wall was reported legal: %v", bad)
+	}
+	first, _ := badProblems[0].(map[string]any)
+	if first["problem"] != string(gamefintech.ProblemOffFloor) {
+		t.Fatalf("the refusal says %v, want %q", first["problem"], gamefintech.ProblemOffFloor)
+	}
+	if after := servedOfficeID(t, admin, srv.URL); after != before {
+		t.Fatal("checking a draft changed the office")
+	}
+
+	// AND SAVING ONE INSTALLS IT, on the same path the rebuild button uses.
+	startShift(t, player, srv.URL)
+	status, saved := doJSON(t, admin, http.MethodPut, srv.URL+"/api/game-fintech/admin/layout", proposal)
+	if status != http.StatusOK {
+		t.Fatalf("saving a drawn floor: %d %v", status, saved)
+	}
+	if saved["source"] != gamefintech.SourceEdited {
+		t.Fatalf("a hand-drawn floor says it came from %v", saved["source"])
+	}
+	if ended, _ := saved["ended"].(float64); ended != 1 {
+		t.Fatalf("one person was working and saving ended %v shifts", saved["ended"])
+	}
+	after := servedOfficeID(t, admin, srv.URL)
+	if after == before {
+		t.Fatal("saving a floor left the office as it was")
+	}
+	if id, _ := proposal["id"].(string); id != after {
+		t.Fatalf("saved the floor %v and the catalogue serves %q", proposal["id"], after)
+	}
+
+	// A refused save is inert: the 422 says what is wrong, and the office is
+	// exactly what it was.
+	status, refused := doJSON(t, admin, http.MethodPut, srv.URL+"/api/game-fintech/admin/layout", illegal)
+	if status != http.StatusUnprocessableEntity || refused["error"] != "layout_invalid" {
+		t.Fatalf("saving an illegal floor: %d %v", status, refused)
+	}
+	if got, _ := refused["problems"].([]any); len(got) == 0 {
+		t.Fatalf("the refusal does not say what is wrong: %v", refused)
+	}
+	if now := servedOfficeID(t, admin, srv.URL); now != after {
+		t.Fatalf("a refused floor changed the office from %q to %q", after, now)
+	}
+}

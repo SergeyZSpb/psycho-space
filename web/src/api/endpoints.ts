@@ -14,8 +14,11 @@ import type {
   GameKhimkiStats,
   GameKhimkiTurnResult,
   FintechAdminFloor,
+  FintechAdminLayout,
   FintechAdminRebuild,
   FintechConfig,
+  FintechLayoutDraft,
+  FintechLayoutProblem,
   FintechShift,
   FintechShiftRow,
   FintechTopBoards,
@@ -295,6 +298,52 @@ export const gameFintechAdminApi = {
   // then nothing moved, so the page keeps drawing the floor it already has.
   reroll: () =>
     apiFetch<FintechAdminRebuild>('/api/game-fintech/admin/layout/reroll', { method: 'POST' }),
+
+  // Draws a floor and INSTALLS NOTHING — the editor's «СЛУЧАЙНЫЙ». Pressing it
+  // three times costs three draws and no evictions, which is what makes trying
+  // an office before keeping it a thing somebody can actually do. The response
+  // carries a bare layout; the server marks it `no-store`, so a browser cannot
+  // reuse the first draw and make the button appear to stop working.
+  proposal: () =>
+    apiFetch<{ layout: FintechAdminLayout }>('/api/game-fintech/admin/layout/proposal'),
+
+  // What is wrong with a draft, and it changes nothing.
+  //
+  // 200 WITH PROBLEMS RATHER THAN A 4xx, deliberately: «this floor is not legal
+  // yet» is the ordinary state of a layout somebody is in the middle of
+  // dragging, so it is an answer and not a failed request. An empty array means
+  // the draft would be accepted; the editor keeps «ПРИМЕНИТЬ» disabled until the
+  // answer is both empty AND current, because the window in which nothing has
+  // been asked yet is exactly the window a destructive button must not be live.
+  //
+  // `problems` IS `null` ON A CLEAN FLOOR, not `[]`. The validator answers a nil
+  // slice when it has nothing to say and Go marshals that as `null`, so «no
+  // problems» arrives as an absent list rather than an empty one — which reads as
+  // a shape error to anything that assumes an array and would crash a `.length`.
+  // Typed honestly here rather than papered over at the call site, because a
+  // client that only ever saw the refusal path would never find out.
+  check: (layout: FintechLayoutDraft) =>
+    apiFetch<{ problems: FintechLayoutProblem[] | null }>('/api/game-fintech/admin/layout/check', {
+      method: 'POST',
+      body: layout,
+    }),
+
+  // Installs a floor somebody drew. The same install path the rebuild button
+  // uses, so a hand-drawn office is held to exactly the rules a generated one is
+  // and ends exactly the same shifts — which is why the page puts the same
+  // confirmation, naming the live occupant count, in front of it.
+  //
+  // It answers the READ's payload plus `ended`, exactly as the rebuild does, so
+  // the page redraws from the response rather than fetching again.
+  //
+  // 422 `layout_invalid` when the floor is refused — and then NOTHING MOVED, so
+  // the page keeps drawing the floor it already has. The problems ride the error
+  // body (see ApiError.body), because a code alone cannot say which desk.
+  save: (layout: FintechLayoutDraft) =>
+    apiFetch<FintechAdminRebuild>('/api/game-fintech/admin/layout', {
+      method: 'PUT',
+      body: layout,
+    }),
 };
 
 export const adminApi = {

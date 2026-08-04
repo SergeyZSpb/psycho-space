@@ -23,13 +23,28 @@ export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
   readonly traceId: string;
+  /**
+   * The whole parsed failure payload, or null when the body was empty or not JSON.
+   *
+   * ALMOST NOTHING READS IT, and it is here for the one failure that carries more
+   * than a code: a refused floor plan answers 422 with the LIST OF PROBLEMS, and
+   * «what is wrong with the office I just tried to save» is the entire content of
+   * that reply. The body was already being parsed to find `error` and `trace_id`
+   * and then thrown away, so keeping it costs a field rather than a request.
+   *
+   * `unknown` on purpose: a caller that wants a shape out of this has to check
+   * for it, which is what stops the field becoming a hole in the typed contract
+   * that every other response goes through.
+   */
+  readonly body: unknown;
 
-  constructor(code: string, status: number, traceId: string) {
+  constructor(code: string, status: number, traceId: string, body: unknown = null) {
     super(`api error ${code} (status ${status}, trace ${traceId || 'n/a'})`);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
     this.traceId = traceId;
+    this.body = body;
   }
 
   // True for the handful of validation codes worth showing inline near a form.
@@ -81,7 +96,7 @@ export async function apiFetch<T = unknown>(path: string, opts: RequestOptions =
     const body = (parsed ?? {}) as { error?: string; trace_id?: string };
     const code = body.error ?? 'http_error';
     const traceId = body.trace_id ?? headerTrace;
-    throw new ApiError(code, res.status, traceId);
+    throw new ApiError(code, res.status, traceId, parsed);
   }
 
   return parsed as T;

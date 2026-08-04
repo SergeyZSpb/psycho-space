@@ -269,6 +269,17 @@ func (s *Service) Renovate(ctx context.Context) (int, error) {
 	return s.Install(ctx, l, SourceGenerated)
 }
 
+// Propose draws a floor for somebody to edit and installs NOTHING. It is the
+// generator with no consequences: pressing «СЛУЧАЙНЫЙ» three times has to cost
+// three draws and no evictions.
+func (s *Service) Propose() (Layout, error) {
+	l, err := Generate(cryptoSeed())
+	if err != nil {
+		return Layout{}, err
+	}
+	return l.WithID(), nil
+}
+
 // Install puts a floor in force: it validates, stores it, throws everybody out,
 // and leaves the next shift to open an office on it. It answers how many shifts
 // it ended.

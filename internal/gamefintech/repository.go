@@ -58,6 +58,10 @@ const (
 	// pressed a button since; an admin looking at the control room needs to be
 	// able to tell those apart, and so does anybody reading the log line.
 	SourceDaily = "daily"
+	// SourceEdited is a floor an admin drew by hand in the editor. It is set by
+	// the endpoint that wrote it and never by its body, so a hand-drawn office
+	// cannot claim to have been the day's.
+	SourceEdited = "edited"
 )
 
 // StoredLayout is a floor as it sits in the table: the geometry, where it came

@@ -446,6 +446,15 @@ The floor is a stored, validated `Layout` rather than a compile-time constant
 desks moved" **is** now a thing that can happen and there are two places to look.
 They answer different questions and disagreeing is itself a finding.
 
+**Drawing one by hand.** The same page is an editor: «СЛУЧАЙНЫЙ» fills a draft
+from a fresh draw (installing nothing), the plan takes drags, resizes, additions
+and deletions, and «ПРИМЕНИТЬ» installs it — through the **same** path the rebuild
+button uses, so a hand-drawn office is held to exactly the rules a generated one
+is and ends exactly the same shifts. A draft that breaks a rule is refused with
+the rule's name and the offending object's index (`too_close`, `off_floor`,
+`spot_blocked`, `split_floor`, …), and a refusal changes nothing. Its rows carry
+`source = 'edited'`.
+
 **Rebuilding it on purpose.** The same page has a control that draws a new floor,
 stores it and **throws everybody currently working out** with the «РЕМОНТ» ending
 (`POST /api/game-fintech/admin/layout/reroll`, admin only). It is the one

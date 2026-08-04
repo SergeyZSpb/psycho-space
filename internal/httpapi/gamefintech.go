@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -158,6 +159,104 @@ func (s *Server) handleGameFintechAdminReroll(w http.ResponseWriter, r *http.Req
 		return
 	}
 	slog.InfoContext(r.Context(), "gamefintech: office rebuilt by hand", "actor_id", actor.ID, "ended", ended)
+	writeJSON(w, http.StatusOK, fintechAdminPayload(s.d.GameFintech.Floor(), &ended))
+}
+
+// fintechAdminProposal is a floor drawn for somebody to edit, and it is
+// DELIBERATELY NOT INSTALLED. Pressing «СЛУЧАЙНЫЙ» in the editor has to be free —
+// an admin trying three offices before keeping one must not throw three rooms
+// full of people out on the way.
+type fintechAdminProposal struct {
+	Layout gamefintech.Layout `json:"layout"`
+}
+
+// fintechAdminProblems is what is wrong with a floor, as codes and indexes. The
+// Russian for each code is written once, in the browser, where the rest of this
+// game's Russian lives — this project never returns an error's text to a client.
+type fintechAdminProblems struct {
+	Problems []gamefintech.LayoutIssue `json:"problems"`
+}
+
+// handleGameFintechAdminProposal draws a floor without installing it.
+func (s *Server) handleGameFintechAdminProposal(w http.ResponseWriter, r *http.Request) {
+	if !s.gameFintechAvailable(w, r) {
+		return
+	}
+	l, err := s.d.GameFintech.Propose()
+	if err != nil {
+		slog.ErrorContext(r.Context(), "gamefintech: propose a layout", "err", err)
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+	// Never cached: it is a fresh draw every time, and a browser reusing one would
+	// make «СЛУЧАЙНЫЙ» stop working after the first press.
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, fintechAdminProposal{Layout: l})
+}
+
+// handleGameFintechAdminCheck answers what is wrong with a floor, and changes
+// nothing.
+//
+// A 200 WITH PROBLEMS RATHER THAN A 4xx, because «this draft is not legal yet» is
+// the ordinary state of a floor somebody is in the middle of dragging — it is an
+// answer, not a failed request. The editor asks after every change and keeps its
+// save disabled until the answer is empty AND current.
+func (s *Server) handleGameFintechAdminCheck(w http.ResponseWriter, r *http.Request) {
+	if !s.gameFintechAvailable(w, r) {
+		return
+	}
+	var l gamefintech.Layout
+	if err := json.NewDecoder(r.Body).Decode(&l); err != nil {
+		writeError(w, r, http.StatusBadRequest, "bad_request")
+		return
+	}
+	// A CLEAN FLOOR ANSWERS `[]` AND NEVER `null`. ValidateLayout returns a nil
+	// slice when it has nothing to say, and Go marshals that as `null` — which is
+	// a third state on the wire for a field that has two, and which a client then
+	// has to decide the meaning of. It costs one allocation on a request an admin
+	// makes while dragging.
+	problems := gamefintech.ValidateLayout(l)
+	if problems == nil {
+		problems = []gamefintech.LayoutIssue{}
+	}
+	writeJSON(w, http.StatusOK, fintechAdminProblems{Problems: problems})
+}
+
+// handleGameFintechAdminSave installs a floor somebody drew.
+//
+// It is the same install path the rebuild button uses, so a hand-drawn office is
+// held to exactly the rules a generated one is and ends exactly the same shifts.
+// A refusal is a 422 carrying the problems: the request was well-formed and the
+// floor was not.
+func (s *Server) handleGameFintechAdminSave(w http.ResponseWriter, r *http.Request) {
+	if !s.gameFintechAvailable(w, r) {
+		return
+	}
+	actor, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, r, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var l gamefintech.Layout
+	if err := json.NewDecoder(r.Body).Decode(&l); err != nil {
+		writeError(w, r, http.StatusBadRequest, "bad_request")
+		return
+	}
+	ended, err := s.d.GameFintech.Install(r.Context(), l, gamefintech.SourceEdited)
+	var invalid gamefintech.LayoutInvalidError
+	switch {
+	case errors.As(err, &invalid):
+		writeJSON(w, http.StatusUnprocessableEntity, struct {
+			Error    string                    `json:"error"`
+			Problems []gamefintech.LayoutIssue `json:"problems"`
+		}{"layout_invalid", invalid.Issues})
+		return
+	case err != nil:
+		slog.ErrorContext(r.Context(), "gamefintech: save a layout", "err", err, "actor_id", actor.ID)
+		writeError(w, r, http.StatusInternalServerError, "internal")
+		return
+	}
+	slog.InfoContext(r.Context(), "gamefintech: office drawn by hand", "actor_id", actor.ID, "ended", ended)
 	writeJSON(w, http.StatusOK, fintechAdminPayload(s.d.GameFintech.Floor(), &ended))
 }
 

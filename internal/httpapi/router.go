@@ -256,6 +256,12 @@ func (s *Server) Handler() http.Handler {
 				// nothing to say about a floor drawn at random, and a request
 				// that carried one would be a second way to install geometry.
 				r.Post("/layout/reroll", s.handleGameFintechAdminReroll)
+				// The editor's three: draw one to start from (installing
+				// nothing), ask what is wrong with a draft (changing
+				// nothing), and install one drawn by hand.
+				r.Get("/layout/proposal", s.handleGameFintechAdminProposal)
+				r.Post("/layout/check", s.handleGameFintechAdminCheck)
+				r.Put("/layout", s.handleGameFintechAdminSave)
 			})
 		})
 
