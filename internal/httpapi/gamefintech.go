@@ -21,11 +21,14 @@ import (
 // socket's own rate limit is a bound this game wants rather than one it has to
 // work around.
 //
-// Starting a shift returns NO LEVEL, which is the one thing that reads oddly
-// next to «ВАНЯДУМ» and is the load-bearing simplification of this game: the
-// office is static and already in the catalogue, so there is nothing per-shift
-// to send. A shift start touches no Postgres row either — a shift is written
-// once, when it ends.
+// Starting a shift returns NO GEOMETRY, only the IDENTITY of the floor it was
+// joined on. The layout rides the catalogue the client already fetched to draw
+// its splash screen — as it always has — but the office can now be rebuilt while
+// a tab sits on that splash, so the shift response carries the floor's content
+// hash and a client whose cached catalogue names a different one refetches before
+// it draws anything. Sixteen bytes, once per shift, against re-sending a floor
+// plan on every start. A shift start still touches no Postgres row: a shift is
+// written once, when it ends.
 
 // gameFintechAvailable reports whether the game is wired, and answers 503 when it
 // is not. Deps documents that a field may be nil in a caller that does not
@@ -73,6 +76,10 @@ type fintechShift struct {
 	// place for anything that never changes. It is not `omitempty`: zero is Карен,
 	// a real answer, and an absent field would be indistinguishable from him.
 	Persona int `json:"persona"`
+	// OfficeID is the content hash of the floor this shift is being played on.
+	// The client compares it against the catalogue it cached at mount; a
+	// difference means the office was rebuilt and the catalogue is stale.
+	OfficeID string `json:"office_id"`
 }
 
 // handleGameFintechStart clocks in.
@@ -95,7 +102,7 @@ func (s *Server) handleGameFintechStart(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	shiftID, persona, err := s.d.GameFintech.StartShift(r.Context(), acc.ID)
+	working, err := s.d.GameFintech.StartShift(r.Context(), acc.ID)
 	switch {
 	case errors.Is(err, gamefintech.ErrShiftInProgress):
 		writeError(w, r, http.StatusConflict, "shift_in_progress")
@@ -108,7 +115,10 @@ func (s *Server) handleGameFintechStart(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
-	writeJSON(w, http.StatusCreated, fintechShift{ShiftID: shiftID, Room: gamefintech.Room, Persona: persona})
+	writeJSON(w, http.StatusCreated, fintechShift{
+		ShiftID: working.ShiftID, Room: gamefintech.Room,
+		Persona: working.Persona, OfficeID: working.OfficeID,
+	})
 }
 
 // handleGameFintechCurrent returns the shift already in progress, or 404.
@@ -130,12 +140,15 @@ func (s *Server) handleGameFintechCurrent(w http.ResponseWriter, r *http.Request
 	// how long the shift has lasted, and it arrives on the ready frame that the
 	// socket's own hello triggers. Putting it on this response as well would be two
 	// places to keep one number right.
-	shiftID, persona, _, ok := s.d.GameFintech.CurrentShift(acc.ID)
+	working, ok := s.d.GameFintech.CurrentShift(acc.ID)
 	if !ok {
 		writeError(w, r, http.StatusNotFound, "no_shift")
 		return
 	}
-	writeJSON(w, http.StatusOK, fintechShift{ShiftID: shiftID, Room: gamefintech.Room, Persona: persona})
+	writeJSON(w, http.StatusOK, fintechShift{
+		ShiftID: working.ShiftID, Room: gamefintech.Room,
+		Persona: working.Persona, OfficeID: working.OfficeID,
+	})
 }
 
 // handleGameFintechLeave walks out, which is one of this game's two endings.

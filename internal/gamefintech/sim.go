@@ -113,10 +113,10 @@ func NewPlayerAt(at Vec2) Player {
 	return Player{Pos: at, Alive: true}
 }
 
-// insideDesk reports whether a disc's centre is strictly inside a desk expanded
+// insideRect reports whether a disc's centre is strictly inside a desk expanded
 // by its radius — the condition the resolver exists to make false, and the
 // condition a spawn has to avoid rather than resolve.
-func insideDesk(d Rect, p Vec2, r float64) bool {
+func insideRect(d Rect, p Vec2, r float64) bool {
 	const eps = 1e-9
 	return p.X > d.X-r+eps && p.X < d.X+d.W+r-eps &&
 		p.Y > d.Y-r+eps && p.Y < d.Y+d.H+r-eps
@@ -138,8 +138,8 @@ func insideDesk(d Rect, p Vec2, r float64) bool {
 // Liang–Barsky against each desk grown by r, which is the standard segment/box
 // clip and is exact — no sampling along the segment, so a thin desk cannot be
 // stepped over.
-func clearLine(a, b Vec2, r float64) bool {
-	for _, d := range Desks {
+func clearLine(rects []Rect, a, b Vec2, r float64) bool {
+	for _, d := range rects {
 		if segmentHitsRect(a, b, d, r) {
 			return false
 		}
@@ -248,7 +248,7 @@ func Multiplier(streak float64) float64 {
 // THE RAMP — you were never really working. That asymmetry is the entire skill
 // ceiling: the correct play is to leave the dodge as late as you dare, because
 // the seconds you spend walking are the only ones that cost you anything.
-func Step(desks []Rect, p Player, c Command) Player {
+func Step(rects []Rect, p Player, c Command) Player {
 	// 1. Dash start. A request is granted only off cooldown and only when no
 	// dash is already running, so holding the button does nothing and mashing it
 	// does nothing.
@@ -298,17 +298,19 @@ func Step(desks []Rect, p Player, c Command) Player {
 		speed *= SlowFactor
 	}
 
-	// 4. Move, then clamp to the floor, then push out of every desk in
-	// catalogue order. One pass per desk is enough and is deterministic: the
-	// desks are metres apart, so no push-out can put anybody inside another one,
-	// and every desk is clear of the walls, so no push-out can put anybody
-	// through one. content_test pins both of those invariants, which is what
-	// lets this stay a single pass rather than the iterative resolver a
-	// generated level needs.
+	// 4. Move, then clamp to the floor, then push out of every solid in layout
+	// order. ONE PASS IS ENOUGH, and it is a layout rule that makes it so rather
+	// than luck: nothing on this floor is closer than ResolverFloor to anything
+	// else or to a wall (see layout.go), so being pushed out of one rectangle can
+	// neither put a body inside another nor put it through a wall — the floor
+	// clamp has already run by this line and there is no second one. That bound is
+	// what buys the single pass instead of the iterative resolver, and it is
+	// enforced by ValidateLayout on every floor this game will accept, generated
+	// or drawn by hand.
 	p.Pos.X += mx * speed * c.Dt
 	p.Pos.Y += my * speed * c.Dt
 	p.Pos = clampToFloor(p.Pos, PlayerRadius)
-	for _, d := range desks {
+	for _, d := range rects {
 		p.Pos = pushOut(d, p.Pos, PlayerRadius)
 	}
 

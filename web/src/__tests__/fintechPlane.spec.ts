@@ -12,7 +12,9 @@ import {
   bandFor,
   decimal,
   depthScaleFor,
-  deskBox,
+  floorStripe,
+  solidBox,
+  windowBand,
   formatClock,
   formatMoney,
   formatMultiplier,
@@ -36,6 +38,7 @@ import {
   sayBelow,
   type StyleTarget,
 } from '../lib/fintechPlane';
+import type { FintechSolid } from '../api/types';
 
 /**
  * Placing the office, and reading the numbers on the wire.
@@ -165,9 +168,9 @@ describe('how pleased he is', () => {
   });
 });
 
-describe('desks', () => {
+describe('solids', () => {
   it('become a fraction of the plane, ready to be a box', () => {
-    expect(deskBox({ x: 2, y: 3, w: 3.4, h: 1.2 }, 16, 22)).toEqual({
+    expect(solidBox({ x: 2, y: 3, w: 3.4, h: 1.2 }, 16, 22)).toEqual({
       left: 0.125,
       top: 3 / 22,
       width: 3.4 / 16,
@@ -176,12 +179,120 @@ describe('desks', () => {
   });
 
   it('collapse to nothing rather than dividing by an office of size zero', () => {
-    expect(deskBox({ x: 2, y: 3, w: 3.4, h: 1.2 }, 0, 0)).toEqual({
+    expect(solidBox({ x: 2, y: 3, w: 3.4, h: 1.2 }, 0, 0)).toEqual({
       left: 0,
       top: 0,
       width: 0,
       height: 0,
     });
+  });
+
+  it('are placed by their rectangle alone, whatever kind they are', () => {
+    // A desk, a flowerpot and a ficus occupy the floor identically — the kind
+    // decides the class and nothing else — which is why this takes a rectangle
+    // and the simulation never reads a kind at all.
+    const box = solidBox({ x: 4, y: 5, w: 1, h: 1 }, 16, 22);
+    for (const kind of ['desk', 'flower', 'tree', 'something-new']) {
+      const solid: FintechSolid = { x: 4, y: 5, w: 1, h: 1, kind };
+      expect(solidBox(solid, 16, 22)).toEqual(box);
+    }
+  });
+});
+
+describe('windows', () => {
+  // The top wall runs along the office's WIDTH and the two side walls down its
+  // HEIGHT, so the same metre is a different fraction depending on which wall a
+  // pane is on. Getting that basis wrong is the whole failure mode here.
+  it('measures a top pane along the room’s width', () => {
+    expect(windowBand({ wall: 'top', at: 4, len: 3 }, 16, 22)).toEqual({
+      wall: 'top',
+      start: 4 / 16,
+      span: 3 / 16,
+    });
+  });
+
+  it('and a side pane down the room’s height, from the top', () => {
+    expect(windowBand({ wall: 'left', at: 5.5, len: 11 }, 16, 22)).toEqual({
+      wall: 'left',
+      start: 5.5 / 22,
+      span: 0.5,
+    });
+    expect(windowBand({ wall: 'right', at: 0, len: 22 }, 16, 22)).toEqual({
+      wall: 'right',
+      start: 0,
+      span: 1,
+    });
+  });
+
+  it('places a pane at either end of its wall', () => {
+    // The ends are where an off-by-one shows: a pane starting at nought must
+    // start at the corner, and one finishing at the far end must finish there
+    // rather than a hair past it.
+    const first = windowBand({ wall: 'top', at: 0, len: 2 }, 16, 22);
+    expect(first.start).toBe(0);
+    expect(first.span).toBeCloseTo(2 / 16, 9);
+    const last = windowBand({ wall: 'top', at: 14, len: 2 }, 16, 22);
+    expect(last.start).toBeCloseTo(14 / 16, 9);
+    expect(last.start + last.span).toBeCloseTo(1, 9);
+  });
+
+  it('clips a pane that would run past the corner rather than drawing over two walls', () => {
+    const over = windowBand({ wall: 'left', at: 20, len: 8 }, 16, 22);
+    expect(over.start).toBeCloseTo(20 / 22, 9);
+    expect(over.start + over.span).toBeCloseTo(1, 9);
+  });
+
+  it('draws nothing for a wall it has never heard of', () => {
+    // `wall` is a plain string precisely so a server can learn a fourth one
+    // without breaking a deployed client — and the client's half of that bargain
+    // is to place nothing rather than to guess an axis. A span of nought is what
+    // the view filters on.
+    expect(windowBand({ wall: 'bottom', at: 2, len: 3 }, 16, 22).span).toBe(0);
+    expect(windowBand({ wall: '', at: 2, len: 3 }, 16, 22).span).toBe(0);
+  });
+
+  it('draws nothing for a pane of no length, or a room of no size', () => {
+    expect(windowBand({ wall: 'top', at: 2, len: 0 }, 16, 22).span).toBe(0);
+    expect(windowBand({ wall: 'top', at: 2, len: -3 }, 16, 22).span).toBe(0);
+    expect(windowBand({ wall: 'top', at: 2, len: 3 }, 0, 0).span).toBe(0);
+  });
+
+  it('never answers a number CSS cannot use', () => {
+    for (const pane of [
+      { wall: 'top', at: Number.NaN, len: 3 },
+      { wall: 'top', at: 2, len: Number.NaN },
+      { wall: 'left', at: -5, len: 3 },
+      { wall: 'left', at: 2, len: Number.POSITIVE_INFINITY },
+    ]) {
+      const band = windowBand(pane, 16, 22);
+      expect(Number.isFinite(band.start)).toBe(true);
+      expect(Number.isFinite(band.span)).toBe(true);
+      expect(band.start).toBeGreaterThanOrEqual(0);
+      expect(band.span).toBeGreaterThanOrEqual(0);
+      expect(band.start + band.span).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe('the floorboards', () => {
+  it('are one metre of the room the catalogue served', () => {
+    // The stripe used to be a hardcoded 4.5455 %, which is a metre only in the
+    // 16 x 22 room the game shipped with — so a layout of any other height drew
+    // boards that were no longer a metre, and the one thing on the plane that
+    // gives the office a sense of scale silently lied about it.
+    expect(floorStripe(22)).toBe(`${100 / 22}%`);
+    expect(floorStripe(10)).toBe('10%');
+    expect(floorStripe(4)).toBe('25%');
+  });
+
+  it('draws a plain floor rather than a guess for a room it cannot read', () => {
+    // A full-height board is one board, which is a floor with no stripes on it.
+    // The alternatives are worse: dividing by nought is an infinity CSS drops,
+    // taking the whole background with it.
+    expect(floorStripe(0)).toBe('100%');
+    expect(floorStripe(-22)).toBe('100%');
+    expect(floorStripe(Number.NaN)).toBe('100%');
+    expect(floorStripe(Number.POSITIVE_INFINITY)).toBe('100%');
   });
 });
 

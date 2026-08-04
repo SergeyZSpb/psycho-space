@@ -49,7 +49,7 @@ func Grin(dist float64) float64 {
 // never empty of a boss; an office empty of PEOPLE is torn down entirely, so
 // this is what he does on the last tick before that happens and while somebody
 // is between shifts.
-func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64, elapsed float64) Boss {
+func StepBoss(plan *Plan, b Boss, targets []Vec2, dt float64, elapsed float64) Boss {
 	aim, ok := nearest(b.Pos, targets)
 	if !ok {
 		aim = Vec2{X: BossSpawnX, Y: BossSpawnY}
@@ -72,7 +72,7 @@ func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64, elapsed float64)
 	// rather than to the waypoint, so his speed and his grin are unchanged: he
 	// is not slower for going around, he simply takes longer to arrive, which is
 	// what furniture is supposed to cost.
-	head := navAimAt(b.Pos, aim)
+	head := navAimAt(plan, b.Pos, aim)
 	dx, dy := head.X-b.Pos.X, head.Y-b.Pos.Y
 	dist := math.Hypot(dx, dy)
 	if b.Drunk > 0 && dist > 1e-9 {
@@ -105,7 +105,7 @@ func StepBoss(desks []Rect, b Boss, targets []Vec2, dt float64, elapsed float64)
 	// that clipping a corner is no longer the whole of his navigation: it is the
 	// last few centimetres rather than the plan.
 	b.Pos = clampToFloor(b.Pos, BossRadius)
-	for _, d := range desks {
+	for _, d := range plan.Rects() {
 		b.Pos = pushOut(d, b.Pos, BossRadius)
 	}
 

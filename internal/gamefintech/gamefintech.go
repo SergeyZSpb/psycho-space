@@ -53,11 +53,11 @@
 // # One office, not one arena per run
 //
 // «ВАНЯДУМ» builds an arena per run because a run is a freshly generated
-// заброшка. This game has ONE office that is always the same office (the layout
-// is a catalogue constant, not a generator), so there is one process-wide Office
-// with a slot per account, torn down when the last person leaves. Iteration 1
-// ships solo gameplay on multiplayer plumbing on purpose: the alternative is a
-// rewrite disguised as a later iteration.
+// заброшка. This game has ONE office that everybody shares, torn down when the
+// last person leaves — and its floor is data rather than a per-run draw: a
+// layout, stored and validated, that changes on a schedule and on an admin's say
+// so rather than per shift. So there is one process-wide Office with a slot per
+// account, and the floor it stands on is decided above it, once, by the service.
 //
 // # Authority
 //
@@ -66,7 +66,7 @@
 // server owns the simulation and publishes idempotent full-state snapshots, so a
 // dropped frame costs nothing and the next one is the truth again.
 //
-// Step is a pure function of (desks, player, command) — no clock, no RNG, no map
+// Step is a pure function of (rects, player, command) — no clock, no RNG, no map
 // iteration — which is what lets it be ported to TypeScript for client-side
 // prediction and pinned by the golden vectors in testdata/. Do not give it
 // anything ambient.

@@ -58,15 +58,33 @@ const CONFIG = {
   game_key: 'karen',
   title: 'СИМУЛЯТОР ФИНТЕХА',
   office: {
+    // Sixteen hex characters, like the server's content hash, and deliberately
+    // not the one `REBUILT_OFFICE` carries — the pair is what drives the
+    // staleness path below.
+    id: '0123456789abcdef',
     w: 12,
     h: 18,
-    desks: [
-      { x: 2, y: 3, w: 3, h: 1.2 },
-      { x: 7, y: 3, w: 3, h: 1.2 },
-      { x: 2, y: 9, w: 3, h: 1.2 },
+    // THREE KINDS, because a kind decides how a solid is DRAWN and the client is
+    // the only thing that knows how. A stub with desks alone could not tell a
+    // per-kind stylesheet from the single rule it replaced.
+    solids: [
+      { x: 2, y: 3, w: 3, h: 1.2, kind: 'desk' },
+      { x: 7, y: 3, w: 3, h: 1.2, kind: 'desk' },
+      { x: 2, y: 9, w: 3, h: 1.2, kind: 'desk' },
+      { x: 8, y: 12, w: 0.8, h: 0.8, kind: 'flower' },
+      { x: 9.5, y: 8, w: 1.1, h: 1.1, kind: 'tree' },
+    ],
+    // ONE PANE PER GLAZED WALL, so the three placements are all exercised — they
+    // are measured along different axes and from different corners, which is the
+    // whole failure mode `windowBand` and the band CSS share.
+    windows: [
+      { wall: 'top', at: 1, len: 3 },
+      { wall: 'left', at: 4, len: 6 },
+      { wall: 'right', at: 2, len: 5 },
     ],
     player_radius: 0.35,
     boss_radius: 0.4,
+    min_gap: 1.5,
   },
   // None of these are the production values. See the note above.
   money: { base_per_second: 777, ramp_seconds: 9, max_multiplier: 4, grace_ms: 450 },
@@ -164,7 +182,34 @@ const CONFIG = {
   },
 };
 
-const SHIFT = { shift_id: 'shift-e2e', room: 'fintech', persona: 2 };
+/**
+ * The office as it stands after somebody rebuilt it, for the staleness path.
+ *
+ * THE CATALOGUE IS FETCHED ONCE AND THE LAYOUT CAN MOVE UNDERNEATH IT. A tab
+ * sitting on the splash holds geometry that may already describe a room nobody
+ * is in, so a shift response names the layout it belongs to and the client
+ * refetches when the two disagree. Deliberately a DIFFERENT number of solids and
+ * windows from `CONFIG.office`, because the count is what the assertion can see.
+ */
+const REBUILT_OFFICE = {
+  ...CONFIG.office,
+  id: 'fedcba9876543210',
+  solids: [
+    { x: 3, y: 5, w: 2, h: 1, kind: 'desk' },
+    { x: 7, y: 11, w: 0.9, h: 0.9, kind: 'tree' },
+  ],
+  windows: [{ wall: 'top', at: 2, len: 4 }],
+};
+
+const SHIFT = {
+  shift_id: 'shift-e2e',
+  // The layout this shift is standing in. It matches the catalogue's own id, so
+  // the ordinary path enters play without refetching anything; the `rebuild`
+  // option below is what makes the two disagree.
+  office_id: CONFIG.office.id,
+  room: 'fintech',
+  persona: 2,
+};
 
 /**
  * A DELIBERATELY WIDE PNG — 4 × 1 — as a `data:` URI, used as the session's own
@@ -190,6 +235,15 @@ const WIDE_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAABCAIAAAB2
 interface StubOptions {
   /** Answer `shifts/current` with a shift, as if the player had reloaded. */
   resume?: boolean;
+  /**
+   * Rebuild the office between the splash's catalogue and the shift's.
+   *
+   * The first `/config` is what the splash was drawn from and answers `CONFIG`;
+   * every one after it answers `REBUILT_OFFICE`, and both shift responses name
+   * the rebuilt layout — which is exactly the state a tab left open on the splash
+   * finds itself in.
+   */
+  rebuild?: boolean;
   /** The session's own avatar, which is where your figure's face comes from. */
   avatar?: string;
   mine?: { cause: string; salary: number; seconds: number; created_at: string }[];
@@ -199,6 +253,10 @@ interface StubOptions {
 }
 
 async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
+  // How many catalogues have been served. Only `rebuild` reads it: the office
+  // moves once, between the splash's read and the shift's.
+  let catalogues = 0;
+  const shift = opts.rebuild ? { ...SHIFT, office_id: REBUILT_OFFICE.id } : SHIFT;
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -235,7 +293,13 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
         body: Buffer.from(WIDE_PNG.split(',')[1], 'base64'),
       });
     }
-    if (path === '/api/game-fintech/config') return json(200, CONFIG);
+    if (path === '/api/game-fintech/config') {
+      catalogues += 1;
+      return json(
+        200,
+        opts.rebuild && catalogues > 1 ? { ...CONFIG, office: REBUILT_OFFICE } : CONFIG,
+      );
+    }
     if (path === '/api/game-fintech/shifts/me') return json(200, { shifts: opts.mine ?? [] });
     if (path === '/api/game-fintech/shifts/top') {
       // TWO BOARDS IN ONE RESPONSE, keyed by the metric each is scored on — the
@@ -245,13 +309,13 @@ async function stubBackend(page: Page, opts: StubOptions = {}): Promise<void> {
     }
     if (path === '/api/game-fintech/shifts/current' && method === 'GET') {
       return opts.resume
-        ? json(200, SHIFT)
+        ? json(200, shift)
         : json(404, { error: 'no_shift', trace_id: 'e2e-trace-id' });
     }
     if (path === '/api/game-fintech/shifts/current' && method === 'DELETE') {
       return route.fulfill({ status: 204, body: '' });
     }
-    if (path === '/api/game-fintech/shifts' && method === 'POST') return json(201, SHIFT);
+    if (path === '/api/game-fintech/shifts' && method === 'POST') return json(201, shift);
     return json(404, { error: 'not_found', trace_id: 'e2e-trace-id' });
   });
 }
@@ -534,7 +598,122 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА» play', () => {
     await expect(page.getByTestId('fintech-me')).toBeVisible();
     await expect(page.getByTestId('fintech-boss')).toBeVisible();
     // The furniture comes off the catalogue, one element each.
-    await expect(page.getByTestId('fintech-desk')).toHaveCount(CONFIG.office.desks.length);
+    await expect(page.getByTestId('fintech-solid')).toHaveCount(CONFIG.office.solids.length);
+  });
+
+  test('every kind of solid is drawn, and a plant does not read as a desk', async ({ page }) => {
+    // THE KIND IS THE ONLY THING IT DECIDES. The simulation pushes you out of a
+    // ficus exactly as it does out of a desk — that claim is pinned in
+    // `fintechStep.spec.ts` — so how a solid LOOKS is the whole of what a kind is
+    // for, and the wire carries it as a plain string so the office can grow a
+    // fourth without a client deploy.
+    await enterOffice(page);
+    const tree = page.locator('[data-testid="fintech-solid"][data-kind="tree"]');
+    await expect(tree).toHaveCount(1);
+    await expect(tree).toHaveClass(/fintech-solid--tree/);
+    await expect(page.locator('[data-testid="fintech-solid"][data-kind="flower"]')).toHaveCount(1);
+
+    // Round rather than a slab, which is what "reads as greenery at thirty
+    // pixels" means in CSS. Asserted as a DIFFERENCE from the desk beside it
+    // rather than as a literal, so this is about the two being told apart and not
+    // a restatement of the stylesheet.
+    const radius = (kind: string) =>
+      page
+        .locator(`[data-testid="fintech-solid"][data-kind="${kind}"]`)
+        .first()
+        .evaluate((el) => getComputedStyle(el).borderTopLeftRadius);
+    expect(await radius('tree')).not.toBe(await radius('desk'));
+
+    // And it is really standing on the floor rather than collapsed into a corner.
+    const box = (await tree.boundingBox())!;
+    expect(box.width).toBeGreaterThan(0);
+    expect(box.height).toBeGreaterThan(0);
+  });
+
+  test('the glazing is drawn on the wall bands, outside the room', async ({ page }) => {
+    // A WINDOW IS A LENGTH OF WALL, not a thing on the floor — so it belongs in
+    // the band around the room, and being a SIBLING of the room rather than a
+    // child of it is what guarantees glass can never come between a viewer and a
+    // figure. Both halves are asserted: the DOM relationship, and where the three
+    // panes actually land.
+    await enterOffice(page);
+    const panes = page.getByTestId('fintech-window');
+    await expect(panes).toHaveCount(CONFIG.office.windows.length);
+
+    const nested = await page.evaluate(
+      () =>
+        document
+          .querySelector('[data-testid="fintech-office"]')!
+          .querySelector('[data-testid="fintech-window"]') !== null,
+    );
+    expect(nested, 'a pane is inside the room and can occlude a figure').toBe(false);
+
+    const office = (await page.getByTestId('fintech-office').boundingBox())!;
+    const drawn = await panes.evaluateAll((els) =>
+      els.map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          wall: el.getAttribute('data-wall') ?? '',
+          left: r.left,
+          right: r.right,
+          top: r.top,
+          bottom: r.bottom,
+          width: r.width,
+          height: r.height,
+        };
+      }),
+    );
+    expect(drawn.map((p) => p.wall).sort()).toEqual(['left', 'right', 'top']);
+    // A pixel of slack throughout: the bands are percentages of a fractional box
+    // and a rounded edge is not a misplaced one.
+    const slack = 1;
+    for (const pane of drawn) {
+      expect(pane.width, `the ${pane.wall} pane has no width`).toBeGreaterThan(0);
+      expect(pane.height, `the ${pane.wall} pane has no height`).toBeGreaterThan(0);
+      if (pane.wall === 'top') expect(pane.bottom).toBeLessThanOrEqual(office.y + slack);
+      if (pane.wall === 'left') expect(pane.right).toBeLessThanOrEqual(office.x + slack);
+      if (pane.wall === 'right') {
+        expect(pane.left).toBeGreaterThanOrEqual(office.x + office.width - slack);
+      }
+    }
+  });
+
+  test('the office and its glazing overflow nothing on a phone', async ({ page }) => {
+    // The bands are laid out in percentages of the plane and the plane is
+    // full-bleed, so a pane placed by the wrong arithmetic is a horizontal
+    // scrollbar rather than a subtle misalignment.
+    await enterOffice(page);
+    await expect(page.getByTestId('fintech-window').first()).toBeVisible();
+    await expect(page.getByTestId('fintech-solid').first()).toBeVisible();
+    expect(await overflow(page)).toBeLessThanOrEqual(0);
+  });
+
+  test('a layout rebuilt under the splash is re-fetched before the office opens', async ({
+    page,
+  }) => {
+    // THE CATALOGUE IS FETCHED ONCE AND THE OFFICE CAN BE REBUILT UNDERNEATH IT.
+    // The visible half of getting this wrong is furniture drawn where there is
+    // none; the invisible half is worse, because the client PREDICTS against the
+    // same rectangles and would be corrected on every frame near a desk that
+    // moved. The shift names its layout, the catalogue names the one on hand, and
+    // a disagreement is refetched before entering play.
+    await enterOffice(page, { rebuild: true });
+    await expect(page.getByTestId('fintech-solid')).toHaveCount(REBUILT_OFFICE.solids.length);
+    await expect(page.getByTestId('fintech-window')).toHaveCount(REBUILT_OFFICE.windows.length);
+    // The rebuilt floor has no flowerpot in it, so the old layout is GONE rather
+    // than drawn alongside the new one.
+    await expect(page.locator('[data-testid="fintech-solid"][data-kind="flower"]')).toHaveCount(0);
+  });
+
+  test('and a resumed shift in a rebuilt office picks the new layout up too', async ({ page }) => {
+    // The reload path: a tab that comes back to a shift already in progress reads
+    // `shifts/current`, which names its layout exactly as the POST does. Without
+    // this the one client most likely to hold stale geometry — the one that was
+    // away — would be the one that never refreshed it.
+    await stubSocket(page);
+    await openSplash(page, { rebuild: true, resume: true });
+    await expect(page.getByTestId('fintech-play')).toBeVisible();
+    await expect(page.getByTestId('fintech-solid')).toHaveCount(REBUILT_OFFICE.solids.length);
   });
 
   test('the HUD follows the snapshot, not the client', async ({ page }) => {

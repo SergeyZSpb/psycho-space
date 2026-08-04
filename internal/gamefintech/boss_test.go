@@ -11,7 +11,7 @@ func TestHeClosesOnTheNearestTarget(t *testing.T) {
 	near := Vec2{X: 8, Y: 9}
 	far := Vec2{X: 8, Y: 1}
 
-	got := StepBoss(nil, b, []Vec2{far, near}, testDt, 0)
+	got := StepBoss(emptyPlan(), b, []Vec2{far, near}, testDt, 0)
 	if got.Pos.Y >= b.Pos.Y {
 		t.Fatalf("he walked away from both of them: %v → %v", b.Pos.Y, got.Pos.Y)
 	}
@@ -30,10 +30,10 @@ func TestATieIsBrokenByTheCallersOrdering(t *testing.T) {
 	right := Vec2{X: 12, Y: 11}
 
 	for i := 0; i < 50; i++ {
-		if got := StepBoss(nil, b, []Vec2{left, right}, testDt, 0); got.Pos.X >= b.Pos.X {
+		if got := StepBoss(emptyPlan(), b, []Vec2{left, right}, testDt, 0); got.Pos.X >= b.Pos.X {
 			t.Fatalf("run %d: he went right (%v) when the left target was listed first", i, got.Pos.X)
 		}
-		if got := StepBoss(nil, b, []Vec2{right, left}, testDt, 0); got.Pos.X <= b.Pos.X {
+		if got := StepBoss(emptyPlan(), b, []Vec2{right, left}, testDt, 0); got.Pos.X <= b.Pos.X {
 			t.Fatalf("run %d: he went left (%v) when the right target was listed first", i, got.Pos.X)
 		}
 	}
@@ -46,13 +46,13 @@ func TestHeNeverEndsInsideADeskOrOutsideTheFloor(t *testing.T) {
 	b := NewBoss()
 	for i := 0; i < 5000; i++ {
 		target := Vec2{X: r.Float64() * OfficeW, Y: r.Float64() * OfficeH}
-		b = StepBoss(Desks, b, []Vec2{target}, testDt, 0)
+		b = StepBoss(testPlan(), b, []Vec2{target}, testDt, 0)
 		if b.Pos.X < BossRadius-1e-9 || b.Pos.X > OfficeW-BossRadius+1e-9 ||
 			b.Pos.Y < BossRadius-1e-9 || b.Pos.Y > OfficeH-BossRadius+1e-9 {
 			t.Fatalf("step %d put him outside the floor at %+v", i, b.Pos)
 		}
-		for j, d := range Desks {
-			if insideDesk(d, b.Pos, BossRadius) {
+		for j, d := range testRects {
+			if insideRect(d, b.Pos, BossRadius) {
 				t.Fatalf("step %d put him inside desk %d at %+v", i, j, b.Pos)
 			}
 		}
@@ -83,7 +83,7 @@ func TestTheGrinIsRecomputedEveryStep(t *testing.T) {
 		t.Fatal("he started out pleased")
 	}
 	for i := 0; i < 200; i++ {
-		next := StepBoss(nil, b, []Vec2{target}, testDt, 0)
+		next := StepBoss(emptyPlan(), b, []Vec2{target}, testDt, 0)
 		if next.Grin < b.Grin {
 			t.Fatalf("step %d: the grin went down while he was closing", i)
 		}
@@ -116,7 +116,7 @@ func TestWithNobodyToChaseHeGoesHomeAndStops(t *testing.T) {
 	// down entirely. This is what he does in between.
 	b := Boss{Pos: Vec2{X: 2, Y: 4}}
 	for i := 0; i < 1000; i++ {
-		b = StepBoss(Desks, b, nil, testDt, 0)
+		b = StepBoss(testPlan(), b, nil, testDt, 0)
 	}
 	if math.Abs(b.Pos.X-BossSpawnX) > 1e-6 || math.Abs(b.Pos.Y-BossSpawnY) > 1e-6 {
 		t.Fatalf("he ended up at %+v rather than his spawn", b.Pos)
@@ -127,7 +127,7 @@ func TestWithNobodyToChaseHeGoesHomeAndStops(t *testing.T) {
 	// And he stays there rather than jittering around it.
 	settled := b
 	for i := 0; i < 10; i++ {
-		b = StepBoss(Desks, b, nil, testDt, 0)
+		b = StepBoss(testPlan(), b, nil, testDt, 0)
 	}
 	if b.Pos != settled.Pos {
 		t.Fatalf("he drifted from %+v to %+v with nothing to chase", settled.Pos, b.Pos)
@@ -150,10 +150,10 @@ func TestADrunkBaldManIsSlowerButStillComing(t *testing.T) {
 	// freezes is a boss you ignore, and the joke is that he is delighted AND now
 	// also drunk. Sober covers more ground than drunk; drunk still covers some.
 	target := []Vec2{{X: BossSpawnX, Y: 2}}
-	sober := StepBoss(Desks, NewBoss(), target, 1, 0)
+	sober := StepBoss(testPlan(), NewBoss(), target, 1, 0)
 	drunkStart := NewBoss()
 	drunkStart.Drunk = DrunkSeconds
-	drunk := StepBoss(Desks, drunkStart, target, 1, 0)
+	drunk := StepBoss(testPlan(), drunkStart, target, 1, 0)
 
 	soberGap := BossSpawnY - sober.Pos.Y
 	drunkGap := BossSpawnY - drunk.Pos.Y
@@ -175,8 +175,8 @@ func TestBothOfThemWalkFasterAsTheOfficeGetsOlder(t *testing.T) {
 	target := []Vec2{{X: BossSpawnX, Y: 2}}
 	late := 6 * LevelSeconds
 
-	early := StepBoss(Desks, NewBoss(), target, 1, 0)
-	older := StepBoss(Desks, NewBoss(), target, 1, late)
+	early := StepBoss(testPlan(), NewBoss(), target, 1, 0)
+	older := StepBoss(testPlan(), NewBoss(), target, 1, late)
 	if BossSpawnY-older.Pos.Y <= BossSpawnY-early.Pos.Y {
 		t.Fatalf("the лысый covered %v at level 0 and %v at level 6 — the ramp does not reach him",
 			BossSpawnY-early.Pos.Y, BossSpawnY-older.Pos.Y)
@@ -186,8 +186,8 @@ func TestBothOfThemWalkFasterAsTheOfficeGetsOlder(t *testing.T) {
 	// stay true at every tempo, or the two of them drift apart over a long shift
 	// and the office stops being one difficulty.
 	chaseTarget := []Vec2{{X: ChaserSpawnX, Y: ChaserSpawnY - 8}}
-	cEarly := StepChaser(Desks, NewChaser(), chaseTarget, 1, 0)
-	cLate := StepChaser(Desks, NewChaser(), chaseTarget, 1, late)
+	cEarly := StepChaser(testPlan(), NewChaser(), chaseTarget, 1, 0)
+	cLate := StepChaser(testPlan(), NewChaser(), chaseTarget, 1, late)
 	movedEarly := ChaserSpawnY - cEarly.Pos.Y
 	movedLate := ChaserSpawnY - cLate.Pos.Y
 	if movedLate <= movedEarly {
@@ -207,10 +207,10 @@ func TestTheDrinkIsWorthTheSameFractionAtEveryTempo(t *testing.T) {
 	// late in a shift would retire the prop exactly when it is needed.
 	target := []Vec2{{X: BossSpawnX, Y: 2}}
 	for _, at := range []float64{0, 3 * LevelSeconds} {
-		sober := StepBoss(Desks, NewBoss(), target, 1, at)
+		sober := StepBoss(testPlan(), NewBoss(), target, 1, at)
 		tipsy := NewBoss()
 		tipsy.Drunk = DrunkSeconds
-		drunk := StepBoss(Desks, tipsy, target, 1, at)
+		drunk := StepBoss(testPlan(), tipsy, target, 1, at)
 		got := (BossSpawnY - drunk.Pos.Y) / (BossSpawnY - sober.Pos.Y)
 		if math.Abs(got-DrunkSpeed) > 1e-6 {
 			t.Fatalf("at %vs a drink left him at ×%v of his walk, want ×%v", at, got, DrunkSpeed)
@@ -229,7 +229,7 @@ func TestHeWeavesWhileDrunkRatherThanWalkingAStraightLine(t *testing.T) {
 		// A quarter of the wobble period apart, so the samples are spread across
 		// it rather than landing on the same phase.
 		at := float64(i) / (4 * DrunkWobbleHz)
-		got := StepBoss(Desks, start, target, 0.5, at)
+		got := StepBoss(testPlan(), start, target, 0.5, at)
 		seen[int(got.Pos.X*1000)] = true
 	}
 	if len(seen) < 3 {
@@ -242,7 +242,7 @@ func TestHeSobersUp(t *testing.T) {
 	b.Drunk = 0.1
 	target := []Vec2{{X: BossSpawnX, Y: 2}}
 	for i := 0; i < 5; i++ {
-		b = StepBoss(Desks, b, target, SimStep.Seconds(), float64(i)*SimStep.Seconds())
+		b = StepBoss(testPlan(), b, target, SimStep.Seconds(), float64(i)*SimStep.Seconds())
 	}
 	if b.Drunk != 0 {
 		t.Fatalf("he is still %v drunk", b.Drunk)
@@ -260,13 +260,13 @@ func TestHeReachesSomebodyStandingBehindADesk(t *testing.T) {
 	//
 	// Behind the FIRST desk, on the far side from him, which is the shape of the
 	// worst case: a straight line that is blocked for most of its length.
-	d := Desks[0]
+	d := testRects[0]
 	behind := Vec2{X: d.X + d.W/2, Y: d.Y - PlayerRadius - 0.45}
-	if clearLine(behind, NewBoss().Pos, BossRadius) {
+	if clearLine(testRects, behind, NewBoss().Pos, BossRadius) {
 		t.Skip("the catalogue moved: this point is no longer behind a desk")
 	}
 
-	o := NewOffice()
+	o := newTestOffice()
 	if err := o.Join("a", "s1", "p-a", "", 0, epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -293,10 +293,10 @@ func TestHeWalksStraightWhenNothingIsInTheWay(t *testing.T) {
 	// line he heads at the target itself.
 	from := Vec2{X: BossSpawnX, Y: BossSpawnY}
 	to := Vec2{X: BossSpawnX, Y: BossSpawnY - 3}
-	if !clearLine(from, to, BossRadius) {
+	if !clearLine(testRects, from, to, BossRadius) {
 		t.Skip("the catalogue moved: this line is no longer clear")
 	}
-	if got := navAimAt(from, to); got != to {
+	if got := navAimAt(testPlan(), from, to); got != to {
 		t.Fatalf("with a clear line he aimed at %+v rather than at the target %+v", got, to)
 	}
 }
@@ -307,17 +307,17 @@ func TestAPathStepIsSomewhereHeCanStand(t *testing.T) {
 	from := Vec2{X: BossSpawnX, Y: BossSpawnY}
 	for _, to := range []Vec2{
 		{X: 1, Y: 1}, {X: OfficeW - 1, Y: 1}, {X: 1, Y: OfficeH - 1},
-		{X: Desks[0].X + Desks[0].W/2, Y: Desks[0].Y - 0.8},
+		{X: testRects[0].X + testRects[0].W/2, Y: testRects[0].Y - 0.8},
 	} {
-		got := navAimAt(from, to)
+		got := navAimAt(testPlan(), from, to)
 		if got.X < 0 || got.X > OfficeW || got.Y < 0 || got.Y > OfficeH {
 			t.Fatalf("heading for %+v he was sent off the floor to %+v", to, got)
 		}
 		if got == to {
 			continue // the clear-line fast path
 		}
-		for i, d := range Desks {
-			if insideDesk(d, got, BossRadius) {
+		for i, d := range testRects {
+			if insideRect(d, got, BossRadius) {
 				t.Fatalf("heading for %+v he was sent into desk %d at %+v", to, i, got)
 			}
 		}
@@ -329,10 +329,10 @@ func TestTheRouteIsTheSameEveryTime(t *testing.T) {
 	// exactly the sort of thing that stops being deterministic when somebody
 	// reaches for a map.
 	from := Vec2{X: BossSpawnX, Y: BossSpawnY}
-	to := Vec2{X: Desks[0].X + Desks[0].W/2, Y: Desks[0].Y - 0.8}
-	first := navAimAt(from, to)
+	to := Vec2{X: testRects[0].X + testRects[0].W/2, Y: testRects[0].Y - 0.8}
+	first := navAimAt(testPlan(), from, to)
 	for i := 0; i < 50; i++ {
-		if got := navAimAt(from, to); got != first {
+		if got := navAimAt(testPlan(), from, to); got != first {
 			t.Fatalf("run %d routed him to %+v, the first run to %+v", i, got, first)
 		}
 	}

@@ -96,7 +96,15 @@ func buildAppFintech(t *testing.T, vkBaseURL string) (http.Handler, chan time.Ti
 		<-hub.Done()
 	})
 
-	svc := gamefintech.NewService(hub, gamefintech.Room, pool, gamefintech.NewPostgresRepository(), newAccountService())
+	// The floor comes out of Postgres, exactly as it does in production: this is
+	// the boot path, so a fresh test database has its starting layout written by
+	// the same call main.go makes.
+	fintechRepo := gamefintech.NewPostgresRepository()
+	layout, err := gamefintech.EnsureLayout(ctx, pool, fintechRepo)
+	if err != nil {
+		t.Fatalf("read the office layout: %v", err)
+	}
+	svc := gamefintech.NewService(hub, gamefintech.Room, pool, fintechRepo, newAccountService(), layout)
 	tick := make(chan time.Time)
 	go svc.Run(ctx, tick)
 
@@ -554,9 +562,12 @@ func TestFintechConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 		GameKey string `json:"game_key"`
 		Title   string `json:"title"`
 		Office  struct {
-			W     float64          `json:"w"`
-			H     float64          `json:"h"`
-			Desks []map[string]any `json:"desks"`
+			ID      string           `json:"id"`
+			W       float64          `json:"w"`
+			H       float64          `json:"h"`
+			Solids  []map[string]any `json:"solids"`
+			Windows []map[string]any `json:"windows"`
+			MinGap  float64          `json:"min_gap"`
 		} `json:"office"`
 		Money   map[string]float64 `json:"money"`
 		Move    map[string]float64 `json:"move"`
@@ -579,8 +590,19 @@ func TestFintechConfigIsServedAndIsTheWholeCatalogue(t *testing.T) {
 	if cfg.GameKey == "" || cfg.Title == "" {
 		t.Fatalf("the catalogue does not say what game it is: %+v", cfg)
 	}
-	if cfg.Office.W <= 0 || cfg.Office.H <= 0 || len(cfg.Office.Desks) == 0 {
+	if cfg.Office.W <= 0 || cfg.Office.H <= 0 || len(cfg.Office.Solids) == 0 {
 		t.Fatalf("an office with no floor and no furniture: %+v", cfg.Office)
+	}
+	// The floor is DATA now, loaded from Postgres at boot rather than compiled in,
+	// so this is also the assertion that the boot path wrote it, read it back and
+	// served it. The id is what a client compares its cached catalogue against.
+	if len(cfg.Office.ID) != 16 || cfg.Office.MinGap <= 0 || len(cfg.Office.Windows) == 0 {
+		t.Fatalf("the served floor has no identity, no separation rule or no glazing: %+v", cfg.Office)
+	}
+	for i, s := range cfg.Office.Solids {
+		if s["kind"] == nil || s["w"] == nil {
+			t.Fatalf("solid %d is not something the client can draw: %+v", i, s)
+		}
 	}
 	// The money ramp IS the game, and every one of these numbers appears on the
 	// cheatsheet.
@@ -655,11 +677,20 @@ func TestFintechShiftIsCreatedAndResumable(t *testing.T) {
 		t.Fatalf("persona %v is outside the cast of %d", persona, len(gamefintech.Personas))
 	}
 
-	// The office is STATIC and already in the catalogue, so a shift start sends
-	// no level. This is the load-bearing difference from the shooter, and it is
-	// worth pinning: re-sending an office nobody generated would be pure waste.
+	// A shift start sends NO GEOMETRY — the floor is in the catalogue the client
+	// already fetched — but it does name WHICH floor, so a tab whose cached
+	// catalogue describes an office that has since been rebuilt knows to fetch it
+	// again. Re-sending the floor plan per shift would be pure waste; sending its
+	// sixteen-byte identity is what makes not re-sending it safe.
 	if _, ok := first["level"]; ok {
 		t.Fatalf("a shift start sent a level: %v", first)
+	}
+	officeID, _ := first["office_id"].(string)
+	if len(officeID) != 16 {
+		t.Fatalf("the shift does not name the floor it is played on: %v", first)
+	}
+	if served := servedOfficeID(t, cli, srv.URL); served != officeID {
+		t.Fatalf("the shift was joined on office %q and the catalogue serves %q", officeID, served)
 	}
 
 	// A refusal rather than a silent replacement: dropping the occupant would
@@ -1127,7 +1158,7 @@ func TestFintechResendingUnacknowledgedInputDoesNotWalkYouTwice(t *testing.T) {
 	const subStep = 0.025
 	const steps = 8
 	dist := steps * subStep * gamefintech.WalkSpeed
-	dirX, dirY := clearHeading(t, startX/100, startY/100, dist)
+	dirX, dirY := clearHeading(t, servedSolids(t, cli, srv.URL), startX/100, startY/100, dist)
 
 	send := func(from, to int) {
 		cmds := make([]map[string]any, 0, to-from+1)
@@ -1185,26 +1216,73 @@ func TestFintechResendingUnacknowledgedInputDoesNotWalkYouTwice(t *testing.T) {
 	}
 }
 
+// servedOfficeID is the identity of the floor the server is serving.
+func servedOfficeID(t *testing.T, cli *http.Client, base string) string {
+	t.Helper()
+	resp, err := cli.Get(base + "/api/game-fintech/config")
+	if err != nil {
+		t.Fatalf("read the catalogue: %v", err)
+	}
+	defer resp.Body.Close()
+	var cfg struct {
+		Office struct {
+			ID string `json:"id"`
+		} `json:"office"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+		t.Fatalf("decode the catalogue: %v", err)
+	}
+	return cfg.Office.ID
+}
+
+// servedSolids is the furniture the SERVER is running, read from the catalogue it
+// serves. The floor is stored data, so this is the only honest source for a test
+// that has to know where it can walk.
+func servedSolids(t *testing.T, cli *http.Client, base string) []gamefintech.Rect {
+	t.Helper()
+	resp, err := cli.Get(base + "/api/game-fintech/config")
+	if err != nil {
+		t.Fatalf("read the catalogue: %v", err)
+	}
+	defer resp.Body.Close()
+	var cfg struct {
+		Office struct {
+			Solids []gamefintech.Rect `json:"solids"`
+		} `json:"office"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+		t.Fatalf("decode the catalogue: %v", err)
+	}
+	if len(cfg.Office.Solids) == 0 {
+		t.Fatal("the served office has no furniture in it at all")
+	}
+	return cfg.Office.Solids
+}
+
 // clearHeading is a unit vector from `at` along which `dist` metres of floor are
 // free of both the walls and the furniture.
 //
 // It exists because a spawn is DRAWN: any hardcoded heading is clear from some
 // spawns and blocked from others, which makes a distance assertion flaky in a way
 // that looks exactly like the bug it is asserting about. Four axis headings, the
-// first that is clear — the office is sixteen metres of floor with eight desks in
-// it, so from anywhere legal at least one of them is.
+// first that is clear — every legal floor keeps MinGap of clear space around
+// everything on it, so from anywhere legal at least one of them is.
+//
+// THE FURNITURE COMES FROM THE SERVED CATALOGUE and not from a constant, because
+// the floor is data: reading a package variable here would be this test asserting
+// against a room the server may not be running.
 //
 // Sampled every five centimetres rather than clipped exactly: this is a test
 // picking a direction, not the simulation resolving a collision, and a sample
 // finer than a tenth of the player's diameter cannot step over a desk.
-func clearHeading(t *testing.T, x, y, dist float64) (float64, float64) {
+func clearHeading(t *testing.T, solids []gamefintech.Rect, x, y, dist float64) (float64, float64) {
 	t.Helper()
 	const r = gamefintech.PlayerRadius
 	free := func(px, py float64) bool {
 		if px < r || py < r || px > gamefintech.OfficeW-r || py > gamefintech.OfficeH-r {
 			return false
 		}
-		for _, d := range gamefintech.Desks {
+		for _, d := range solids {
 			if px > d.X-r && px < d.X+d.W+r && py > d.Y-r && py < d.Y+d.H+r {
 				return false
 			}
@@ -1761,4 +1839,53 @@ func TestFintechEveryShiftIsSomebodyElse(t *testing.T) {
 		t.Fatalf("forty shifts were all the same person: %v — the draw is not reaching the client", seen)
 	}
 	t.Logf("forty shifts drew %d of %d personas: %v", len(seen), cast, seen)
+}
+
+func TestFintechTheFloorSurvivesARestart(t *testing.T) {
+	// THE WHOLE POINT OF THE FLOOR BEING DATA, end to end and against a real
+	// database: a process that comes back reads the office it was running rather
+	// than one it compiled in.
+	//
+	// It is also the test that pins the id being a CONTENT HASH rather than a row
+	// id — a second boot over the same row has to produce the same identity, or
+	// every deploy would tell every open browser its cached catalogue was stale.
+	ctx := context.Background()
+	repo := gamefintech.NewPostgresRepository()
+
+	first, err := gamefintech.EnsureLayout(ctx, pool, repo)
+	if err != nil {
+		t.Fatalf("first boot: %v", err)
+	}
+	if len(first.Solids) == 0 || first.ID == "" {
+		t.Fatalf("the first boot produced no floor: %+v", first)
+	}
+
+	second, err := gamefintech.EnsureLayout(ctx, pool, repo)
+	if err != nil {
+		t.Fatalf("second boot: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("a restart came back on office %q, having been running %q", second.ID, first.ID)
+	}
+	if len(second.Solids) != len(first.Solids) || len(second.Windows) != len(first.Windows) {
+		t.Fatalf("the floor changed shape across a restart: %d/%d against %d/%d",
+			len(second.Solids), len(second.Windows), len(first.Solids), len(first.Windows))
+	}
+
+	// And booting twice did not write twice: the starting floor is installed when
+	// there is nothing stored, not whenever a process starts.
+	var rows int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM game_fintech_layouts WHERE deleted_at IS NULL`).Scan(&rows); err != nil {
+		t.Fatalf("count layouts: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("%d floors stored after two boots, want 1", rows)
+	}
+
+	// The stored floor is playable, which is what EnsureLayout refuses to boot
+	// onto anything else for.
+	if issues := gamefintech.ValidateLayout(second); len(issues) > 0 {
+		t.Fatalf("the stored floor is not playable: %+v", issues)
+	}
 }

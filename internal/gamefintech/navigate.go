@@ -1,9 +1,6 @@
 package gamefintech
 
-import (
-	"math"
-	"sync"
-)
+import "math"
 
 // Getting round a desk.
 //
@@ -18,9 +15,10 @@ import (
 // still, that is not cover — it is a corner of the room where the antagonist
 // cannot reach you, which is the one thing this game cannot have.
 //
-// WHAT IT IS. A coarse uniform grid over the static office, a breadth-first
-// search from the TARGET each tick, and a boss who walks downhill through the
-// resulting distance field. That is the whole of it. Deliberately not A*: the
+// WHAT IT IS. A coarse uniform grid over the floor, a breadth-first search from
+// the TARGET each tick, and a boss who walks downhill through the resulting
+// distance field. The grid belongs to the floor rather than to the process (see
+// Plan): it is built once, when a layout is installed, and thrown away with it. That is the whole of it. Deliberately not A*: the
 // grid is 1400 cells and there is one boss, so a full flood fill costs less than
 // the priority queue would, and BFS has no heuristic to get subtly wrong.
 //
@@ -37,34 +35,33 @@ import (
 // is a place he never arrives at at all.
 
 // The navigation grid. Cell size is a compromise stated rather than guessed: it
-// has to be small enough that the gaps between the desks are several cells wide
-// — the narrowest passage in the catalogue is comfortably over a metre, so half
-// a metre gives at least two cells of it — and large enough that a flood fill is
-// nothing. 32 x 44 = 1408 cells.
+// has to be small enough that the gaps between the furniture are several cells
+// wide — no legal floor has a passage narrower than MinGap, which is three cells
+// of this — and large enough that a flood fill is nothing. 32 x 44 = 1408 cells.
 const (
 	navCell = 0.5
 	navCols = int(OfficeW / navCell)
 	navRows = int(OfficeH / navCell)
 )
 
-// navFree reports, per cell, whether the bald man's disc fits with its centre at
-// that cell's middle.
+// navGridFor reports, per cell, whether the bald man's disc fits with its centre
+// at that cell's middle.
 //
-// Built ONCE from the catalogue's own desks, not from the argument StepBoss
-// takes. That is deliberate and it is not an inconsistency: the office in this
-// game is STATIC and lives in the catalogue (unlike «ВАНЯДУМ», where a level is
-// generated per run), so the navigable space is a constant of the content rather
-// than a function of a parameter. The `desks` argument still drives the collision
-// resolver, which is per-call and unchanged.
-var navFree = sync.OnceValue(func() []bool {
+// A FUNCTION OF THE LAYOUT, built once when a layout is installed (see Plan) and
+// never per tick. It used to be a package-level sync.OnceValue over the
+// catalogue's constant desks — correct while the office could not change, and
+// exactly wrong now that it can: a regenerated office would have gone on pathing
+// round the furniture of the office before it, which presents as the лысый walking
+// into thin air and grinding on a desk that is no longer there.
+func navGridFor(rects []Rect) []bool {
 	free := make([]bool, navCols*navRows)
 	for r := 0; r < navRows; r++ {
 		for c := 0; c < navCols; c++ {
 			at := navCentre(c, r)
 			ok := at.X >= BossRadius && at.X <= OfficeW-BossRadius &&
 				at.Y >= BossRadius && at.Y <= OfficeH-BossRadius
-			for _, d := range Desks {
-				if insideDesk(d, at, BossRadius) {
+			for _, d := range rects {
+				if insideRect(d, at, BossRadius) {
 					ok = false
 					break
 				}
@@ -73,7 +70,7 @@ var navFree = sync.OnceValue(func() []bool {
 		}
 	}
 	return free
-})
+}
 
 // navCentre is the middle of a cell, in metres.
 func navCentre(col, row int) Vec2 {
@@ -108,18 +105,19 @@ func clampInt(v, lo, hi int) int {
 // of the NEXT cell along rather than a whole route — he is re-planned every tick
 // anyway, because the thing he is chasing moves.
 //
-// It also returns `to` when there is no path at all. That cannot happen in the
-// catalogue office, whose free space is one connected region, and if a later
-// layout breaks that the honest failure is the old behaviour — walking at you and
-// grinding on a desk — rather than standing still.
-func navAimAt(from, to Vec2) Vec2 {
+// It also returns `to` when there is no path at all. Every office this game
+// installs has free space in one connected region — ValidateLayout will not accept
+// one that does not, and the generator only ever accepts what validates — so the
+// unreachable case is a guard rather than a state, and the honest failure is the
+// old behaviour: walking at you and grinding on a desk, rather than standing still.
+func navAimAt(p *Plan, from, to Vec2) Vec2 {
 	// Nothing in the way: go straight at him. The disc that has to fit is HIS,
 	// so the line is tested at BossRadius.
-	if clearLine(from, to, BossRadius) {
+	if clearLine(p.rects, from, to, BossRadius) {
 		return to
 	}
 
-	free := navFree()
+	free := p.nav
 	tc, tr := navCellOf(to)
 	fc, fr := navCellOf(from)
 	if fc == tc && fr == tr {

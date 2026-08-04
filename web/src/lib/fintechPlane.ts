@@ -24,7 +24,7 @@
  * properties and never builds a sentence or works out a coordinate.
  */
 
-import type { FintechRect } from '../api/types';
+import type { FintechRect, FintechWindow } from '../api/types';
 
 /** The custom properties the stylesheet reads. Normalised 0..1 across the plane. */
 export const X_PROPERTY = '--x';
@@ -251,7 +251,7 @@ export interface PlaneBox {
  * PURE, AND THE REASON THE SPLIT IS TWO ELEMENTS RATHER THAN ARITHMETIC. The
  * plane is the clipping box and holds the wall; the office rectangle inside it
  * keeps the catalogue's own shape and is the query container, so `toPlane`,
- * `deskBox` and every `100cqw` / `100cqh` consumer are untouched by the band's
+ * `solidBox` and every `100cqw` / `100cqh` consumer are untouched by the band's
  * existence — a coordinate is still a fraction of the room. Folding the band into
  * the four transform sites instead would be four independent edits that have to
  * agree forever.
@@ -383,8 +383,8 @@ export function withName(line: string, name: string, fallback = 'ОН'): string 
   return line.split(NAME_PLACEHOLDER).join(use.toUpperCase());
 }
 
-/** A desk's box on the plane, as fractions of it. */
-export interface DeskBox {
+/** A solid's box on the plane, as fractions of it. */
+export interface SolidBox {
   left: number;
   top: number;
   width: number;
@@ -392,14 +392,20 @@ export interface DeskBox {
 }
 
 /**
- * One desk, as a fraction of the plane.
+ * One solid — a desk, a flowerpot, a ficus — as a fraction of the room.
  *
- * Desks are static — the office is in the catalogue and never generated — so
- * unlike the figures these go through Vue exactly once, as an inline style on a
- * `v-for`. Deriving the fractions here rather than in the template keeps the
- * arithmetic testable and the template a list of boxes.
+ * STATIC FOR THE LIFE OF A SHIFT, though no longer for the life of the process:
+ * the layout is stored and can be rebuilt, but nothing moves while somebody is
+ * standing in it. So unlike the figures these go through Vue exactly once, as an
+ * inline style on a `v-for`, and a new layout is a new list rather than a stream
+ * of positions. Deriving the fractions here rather than in the template keeps
+ * the arithmetic testable and the template a list of boxes.
+ *
+ * IT TAKES A RECTANGLE AND NOT A SOLID, deliberately: what a thing IS decides
+ * its class and nothing else, so this function has no reason to know. Every kind
+ * is placed identically because every kind occupies the floor identically.
  */
-export function deskBox(d: FintechRect, officeW: number, officeH: number): DeskBox {
+export function solidBox(d: FintechRect, officeW: number, officeH: number): SolidBox {
   if (!(officeW > 0) || !(officeH > 0)) return { left: 0, top: 0, width: 0, height: 0 };
   return {
     left: clamp01(d.x / officeW),
@@ -407,6 +413,71 @@ export function deskBox(d: FintechRect, officeW: number, officeH: number): DeskB
     width: clamp01(d.w / officeW),
     height: clamp01(d.h / officeH),
   };
+}
+
+/** Where one pane sits, as fractions of its own wall's length. */
+export interface WindowPlacement {
+  /** Which wall it is on, verbatim from the catalogue. */
+  wall: string;
+  /** Where the pane begins, 0..1 from that wall's start. */
+  start: number;
+  /** How much of the wall it covers, 0..1. Zero means "do not draw this". */
+  span: number;
+}
+
+/**
+ * One window, as a placement along the wall band it belongs to.
+ *
+ * A WINDOW IS NOT ON THE FLOOR, which is the whole reason it is not a rectangle.
+ * The plane is the room plus the walls around it (see `planeBox`), and glazing
+ * lives in those bands: on the top wall it runs left to right across the room's
+ * WIDTH, and on either side wall it runs top to bottom down the room's HEIGHT.
+ * So a pane has one axis and one offset, and this turns the catalogue's metres
+ * into the two fractions of that axis the stylesheet needs.
+ *
+ * FRACTIONS OF THE WALL RATHER THAN OF THE PLANE, and that is what keeps the
+ * band's own depth out of here. The wall shares are already CSS custom
+ * properties written from `planeBox` — the stylesheet is the one place that
+ * knows how deep a band is — so a pane is placed by the same arithmetic whichever
+ * wall it is on, and this function stays pure and free of the layout.
+ *
+ * A SPAN OF ZERO MEANS DO NOT DRAW IT, which is what an unreadable wall, a
+ * degenerate room and a pane of no length all answer. There is no such thing as
+ * a window this client should guess the position of: a fourth wall name it has
+ * never heard of is a pane it cannot place, and an element of no size in the
+ * corner would be worse than an absent one.
+ */
+export function windowBand(win: FintechWindow, officeW: number, officeH: number): WindowPlacement {
+  const along = win.wall === 'top' ? officeW : win.wall === 'left' || win.wall === 'right' ? officeH : 0;
+  if (!(along > 0) || !Number.isFinite(win.at) || !(win.len > 0)) {
+    return { wall: win.wall, start: 0, span: 0 };
+  }
+  const start = clamp01(win.at / along);
+  // Clipped at the far end rather than allowed to run past it: a pane longer than
+  // the wall it is on is a layout this client cannot fix, and drawing it over the
+  // corner would put glazing on two walls at once.
+  const span = Math.min(clamp01(win.len / along), 1 - start);
+  return { wall: win.wall, start, span };
+}
+
+/**
+ * One metre of floor, as a percentage of the room's HEIGHT — the floorboard the
+ * stylesheet repeats down the room.
+ *
+ * DERIVED FROM THE SERVED ROOM RATHER THAN TYPED, which is the point: the stripe
+ * used to be a hardcoded 4.5455 %, which is one twenty-second, which is one metre
+ * of the 16 × 22 room the game shipped with. A layout of any other height drew a
+ * floor whose boards were no longer a metre, so the one thing on the plane that
+ * gives the room a sense of scale silently lied about it.
+ *
+ * A ROOM IT CANNOT READ GETS ONE BOARD, not a guess: a full-height stripe is a
+ * plain floor, which is the right way to fail — a division by a height of zero
+ * would be an infinity CSS drops, and a made-up height would draw a scale nobody
+ * chose.
+ */
+export function floorStripe(officeH: number): string {
+  if (!(officeH > 0) || !Number.isFinite(officeH)) return '100%';
+  return `${100 / officeH}%`;
 }
 
 // ---------------------------------------------------------------------------

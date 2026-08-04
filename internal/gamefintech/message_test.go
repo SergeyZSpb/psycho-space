@@ -164,7 +164,7 @@ func TestADashCooldownIsNeverRoundedDownToReady(t *testing.T) {
 	}
 	// And the snapshot uses it, so the guarantee reaches the wire rather than
 	// stopping at the helper.
-	o := NewOffice()
+	o := newTestOffice()
 	if err := o.Join("a", "s", "p-a", "", 0, time.Now()); err != nil {
 		t.Fatalf("join: %v", err)
 	}
@@ -375,16 +375,37 @@ func TestSnapshotStaysSmall(t *testing.T) {
 }
 
 func TestTheOfficeIsNeverOnAFrame(t *testing.T) {
-	// It is a constant the client already fetched with the catalogue. Putting
-	// eight desks on a payload that repeats ten times a second would be the
-	// single most expensive mistake available in this game.
-	raw, err := json.Marshal(Snapshot{T: TypeSnapshot})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{`"desks"`, `"office"`, `"w"`, `"h"`} {
-		if strings.Contains(string(raw), key) {
-			t.Fatalf("the office leaked onto a snapshot (%s): %s", key, raw)
+	// The floor is in the catalogue the client fetched once. Putting it on a
+	// payload that repeats ten times a second, per viewer, would be the single
+	// most expensive mistake available in this game — and it is a LIVELIER
+	// mistake now that the floor is data, because the temptation is to answer
+	// «the office changed» by sending the office.
+	//
+	// EVERY OUTBOUND FRAME AND NOT ONLY THE SNAPSHOT. This checked `Snapshot`
+	// alone while the geometry was a constant that nothing could have been
+	// tempted to attach; the answer to a floor that changes is an identifier on
+	// the HTTP shift response, so the guard has to cover the frames somebody
+	// would otherwise reach for.
+	//
+	// The keys are the geometry's own. `"kind"` is deliberately not among them —
+	// it is a served field on a solid, not something a frame could carry — and
+	// neither is `"k"`, which is the snapshot's tick and an input's seen-tick.
+	for _, frame := range []struct {
+		name string
+		v    any
+	}{
+		{"snapshot", Snapshot{T: TypeSnapshot}},
+		{"ready", Ready{T: TypeReady}},
+		{"over", Over{T: TypeOver}},
+	} {
+		raw, err := json.Marshal(frame.v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{`"desks"`, `"solids"`, `"windows"`, `"office"`, `"w"`, `"h"`} {
+			if strings.Contains(string(raw), key) {
+				t.Fatalf("the office leaked onto the %s frame (%s): %s", frame.name, key, raw)
+			}
 		}
 	}
 }

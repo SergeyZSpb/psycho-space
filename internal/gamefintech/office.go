@@ -14,11 +14,13 @@ import (
 //
 // THERE IS ONE OF THESE FOR THE WHOLE PROCESS, not one per shift. That is the
 // load-bearing difference from «ВАНЯДУМ», where an arena is a freshly generated
-// заброшка and therefore has to be per run. This office is a constant in the
-// catalogue: the same room, the same eight desks, the same two spawns, every
-// time. So there is one of it, everybody who is working shares it, and it is
-// dropped entirely when the last person leaves — the next shift builds a fresh
-// one with the bald man back at the far wall.
+// заброшка and therefore has to be per run. The floor here is data rather than a
+// constant — it is generated, stored and editable (layout.go) — but it is the
+// SAME floor for everybody at any instant, and it is chosen by the service rather
+// than by whoever clocked in. So there is one office, everybody who is working
+// shares it, and it is dropped entirely when the last person leaves; the next
+// shift builds a fresh one, on whatever floor is current by then, with the bald
+// man back at the far wall.
 //
 // Nothing here is ever written to Postgres except the summary, once, when a
 // shift ends. That is what keeps the 20 Hz tick clear of the rule that nothing
@@ -192,6 +194,15 @@ type Office struct {
 	occupants map[string]*Occupant
 	boss      Boss
 	tick      uint64
+	// plan is the office's furniture: the layout it was opened with, the
+	// collision list, and the navigation grid built from it.
+	//
+	// HELD BY THE OFFICE RATHER THAN BY THE PACKAGE, which is the whole of the
+	// difference between a level and a constant. Everything that collides or paths
+	// reads this — under the mutex, like everything else here — so an office is
+	// entirely described by its occupants and its plan, and there is no global
+	// state left for two of them to disagree about.
+	plan *Plan
 	// redirectTo is the account the bald man has been POINTED at, overriding his
 	// standing rule of walking at whoever is nearest, and redirectLeft is how
 	// much of that override is left.
@@ -272,10 +283,17 @@ type prop struct {
 	gone float64
 }
 
-// NewOffice opens the floor with both men at the far wall and nobody in it.
-func NewOffice() *Office {
+// NewOffice opens the floor on a plan, with both men at the far wall and nobody
+// in it.
+//
+// The plan is a PARAMETER rather than something this reads, because the office is
+// no longer the only thing that decides what the room looks like: it is opened on
+// whatever floor is current, and the service that holds that decision hands it
+// over — already built, so opening an office costs no flood fill.
+func NewOffice(plan *Plan) *Office {
 	o := &Office{
 		occupants: make(map[string]*Occupant, MaxOccupants),
+		plan:      plan,
 		boss:      NewBoss(),
 		claude:    NewChaser(),
 		npcs:      NewNPCs(),
@@ -392,8 +410,8 @@ const (
 // could choose.
 func (o *Office) spawnPoint() Vec2 {
 	free := func(at Vec2) bool {
-		for _, d := range Desks {
-			if insideDesk(d, at, PlayerRadius) {
+		for _, d := range o.plan.rects {
+			if insideRect(d, at, PlayerRadius) {
 				return false
 			}
 		}
@@ -603,7 +621,7 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 			occ.Pending = occ.Pending[1:]
 			occ.Budget -= c.Dt
 			spent += c.Dt
-			occ.State = Step(Desks, occ.State, c)
+			occ.State = Step(o.plan.rects, occ.State, c)
 			// The queue is strictly ascending in Seq — Enqueue drops anything at
 			// or below HighSeq and the overflow trim takes from the front — so
 			// this is the last command actually folded in, which is what the
@@ -663,7 +681,7 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 		// the fill runs again, for ever. The fill exists for a client that sent
 		// NOTHING; a client whose command is waiting has sent something.
 		if idle := dt - spent; idle > 0 && spent == 0 && len(occ.Pending) == 0 {
-			occ.State = Step(Desks, occ.State, Command{Dt: idle})
+			occ.State = Step(o.plan.rects, occ.State, Command{Dt: idle})
 			occ.Budget = math.Max(0, occ.Budget-idle)
 		}
 	}
@@ -790,7 +808,7 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// on every process that replays the same office — and so the browser can
 	// compute the tempo from the `k` its snapshot already carries.
 	elapsed := float64(o.tick) * SimStep.Seconds()
-	o.boss = StepBoss(Desks, o.boss, targets, dt, elapsed)
+	o.boss = StepBoss(o.plan, o.boss, targets, dt, elapsed)
 
 	// AND CLAUDE, stepped against the same target list — so a cloud hides you from
 	// both of them, which is the answer a player expects from something called
@@ -803,7 +821,7 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// keeps his last position and it is never sent, because he is about to be put
 	// back at his spawn when the absence ends.
 	if o.routerAway <= 0 {
-		o.claude = StepChaser(Desks, o.claude, targets, dt, elapsed)
+		o.claude = StepChaser(o.plan, o.claude, targets, dt, elapsed)
 	}
 
 	// AND THEN HE STEPS ASIDE IF HE HAS WALKED INTO SOMEBODY — the лысый, whose
@@ -813,14 +831,14 @@ func (o *Office) Advance(dt float64, now time.Time) []*Occupant {
 	// him. Claude is the one who gives way in both cases, so neither the лысый's
 	// position nor a player's is a function of his. See Separate.
 	if o.routerAway <= 0 {
-		o.claude = Separate(o.boss.Pos, bodies, o.claude, Desks)
+		o.claude = Separate(o.boss.Pos, bodies, o.claude, o.plan.rects)
 	}
 
 	// AND THE TWO WHO ARE NOT PLAYING. Stepped after both men and against neither of
 	// them: they are not in `targets`, so nobody walks at them and they walk at
 	// nobody. They carry their own кальян and never touch the office's one.
 	for i := range o.npcs {
-		o.npcs[i] = StepNPC(Desks, o.npcs[i], dt)
+		o.npcs[i] = StepNPC(o.plan.rects, o.npcs[i], dt)
 	}
 
 	// RECORDED AFTER BOTH MEN HAVE STEPPED and before either is tested against

@@ -41,51 +41,83 @@ const MIN_SHIFT_MS = 3_000;
  * from the лысый at the far wall, which puts most spawns in the band at the other
  * end, where "up" is a wall. It takes the plane coordinates the figure is drawn
  * with — both 0..1 across the office — and the served catalogue, which carries
- * the office's size, its desks and the player's radius.
+ * the office's size, everything solid in it and the player's radius.
  *
  * `KeyW` is −Y and `KeyS` is +Y, because the office's +Y points DOWN and so does
  * the screen's; there is no axis flip anywhere in this client, and asserting the
  * direction is half of what this test is for.
+ *
+ * IT MEASURES ALL FOUR DIRECTIONS AND TAKES THE ROOMIEST. The earlier version
+ * took the first of one axis's two that had a clear 0.8 m and threw when neither
+ * did — survivable while the floor was three desks, and reachable now that the
+ * layout is stored and can be denser: a spawn in a gap between two solids has
+ * neither of one axis's directions clear while the other axis is wide open.
+ * Choosing by clearance also fails INFORMATIVELY, because the message carries
+ * what every direction actually had.
+ *
+ * `only` NARROWS IT TO ONE AXIS, and the caller needs that for the second leg:
+ * proving the axes are neither swapped nor flipped takes one vertical walk and
+ * one horizontal one, so the second call asks for whatever the first did not use
+ * — still the roomier of that axis's two rather than the first that qualifies.
  */
 function clearKey(
   cfg: {
-    office: { w: number; h: number; player_radius: number; desks: { x: number; y: number; w: number; h: number }[] };
+    office: {
+      w: number;
+      h: number;
+      player_radius: number;
+      solids: { x: number; y: number; w: number; h: number }[];
+    };
     move: { walk_speed: number };
   },
   from: { x: number; y: number },
-  axis: 'vertical' | 'horizontal',
-): { key: string; moved: (a: { x: number; y: number }, b: { x: number; y: number }) => boolean } {
-  const { w, h, player_radius: r, desks } = cfg.office;
-  // Enough clearance for the assertion and no more. The poll asks for 0.01 of the
-  // plane, which is about eleven centimetres, so eighty of them is seven times the
-  // margin — and demanding a whole half-second of walking (3.2 m) rejects most of
-  // the floor, which is how the first version of this helper threw instead of
-  // choosing.
+  only?: 'vertical' | 'horizontal',
+): {
+  key: string;
+  axis: 'vertical' | 'horizontal';
+  moved: (a: { x: number; y: number }, b: { x: number; y: number }) => boolean;
+} {
+  const { w, h, player_radius: r, solids } = cfg.office;
+  // How far is worth measuring. The poll asks for 0.01 of the plane, which is
+  // about eleven centimetres, so eighty of them is seven times the margin — and
+  // demanding a whole half-second of walking (3.2 m) rejects most of the floor,
+  // which is how the first version of this helper threw instead of choosing.
   const reach = 0.8;
+  const step = 0.05;
   const free = (mx: number, my: number) => {
     if (mx < r || my < r || mx > w - r || my > h - r) return false;
-    return !desks.some((d) => mx > d.x - r && mx < d.x + d.w + r && my > d.y - r && my < d.y + d.h + r);
+    return !solids.some(
+      (d) => mx > d.x - r && mx < d.x + d.w + r && my > d.y - r && my < d.y + d.h + r,
+    );
   };
-  const walkable = (dx: number, dy: number) => {
-    for (let s = 0; s <= reach + 1e-9; s += 0.05) {
-      if (!free(from.x * w + dx * s, from.y * h + dy * s)) return false;
+  /** How far this direction is walkable before something is in the way, in metres. */
+  const clearance = (dx: number, dy: number) => {
+    let s = 0;
+    while (s + step <= reach + 1e-9 && free(from.x * w + dx * (s + step), from.y * h + dy * (s + step))) {
+      s += step;
     }
-    return true;
+    return s;
   };
-  const options =
-    axis === 'vertical'
-      ? ([
-          { key: 'KeyW', dx: 0, dy: -1, moved: (a: { y: number }, b: { y: number }) => b.y < a.y - 0.01 },
-          { key: 'KeyS', dx: 0, dy: 1, moved: (a: { y: number }, b: { y: number }) => b.y > a.y + 0.01 },
-        ] as const)
-      : ([
-          { key: 'KeyD', dx: 1, dy: 0, moved: (a: { x: number }, b: { x: number }) => b.x > a.x + 0.01 },
-          { key: 'KeyA', dx: -1, dy: 0, moved: (a: { x: number }, b: { x: number }) => b.x < a.x - 0.01 },
-        ] as const);
-  for (const o of options) {
-    if (walkable(o.dx, o.dy)) return { key: o.key, moved: o.moved };
+  const options = [
+    { key: 'KeyW', axis: 'vertical', dx: 0, dy: -1, moved: (a: { y: number }, b: { y: number }) => b.y < a.y - 0.01 },
+    { key: 'KeyS', axis: 'vertical', dx: 0, dy: 1, moved: (a: { y: number }, b: { y: number }) => b.y > a.y + 0.01 },
+    { key: 'KeyD', axis: 'horizontal', dx: 1, dy: 0, moved: (a: { x: number }, b: { x: number }) => b.x > a.x + 0.01 },
+    { key: 'KeyA', axis: 'horizontal', dx: -1, dy: 0, moved: (a: { x: number }, b: { x: number }) => b.x < a.x - 0.01 },
+  ] as const;
+  const measured = options
+    .filter((o) => !only || o.axis === only)
+    .map((o) => ({ ...o, room: clearance(o.dx, o.dy) }));
+  const best = measured.reduce((a, b) => (b.room > a.room ? b : a));
+  // A tenth of a metre is ten times the 0.01 of the plane the poll asks for, so a
+  // direction that clears it is a direction the assertion can see.
+  if (best.room < 0.1) {
+    throw new Error(
+      `nowhere to walk ${only ?? 'at all'} from ${from.x}/${from.y}: ${measured
+        .map((m) => `${m.key} ${m.room.toFixed(2)}m`)
+        .join(', ')}`,
+    );
   }
-  throw new Error(`no clear ${axis} walk from ${from.x}/${from.y}`);
+  return { key: best.key, axis: best.axis, moved: best.moved };
 }
 /**
  * A little over the minimum, and deliberately NOT more.
@@ -140,7 +172,7 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     expect(res.status()).toBe(200);
     const config = (await res.json()) as {
       game_key: string;
-      office: { w: number; h: number; desks: unknown[] };
+      office: { id: string; w: number; h: number; solids: { kind: string }[]; windows: unknown[] };
       endings: { key: string }[];
       boss_lines: string[];
       player_lines: string[];
@@ -160,7 +192,18 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     // could reach production. Leave it.
     expect(config.game_key).toBe('karen');
     expect(config.office.w).toBeGreaterThan(0);
-    expect(config.office.desks.length).toBeGreaterThan(0);
+    expect(config.office.solids.length).toBeGreaterThan(0);
+    // AND THE LAYOUT HAS AN IDENTITY, which is the whole of how a client knows the
+    // geometry it cached is still the geometry everybody is standing in: the office
+    // is stored and rebuildable now, and every shift response names the layout it
+    // belongs to. A content hash, so the shape is pinned rather than the value —
+    // two identical floors have the same id on every machine and after every
+    // deploy, which is what makes it a cache key rather than a row id.
+    expect(config.office.id).toMatch(/^[0-9a-f]{16}$/);
+    // Every solid says what it is, because the kind is the only thing that decides
+    // how it is drawn. Not pinned to a fixed set: the wire carries a plain string
+    // precisely so the office can grow a fourth kind without a client deploy.
+    for (const s of config.office.solids) expect(s.kind).not.toBe('');
     expect(config.endings.map((e) => e.key).sort()).toEqual(['left', 'promoted']);
     // The balloons live here too, for the same reason: the frame carries an
     // INDEX ten times a second and the words are fetched once (ADR-037). Index 0
@@ -285,20 +328,22 @@ test.describe('«СИМУЛЯТОР ФИНТЕХА»', () => {
     // has somewhere to go. The claim — that WASD reaches the real office and that
     // the axes are not swapped or flipped — is unchanged.
     const cfg = await (await page.request.get('/api/game-fintech/config')).json();
-    const vertical = clearKey(cfg, before, 'vertical');
-    const horizontal = clearKey(cfg, before, 'horizontal');
+    const first = clearKey(cfg, before);
 
     // Held, not tapped: a walk is a state, and the emitter samples the axes at the
     // served rate rather than per key event.
-    await page.keyboard.down(vertical.key);
-    await expect.poll(async () => vertical.moved(before, await at()), { timeout: 5_000 }).toBe(true);
-    await page.keyboard.up(vertical.key);
+    await page.keyboard.down(first.key);
+    await expect.poll(async () => first.moved(before, await at()), { timeout: 5_000 }).toBe(true);
+    await page.keyboard.up(first.key);
 
-    // And sideways, so the axis mapping is proved rather than just "something moved".
+    // And then the OTHER axis, so the mapping is proved rather than just
+    // "something moved" — measured from where the first walk actually ended,
+    // which is also a second draw at finding room to walk in.
     const mid = await at();
-    await page.keyboard.down(horizontal.key);
-    await expect.poll(async () => horizontal.moved(mid, await at()), { timeout: 5_000 }).toBe(true);
-    await page.keyboard.up(horizontal.key);
+    const second = clearKey(cfg, mid, first.axis === 'vertical' ? 'horizontal' : 'vertical');
+    await page.keyboard.down(second.key);
+    await expect.poll(async () => second.moved(mid, await at()), { timeout: 5_000 }).toBe(true);
+    await page.keyboard.up(second.key);
 
     // Space dashes, and the readout says so — which is the office answering, since the
     // cooldown is on the snapshot rather than run locally.

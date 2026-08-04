@@ -45,7 +45,7 @@ func NewNPCs() []NPC {
 // and no golden vector pins one, so there is no second implementation for a random
 // draw to disagree with. The office is the only authority on where Серега is, which
 // is the cheapest possible arrangement for something nobody is racing.
-func StepNPC(desks []Rect, n NPC, dt float64) NPC {
+func StepNPC(rects []Rect, n NPC, dt float64) NPC {
 	if n.Pause > 0 {
 		n.Pause = math.Max(0, n.Pause-dt)
 		return n
@@ -58,7 +58,7 @@ func StepNPC(desks []Rect, n NPC, dt float64) NPC {
 	// walk at for the rest of the shift while the resolver held him off it.
 	if dist <= NPCArrive || n.Walked >= NPCGiveUpSeconds {
 		n.Pause = NPCPauseSeconds
-		n.To = drawNPCTarget(desks)
+		n.To = drawNPCTarget(rects)
 		n.Walked = 0
 		return n
 	}
@@ -74,7 +74,7 @@ func StepNPC(desks []Rect, n NPC, dt float64) NPC {
 	// The same resolver everybody else gets. He has no navigation — he ambles, and
 	// bumping into a desk and sliding along it is exactly what an amble looks like.
 	n.Pos = clampToFloor(n.Pos, PlayerRadius)
-	for _, d := range desks {
+	for _, d := range rects {
 		n.Pos = pushOut(d, n.Pos, PlayerRadius)
 	}
 	return n
@@ -89,15 +89,15 @@ func StepNPC(desks []Rect, n NPC, dt float64) NPC {
 //
 // Bounded draws with a floor fallback rather than a loop, for `spawnPoint`'s reason:
 // a rejection sampler with no bound is a rejection sampler that can hang the tick.
-func drawNPCTarget(desks []Rect) Vec2 {
+func drawNPCTarget(rects []Rect) Vec2 {
 	for i := 0; i < 16; i++ {
 		at := Vec2{
 			X: PlayerRadius + unitRand()*(OfficeW-2*PlayerRadius),
 			Y: PlayerRadius + unitRand()*(OfficeH-2*PlayerRadius),
 		}
 		clear := true
-		for _, d := range desks {
-			if insideDesk(d, at, PlayerRadius) {
+		for _, d := range rects {
+			if insideRect(d, at, PlayerRadius) {
 				clear = false
 				break
 			}

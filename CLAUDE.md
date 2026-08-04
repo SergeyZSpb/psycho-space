@@ -61,8 +61,12 @@ internal/
                     to do it in DOM: pursuit is not closed form, so a 20 Hz loop
                     advances ONE process-wide office (not one per shift) and
                     Postgres is touched once per shift — never on a tick.
-                    content.go  the catalogue — the STATIC office, every constant
-                    sim.go      Step: pure (desks, player, command) → player
+                    content.go  the catalogue — the room, the starting floor, every constant
+                    layout.go   the floor as DATA — Layout, Solid + its decorative
+                                Kind, Window, the Plan they compile into, and the
+                                geometry constants with their derivations
+                    validate.go the one predicate that says whether a floor is playable
+                    sim.go      Step: pure (rects, player, command) → player
                     boss.go     the man who walks at the nearest employee, and grins
                     chaser.go   Claude Code — the same walk, a different consequence
                     npc.go      Серега and Тёма, who are scenery with opinions

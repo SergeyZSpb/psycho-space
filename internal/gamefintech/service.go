@@ -76,6 +76,23 @@ type Profiles interface {
 	AvatarURL(ctx context.Context, accountID string) (string, error)
 }
 
+// Working is a shift somebody is in: which one, who they are, when it started,
+// and the floor it is being played on.
+//
+// A STRUCT RATHER THAN FOUR RETURN VALUES, because the office id arrived fourth
+// and a four-value signature at two call sites is where a caller starts passing
+// them in the wrong order. StartTick is zero from StartShift — the caller already
+// knows the shift has just begun — and carries the office tick on a resume.
+type Working struct {
+	ShiftID   string
+	Persona   int
+	StartTick uint64
+	// OfficeID is the content hash of the floor this shift was joined on. A
+	// client compares it against the catalogue it cached at mount and refetches
+	// when they differ, which is the whole of the staleness contract.
+	OfficeID string
+}
+
 // Service owns the office and the simulation loop that advances it.
 type Service struct {
 	transport Transport
@@ -88,6 +105,16 @@ type Service struct {
 	pseudonymKey []byte
 
 	mu sync.Mutex
+	// plan is the floor in force: the layout the next office will be opened on,
+	// and the one the catalogue serves.
+	//
+	// HELD BY THE SERVICE AND NOT BY THE OFFICE, because it outlives every office
+	// — an empty process still has to be able to tell a splash screen what the
+	// room looks like. An office is opened on whatever plan this holds and keeps
+	// its own pointer to it for its whole life, so a floor that changes never
+	// changes underneath a shift in progress: it changes what the NEXT office is
+	// built on.
+	plan *Plan
 	// office is nil when nobody is working. It is built by the first StartShift
 	// and dropped when the last person leaves, so an idle process simulates
 	// nothing at all and the bald man is always back at the far wall for the
@@ -103,14 +130,20 @@ type Service struct {
 	done  chan struct{}
 }
 
-// NewService builds the game.
-func NewService(t Transport, room string, q db.DBTX, repo Repository, profiles Profiles) *Service {
+// NewService builds the game on a floor.
+//
+// The layout is a parameter because reading it is a database round trip and this
+// constructor takes no context: the composition root reads it once, at boot, with
+// EnsureLayout, and hands it over. That also makes the failure mode obvious —
+// there is no state in which this service is running without a floor.
+func NewService(t Transport, room string, q db.DBTX, repo Repository, profiles Profiles, layout Layout) *Service {
 	return &Service{
 		transport:    t,
 		room:         room,
 		q:            q,
 		repo:         repo,
 		profiles:     profiles,
+		plan:         NewPlan(layout),
 		saves:        make(chan Shift, savesBuffer),
 		done:         make(chan struct{}),
 		pseudonymKey: randomKey(),
@@ -161,8 +194,50 @@ func (s *Service) AvatarFor(handle string) (string, bool) {
 // silently loses the final flush.
 func (s *Service) Done() <-chan struct{} { return s.done }
 
-// Config is the served catalogue.
-func (s *Service) Config() Config { return BuildConfig() }
+// Config is the served catalogue, including the floor in force.
+//
+// Under the lock, because the floor can be replaced while a request is being
+// served — and the layout it hands out is a copy (BuildConfig), so the encoder
+// never reads a slice the simulation is reading.
+func (s *Service) Config() Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return BuildConfig(s.plan.Layout())
+}
+
+// EnsureLayout is the boot path: the floor in force, or the starting one written
+// and returned when there is nothing stored yet.
+//
+// A MISSING FLOOR IS A STATE AND A BROKEN ONE IS NOT. An empty table is what a
+// fresh database looks like, so it installs the starting floor and says so. A row
+// that does not validate is a different matter — an older or hand-mangled
+// geometry the simulation's single-pass resolver has no answer for — so it is
+// refused in favour of the starting floor rather than served, and the log line is
+// what makes that visible.
+func EnsureLayout(ctx context.Context, q db.DBTX, repo Repository) (Layout, error) {
+	l, err := repo.CurrentLayout(ctx, q)
+	switch {
+	case err == nil:
+		if issues := ValidateLayout(l); len(issues) > 0 {
+			slog.ErrorContext(ctx, "gamefintech: stored layout is not playable, using the starting one",
+				"problem", issues[0].Problem, "index", issues[0].Index)
+			break
+		}
+		return l, nil
+	case errors.Is(err, ErrNoLayout):
+	default:
+		return Layout{}, err
+	}
+
+	l = StartingLayout.WithID()
+	if err := repo.InsertLayout(ctx, q, l, SourceStarting); err != nil {
+		// Standing up on the in-memory floor beats refusing to boot: this table is
+		// one game's furniture, and the landing page, the wishlist and three other
+		// games have nothing to do with it.
+		slog.ErrorContext(ctx, "gamefintech: could not store the starting layout", "err", err)
+	}
+	return l, nil
+}
 
 // Run advances the office on the injected tick.
 //
@@ -353,7 +428,7 @@ func (s *Service) writeShift(ctx context.Context, sh Shift) {
 // request-scoped call, and a handler that had to remember which one was
 // different would eventually forget; the day this one reads the database, the
 // parameter is already there and no caller changes.
-func (s *Service) StartShift(ctx context.Context, accountID string) (string, int, error) {
+func (s *Service) StartShift(ctx context.Context, accountID string) (Working, error) {
 	now := time.Now()
 	// Read ONCE, here, and outside the lock: it is a database round trip, it is
 	// constant for the life of the shift, and the alternative is a query on a
@@ -373,7 +448,7 @@ func (s *Service) StartShift(ctx context.Context, accountID string) (string, int
 	defer s.mu.Unlock()
 
 	if s.office == nil {
-		s.office = NewOffice()
+		s.office = NewOffice(s.plan)
 	}
 	shiftID := uuid.New().String()
 	persona := drawPersona()
@@ -383,9 +458,17 @@ func (s *Service) StartShift(ctx context.Context, accountID string) (string, int
 		if s.office.Empty() {
 			s.office = nil
 		}
-		return "", 0, err
+		return Working{}, err
 	}
-	return shiftID, persona, nil
+	// THE OFFICE ID IS READ HERE, inside the same critical section as the join,
+	// and never from a second Config() call afterwards. Between the two the floor
+	// could be replaced — and telling a client the id of a floor its shift was not
+	// joined on is exactly the stranding the id exists to prevent.
+	return Working{
+		ShiftID:  shiftID,
+		Persona:  persona,
+		OfficeID: s.office.plan.Layout().ID,
+	}, nil
 }
 
 // LeaveShift is the quit button: the shift ends with cause "left", is recorded
@@ -434,14 +517,23 @@ func (s *Service) LeaveShift(ctx context.Context, accountID string) error {
 // employee they are, and the office tick they clocked in on. It is the reload
 // path: a page that comes back finds its shift here rather than starting a
 // second one.
-func (s *Service) CurrentShift(accountID string) (string, int, uint64, bool) {
+func (s *Service) CurrentShift(accountID string) (Working, bool) {
 	s.mu.Lock()
 	office := s.office
 	s.mu.Unlock()
 	if office == nil {
-		return "", 0, 0, false
+		return Working{}, false
 	}
-	return office.ShiftOf(accountID)
+	id, persona, k0, ok := office.ShiftOf(accountID)
+	if !ok {
+		return Working{}, false
+	}
+	return Working{
+		ShiftID:   id,
+		Persona:   persona,
+		StartTick: k0,
+		OfficeID:  office.plan.Layout().ID,
+	}, true
 }
 
 // RecentShifts reads an account's own last shifts, newest first.
@@ -555,11 +647,14 @@ func (s *Service) HandleInbound(ctx context.Context, m realtime.Member, room str
 // that opened before the shift did, or one that outlived it, and the client's
 // own next move — pressing НАЧАТЬ СМЕНУ — is what fixes it.
 func (s *Service) hello(ctx context.Context, m realtime.Member) {
-	shiftID, persona, startTick, ok := s.CurrentShift(m.AccountID)
+	w, ok := s.CurrentShift(m.AccountID)
 	if !ok {
 		return
 	}
-	msg, err := json.Marshal(Ready{T: TypeReady, ShiftID: shiftID, Persona: persona, K0: startTick})
+	// The office id is deliberately NOT on this frame. It rides the HTTP shift
+	// response instead, which lands before the client builds anything — where a
+	// ready frame arrives after, racing the first snapshot it would be reacting to.
+	msg, err := json.Marshal(Ready{T: TypeReady, ShiftID: w.ShiftID, Persona: w.Persona, K0: w.StartTick})
 	if err != nil {
 		return
 	}

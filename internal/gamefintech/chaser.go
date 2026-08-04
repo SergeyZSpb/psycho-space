@@ -43,14 +43,14 @@ func NewChaser() Chaser {
 // tempo ramp (TempoAt) speeds both men up together. He takes it as a parameter
 // rather than reading a clock for the reason everything in this file is pure — the
 // office steps him and the tests state his next position.
-func StepChaser(desks []Rect, c Chaser, targets []Vec2, dt float64, elapsed float64) Chaser {
+func StepChaser(plan *Plan, c Chaser, targets []Vec2, dt float64, elapsed float64) Chaser {
 	aim, ok := nearest(c.Pos, targets)
 	if !ok {
 		c.Cig = 0
 		return c
 	}
 
-	head := navAimAt(c.Pos, aim)
+	head := navAimAt(plan, c.Pos, aim)
 	dx, dy := head.X-c.Pos.X, head.Y-c.Pos.Y
 	dist := math.Hypot(dx, dy)
 	// The same ramp the лысый is on, so «his speed is the лысый's, exactly» stays
@@ -65,7 +65,7 @@ func StepChaser(desks []Rect, c Chaser, targets []Vec2, dt float64, elapsed floa
 	}
 
 	c.Pos = clampToFloor(c.Pos, ChaserRadius)
-	for _, d := range desks {
+	for _, d := range plan.Rects() {
 		c.Pos = pushOut(d, c.Pos, ChaserRadius)
 	}
 	c.Cig = Grin(math.Hypot(aim.X-c.Pos.X, aim.Y-c.Pos.Y))

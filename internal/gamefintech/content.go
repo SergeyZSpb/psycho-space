@@ -45,11 +45,12 @@ const Title = "СИМУЛЯТОР ФИНТЕХА"
 
 // Office geometry, in metres.
 //
-// STATIC, and that is the load-bearing simplification against «ВАНЯДУМ». That
-// game needs a generator because a run is a fresh заброшка; this one is a single
-// open-plan floor that is always the same floor, so the layout is a constant, no
-// seed is stored, and nothing about the room is ever sent at shift start — it is
-// already in the catalogue the client fetched to draw the splash screen.
+// THE ROOM IS A CONSTANT AND THE FURNITURE IS NOT. The floor is 16 by 22 metres
+// in every office this game will ever open — the client's plane ratio, its
+// headroom band and its floor stripe are all functions of those two numbers — but
+// what stands on it is a LAYOUT: data, validated, stored, generated, and editable
+// by hand (layout.go). Nothing about the room is on a frame even so; the layout
+// rides the catalogue the client fetches once, exactly as the desks used to.
 const (
 	OfficeW = 16.0
 	OfficeH = 22.0
@@ -86,20 +87,44 @@ type Vec2 struct {
 	Y float64 `json:"y"`
 }
 
-// Desks are the furniture. Both the player and the bald man are pushed out of
-// them and neither paths around them: bumping into a desk and sliding along it
-// is correct, funny, and is the whole reason desks are tactically useful — he
-// takes the long way round and you do not.
+// StartingLayout is the office a fresh database opens with: the two rows of four
+// this game shipped on, plus the greenery and the glazing.
 //
-// Two rows of four with a clear central lane, so a chase always has somewhere to
-// go. Every desk is at least BossRadius clear of the walls, which is what lets
-// the push-out resolver be a single pass with no risk of shoving anybody through
-// a wall; content_test pins it.
-var Desks = []Rect{
-	{X: 2.8, Y: 3.0, W: 2.6, H: 1.0}, {X: 2.8, Y: 7.0, W: 2.6, H: 1.0},
-	{X: 2.8, Y: 11.0, W: 2.6, H: 1.0}, {X: 2.8, Y: 15.0, W: 2.6, H: 1.0},
-	{X: 10.6, Y: 3.0, W: 2.6, H: 1.0}, {X: 10.6, Y: 7.0, W: 2.6, H: 1.0},
-	{X: 10.6, Y: 11.0, W: 2.6, H: 1.0}, {X: 10.6, Y: 15.0, W: 2.6, H: 1.0},
+// A CHECKED-IN FLOOR AND NOT A GENERATED ONE, for exactly as long as there is no
+// generator. It is what makes the layout being data provable end to end — the row
+// is written, loaded back, served, drawn and collided against — while the office
+// a player walks into is the one they already know. The moment the generator
+// lands this constant is deleted and the boot path draws instead; it is named
+// here so that deletion is a planned step rather than something to notice later.
+//
+// Every rule in ValidateLayout holds of it, and TestTheStartingLayoutIsALegalOffice
+// is what says so rather than this comment.
+var StartingLayout = Layout{
+	Solids: []Solid{
+		// The desks: two columns of four with a clear central lane, so a chase
+		// always has somewhere to go.
+		{Rect: Rect{X: 2.8, Y: 3.0, W: 2.6, H: 1.0}, Kind: KindDesk},
+		{Rect: Rect{X: 2.8, Y: 7.0, W: 2.6, H: 1.0}, Kind: KindDesk},
+		{Rect: Rect{X: 2.8, Y: 11.0, W: 2.6, H: 1.0}, Kind: KindDesk},
+		{Rect: Rect{X: 2.8, Y: 15.0, W: 2.6, H: 1.0}, Kind: KindDesk},
+		{Rect: Rect{X: 10.6, Y: 3.0, W: 2.6, H: 1.0}, Kind: KindDesk},
+		{Rect: Rect{X: 10.6, Y: 7.0, W: 2.6, H: 1.0}, Kind: KindDesk},
+		{Rect: Rect{X: 10.6, Y: 11.0, W: 2.6, H: 1.0}, Kind: KindDesk},
+		{Rect: Rect{X: 10.6, Y: 15.0, W: 2.6, H: 1.0}, Kind: KindDesk},
+		// And the two things that are new: the ficus nobody waters and the pot
+		// beside it, both down at the лысый's end where there was nothing at all.
+		{Rect: Rect{X: 11.0, Y: 17.6, W: 1.2, H: 1.2}, Kind: KindTree},
+		{Rect: Rect{X: 3.0, Y: 18.0, W: 0.8, H: 0.8}, Kind: KindFlower},
+	},
+	Windows: []Window{
+		{Wall: WallTop, At: 1.0, Len: 3.0},
+		{Wall: WallTop, At: 6.5, Len: 3.0},
+		{Wall: WallTop, At: 12.0, Len: 3.0},
+		{Wall: WallLeft, At: 4.0, Len: 4.0},
+		{Wall: WallLeft, At: 12.0, Len: 4.0},
+		{Wall: WallRight, At: 4.0, Len: 4.0},
+		{Wall: WallRight, At: 12.0, Len: 4.0},
+	},
 }
 
 // Movement.
@@ -882,8 +907,13 @@ const (
 	ChaserSpeed = BossSpeed
 
 	// ChaserRadius is the disc the resolver pushes out of furniture. The лысый's,
-	// so `navFree`'s single cached grid is reused for free and the passage-width
-	// rule that already holds for him holds for this one too.
+	// and that equality is load-bearing rather than tidy: a plan carries ONE
+	// navigation grid, built at BossRadius, and both men walk on it. The day these
+	// two differ, the narrower man is pathing on a grid that thinks he is wider
+	// than he is — which is survivable — or the wider one on a grid that thinks he
+	// is thinner, which is him grinding along furniture the path told him he fits
+	// past. It also means the separation rule ValidateLayout enforces for the
+	// лысый holds for this one for free.
 	ChaserRadius = BossRadius
 
 	// ChaserReach is how close he has to get to land on you. Shorter than the
@@ -1299,13 +1329,26 @@ type VerbConfig struct {
 	CooldownMs int `json:"cooldown_ms"`
 }
 
-// OfficeConfig is the room, which is all the client needs to draw the plane.
+// OfficeConfig is the room and its furniture, which is all the client needs to
+// draw the plane and to predict its own movement.
+//
+// ID IS WHAT MAKES A CACHED CATALOGUE SAFE. The browser fetches this once and
+// keeps it for the life of the tab; the office can now change underneath it. So a
+// shift start echoes the id of the office it was joined under, and a client that
+// sees a different one refetches before it draws anything. It is a content hash,
+// so a restart or a deploy that changes nothing changes nothing here either.
 type OfficeConfig struct {
-	W            float64 `json:"w"`
-	H            float64 `json:"h"`
-	Desks        []Rect  `json:"desks"`
-	PlayerRadius float64 `json:"player_radius"`
-	BossRadius   float64 `json:"boss_radius"`
+	ID           string   `json:"id"`
+	W            float64  `json:"w"`
+	H            float64  `json:"h"`
+	Solids       []Solid  `json:"solids"`
+	Windows      []Window `json:"windows"`
+	PlayerRadius float64  `json:"player_radius"`
+	BossRadius   float64  `json:"boss_radius"`
+	// MinGap is the separation every solid keeps from every other solid and from
+	// every wall. Served because the admin editor draws against it — it is what
+	// «too close» means — and it costs eight bytes on a catalogue fetched once.
+	MinGap float64 `json:"min_gap"`
 }
 
 // MoneyConfig is the ramp. Every one of these four numbers appears in the
@@ -1354,19 +1397,28 @@ type SimConfig struct {
 	RenderDelayMs int `json:"render_delay_ms"`
 }
 
-// BuildConfig assembles the served catalogue. It is a pure function of the
-// constants above, so the served contract and the simulation can never disagree
-// about a number.
-func BuildConfig() Config {
+// BuildConfig assembles the served catalogue. Every number in it but the layout
+// is a pure function of the constants above, so the served contract and the
+// simulation can never disagree; the layout is a parameter because it is the one
+// thing about this game that is data rather than content.
+//
+// THE COPY OF THE LAYOUT IS RACE SAFETY AND NOT HABIT. The office holds the same
+// slices, on another goroutine, twenty times a second — so handing a caller the
+// originals would let a handler's JSON encoder read what the simulation is
+// reading. It cost nothing when it was eight desks and it costs nothing now.
+func BuildConfig(layout Layout) Config {
 	return Config{
 		GameKey: GameKey,
 		Title:   Title,
 		Office: OfficeConfig{
+			ID:           layout.ID,
 			W:            OfficeW,
 			H:            OfficeH,
-			Desks:        append([]Rect(nil), Desks...),
+			Solids:       append([]Solid(nil), layout.Solids...),
+			Windows:      append([]Window(nil), layout.Windows...),
 			PlayerRadius: PlayerRadius,
 			BossRadius:   BossRadius,
+			MinGap:       MinGap,
 		},
 		Money: MoneyConfig{
 			BasePerSecond: BasePerSecond,

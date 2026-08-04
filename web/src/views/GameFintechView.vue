@@ -108,6 +108,7 @@
         '--head-share': String(box.headShare),
         '--side-share': String(box.sideShare),
         '--unit-cqw': String(UNIT_CQW),
+        '--stripe': stripe,
       }"
     >
       <div class="fintech-hud">
@@ -177,13 +178,37 @@
              a fraction of IT — so nothing that maps metres to pixels knows the
              wall exists. -->
         <div class="fintech-plane" data-testid="fintech-plane">
-          <div class="fintech-office" data-testid="fintech-office">
+          <!-- THE GLAZING, AND IT LIVES OUTSIDE THE ROOM. A window is a stretch
+               of WALL, so it is drawn on the band the wall occupies rather than
+               on the floor — and being a sibling of the office rather than a
+               child of it is what guarantees it can never come between a viewer
+               and a figure. Order matters and this is the reason it is first:
+               the figures inside the office carry a depth band as their
+               `z-index`, a pane carries none, and a man standing at the top wall
+               hangs up into exactly this strip. -->
           <span
-            v-for="(desk, i) in desks"
+            v-for="(pane, i) in windows"
             :key="i"
-            class="fintech-desk"
-            data-testid="fintech-desk"
-            :style="deskStyle(desk)"
+            class="fintech-window"
+            data-testid="fintech-window"
+            :data-wall="pane.wall"
+            :style="{ '--at': String(pane.start), '--len': String(pane.span) }"
+            aria-hidden="true"
+          />
+          <div class="fintech-office" data-testid="fintech-office">
+          <!-- EVERYTHING YOU CAN WALK INTO, in the layout's own order. What each
+               one IS decides only how it is drawn: the class carries the kind and
+               the stylesheet answers, so a kind this client has never heard of
+               draws as a plain block rather than as nothing at all — an invisible
+               solid is a wall you bounce off for no reason anybody can see. -->
+          <span
+            v-for="(solid, i) in solids"
+            :key="i"
+            class="fintech-solid"
+            :class="`fintech-solid--${solid.kind}`"
+            data-testid="fintech-solid"
+            :data-kind="solid.kind"
+            :style="solidStyle(solid)"
           />
           <!-- THE BOTTLES — one per person on the floor, so this is a list. Each
                is placed from the catalogue by the index its bit names; a spot with
@@ -468,8 +493,9 @@
 /**
  * «СИМУЛЯТОР ФИНТЕХА» — the fourth game, and the second the server simulates.
  *
- * WHAT IS DRAWN, AND HOW. The office is DOM and CSS: a plane with desks on it
- * and two figures placed by CSS custom properties. That is this game's own
+ * WHAT IS DRAWN, AND HOW. The office is DOM and CSS: a plane with the layout's
+ * solids on it, glazing on the wall bands around it, and figures placed by CSS
+ * custom properties. That is this game's own
  * rendering decision (ADR-028 lets each game make one) and it is the yard's
  * technique rather than «ВАНЯДУМ»'s — a flat plan view of a room is what a
  * stylesheet is good at, and it keeps every readout assertable, which nothing
@@ -510,6 +536,7 @@ import type {
   FintechRect,
   FintechShift,
   FintechShiftRow,
+  FintechSolid,
   FintechTopBoards,
 } from '../api/types';
 import {
@@ -529,7 +556,9 @@ import {
   peerColour,
   sameRoster,
   type PeerLook,
-  deskBox,
+  floorStripe,
+  solidBox,
+  windowBand,
   sayFor,
   withName,
   formatClock,
@@ -590,7 +619,31 @@ const hasBoards = computed(() => boards.value.some((b) => b.rows.length > 0));
 // rather than guessed at, exactly as every derived rule on this screen is.
 const boardWindow = computed(() => boardWindowLabel(config.value));
 const rules = computed(() => buildRules(config.value));
-const desks = computed<FintechRect[]>(() => config.value?.office.desks ?? []);
+/**
+ * Everything on the floor, and the glazing on the walls.
+ *
+ * Both come off the catalogue and neither is ever sent again, so they go through
+ * Vue exactly once per layout — which is now once per SHIFT rather than once per
+ * process, since the office can be rebuilt between them. `solids` is also what
+ * the predictor collides against: `FintechSolid` extends `FintechRect`, so the
+ * same array is handed to `createPredictor` with no mapping and no cast.
+ */
+const solids = computed<FintechSolid[]>(() => config.value?.office.solids ?? []);
+/**
+ * The panes, each already reduced to a placement along its own wall.
+ *
+ * Reduced HERE rather than in the template, and only when the layout changes:
+ * `windowBand` is pure and unit-tested, and a pane it cannot place answers a
+ * span of nothing, which is dropped rather than drawn as an empty element in a
+ * corner.
+ */
+const windows = computed(() => {
+  const o = config.value?.office;
+  if (!o) return [];
+  return o.windows.map((pane) => windowBand(pane, o.w, o.h)).filter((band) => band.span > 0);
+});
+/** One metre of floor, as a share of the served room's height. See floorStripe. */
+const stripe = computed(() => floorStripe(config.value?.office.h ?? 0));
 /**
  * The plane's box, which is the ROOM PLUS THE WALL ABOVE IT.
  *
@@ -1126,9 +1179,9 @@ function causeIcon(cause: string): string {
   return cause === 'promoted' ? '🎉' : '🚪';
 }
 
-function deskStyle(d: FintechRect): Record<string, string> {
+function solidStyle(d: FintechRect): Record<string, string> {
   const o = config.value?.office;
-  const box = deskBox(d, o?.w ?? 0, o?.h ?? 0);
+  const box = solidBox(d, o?.w ?? 0, o?.h ?? 0);
   return {
     left: `${box.left * 100}%`,
     top: `${box.top * 100}%`,
@@ -1155,6 +1208,10 @@ onMounted(async () => {
   // than stranding the player behind a button that answers 409.
   try {
     shift = await gameFintechApi.current();
+    // Nothing to overlap with here: the catalogue this is checked against was
+    // fetched a moment ago in this very function, so `adoptOffice` fetches for
+    // itself in the rare case that the shift is standing in a different layout.
+    await adoptOffice(shift.office_id);
     enterPlay();
   } catch {
     // 404 is the ordinary answer. Nothing to resume.
@@ -1189,13 +1246,56 @@ async function loadLists(): Promise<void> {
   };
 }
 
+/**
+ * Puts the catalogue in step with the layout this shift is actually standing in.
+ *
+ * THE OFFICE STOPPED BEING A CONSTANT. Its geometry is stored and validated and
+ * can be rebuilt while a tab sits on the splash, so the catalogue fetched at
+ * mount may describe a room nobody is in any more. Every shift response names the
+ * layout it belongs to (`office_id`, a content hash of the geometry) and
+ * `office.id` names the one on hand; a disagreement is the only signal there is.
+ *
+ * IT IS THE PREDICTION THAT MAKES THIS URGENT, not the drawing. Furniture drawn
+ * where there is none is merely wrong to look at; the port collides against the
+ * SAME rectangles, so a stale layout means the client pushes itself out of a desk
+ * the office does not have, disagrees with every snapshot near it, and hands the
+ * player a figure that is corrected on every frame. Which is why the refetch
+ * happens before `enterPlay` — the predictor is built from `solids` afterwards,
+ * never before.
+ *
+ * `inFlight` IS THE CONCURRENCY, and it exists because the id cannot be known
+ * before the shift responds. `start` fires the catalogue GET alongside its POST
+ * and hands the promise in, so a layout that HAS moved is already on its way
+ * rather than costing a second round trip in front of the office; when nothing
+ * moved the promise is simply abandoned unread. The cost is one cacheable GET per
+ * clock-in — a thing somebody does a few times an hour, not a repeating frame —
+ * which is the trade this project's wire rules already name: prefer the request.
+ */
+async function adoptOffice(
+  officeID: string | undefined,
+  inFlight?: Promise<FintechConfig | null>,
+): Promise<void> {
+  // An older server sends no id at all, and then there is nothing to compare —
+  // which must mean "carry on with what we have" rather than "refetch forever".
+  if (!officeID || config.value?.office.id === officeID) return;
+  const fresh = await (inFlight ?? gameFintechApi.config().catch(() => null));
+  // A catalogue that would not load is not a reason to refuse a shift: the office
+  // is then drawn from the layout on hand, which is the state we were already in.
+  if (fresh) config.value = fresh;
+}
+
 async function start(): Promise<void> {
   if (starting.value) return;
   starting.value = true;
   error.value = '';
+  // Issued BEFORE the shift POST is awaited, so the two are in flight together —
+  // see `adoptOffice`. Its rejection is swallowed here rather than left unhandled,
+  // because nothing downstream may fail on account of a refresh nobody may need.
+  const fresh = gameFintechApi.config().catch(() => null);
   try {
     shift = await gameFintechApi.start();
     persona.value = shift.persona ?? 0;
+    await adoptOffice(shift.office_id, fresh);
     enterPlay();
   } catch (e) {
     if (e instanceof ApiError && e.code === 'shift_in_progress') {
@@ -1203,6 +1303,9 @@ async function start(): Promise<void> {
       try {
         shift = await gameFintechApi.current();
         persona.value = shift.persona ?? 0;
+        // The same promise: it was fired before the POST that refused, so it is
+        // as far along here as it is on the path that succeeded.
+        await adoptOffice(shift.office_id, fresh);
         enterPlay();
       } catch {
         error.value = 'смена уже идёт на другой вкладке';
@@ -1681,7 +1784,10 @@ function applySnapshot(frame: RealtimeFrame): void {
   if (!predictor) {
     // The first authoritative position is what the predictor is seeded with —
     // see enterPlay for why there is nothing better to start from.
-    predictor = createPredictor({ desks: desks.value, constants, start: { x, y } });
+    // Built from the layout the catalogue holds NOW, which `adoptOffice` has
+    // already put in step with the shift — a predictor colliding against a room
+    // nobody is in would be corrected on every frame.
+    predictor = createPredictor({ rects: solids.value, constants, start: { x, y } });
   }
   // The cooldown is folded in beside the position, because the client SIMULATES
   // from it: `step` refuses a dash while it is running, and a client whose own
@@ -2463,7 +2569,7 @@ function onDash(): void {
    pixels are clipped before anything composites.
 
    TWO ELEMENTS, NOT ONE, and the reason is worth keeping. The room inside keeps
-   the catalogue's own shape and is the query container, so `toPlane`, `deskBox`
+   the catalogue's own shape and is the query container, so `toPlane`, `solidBox`
    and every `100cqw`/`100cqh` consumer are untouched: a coordinate is still a
    fraction of the room and nothing that maps metres to pixels knows the wall
    exists. `padding-top` on this element instead would have resolved its
@@ -2507,9 +2613,19 @@ function onDash(): void {
   inset: calc(var(--head-share, 0.088) * 100%) calc(var(--side-share, 0.038) * 100%) 0;
   container-type: size;
   border-radius: 0 0 10px 10px;
+  /* THE FLOORBOARDS ARE ONE METRE, AND THE METRE IS SERVED. `--stripe` is
+     `100 / office.h` per cent, written by the template from `floorStripe`, so a
+     board is a metre in whatever room the layout describes. It used to be a
+     hardcoded 4.5455 % — one twenty-second, which is a metre only in the 16 × 22
+     room the game shipped with — so the one thing on this plane that gives the
+     office a sense of scale silently lied the moment the layout could change. */
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.25)),
-    repeating-linear-gradient(0deg, #2a2e36 0 4.5455%, #262a31 4.5455% 9.0909%);
+    repeating-linear-gradient(
+      0deg,
+      #2a2e36 0 var(--stripe, 100%),
+      #262a31 var(--stripe, 100%) calc(var(--stripe, 100%) * 2)
+    );
   /* HOW BIG A PERSON IS, IN THIS OFFICE. Every fixed length inside the room is a
      fraction of this one, so the world is drawn at the same apparent scale on
      every screen instead of shrinking as the room grows. Declared here and used
@@ -2523,13 +2639,91 @@ function onDash(): void {
   --unit: clamp(20px, calc(var(--unit-cqw, 0.0825) * 100cqw), 96px);
 }
 
-/* Furniture. Static — it comes off the catalogue once and never moves — so
-   unlike the figures these go through Vue exactly once. */
-.fintech-desk {
+/* EVERYTHING YOU CAN WALK INTO. Static for the life of a shift — it comes off
+   the catalogue and nothing moves while somebody is standing in it — so unlike
+   the figures these go through Vue exactly once per layout.
+
+   THE BASE RULE IS THE DESK, AND THAT IS ALSO THE FALLBACK. A kind is a plain
+   string on the wire precisely so a server can learn a fourth one without
+   breaking a deployed client, and the consequence has to be drawn rather than
+   dropped: an unknown kind still COLLIDES, and an invisible solid is a wall you
+   bounce off for no reason anybody can see. So the brown slab is what a solid
+   looks like unless a rule below says otherwise. */
+.fintech-solid {
   position: absolute;
   border-radius: calc(var(--unit) * 0.075);
   background: #4a3b28;
   box-shadow: inset 0 calc(var(--unit) * -0.05) 0 rgba(0, 0, 0, 0.35);
+}
+
+/* THE GREENERY — a flowerpot and a ficus. Round and green, which is the whole
+   design: at thirty pixels a plant is told from a desk by its SILHOUETTE and its
+   colour, never by detail, and both of those survive the depth ramp. They are
+   drawn at all because they collide exactly as a desk does — this office is
+   something to hide behind, and a plant you could walk through would be a lie
+   about where the bald man cannot reach you. */
+.fintech-solid--flower,
+.fintech-solid--tree {
+  border-radius: 50%;
+  box-shadow: inset 0 calc(var(--unit) * -0.04) 0 rgba(0, 0, 0, 0.3);
+}
+
+/* The pot: small, bright, lit from the top left like everything else here. */
+.fintech-solid--flower {
+  background: radial-gradient(circle at 35% 30%, #86c45f, #3f7a34 72%);
+}
+
+/* The ficus: bigger and darker, so the two read as two plants rather than as one
+   plant at two sizes. */
+.fintech-solid--tree {
+  background: radial-gradient(circle at 40% 28%, #6aa84f, #2c5726 74%);
+}
+
+/* THE GLAZING. A pane is a length of WALL, so it is drawn on the band the wall
+   occupies and never on the floor — and it is a sibling of the room rather than
+   a child of it, so it cannot come between a viewer and a figure.
+
+   THE BAND'S DEPTH IS READ HERE AND NOWHERE ELSE. `--head-share` and
+   `--side-share` are already written from `planeBox`, and `--at` / `--len` are
+   fractions of the pane's own wall from `windowBand` — so the arithmetic that
+   maps one onto the other lives in exactly one place, and the helper stays pure
+   and knows nothing about how deep a wall is. The room's own extent is what a
+   pane is measured along: `1 - 2 × side-share` of the plane's width across the
+   top, `1 - head-share` of its height down a side. */
+.fintech-window {
+  position: absolute;
+  /* Pale and cold against the wall's warm grey, so it reads as daylight rather
+     than as a panel somebody screwed to the wall. */
+  background: linear-gradient(180deg, rgba(150, 196, 232, 0.5), rgba(96, 140, 178, 0.28));
+  box-shadow: inset 0 0 0 1px rgba(190, 222, 245, 0.28);
+  pointer-events: none;
+}
+
+.fintech-window[data-wall='top'] {
+  top: 0;
+  height: calc(var(--head-share, 0.088) * 100%);
+  left: calc((var(--side-share, 0.038) + var(--at, 0) * (1 - 2 * var(--side-share, 0.038))) * 100%);
+  width: calc(var(--len, 0) * (1 - 2 * var(--side-share, 0.038)) * 100%);
+}
+
+.fintech-window[data-wall='left'],
+.fintech-window[data-wall='right'] {
+  width: calc(var(--side-share, 0.038) * 100%);
+  top: calc((var(--head-share, 0.088) + var(--at, 0) * (1 - var(--head-share, 0.088))) * 100%);
+  height: calc(var(--len, 0) * (1 - var(--head-share, 0.088)) * 100%);
+}
+
+/* NO CORNER RADIUS ON ANY OF THE THREE, and it is not an omission: `--unit` is
+   declared on the room and a pane is the room's SIBLING, so there is no scale in
+   scope here and a rounded corner would have to be a hardcoded pixel count that
+   read as a pill on a desktop and as nothing on a phone. The plane clips its own
+   outer corners already. */
+.fintech-window[data-wall='left'] {
+  left: 0;
+}
+
+.fintech-window[data-wall='right'] {
+  right: 0;
 }
 
 /* THE FIGURES. Feet-anchored: the coordinate is where somebody is STANDING, so

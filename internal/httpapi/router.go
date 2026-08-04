@@ -221,9 +221,11 @@ func (s *Server) Handler() http.Handler {
 		// and reading the two boards the splash screen is built from. Playing
 		// happens entirely on the socket.
 		//
-		// Starting a shift returns no level, because there is nothing per-shift
-		// to send: the office is static and already in the catalogue, which is
-		// this game's one real simplification over the shooter above.
+		// Starting a shift returns no geometry, because there is nothing
+		// per-shift to send: the floor is in the catalogue the client already
+		// fetched, and what the shift response adds is only its IDENTITY, so a
+		// tab whose cached catalogue describes a floor that has since been
+		// rebuilt knows to fetch it again.
 		//
 		// No LLM on any path here either — that rule is written into the game's
 		// package doc, so the blanket 240/min limiter above is the whole guard

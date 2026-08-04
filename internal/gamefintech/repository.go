@@ -41,10 +41,23 @@ type Shift struct {
 	CreatedAt time.Time
 }
 
-// Repository is this game's persistence, and it is three statements wide on
-// purpose. Everything else about a shift lives in memory for the few minutes it
-// exists.
+// LayoutSource says where a stored floor came from. It is set by the endpoint
+// that wrote the row and never by the payload, so it cannot be claimed.
+const (
+	// SourceStarting is the floor a fresh database opens with.
+	SourceStarting = "starting"
+)
+
+// Repository is this game's persistence. Everything else about a shift lives in
+// memory for the few minutes it exists; the floor lives here because a floor
+// somebody drew has to survive a deploy.
 type Repository interface {
+	// CurrentLayout reads the floor in force — the newest row that has not been
+	// deleted. It answers ErrNoLayout on an empty table, which is a state rather
+	// than a failure: it is what a fresh database looks like.
+	CurrentLayout(ctx context.Context, q db.DBTX) (Layout, error)
+	// InsertLayout writes a floor and makes it the current one.
+	InsertLayout(ctx context.Context, q db.DBTX, l Layout, source string) error
 	// InsertShift records a finished shift. It is the only write this game
 	// makes.
 	InsertShift(ctx context.Context, q db.DBTX, s Shift) error

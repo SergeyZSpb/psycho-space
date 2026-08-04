@@ -66,13 +66,13 @@ func TestNobodyEverLeavesTheFloorOrEndsInsideADesk(t *testing.T) {
 			MY:   r.Float64()*6 - 3, //
 			Dash: r.IntN(10) == 0,   //
 		})
-		p = Step(Desks, p, c)
+		p = Step(testRects, p, c)
 		if p.Pos.X < PlayerRadius-1e-9 || p.Pos.X > OfficeW-PlayerRadius+1e-9 ||
 			p.Pos.Y < PlayerRadius-1e-9 || p.Pos.Y > OfficeH-PlayerRadius+1e-9 {
 			t.Fatalf("step %d left the floor at %+v", i, p.Pos)
 		}
-		for j, d := range Desks {
-			if insideDesk(d, p.Pos, PlayerRadius) {
+		for j, d := range testRects {
+			if insideRect(d, p.Pos, PlayerRadius) {
 				t.Fatalf("step %d ended inside desk %d at %+v", i, j, p.Pos)
 			}
 		}
@@ -91,7 +91,7 @@ func TestADeskIsPushedOutOfAlongTheShortestAxis(t *testing.T) {
 	// Walking into the top edge of a desk puts you back on top of it, not around
 	// the side. That is what makes furniture read as furniture rather than as an
 	// invisible current.
-	d := Desks[0]
+	d := testRects[0]
 	p := atSpawn()
 	p.Pos = Vec2{X: d.X + d.W/2, Y: d.Y - PlayerRadius - 0.01}
 	got := Step([]Rect{d}, p, Command{Dt: 0.1, MY: 1})
@@ -145,7 +145,7 @@ func TestStepIsDeterministic(t *testing.T) {
 	run := func() Player {
 		p := atSpawn()
 		for _, c := range cmds {
-			p = Step(Desks, p, c)
+			p = Step(testRects, p, c)
 		}
 		return p
 	}
@@ -160,7 +160,7 @@ func TestStepDoesNotResurrectAnybody(t *testing.T) {
 	// they are removed without coming back to life.
 	p := atSpawn()
 	p.Alive = false
-	if Step(Desks, p, Command{Dt: testDt, MX: 1}).Alive {
+	if Step(testRects, p, Command{Dt: testDt, MX: 1}).Alive {
 		t.Fatal("stepping a dead player brought him back")
 	}
 }

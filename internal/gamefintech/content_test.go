@@ -11,52 +11,7 @@ import (
 // The catalogue is content, so these tests are about the office being a room a
 // game can happen in — not about arithmetic.
 
-// clearance is the widest disc the resolver has to push out of furniture.
-var clearance = math.Max(PlayerRadius, BossRadius)
-
-func TestNoTwoDesksOverlap(t *testing.T) {
-	for i := range Desks {
-		for j := i + 1; j < len(Desks); j++ {
-			a, b := Desks[i], Desks[j]
-			if a.X < b.X+b.W && b.X < a.X+a.W && a.Y < b.Y+b.H && b.Y < a.Y+a.H {
-				t.Fatalf("desks %d and %d overlap: %+v %+v", i, j, a, b)
-			}
-		}
-	}
-}
-
-func TestEveryDeskIsClearOfTheWalls(t *testing.T) {
-	// THIS IS WHAT LETS Step's RESOLVER BE A SINGLE PASS. The player is clamped
-	// to the floor and then pushed out of each desk in turn; if a desk touched a
-	// wall, that push could put somebody outside the room and nothing would
-	// clamp them back. A generated level would need an iterative resolver
-	// instead — this one buys the simplicity with a layout rule.
-	for i, d := range Desks {
-		if d.X < clearance || d.Y < clearance ||
-			d.X+d.W > OfficeW-clearance || d.Y+d.H > OfficeH-clearance {
-			t.Fatalf("desk %d (%+v) is within %v of a wall", i, d, clearance)
-		}
-	}
-}
-
-func TestNoTwoDesksAreCloserThanADiameter(t *testing.T) {
-	// The other half of the same bargain: one pass per desk is only safe while
-	// being pushed out of one desk cannot put you inside another.
-	gap := 2 * clearance
-	for i := range Desks {
-		for j := i + 1; j < len(Desks); j++ {
-			a, b := Desks[i], Desks[j]
-			dx := math.Max(0, math.Max(b.X-(a.X+a.W), a.X-(b.X+b.W)))
-			dy := math.Max(0, math.Max(b.Y-(a.Y+a.H), a.Y-(b.Y+b.H)))
-			if math.Hypot(dx, dy) <= gap {
-				t.Fatalf("desks %d and %d are %v apart, which is not more than %v",
-					i, j, math.Hypot(dx, dy), gap)
-			}
-		}
-	}
-}
-
-func TestBothSpawnsAreOnTheFloorAndOutOfTheFurniture(t *testing.T) {
+func TestBothSpawnsAreOnTheFloor(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		pos  Vec2
@@ -67,11 +22,6 @@ func TestBothSpawnsAreOnTheFloorAndOutOfTheFurniture(t *testing.T) {
 	} {
 		if tc.pos.X < tc.r || tc.pos.X > OfficeW-tc.r || tc.pos.Y < tc.r || tc.pos.Y > OfficeH-tc.r {
 			t.Fatalf("%s spawns outside the floor at %+v", tc.name, tc.pos)
-		}
-		for i, d := range Desks {
-			if insideDesk(d, tc.pos, tc.r) {
-				t.Fatalf("%s spawns inside desk %d", tc.name, i)
-			}
 		}
 	}
 }
@@ -121,7 +71,7 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 	// The splash screen's rules cheatsheet is GENERATED from this payload rather
 	// than typed out, so every number below is load-bearing: dropping one turns
 	// a rule into a blank line, and renaming one is a client change.
-	raw, err := json.Marshal(BuildConfig())
+	raw, err := json.Marshal(BuildConfig(testLayout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +81,7 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 	// deploy — an anchored edit that matched nothing, which is indistinguishable from
 	// success — and a real browser drew no non-players at all while this test stayed
 	// green. Every array the client indexes into is now checked for CONTENT first.
-	c := BuildConfig()
+	c := BuildConfig(testLayout)
 	for name, arr := range map[string]int{
 		"npcs":         len(c.NPCs),
 		"claude_lines": len(c.ClaudeLines),
@@ -139,7 +89,8 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 		"boss_lines":   len(c.BossLines),
 		"player_lines": len(c.PlayerLines),
 		"endings":      len(c.Endings),
-		"desks":        len(c.Office.Desks),
+		"solids":       len(c.Office.Solids),
+		"windows":      len(c.Office.Windows),
 		"hookah spots": len(c.Hookah.Spots),
 		"bottle spots": len(c.Bottle.Spots),
 	} {
@@ -155,7 +106,8 @@ func TestTheConfigCarriesEveryFieldTheClientIsWrittenAgainst(t *testing.T) {
 
 	for _, key := range []string{
 		`"game_key"`, `"title"`,
-		`"office"`, `"w"`, `"h"`, `"desks"`, `"player_radius"`, `"boss_radius"`,
+		`"office"`, `"id"`, `"w"`, `"h"`, `"player_radius"`, `"boss_radius"`, `"min_gap"`,
+		`"solids"`, `"kind"`, `"windows"`, `"wall"`, `"at"`, `"len"`,
 		`"money"`, `"base_per_second"`, `"ramp_seconds"`, `"max_multiplier"`, `"grace_ms"`,
 		`"move"`, `"walk_speed"`, `"dash_speed"`, `"dash_ms"`, `"dash_cooldown_ms"`,
 		`"input_hz"`, `"max_commands"`,
@@ -196,11 +148,11 @@ func TestTheConfigAgreesWithTheSimulation(t *testing.T) {
 	// One catalogue, one set of numbers. A config that published a walk speed
 	// the simulation did not use would make the cheatsheet a lie and prediction
 	// diverge on the first step.
-	c := BuildConfig()
+	c := BuildConfig(testLayout)
 	if c.GameKey != GameKey || c.Title != Title {
 		t.Fatalf("the catalogue does not know what game it is: %+v", c)
 	}
-	if c.Office.W != OfficeW || c.Office.H != OfficeH || len(c.Office.Desks) != len(Desks) {
+	if c.Office.W != OfficeW || c.Office.H != OfficeH || len(c.Office.Solids) != len(testLayout.Solids) {
 		t.Fatalf("the published office is not the simulated one: %+v", c.Office)
 	}
 	if c.Move.WalkSpeed != WalkSpeed || c.Move.DashSpeed != DashSpeed {
@@ -294,12 +246,16 @@ func TestTheCatalogueIsCopiedRatherThanShared(t *testing.T) {
 	// BuildConfig is called per request and the result is serialised by a
 	// handler. Handing out the package's own slices would let one caller's
 	// decoration — the art keys the HTTP layer adds — leak into everybody
-	// else's office.
-	c := BuildConfig()
-	c.Office.Desks[0].X = -999
+	// else's office. With the floor as data it is stronger than that: the office
+	// holds these same slices and steps them twenty times a second, so a shared
+	// slice is a handler's JSON encoder reading what the simulation is reading.
+	c := BuildConfig(testLayout)
+	c.Office.Solids[0].X = -999
+	c.Office.Windows[0].At = -999
 	c.Endings[0].Title = "нет"
 	c.BossLines[0] = "нет"
-	if Desks[0].X == -999 || Endings[0].Title == "нет" || BossLines[0] == "нет" {
+	if testLayout.Solids[0].X == -999 || testLayout.Windows[0].At == -999 ||
+		Endings[0].Title == "нет" || BossLines[0] == "нет" {
 		t.Fatal("mutating a served config changed the catalogue")
 	}
 }
@@ -316,74 +272,6 @@ func TestEveryBossLineIsSomethingHeWouldSay(t *testing.T) {
 		}
 	}
 }
-
-// TestEveryPassageFitsTheWidestThingThatMustUseIt pins the level design.
-//
-// The gaps between the furniture ARE the level: they are what makes a desk cover
-// you use rather than something you catch on. The first layout had 2.0 m aisles,
-// which is 1.2 m of daylight once the лысый's width is removed — and it was
-// tuned before the player's speed was, so at 6.4 m/s you cross it in under a
-// fifth of a second and clipping a desk mid-dodge is likelier than choosing to.
-//
-// Measured against the BOSS rather than the player: he is the wider of the two,
-// and a gap he cannot follow you through is a gap that changes the game.
-func TestEveryPassageFitsTheWidestThingThatMustUseIt(t *testing.T) {
-	// Daylight left after the widest occupant, in metres. Room to steer, not just
-	// room to exist.
-	const wantDaylight = 1.5
-	widest := 2 * math.Max(PlayerRadius, BossRadius)
-
-	check := func(what string, gap float64) {
-		t.Helper()
-		if got := gap - widest; got < wantDaylight {
-			t.Errorf("%s is %.2f m, leaving %.2f m of daylight for a %.2f m body, want %.2f m",
-				what, gap, got, widest, wantDaylight)
-		}
-	}
-
-	left, right := math.Inf(1), math.Inf(1)
-	for _, d := range Desks {
-		left = math.Min(left, d.X)
-		right = math.Min(right, OfficeW-(d.X+d.W))
-	}
-	check("the left aisle", left)
-	check("the right aisle", right)
-
-	// The central lane: from the right edge of the left column to the left edge
-	// of the right column.
-	var leftEdge, rightEdge float64
-	for _, d := range Desks {
-		if d.X < OfficeW/2 {
-			leftEdge = math.Max(leftEdge, d.X+d.W)
-		}
-	}
-	rightEdge = OfficeW
-	for _, d := range Desks {
-		if d.X >= OfficeW/2 {
-			rightEdge = math.Min(rightEdge, d.X)
-		}
-	}
-	check("the central lane", rightEdge-leftEdge)
-
-	// And between the rows, for every pair in the same column.
-	for i, a := range Desks {
-		for j, b := range Desks {
-			if i >= j || a.X != b.X {
-				continue
-			}
-			lo, hi := a, b
-			if lo.Y > hi.Y {
-				lo, hi = hi, lo
-			}
-			if gap := hi.Y - (lo.Y + lo.H); gap > 0 && gap < OfficeH/2 {
-				check("the gap between two desks in a column", gap)
-			}
-		}
-	}
-}
-
-// The balloons. Index 0 of each pool is what an omitted `p` means, so the first
-// line of each is a contract rather than a preference.
 func TestTheDefaultLinesAreFirst(t *testing.T) {
 	if BossLines[0] != "Я ЛЫСЫЙ" {
 		t.Fatalf("an absent `p` means BossLines[0], which is %q", BossLines[0])
@@ -700,11 +588,6 @@ func TestEveryBottleSpotIsSomewhereYouCanStand(t *testing.T) {
 			at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
 			t.Fatalf("bottle spot %d is off the floor at %+v", i, at)
 		}
-		for d, desk := range Desks {
-			if insideDesk(desk, at, PlayerRadius) {
-				t.Fatalf("bottle spot %d is inside desk %d", i, d)
-			}
-		}
 		for j := i + 1; j < len(BottleSpots); j++ {
 			if math.Hypot(at.X-BottleSpots[j].X, at.Y-BottleSpots[j].Y) < 2 {
 				t.Fatalf("spots %d and %d are close enough to be the same spot", i, j)
@@ -774,7 +657,7 @@ func TestTheServedGeometryUsesTheKeysTheClientReads(t *testing.T) {
 	// the CLIENT expects, so the stub and the server disagreed and both were
 	// self-consistent. Checking a served payload against the names the client
 	// actually reads is the only thing that closes that gap.
-	raw, err := json.Marshal(BuildConfig())
+	raw, err := json.Marshal(BuildConfig(testLayout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,10 +669,16 @@ func TestTheServedGeometryUsesTheKeysTheClientReads(t *testing.T) {
 			} `json:"spots"`
 		} `json:"bottle"`
 		Office struct {
-			Desks []struct {
-				X *float64 `json:"x"`
-				W *float64 `json:"w"`
-			} `json:"desks"`
+			Solids []struct {
+				X    *float64 `json:"x"`
+				W    *float64 `json:"w"`
+				Kind *string  `json:"kind"`
+			} `json:"solids"`
+			Windows []struct {
+				Wall *string  `json:"wall"`
+				At   *float64 `json:"at"`
+				Len  *float64 `json:"len"`
+			} `json:"windows"`
 		} `json:"office"`
 	}
 	if err := json.Unmarshal(raw, &served); err != nil {
@@ -808,9 +697,14 @@ func TestTheServedGeometryUsesTheKeysTheClientReads(t *testing.T) {
 				i, *spot.X, *spot.Y, BottleSpots[i])
 		}
 	}
-	for i, d := range served.Office.Desks {
-		if d.X == nil || d.W == nil {
-			t.Fatalf("desk %d has no x/w the client can read: %s", i, raw)
+	for i, d := range served.Office.Solids {
+		if d.X == nil || d.W == nil || d.Kind == nil {
+			t.Fatalf("solid %d has no x/w/kind the client can read: %s", i, raw)
+		}
+	}
+	for i, w := range served.Office.Windows {
+		if w.Wall == nil || w.At == nil || w.Len == nil {
+			t.Fatalf("window %d has no wall/at/len the client can read: %s", i, raw)
 		}
 	}
 }
@@ -877,19 +771,16 @@ func TestAppendingPersonasDidNotMoveTheRedirectLine(t *testing.T) {
 	}
 }
 
+// The furniture half of this claim — that no solid stands on the spot — moved
+// into ValidateLayout when the floor became data: it is a rule every office has
+// to satisfy rather than a property of one hand-written arrangement, and
+// TestValidateNamesWhatIsWrongAndWhere is where it is now driven. What stays here
+// is what is still about the CATALOGUE: a spot has to be on the floor at all.
 func TestEveryHookahSpotIsSomewhereYouCanActuallyStand(t *testing.T) {
 	for i, at := range HookahSpots {
 		if at.X < PlayerRadius || at.X > OfficeW-PlayerRadius ||
 			at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
 			t.Fatalf("hookah spot %d (%+v) is not on the floor", i, at)
-		}
-		for j, d := range Desks {
-			// Reachable means a player disc can sit ON it, not merely near it: a
-			// spot inside a desk would be a prop you walk at forever while the
-			// collision resolver pushes you out.
-			if insideDesk(d, at, PlayerRadius) {
-				t.Fatalf("hookah spot %d (%+v) is inside desk %d", i, at, j)
-			}
 		}
 	}
 }
@@ -1117,11 +1008,6 @@ func TestTheNonPlayersSpawnSomewhereTheyCanStand(t *testing.T) {
 		if at.X < PlayerRadius || at.X > OfficeW-PlayerRadius ||
 			at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
 			t.Fatalf("%s spawns off the floor at %+v", k.Name, at)
-		}
-		for i, d := range Desks {
-			if insideDesk(d, at, PlayerRadius) {
-				t.Fatalf("%s spawns inside desk %d", k.Name, i)
-			}
 		}
 	}
 }

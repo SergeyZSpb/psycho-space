@@ -995,15 +995,19 @@ export interface VanyadumVisitRow {
 // «СИМУЛЯТОР ФИНТЕХА» — game four, the office.
 //
 // The catalogue carries the whole office, and that is the load-bearing
-// simplification against «ВАНЯДУМ»: there is one office, it is always the same
-// office, and it is not generated, not per-shift and not sent when a shift
-// starts. So `POST /shifts` answers with an id and a room and nothing else, and
-// everything the plane draws comes from here — fetched once, cached by the
-// browser, and derived from for the splash's rules cheatsheet.
+// simplification against «ВАНЯДУМ»: a shift is not sent a level, because the
+// room it is in is already here. So `POST /shifts` answers with an id, a room, a
+// persona and the id of the LAYOUT it is standing in, and everything the plane
+// draws comes from this catalogue — fetched once, cached by the browser, and
+// derived from for the splash's rules cheatsheet.
 //
-// Nothing is withheld in iteration 1: the boss is a speed and a radius, both of
-// which the client draws and the server enforces, so publishing them costs
-// nothing and lets the cheatsheet be generated rather than typed.
+// WHAT CHANGED: the layout is no longer a compile-time constant. It is stored,
+// validated and rebuildable, so «the office is always the same office» is no
+// longer true and `office.id` is what says which one this is. See FintechShift.
+//
+// Nothing is withheld: the boss is a speed and a radius, both of which the
+// client draws and the server enforces, so publishing them costs nothing and
+// lets the cheatsheet be generated rather than typed.
 // ---------------------------------------------------------------------------
 
 /** An axis-aligned rectangle in office metres. Origin top-left, +Y downward. */
@@ -1014,13 +1018,78 @@ export interface FintechRect {
   h: number;
 }
 
-/** The room itself: its size in metres, its furniture, and who fits through it. */
+/**
+ * One thing standing on the floor: a rectangle, and what it is.
+ *
+ * EVERY SOLID COLLIDES — that is what makes it a solid, and it is why the
+ * simulation takes the whole list as plain rectangles (`FintechRect`) without
+ * ever reading `kind`. The kind decides only how it is DRAWN, which is why this
+ * extends the rectangle rather than wrapping one: the array goes straight into
+ * `step` with no mapping and no cast.
+ *
+ * `kind` IS A PLAIN STRING AND MUST NEVER BECOME A UNION. It is `desk`, `flower`
+ * or `tree` today; a server that learns a fourth one must not break a client
+ * that is already deployed, and a union would turn "the office gained a plant"
+ * into a type error in a browser somebody is holding. The stylesheet keys off it
+ * and an unknown kind falls back to the neutral block — visible, because it is
+ * something you can walk into.
+ */
+export interface FintechSolid extends FintechRect {
+  kind: string;
+}
+
+/**
+ * A stretch of glazing along one wall. Decorative — it never collides.
+ *
+ * NOT A RECTANGLE, because a window has no thickness and no Y: it is a length of
+ * WALL, and the wall it is on is the second coordinate. `at` is the distance
+ * along that wall from the wall's start — left to right on the top, top to
+ * bottom on the sides — and `len` is the span, both in office metres.
+ *
+ * `wall` is a plain string for `FintechSolid.kind`'s reason: it is `top`, `left`
+ * or `right` today, and a client that could not parse a fourth wall should draw
+ * nothing rather than fail to compile.
+ */
+export interface FintechWindow {
+  wall: string;
+  at: number;
+  len: number;
+}
+
+/** The room itself: which layout it is, its size, its furniture and its glazing. */
 export interface FintechOfficeConfig {
+  /**
+   * A content hash of the geometry, sixteen lowercase hex characters.
+   *
+   * IT IS THE CACHE KEY, and the only reason it is here — the same job
+   * `VanyadumWorld.world_id` does for the заброшка. The catalogue is fetched once
+   * per visit while the layout can be rebuilt underneath a tab sitting on the
+   * splash, so a shift response names the layout it is in and a disagreement
+   * means re-fetch before entering play. Drawing furniture that is not there
+   * would be the visible half of getting this wrong; the invisible half is worse,
+   * because the client PREDICTS against these rectangles.
+   */
+  id: string;
   w: number;
   h: number;
-  desks: FintechRect[];
+  /** Everything you can walk into, in the order the server resolves collisions in. */
+  solids: FintechSolid[];
+  /** Everything you cannot. Drawn on the wall bands, never on the floor. */
+  windows: FintechWindow[];
   player_radius: number;
   boss_radius: number;
+  /**
+   * The separation every solid keeps from every other solid and from every wall,
+   * in metres.
+   *
+   * IT IS PUBLISHED AND NOT ENFORCED HERE. The server validates a layout against
+   * it, and a client re-deriving that judgement would be a second implementation
+   * of a rule that already has one — so nothing in this file's consumers reads it
+   * to decide anything. It is typed because it is part of the contract and
+   * because it is the number that says a gap is always wide enough to walk down,
+   * which is a fact about the room somebody may yet want to state on a screen.
+   */
+  min_gap: number;
 }
 
 /** The money ramp — the core feel of the game, and the whole reason to stand still. */
@@ -1190,6 +1259,18 @@ export interface FintechConfig {
 /** A started or resumed shift. No level — the office is in the catalogue. */
 export interface FintechShift {
   shift_id: string;
+  /**
+   * Which LAYOUT this shift is standing in — the same sixteen hex characters
+   * `office.id` carries.
+   *
+   * The catalogue is fetched once and the layout can be rebuilt while a tab sits
+   * on the splash, so this is the one field that says whether the geometry on
+   * hand is the geometry everybody else is walking around. It rides the two shift
+   * responses rather than a snapshot because it is constant for the life of a
+   * shift, and a repeating payload is the wrong place for anything that never
+   * changes.
+   */
+  office_id: string;
   /** The realtime room to open the socket in. Taken from here, never hardcoded. */
   room: string;
   /**

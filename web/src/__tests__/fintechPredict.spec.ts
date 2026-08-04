@@ -47,7 +47,7 @@ const K: StepConstants = {
 };
 
 /** An empty room, so nothing below is about collision. */
-const NO_DESKS: readonly FintechRect[] = [];
+const NO_SOLIDS: readonly FintechRect[] = [];
 
 /**
  * The direction a dash would resolve to if one were asked for.
@@ -58,7 +58,7 @@ const NO_DESKS: readonly FintechRect[] = [];
 const FOR_DASH = { mx: 0, my: -1 };
 
 function predictor() {
-  return createPredictor({ desks: NO_DESKS, constants: K, start: { x: 8, y: 11 } });
+  return createPredictor({ rects: NO_SOLIDS, constants: K, start: { x: 8, y: 11 } });
 }
 
 const walk = { dt: 0.025, mx: 0, my: 1 };

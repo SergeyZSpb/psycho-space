@@ -8,15 +8,15 @@ import {
   type StepConstants,
   type StepPlayer,
 } from '../lib/fintechStep';
-import type { FintechRect } from '../api/types';
+import type { FintechRect, FintechSolid } from '../api/types';
 
 /**
  * The conformance test that makes client-side prediction safe.
  *
  * `Step` exists twice — in Go and in TypeScript — because prediction cannot work
  * otherwise. This file is the thing that stops the two drifting: the Go test
- * emits a desk layout, an input transcript and the resulting player trace, and
- * the port must reproduce it. Regenerate the vectors with
+ * emits a set of solid rectangles, an input transcript and the resulting player
+ * trace, and the port must reproduce it. Regenerate the vectors with
  *
  *     ./dev.sh test -run TestGoldenVectors ./internal/gamefintech/ -update
  *
@@ -45,7 +45,17 @@ interface GoldenPlayer {
 
 interface GoldenCase {
   name: string;
-  desks: FintechRect[];
+  /**
+   * Everything that collides, in the layout's own order.
+   *
+   * `rects` and not `desks`: the office grew flowerpots and ficuses, every one
+   * of which is pushed out of by the same function, and the SIMULATION has never
+   * cared which is which. The Go emits the same word, and the order is part of
+   * the fixture rather than incidental — it is the tie-break where two solids
+   * overlap after expansion by the player's radius, so re-sorting it would make
+   * the two implementations disagree by construction.
+   */
+  rects: FintechRect[];
   start: GoldenPlayer;
   commands: { dt: number; mx?: number; my?: number; d?: boolean }[];
   trace: GoldenPlayer[];
@@ -198,7 +208,7 @@ describe('the TypeScript port of Step conforms to the Go original', () => {
       let p = fromGolden(c.start);
       for (let i = 0; i < c.commands.length; i++) {
         const g = c.commands[i];
-        p = step(c.desks, p, { dt: g.dt, mx: g.mx ?? 0, my: g.my ?? 0, dash: g.d ?? false }, K);
+        p = step(c.rects, p, { dt: g.dt, mx: g.mx ?? 0, my: g.my ?? 0, dash: g.d ?? false }, K);
         const want = c.trace[i];
         // Reported with the step index, because a divergence almost always
         // starts at one identifiable moment — a desk, the instant a dash ends,
@@ -423,6 +433,28 @@ describe('the office', () => {
       p.y > d.y - K.playerRadius &&
       p.y < d.y + d.h + K.playerRadius;
     expect(inside).toBe(false);
+  });
+
+  it('pushes a player out of a ficus exactly as it does out of a desk', () => {
+    // A KIND DECIDES HOW A SOLID IS DRAWN AND NOTHING ELSE, which is why `step`
+    // takes plain rectangles and never reads one. A plant you could walk through
+    // would be a lie about where the bald man cannot reach you — and a client
+    // that skipped one would predict straight through it and be corrected on
+    // every frame it spent standing inside it.
+    const solid = (kind: string): FintechSolid[] => [{ x: 4, y: 8, w: 1, h: 1, kind }];
+    const walkInto = (rects: readonly FintechRect[]) => {
+      let p = player({ x: 4.5, y: 4 });
+      for (let i = 0; i < 200; i++) p = step(rects, p, { dt: 0.05, mx: 0, my: 1 }, K);
+      return p;
+    };
+    const asDesk = walkInto(solid('desk'));
+    expect(walkInto(solid('tree'))).toEqual(asDesk);
+    expect(walkInto(solid('flower'))).toEqual(asDesk);
+    // Including one this client has never heard of: the wire's kind is a plain
+    // string so a server can learn a fourth, and an unknown one still collides.
+    expect(walkInto(solid('something-new'))).toEqual(asDesk);
+    // And it really did stop him — otherwise the three would agree vacuously.
+    expect(asDesk.y).toBeLessThan(8 - K.playerRadius + 1e-9);
   });
 
   it('is deterministic: the same input twice is the same player twice', () => {

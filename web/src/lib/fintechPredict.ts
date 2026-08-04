@@ -63,7 +63,13 @@ export const SNAP_CORRECTION = 2;
 export const CORRECTION_SECONDS = 0.12;
 
 export interface PredictorOptions {
-  desks: readonly FintechRect[];
+  /**
+   * Everything on the floor that collides, in the layout's own order — which is
+   * the tie-break the server resolves overlaps by, so it may not be re-sorted.
+   * `FintechSolid` extends `FintechRect`, so the served array is passed straight
+   * in: prediction has no opinion about what a solid IS.
+   */
+  rects: readonly FintechRect[];
   constants: StepConstants;
   /** Where the player starts, in metres. */
   start: { x: number; y: number };
@@ -119,7 +125,7 @@ export interface Authoritative {
  * prediction, reconciliation and smoothing without waiting for one.
  */
 export function createPredictor(opts: PredictorOptions) {
-  const { desks, constants } = opts;
+  const { rects, constants } = opts;
 
   let seq = 0;
   /**
@@ -172,7 +178,7 @@ export function createPredictor(opts: PredictorOptions) {
       // `step` returns a fresh object, so keeping the old one costs nothing and
       // nothing can mutate it afterwards.
       pending.push({ cmd: stamped, before: predicted });
-      predicted = step(desks, predicted, stamped, constants);
+      predicted = step(rects, predicted, stamped, constants);
       return stamped;
     },
 
@@ -211,7 +217,7 @@ export function createPredictor(opts: PredictorOptions) {
         dashCooldown: a.dashCooldown,
         slowLeft: a.slowLeft,
       };
-      for (const p of pending) replayed = step(desks, replayed, p.cmd, constants);
+      for (const p of pending) replayed = step(rects, replayed, p.cmd, constants);
       predicted = replayed;
 
       const dx = drawnX - predicted.x;
@@ -275,7 +281,7 @@ export function createPredictor(opts: PredictorOptions) {
      */
     viewAhead(dt: number, axes: { mx: number; my: number }): { x: number; y: number } {
       if (!(dt > 0)) return this.view();
-      const ahead = step(desks, predicted, { seq: 0, dt, mx: axes.mx, my: axes.my }, constants);
+      const ahead = step(rects, predicted, { seq: 0, dt, mx: axes.mx, my: axes.my }, constants);
       return { x: ahead.x + errX, y: ahead.y + errY };
     },
 

@@ -11,7 +11,7 @@ import (
 // stand advances a player through n steps of standing perfectly still.
 func stand(p Player, n int) Player {
 	for i := 0; i < n; i++ {
-		p = Step(Desks, p, Command{Dt: testDt})
+		p = Step(testRects, p, Command{Dt: testDt})
 	}
 	return p
 }
@@ -19,7 +19,7 @@ func stand(p Player, n int) Player {
 // walk advances a player through n steps of walking, without dashing.
 func walk(p Player, n int) Player {
 	for i := 0; i < n; i++ {
-		p = Step(Desks, p, Command{Dt: testDt, MX: 1})
+		p = Step(testRects, p, Command{Dt: testDt, MX: 1})
 	}
 	return p
 }
@@ -114,12 +114,12 @@ func TestADashNeverResetsTheStreakAndNeverEarns(t *testing.T) {
 	pay, streak := full.Salary, full.Streak
 
 	// Request it, then hold the stick down for exactly as long as the dash runs.
-	p := Step(Desks, full, Command{Dt: testDt, MX: 1, Dash: true})
+	p := Step(testRects, full, Command{Dt: testDt, MX: 1, Dash: true})
 	if p.DashLeft <= 0 {
 		t.Fatal("the dash was refused from a cold cooldown")
 	}
 	for p.DashLeft > 0 {
-		p = Step(Desks, p, Command{Dt: testDt, MX: 1})
+		p = Step(testRects, p, Command{Dt: testDt, MX: 1})
 	}
 	if p.Streak != streak {
 		t.Fatalf("the dash cost the streak: %v → %v", streak, p.Streak)
@@ -134,8 +134,8 @@ func TestADashNeverResetsTheStreakAndNeverEarns(t *testing.T) {
 	// And the exemption is the DASH rather than the grace window happening to be
 	// longer than it: one walking step spends grace, the identical dashing step
 	// spends none.
-	walked := Step(Desks, full, Command{Dt: testDt, MX: 1})
-	dashed := Step(Desks, full, Command{Dt: testDt, MX: 1, Dash: true})
+	walked := Step(testRects, full, Command{Dt: testDt, MX: 1})
+	dashed := Step(testRects, full, Command{Dt: testDt, MX: 1, Dash: true})
 	if walked.MoveGrace != testDt {
 		t.Fatalf("one walking step spent %v of grace, want %v", walked.MoveGrace, testDt)
 	}
@@ -159,7 +159,7 @@ func TestADashMovesAtDashSpeedOnTheStepItIsRequested(t *testing.T) {
 func TestTheDashCannotBeRetriggeredInsideItsCooldown(t *testing.T) {
 	p := atSpawn()
 	p.Pos = Vec2{X: 8, Y: 8}
-	p = Step(Desks, p, Command{Dt: testDt, MX: 1, Dash: true})
+	p = Step(testRects, p, Command{Dt: testDt, MX: 1, Dash: true})
 	if math.Abs(p.DashCooldown-(DashCooldown-testDt)) > 1e-9 {
 		t.Fatalf("the cooldown started at %v", p.DashCooldown)
 	}
@@ -167,7 +167,7 @@ func TestTheDashCannotBeRetriggeredInsideItsCooldown(t *testing.T) {
 	// Mash it for a second: nothing happens, and the cooldown keeps running down
 	// rather than being reset by the attempt.
 	for i := 0; i < SimHz; i++ {
-		p = Step(Desks, p, Command{Dt: testDt, MX: 1, Dash: true})
+		p = Step(testRects, p, Command{Dt: testDt, MX: 1, Dash: true})
 		if p.DashLeft > 0 && float64(i)*testDt > DashSeconds {
 			t.Fatalf("step %d: a second dash started inside the cooldown", i)
 		}
@@ -178,9 +178,9 @@ func TestTheDashCannotBeRetriggeredInsideItsCooldown(t *testing.T) {
 
 	// And once it expires, it works again.
 	for p.DashCooldown > 0 {
-		p = Step(Desks, p, Command{Dt: testDt})
+		p = Step(testRects, p, Command{Dt: testDt})
 	}
-	p = Step(Desks, p, Command{Dt: testDt, MX: 1, Dash: true})
+	p = Step(testRects, p, Command{Dt: testDt, MX: 1, Dash: true})
 	if p.DashLeft <= 0 {
 		t.Fatal("the dash never came back after its cooldown expired")
 	}
@@ -212,7 +212,7 @@ func TestAThumbRestingOnTheStickIsStandingStill(t *testing.T) {
 	// An analogue stick never returns exactly zero, and a player whose thumb is
 	// resting on it is standing still as far as anybody watching is concerned.
 	p := stand(atSpawn(), 1)
-	twitch := Step(Desks, p, Command{Dt: testDt, MX: IdleThreshold / 2})
+	twitch := Step(testRects, p, Command{Dt: testDt, MX: IdleThreshold / 2})
 	if twitch.Salary <= p.Salary {
 		t.Fatal("a stick below the idle threshold stopped the money")
 	}
@@ -235,9 +235,9 @@ func TestADashCoversItsWholeDistanceWithNoFurtherInput(t *testing.T) {
 	// One command carrying the dash and its direction, then silence. DOWN the
 	// clear central lane: the spawn is only 3.65 m from the top wall and a dash
 	// is 5.2 m, so dashing up would measure the wall rather than the dash.
-	p = Step(Desks, p, Command{Seq: 1, Dt: 0.025, MX: 0, MY: 1, Dash: true})
+	p = Step(testRects, p, Command{Seq: 1, Dt: 0.025, MX: 0, MY: 1, Dash: true})
 	for p.DashLeft > 0 {
-		p = Step(Desks, p, Command{Dt: 0.025})
+		p = Step(testRects, p, Command{Dt: 0.025})
 	}
 	got := p.Pos.Y - from.Y
 	want := DashSpeed * DashSeconds
@@ -261,11 +261,11 @@ func TestADashCoversItsWholeDistanceWithNoFurtherInput(t *testing.T) {
 func TestADashIgnoresTheStickOnceCommitted(t *testing.T) {
 	run := func(during Command) Vec2 {
 		p := atSpawn()
-		p = Step(Desks, p, Command{Seq: 1, Dt: 0.025, MX: 0, MY: 1, Dash: true})
+		p = Step(testRects, p, Command{Seq: 1, Dt: 0.025, MX: 0, MY: 1, Dash: true})
 		for p.DashLeft > 0 {
 			c := during
 			c.Dt = 0.025
-			p = Step(Desks, p, c)
+			p = Step(testRects, p, c)
 		}
 		return p.Pos
 	}

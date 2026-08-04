@@ -89,6 +89,9 @@ type fakeRepo struct {
 	// window — and the only way to see it is to look at the argument.
 	mu         sync.Mutex
 	boardSince time.Time
+	// layouts and sources are what InsertLayout was called with, in order.
+	layouts []Layout
+	sources []string
 }
 
 func newFakeRepo() *fakeRepo { return &fakeRepo{inserted: make(chan Shift, 16)} }
@@ -109,6 +112,26 @@ func (f *fakeRepo) recordBoardSince(since time.Time) {
 
 func (f *fakeRepo) InsertShift(_ context.Context, _ db.DBTX, s Shift) error {
 	f.inserted <- s
+	return nil
+}
+
+// The floor. The service reads it once at boot through EnsureLayout rather than
+// through this fake — every test here builds a service on an explicit layout —
+// so what these two owe is a plausible answer and a record of the write.
+func (f *fakeRepo) CurrentLayout(context.Context, db.DBTX) (Layout, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.layouts) == 0 {
+		return Layout{}, ErrNoLayout
+	}
+	return f.layouts[len(f.layouts)-1], nil
+}
+
+func (f *fakeRepo) InsertLayout(_ context.Context, _ db.DBTX, l Layout, source string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.layouts = append(f.layouts, l)
+	f.sources = append(f.sources, source)
 	return nil
 }
 
@@ -156,7 +179,7 @@ func start(t *testing.T, members ...realtime.Member) *harness {
 		tick: make(chan time.Time),
 		base: time.Now(),
 	}
-	h.svc = NewService(h.tr, Room, nil, h.repo, fakeProfiles{})
+	h.svc = NewService(h.tr, Room, nil, h.repo, fakeProfiles{}, testLayout)
 	ctx, cancel := context.WithCancel(context.Background())
 	go h.svc.Run(ctx, h.tick)
 	t.Cleanup(func() {
@@ -210,7 +233,7 @@ func TestHelloIsAnsweredWithTheShiftYouAreOn(t *testing.T) {
 	m := realtime.Member{ConnID: "c1", AccountID: acc}
 	h := start(t, m)
 
-	shiftID, _, err := h.svc.StartShift(context.Background(), acc)
+	working, err := h.svc.StartShift(context.Background(), acc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +243,8 @@ func TestHelloIsAnsweredWithTheShiftYouAreOn(t *testing.T) {
 	if len(ready) != 1 {
 		t.Fatalf("expected one ready frame, got %d", len(ready))
 	}
-	if ready[0].Frame["shift_id"] != shiftID {
-		t.Fatalf("ready names shift %v, StartShift returned %v", ready[0].Frame["shift_id"], shiftID)
+	if ready[0].Frame["shift_id"] != working.ShiftID {
+		t.Fatalf("ready names shift %v, StartShift returned %v", ready[0].Frame["shift_id"], working.ShiftID)
 	}
 }
 
@@ -241,7 +264,7 @@ func TestTheReadyFrameSaysWhichTickTheShiftStartedOn(t *testing.T) {
 	m2 := realtime.Member{ConnID: "c2", AccountID: late}
 	h := start(t, m1)
 
-	if _, _, err := h.svc.StartShift(context.Background(), first); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), first); err != nil {
 		t.Fatal(err)
 	}
 	h.pump(t, "the office to be a few ticks old", func() bool {
@@ -249,7 +272,7 @@ func TestTheReadyFrameSaysWhichTickTheShiftStartedOn(t *testing.T) {
 	})
 
 	h.tr.setMembers([]realtime.Member{m1, m2})
-	if _, _, err := h.svc.StartShift(context.Background(), late); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), late); err != nil {
 		t.Fatal(err)
 	}
 	h.svc.HandleInbound(context.Background(), m2, Room, []byte(`{"t":"fintech_hello"}`))
@@ -297,7 +320,7 @@ func TestAFrameForAnotherRoomIsIgnored(t *testing.T) {
 	// that trusted that entirely would misbehave the day two games shared one.
 	acc := uuid.New().String()
 	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
-	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatal(err)
 	}
 	h.svc.HandleInbound(context.Background(), realtime.Member{ConnID: "c1", AccountID: acc},
@@ -313,7 +336,7 @@ func TestSnapshotsGoOutOnEverySecondTick(t *testing.T) {
 	// difference — and it halves a cost that is per viewer, per tick, forever.
 	acc := uuid.New().String()
 	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
-	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatal(err)
 	}
 	h.pump(t, "four snapshots", func() bool { return len(h.tr.framesOfType(TypeSnapshot)) >= 4 })
@@ -343,7 +366,7 @@ func TestBothOfAnAccountsDevicesGetTheSnapshot(t *testing.T) {
 		realtime.Member{ConnID: "c1", AccountID: acc},
 		realtime.Member{ConnID: "c2", AccountID: acc},
 	)
-	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatal(err)
 	}
 	h.pump(t, "both connections", func() bool {
@@ -361,7 +384,7 @@ func TestNobodyElsesConnectionGetsYourFrames(t *testing.T) {
 		realtime.Member{ConnID: "ca", AccountID: a},
 		realtime.Member{ConnID: "cb", AccountID: b},
 	)
-	if _, _, err := h.svc.StartShift(context.Background(), a); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), a); err != nil {
 		t.Fatal(err)
 	}
 	h.pump(t, "a snapshot", func() bool { return len(h.tr.framesOfType(TypeSnapshot)) >= 2 })
@@ -376,18 +399,18 @@ func TestASecondShiftIsRefusedAndTheFloorIsCapped(t *testing.T) {
 	h := start(t)
 	ctx := context.Background()
 	acc := uuid.New().String()
-	if _, _, err := h.svc.StartShift(ctx, acc); err != nil {
+	if _, err := h.svc.StartShift(ctx, acc); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := h.svc.StartShift(ctx, acc); !errors.Is(err, ErrShiftInProgress) {
+	if _, err := h.svc.StartShift(ctx, acc); !errors.Is(err, ErrShiftInProgress) {
 		t.Fatalf("the second shift returned %v", err)
 	}
 	for i := 1; i < MaxOccupants; i++ {
-		if _, _, err := h.svc.StartShift(ctx, uuid.New().String()); err != nil {
+		if _, err := h.svc.StartShift(ctx, uuid.New().String()); err != nil {
 			t.Fatalf("occupant %d refused: %v", i, err)
 		}
 	}
-	if _, _, err := h.svc.StartShift(ctx, uuid.New().String()); !errors.Is(err, ErrOfficeFull) {
+	if _, err := h.svc.StartShift(ctx, uuid.New().String()); !errors.Is(err, ErrOfficeFull) {
 		t.Fatalf("the cap did not bite: %v", err)
 	}
 }
@@ -400,7 +423,7 @@ func TestARefusedFirstShiftDoesNotLeaveAnEmptyOfficeBehind(t *testing.T) {
 	h := start(t)
 	ctx := context.Background()
 	acc := uuid.New().String()
-	if _, _, err := h.svc.StartShift(ctx, acc); err != nil {
+	if _, err := h.svc.StartShift(ctx, acc); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.svc.LeaveShift(ctx, acc); err != nil {
@@ -418,21 +441,26 @@ func TestCurrentShiftIsTheReloadPath(t *testing.T) {
 	h := start(t)
 	ctx := context.Background()
 	acc := uuid.New().String()
-	if _, _, _, ok := h.svc.CurrentShift(acc); ok {
+	if _, ok := h.svc.CurrentShift(acc); ok {
 		t.Fatal("an account that has never played is working")
 	}
-	id, _, err := h.svc.StartShift(ctx, acc)
+	started, err := h.svc.StartShift(ctx, acc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _, _, ok := h.svc.CurrentShift(acc)
-	if !ok || got != id {
-		t.Fatalf("CurrentShift = %q, %v; want %q", got, ok, id)
+	got, ok := h.svc.CurrentShift(acc)
+	if !ok || got.ShiftID != started.ShiftID {
+		t.Fatalf("CurrentShift = %q, %v; want %q", got.ShiftID, ok, started.ShiftID)
+	}
+	// And it names the floor the shift is being played on, which is what a
+	// reloaded tab compares its cached catalogue against.
+	if got.OfficeID == "" || got.OfficeID != testLayout.ID {
+		t.Fatalf("CurrentShift says the office is %q, the service was built on %q", got.OfficeID, testLayout.ID)
 	}
 	if err := h.svc.LeaveShift(ctx, acc); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, ok := h.svc.CurrentShift(acc); ok {
+	if _, ok := h.svc.CurrentShift(acc); ok {
 		t.Fatal("the shift survived being walked out of")
 	}
 }
@@ -444,7 +472,7 @@ func TestWalkingOutWritesTheShiftAndTellsEveryDevice(t *testing.T) {
 		realtime.Member{ConnID: "c2", AccountID: acc},
 	)
 	ctx := context.Background()
-	if _, _, err := h.svc.StartShift(ctx, acc); err != nil {
+	if _, err := h.svc.StartShift(ctx, acc); err != nil {
 		t.Fatal(err)
 	}
 	// Long enough to be worth recording. The clock is the one the handler reads,
@@ -497,7 +525,7 @@ func TestAShiftShorterThanTheMinimumIsNotWritten(t *testing.T) {
 	acc := uuid.New().String()
 	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
 	ctx := context.Background()
-	if _, _, err := h.svc.StartShift(ctx, acc); err != nil {
+	if _, err := h.svc.StartShift(ctx, acc); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.svc.LeaveShift(ctx, acc); err != nil {
@@ -551,7 +579,7 @@ func TestTheBoardWindowIsAWeekAndIsPublished(t *testing.T) {
 	if BoardWindow != time.Duration(BoardWindowDays)*24*time.Hour {
 		t.Fatalf("BoardWindow is %v, which is not %d days", BoardWindow, BoardWindowDays)
 	}
-	if got := BuildConfig().Board.WindowDays; got != BoardWindowDays {
+	if got := BuildConfig(testLayout).Board.WindowDays; got != BoardWindowDays {
 		t.Fatalf("the served board window is %d days, want %d", got, BoardWindowDays)
 	}
 }
@@ -563,7 +591,7 @@ func TestLeavingAShiftThatIsNotThere(t *testing.T) {
 		t.Fatalf("leaving an empty office returned %v", err)
 	}
 	acc := uuid.New().String()
-	if _, _, err := h.svc.StartShift(ctx, acc); err != nil {
+	if _, err := h.svc.StartShift(ctx, acc); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.svc.LeaveShift(ctx, uuid.New().String()); !errors.Is(err, ErrNoShift) {
@@ -574,7 +602,7 @@ func TestLeavingAShiftThatIsNotThere(t *testing.T) {
 func TestBeingCaughtEndsTheShiftAndWritesIt(t *testing.T) {
 	acc := uuid.New().String()
 	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
-	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatal(err)
 	}
 	// Backdate the start so the shift is worth recording when he arrives, which
@@ -602,7 +630,7 @@ func TestBeingCaughtEndsTheShiftAndWritesIt(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("being caught never wrote the shift")
 	}
-	if _, _, _, ok := h.svc.CurrentShift(acc); ok {
+	if _, ok := h.svc.CurrentShift(acc); ok {
 		t.Fatal("the shift outlived the promotion")
 	}
 }
@@ -610,7 +638,7 @@ func TestBeingCaughtEndsTheShiftAndWritesIt(t *testing.T) {
 func TestAnOccupantWhoseConnectionNeverComesBackIsEndedAndWritten(t *testing.T) {
 	acc := uuid.New().String()
 	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
-	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatal(err)
 	}
 	h.svc.mu.Lock()
@@ -642,7 +670,7 @@ func TestAReconnectingPlayerKeepsTheirShift(t *testing.T) {
 	acc := uuid.New().String()
 	m := realtime.Member{ConnID: "c1", AccountID: acc}
 	h := start(t, m)
-	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatal(err)
 	}
 	h.step(t)
@@ -652,7 +680,7 @@ func TestAReconnectingPlayerKeepsTheirShift(t *testing.T) {
 	h.stepAt(t, AbandonGrace/2)
 	h.step(t)
 
-	if _, _, _, ok := h.svc.CurrentShift(acc); !ok {
+	if _, ok := h.svc.CurrentShift(acc); !ok {
 		t.Fatal("a gap shorter than the grace lost the shift")
 	}
 }
@@ -661,7 +689,7 @@ func TestInputMovesThePlayerAndTheSnapshotSaysSo(t *testing.T) {
 	acc := uuid.New().String()
 	m := realtime.Member{ConnID: "c1", AccountID: acc}
 	h := start(t, m)
-	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatal(err)
 	}
 	h.pump(t, "a first snapshot", func() bool { return len(h.tr.framesOfType(TypeSnapshot)) > 0 })
@@ -689,7 +717,7 @@ func TestPurgeAccountIsIdempotentAndWritesNothing(t *testing.T) {
 	h := start(t)
 	ctx := context.Background()
 	acc := uuid.New().String()
-	if _, _, err := h.svc.StartShift(ctx, acc); err != nil {
+	if _, err := h.svc.StartShift(ctx, acc); err != nil {
 		t.Fatal(err)
 	}
 	h.svc.mu.Lock()
@@ -704,7 +732,7 @@ func TestPurgeAccountIsIdempotentAndWritesNothing(t *testing.T) {
 	h.svc.PurgeAccount(uuid.New().String())
 	h.svc.PurgeAccount("not even a uuid")
 
-	if _, _, _, ok := h.svc.CurrentShift(acc); ok {
+	if _, ok := h.svc.CurrentShift(acc); ok {
 		t.Fatal("the purged account is still working")
 	}
 	if got := len(h.svc.saves); got != 0 {
@@ -717,7 +745,7 @@ func TestPurgeAccountIsIdempotentAndWritesNothing(t *testing.T) {
 	}
 	// And the account can play again afterwards, which is what "idempotent"
 	// has to mean for something called around a mutation.
-	if _, _, err := h.svc.StartShift(ctx, acc); err != nil {
+	if _, err := h.svc.StartShift(ctx, acc); err != nil {
 		t.Fatalf("a purged account cannot start again: %v", err)
 	}
 }
@@ -726,7 +754,7 @@ func TestAFullSaveQueueDropsRatherThanBlocking(t *testing.T) {
 	// Stalling a twenty-hertz simulation for everybody in order to record one
 	// summary row is the wrong trade. The log line is what stops the loss being
 	// silent.
-	s := NewService(newFakeTransport(), Room, nil, newFakeRepo(), fakeProfiles{})
+	s := NewService(newFakeTransport(), Room, nil, newFakeRepo(), fakeProfiles{}, testLayout)
 	for i := 0; i < savesBuffer; i++ {
 		s.saves <- Shift{ID: uuid.New()}
 	}
@@ -755,7 +783,7 @@ func TestTheWriterDrainsOnShutdown(t *testing.T) {
 	// A deploy in the middle of somebody's best shift should still record it.
 	// The context is gone by then, so the writes get a fresh short-lived one.
 	repo := newFakeRepo()
-	s := NewService(newFakeTransport(), Room, nil, repo, fakeProfiles{})
+	s := NewService(newFakeTransport(), Room, nil, repo, fakeProfiles{}, testLayout)
 	queued := Shift{ID: uuid.New(), AccountID: uuid.New(), Cause: CauseLeft, Salary: 1234, Seconds: 42}
 	s.saves <- queued
 
@@ -775,7 +803,7 @@ func TestTheWriterDrainsOnShutdown(t *testing.T) {
 
 func TestConfigIsTheCatalogue(t *testing.T) {
 	h := start(t)
-	if got := h.svc.Config(); got.GameKey != GameKey || len(got.Office.Desks) != len(Desks) {
+	if got := h.svc.Config(); got.GameKey != GameKey || len(got.Office.Solids) != len(testLayout.Solids) {
 		t.Fatalf("the service serves something other than the catalogue: %+v", got)
 	}
 }
@@ -808,10 +836,10 @@ func TestAShiftStartsEvenWhenTheFaceWillNotLoad(t *testing.T) {
 	acc := uuid.New().String()
 	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
 	h.svc.profiles = fakeProfiles{err: errors.New("the account service is having a moment")}
-	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatalf("a failing avatar lookup stopped the shift: %v", err)
 	}
-	if _, _, _, ok := h.svc.CurrentShift(acc); !ok {
+	if _, ok := h.svc.CurrentShift(acc); !ok {
 		t.Fatal("no shift after a failed avatar load")
 	}
 }
@@ -823,7 +851,7 @@ func TestTheFaceIsReadOnceAtTheStartAndNotOnEveryTick(t *testing.T) {
 	h := start(t, realtime.Member{ConnID: "c1", AccountID: acc})
 	counting := &countingProfiles{}
 	h.svc.profiles = counting
-	if _, _, err := h.svc.StartShift(context.Background(), acc); err != nil {
+	if _, err := h.svc.StartShift(context.Background(), acc); err != nil {
 		t.Fatal(err)
 	}
 	h.pump(t, "a snapshot", func() bool { return len(h.tr.framesOfType(TypeSnapshot)) >= 5 })

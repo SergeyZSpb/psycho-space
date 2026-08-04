@@ -63,7 +63,7 @@ func advance(o *Office, n int) []*Occupant {
 func TestTheSameAccountCannotStartTwice(t *testing.T) {
 	// A refusal rather than a silent replacement: dropping the running shift
 	// would throw away one somebody is in the middle of on their other tab.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	if err := o.Join("a", "s2", "p-a", "", 0, epoch); !errors.Is(err, ErrShiftInProgress) {
 		t.Fatalf("the second shift was allowed: %v", err)
@@ -78,7 +78,7 @@ func TestTheSameAccountCannotStartTwice(t *testing.T) {
 }
 
 func TestTheFloorIsCapped(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	for i := 0; i < MaxOccupants; i++ {
 		if err := o.Join(string(rune('a'+i)), "s", "p-"+string(rune('a'+i)), "", 0, epoch); err != nil {
 			t.Fatalf("occupant %d refused: %v", i, err)
@@ -95,7 +95,7 @@ func TestTheFloorIsCapped(t *testing.T) {
 func TestEmptyIsTrueOnceEverybodyHasGoneHome(t *testing.T) {
 	// It is what the service watches to drop the office entirely, which is what
 	// puts the bald man back at the far wall for the next shift.
-	o := NewOffice()
+	o := newTestOffice()
 	if !o.Empty() {
 		t.Fatal("a fresh office is not empty")
 	}
@@ -120,7 +120,7 @@ func TestStandingStillEarnsWithoutSendingAnything(t *testing.T) {
 	// nothing is the mistake «ВАНЯДУМ» shipped once — so the office has to
 	// simulate the time no command claimed. Without this, standing perfectly
 	// still would pay nothing, which is the one outcome the design cannot have.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	advance(o, SimHz) // one second, no input at all
 
@@ -147,7 +147,7 @@ func TestStandingStillEarnsWithoutSendingAnything(t *testing.T) {
 func TestQueuedInputDrainsAtRealTimeRatherThanAllAtOnce(t *testing.T) {
 	// Two sub-steps arrive per input frame at 10 Hz and are spent one per tick
 	// at 20 Hz, so a client cannot get ahead by batching — it merely queues.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	cmds := make([]Command, 0, 10)
 	for i := 1; i <= 10; i++ {
@@ -170,7 +170,7 @@ func TestACommandAlreadyAppliedIsDroppedRatherThanReplayed(t *testing.T) {
 	// unacknowledged commands in every frame, and a replayed one would be
 	// movement that happens twice on the server and once on the client — which
 	// the player feels as being dragged.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	c := Command{Seq: 1, Dt: SimStep.Seconds(), MX: 1}
 	o.Enqueue("a", Input{Cmds: []Command{c}}, epoch)
@@ -202,7 +202,7 @@ func TestARedundantCommandStillWaitingInTheQueueIsDroppedToo(t *testing.T) {
 	// half and accepts the repeats of the waiting half, so the player walks twice
 	// for input they gave once: dragged forward while the stick is down, and still
 	// walking after it is released while the office works through the surplus.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", Vec2{X: 1, Y: OfficeH / 2})
 	start := snapOf(t, o, "a").X
@@ -238,7 +238,7 @@ func TestOnlyWhatWasActuallySimulatedIsAcknowledged(t *testing.T) {
 	// never ran — a permanent divergence, and in the direction that costs most
 	// here: the client believes it is further from the лысый than the office does,
 	// so the shift ends while he is still drawn a metre away.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	start := snapOf(t, o, "a").X
 
@@ -271,7 +271,7 @@ func TestTheTimeBudgetCapsBankedSimulatedTime(t *testing.T) {
 	// range anywhere. The answer is that simulated time is bought at real time:
 	// a tick may spend at most TimeBudgetCap seconds of client-claimed movement,
 	// however much is queued and however long the tick itself claims to be.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	var cmds []Command
 	for i := 1; i <= maxPending; i++ {
@@ -305,7 +305,7 @@ func TestQuietTimeCannotBeBankedAndSpentOnMovement(t *testing.T) {
 	// rather than by the client, and that simulation CONSUMES the budget — so a
 	// player cannot earn the ramp for ten seconds and then cash those ten
 	// seconds in as free movement.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	// Two seconds of standing perfectly still. NOT five: the bald man reaches the
 	// spawn in about 3.8 s, and this test is about the budget rather than about
@@ -339,7 +339,7 @@ func TestTheRoundTripIsDerivedFromTheTickTheClientSaysItDrew(t *testing.T) {
 	// tick a client says it has and the tick the office is on IS the loop — and
 	// a client cannot inflate it without also claiming to be looking at a frame
 	// it has not received.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	advance(o, 5)
 
@@ -363,7 +363,7 @@ func TestAClaimedLatencyIsCappedAndAFutureOneIsIgnored(t *testing.T) {
 	// The client controls the number, so it needs a ceiling — otherwise claiming
 	// an absurd latency would leave somebody permanently further from the лысый
 	// than they really are.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	advance(o, 5)
 	o.Enqueue("a", Input{Seen: 1}, epoch)
@@ -374,7 +374,7 @@ func TestAClaimedLatencyIsCappedAndAFutureOneIsIgnored(t *testing.T) {
 	// A tick in the FUTURE is discarded rather than clamped: it is a client
 	// guessing, or the office having been rebuilt under it, and neither is a
 	// measurement.
-	o2 := NewOffice()
+	o2 := newTestOffice()
 	join(t, o2, "b", "s2")
 	advance(o2, 2)
 	o2.Enqueue("b", Input{Seen: 9999}, epoch)
@@ -389,7 +389,7 @@ func TestTheCatchIsResolvedAgainstTheWorldTheVictimSaw(t *testing.T) {
 	// still the better part of a metre away — but it must end once their screen
 	// has caught up. Being uncatchable is not the fix; being caught where you saw
 	// it happen is.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	advance(o, 8)
 	// The measured loop, through the production path. Capped at CatchRewindMax,
@@ -418,7 +418,7 @@ func TestAClientWithNoMeasuredLatencyStillGetsTheRenderDelay(t *testing.T) {
 	// mechanism — so a brand-new occupant with no round trip yet is still two
 	// ticks behind, and resolving their catch in the present would be the same
 	// defect in miniature.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	advance(o, 4)
 	o.mu.Lock()
@@ -449,7 +449,7 @@ func (o *Office) rttOf(t *testing.T, accountID string) float64 {
 func TestBeingCaughtEndsTheShiftAsAPromotion(t *testing.T) {
 	// End to end, with nothing reached into: somebody stands still at the spawn
 	// earning money, and the bald man crosses the office to congratulate them.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 
 	// Long enough for him to walk the length of the floor and no longer, so a
@@ -484,7 +484,7 @@ func TestAnOccupantNobodyHasSeenIsEndedAsHavingWalkedOut(t *testing.T) {
 	// Unlike «ВАНЯДУМ», the shift IS recorded: a забег somebody walked away from
 	// is not a result, but a SHIFT somebody walked away from is exactly what this
 	// game is about.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 
 	// One tick just inside the grace, and one just outside it. The clock is the
@@ -508,7 +508,7 @@ func TestBeingSeenKeepsAShiftAlive(t *testing.T) {
 	// The other side of the same rule: a connection is presence, whether or not
 	// anything is sent down it. A player standing perfectly still sends nothing
 	// at all and is the most present person in the game.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	for i := 1; i <= 5; i++ {
 		at := epoch.Add(time.Duration(i) * AbandonGrace)
@@ -523,7 +523,7 @@ func TestBeingSeenKeepsAShiftAlive(t *testing.T) {
 }
 
 func TestASnapshotDescribesTheOccupantItIsAddressedTo(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	// Move one of them and not the other.
@@ -546,7 +546,7 @@ func TestASnapshotDescribesTheOccupantItIsAddressedTo(t *testing.T) {
 }
 
 func TestTheTickIsTheClientsTimeline(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	advance(o, 7)
 	if got := o.Tick(); got != 7 {
@@ -582,7 +582,7 @@ func TestTwoOccupantsAreSteppedInADeterministicOrder(t *testing.T) {
 	// differ between processes. Two people at exactly the same distance is not a
 	// hypothetical in a room this size.
 	run := func() (Vec2, Vec2) {
-		o := NewOffice()
+		o := newTestOffice()
 		join(t, o, "a", "s1")
 		join(t, o, "b", "s2")
 		// Both start on the same known point (join pins it), so the split below
@@ -608,7 +608,7 @@ func TestPendingInputIsBounded(t *testing.T) {
 	// A client that floods must not make the office hold an unbounded slice.
 	// What bounds how much of it is SIMULATED is the time budget; this bounds
 	// the memory.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	for frame := 0; frame < 100; frame++ {
 		cmds := make([]Command, 0, MaxInboundCommands)
@@ -638,7 +638,7 @@ func TestPendingInputIsBounded(t *testing.T) {
 }
 
 func TestEnqueueIgnoresAnAccountThatIsNotWorking(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	o.Enqueue("nobody", Input{Cmds: []Command{{Seq: 1, Dt: 0.05, MX: 1}}}, epoch)
 	if !o.Empty() {
 		t.Fatal("sending input started a shift")
@@ -661,7 +661,7 @@ func TestEnqueueIgnoresAnAccountThatIsNotWorking(t *testing.T) {
 // tick also charges the unclaimed remainder.
 func TestDriftDoesNotEatTheDash(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	o := NewOffice()
+	o := newTestOffice()
 	if err := o.Join("a", "shift-a", "p-a", "", 0, now); err != nil {
 		t.Fatalf("join: %v", err)
 	}
@@ -694,7 +694,7 @@ func TestDriftDoesNotEatTheDash(t *testing.T) {
 // player standing still, and that is the whole game.
 func TestStandingPerfectlyStillStillEarns(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	o := NewOffice()
+	o := newTestOffice()
 	if err := o.Join("a", "shift-a", "p-a", "", 0, now); err != nil {
 		t.Fatalf("join: %v", err)
 	}
@@ -745,7 +745,7 @@ func spawnsOf(t *testing.T, n int) []Vec2 {
 	t.Helper()
 	out := make([]Vec2, 0, n)
 	for i := 0; i < n; i++ {
-		o := NewOffice()
+		o := newTestOffice()
 		if err := o.Join("a", "s", "p-a", "", 0, epoch); err != nil {
 			t.Fatal(err)
 		}
@@ -776,8 +776,8 @@ func TestEverySpawnIsSomewhereYouCouldStand(t *testing.T) {
 			at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
 			t.Fatalf("draw %d spawned outside the floor at %+v", i, at)
 		}
-		for d, desk := range Desks {
-			if insideDesk(desk, at, PlayerRadius) {
+		for d, desk := range testRects {
+			if insideRect(desk, at, PlayerRadius) {
 				t.Fatalf("draw %d spawned inside desk %d at %+v", i, d, at)
 			}
 		}
@@ -796,7 +796,7 @@ func TestEverySpawnIsSomewhereHeCanActuallyGetTo(t *testing.T) {
 	// is 10.35 s, and this is here to catch "never", not to pin a number.
 	const patience = 30 * SimHz
 	for i, at := range spawnsOf(t, 40) {
-		o := NewOffice()
+		o := newTestOffice()
 		join(t, o, "a", "s1")
 		place(t, o, "a", at)
 		caught := false
@@ -835,7 +835,7 @@ func TestNobodySpawnsOnTopOfSomebodyAlreadyWorking(t *testing.T) {
 	// The first of the two faults a fixed spawn had: join while somebody is
 	// playing and you used to materialise INSIDE them.
 	for i := 0; i < 200; i++ {
-		o := NewOffice()
+		o := newTestOffice()
 		if err := o.Join("a", "s1", "p-a", "", 0, epoch); err != nil {
 			t.Fatal(err)
 		}
@@ -880,7 +880,7 @@ func TestACrowdedFloorStillProducesALegalSpawn(t *testing.T) {
 	// standing in the one lane, so nothing is spawnFromEachOther clear of them.
 	// It must still answer with a point on the floor and out of the furniture —
 	// overlapping is untidy, off the floor is broken.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	// Fill the room: pin the two of them either side of the canonical spawn so
@@ -895,8 +895,8 @@ func TestACrowdedFloorStillProducesALegalSpawn(t *testing.T) {
 		at.Y < PlayerRadius || at.Y > OfficeH-PlayerRadius {
 		t.Fatalf("the crowded fallback stood somebody off the floor at %+v", at)
 	}
-	for d, desk := range Desks {
-		if insideDesk(desk, at, PlayerRadius) {
+	for d, desk := range testRects {
+		if insideRect(desk, at, PlayerRadius) {
 			t.Fatalf("the crowded fallback stood somebody inside desk %d at %+v", d, at)
 		}
 	}
@@ -905,7 +905,7 @@ func TestACrowdedFloorStillProducesALegalSpawn(t *testing.T) {
 // --- peers on the frame ----------------------------------------------------
 
 func TestYourFrameCarriesTheOtherPeopleInTheOffice(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	// Somewhere else, so the two of them are distinguishable on the wire.
@@ -929,7 +929,7 @@ func TestYouAreNeverYourOwnPeer(t *testing.T) {
 	// The frame already says where YOU are at the top level, and the client
 	// predicts that position rather than interpolating it. A self-entry in the
 	// array would draw a second, laggier copy of you standing on yourself.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	if s := snapOf(t, o, "a"); len(s.Pr) != 0 {
 		t.Fatalf("a solo occupant sees %d peers: %+v", len(s.Pr), s.Pr)
@@ -940,7 +940,7 @@ func TestAPeerIsAPseudonymAndNeverAnAccountID(t *testing.T) {
 	// ADR-037. An account id is a durable identifier for a person, and it must
 	// not reach somebody else's browser — the handle is minted per process from
 	// a key held only in memory.
-	svc := NewService(nil, Room, nil, nil, nil)
+	svc := NewService(nil, Room, nil, nil, nil, testLayout)
 	account := "0195f0c2-1111-2222-3333-444455556666"
 	handle := svc.pseudonym(account)
 	if handle == account || strings.Contains(handle, account) {
@@ -954,13 +954,13 @@ func TestAPeerIsAPseudonymAndNeverAnAccountID(t *testing.T) {
 	}
 	// A second process means a second key, so the handle is meaningless once
 	// this office is gone — which is the property that makes it not an identity.
-	if NewService(nil, Room, nil, nil, nil).pseudonym(account) == handle {
+	if NewService(nil, Room, nil, nil, nil, testLayout).pseudonym(account) == handle {
 		t.Fatal("the handle survived a restart, so it is a durable identifier")
 	}
 }
 
 func TestTheFrameCarriesTheHandleTheServiceMinted(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	if err := o.Join("a", "s1", "handle-a", "", 0, epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -980,7 +980,7 @@ func TestADeadColleagueIsNotDrawn(t *testing.T) {
 	// The tick that catches somebody deletes them, so this is reachable only in
 	// the instant between the two — but drawing a figure the simulation has
 	// stopped stepping is worse than drawing nothing.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	o.mu.Lock()
@@ -995,7 +995,7 @@ func TestTheOrderOfPeersDoesNotWander(t *testing.T) {
 	// A slice's order is part of its value, so a randomised one is a diff on the
 	// wire and a re-render on the client ten times a second for nothing. Map
 	// iteration is what would cause it, which is why peersFor walks keys().
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	join(t, o, "c", "s3")
@@ -1019,7 +1019,7 @@ func TestAColleaguesFaceIsFetchedByHandleAndNeverSentOnAFrame(t *testing.T) {
 	// ADR-037's whole point. A ~250-character URL beside each peer would repeat
 	// ten times a second per viewer to say something that cannot change during a
 	// shift, so the frame carries the handle and the picture is one cached GET.
-	o := NewOffice()
+	o := newTestOffice()
 	if err := o.Join("a", "s1", "handle-a", "https://cdn.example/a.jpg", 0, epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -1048,7 +1048,7 @@ func TestAColleaguesFaceIsFetchedByHandleAndNeverSentOnAFrame(t *testing.T) {
 func TestAnAccountWithNoPictureIsSimplyAPlainFigure(t *testing.T) {
 	// Not an error and not a placeholder URL: the plane draws the figure it was
 	// already drawing, which is what the office looked like before avatars.
-	o := NewOffice()
+	o := newTestOffice()
 	if err := o.Join("a", "s1", "handle-a", "", 0, epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -1061,7 +1061,7 @@ func TestAFaceGoesWhenItsOwnerDoes(t *testing.T) {
 	// The handle is per-process and the office is the only thing that holds the
 	// mapping, so walking out has to take the picture with it — otherwise a
 	// handle that came back would serve a face nobody in the office has.
-	o := NewOffice()
+	o := newTestOffice()
 	if err := o.Join("a", "s1", "handle-a", "https://cdn.example/a.jpg", 0, epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -1103,7 +1103,7 @@ func bossOf(o *Office) Vec2 {
 func TestPointingHimAtSomebodyElseOverridesWhoIsNearest(t *testing.T) {
 	// The whole verb, and the whole of co-op's betrayal half: he walks at the
 	// NEAREST person, and this says otherwise for a few seconds.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	// Nothing on the floor to pick up: with two people there are two кальяны, one
@@ -1135,7 +1135,7 @@ func TestPointingHimAtSomebodyElseOverridesWhoIsNearest(t *testing.T) {
 
 func TestTheRedirectWearsOffAndHeComesBack(t *testing.T) {
 	// A reprieve rather than an answer — and he is nearer than he was.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	// `a` parks out of the way; `b` RUNS, and has to.
@@ -1184,7 +1184,7 @@ func TestTheRedirectWearsOffAndHeComesBack(t *testing.T) {
 }
 
 func TestTheRedirectIsRefusedWhenItWouldBeFree(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 
@@ -1211,7 +1211,7 @@ func TestTheRedirectIsRefusedWhenItWouldBeFree(t *testing.T) {
 func TestTheCallerSaysWhatHeDidAndTheFrameCarriesTheCooldown(t *testing.T) {
 	// A colleague has to be able to see who did it to him, so the announcement
 	// outranks the ordinary two-second rotation for a few seconds.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	if !o.Redirect("a", "p-b") {
@@ -1246,7 +1246,7 @@ func TestARedirectedColleagueWhoLeavesGivesHimBack(t *testing.T) {
 	// He must not keep walking at somebody who is no longer in the office —
 	// StepBoss with a target list of one that has gone would leave him homing on
 	// a corpse's last position.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	place(t, o, "a", Vec2{X: BossSpawnX, Y: BossSpawnY - GrinRange - 1})
@@ -1272,7 +1272,7 @@ func TestWalkingIntoTheBottleBuysHimARound(t *testing.T) {
 	// The one mechanic that acts on HIM rather than on the space between you, so
 	// it costs a walk — which means leaving wherever you were standing, and the
 	// streak with it.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", BottleSpots[spotOf(o)])
 	advance(o, 1)
@@ -1290,7 +1290,7 @@ func TestWalkingIntoTheBottleBuysHimARound(t *testing.T) {
 func TestTheBottleIsNotAButtonYouCanHold(t *testing.T) {
 	// It is spent, and another one takes a long time to arrive — the effect is
 	// the strongest in the game, so the cooldown is the whole balance of it.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", BottleSpots[spotOf(o)])
 	advance(o, 1)
@@ -1315,7 +1315,7 @@ func TestTheBottleIsNotAButtonYouCanHold(t *testing.T) {
 
 func TestABottleNobodyHasReachedIsStillThere(t *testing.T) {
 	// The mask carries a bit for it, which is what the plane draws one from.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", Vec2{X: OfficeW - 1, Y: 1})
 	advance(o, 2)
@@ -1361,7 +1361,7 @@ func TestTheBottleComesBackSomewhereElse(t *testing.T) {
 	// It MOVES, and that is what stops fetch-and-spend being a button you stand
 	// next to. Ten seconds is short enough to be a thing you watch for; a bottle
 	// that came back where it was would just be a lever with a timer.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	seen := map[int]bool{}
 	for round := 0; round < 12; round++ {
@@ -1462,7 +1462,7 @@ func cloudOf(o *Office, accountID string) float64 {
 }
 
 func TestWalkingToTheHookahPutsYouBehindACloud(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
 	advance(o, 1)
@@ -1480,7 +1480,7 @@ func TestWalkingToTheHookahPutsYouBehindACloud(t *testing.T) {
 func TestHeCannotCatchSomebodyBehindACloud(t *testing.T) {
 	// THE WHOLE MECHANIC. He is placed ON the player, which without the cloud ends
 	// the shift on the next tick.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
 	advance(o, 1)
@@ -1501,7 +1501,7 @@ func TestBeingUncatchableIsNotBeingImmortal(t *testing.T) {
 	// whole switch, an invincible occupant who closed the tab would hold a slot in
 	// a three-person office until the process restarted, because the abandon branch
 	// shares that switch.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
 	advance(o, 1)
@@ -1523,7 +1523,7 @@ func TestWhileHiddenHeLosesInterestAndSaysSo(t *testing.T) {
 	// Excluded from the target list rather than merely un-catchable, which is what
 	// makes the reprieve buy DISTANCE: he stops at the catch radius, so a guard
 	// alone would leave him standing on you when the cloud cleared.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
 	advance(o, 2)
@@ -1545,7 +1545,7 @@ func TestAColleagueSeesTheCloudToo(t *testing.T) {
 	// A buff only its owner can see is unfinished — and which colleague the лысый
 	// can no longer walk at is the most useful thing to know about somebody else in
 	// the room.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
@@ -1564,7 +1564,7 @@ func TestAColleagueSeesTheCloudToo(t *testing.T) {
 }
 
 func TestTheHookahIsSpentAndComesBackSomewhereElse(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	first := hookahSpotOf(o)
 	place(t, o, "a", HookahSpots[first])
@@ -1599,7 +1599,7 @@ func TestClaudeSlowsYouDownRatherThanEndingTheShift(t *testing.T) {
 	// THE WHOLE DIFFERENCE BETWEEN THE TWO MEN. He is placed on the player, which
 	// for the лысый is the end of the shift; for this one it is four seconds of
 	// walking at 5.12 instead of 6.4.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	o.mu.Lock()
 	o.claude.Pos = o.occupants["a"].State.Pos
@@ -1625,7 +1625,7 @@ func TestClaudeSlowsYouDownRatherThanEndingTheShift(t *testing.T) {
 func TestTheSlowDoesNotStack(t *testing.T) {
 	// Assigned, never accumulated — the лысый's drink arrangement. Two applications
 	// would leave a walk at 4.096 m/s against their 4.0, which is not an escape.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	o.mu.Lock()
 	o.claude.Pos = o.occupants["a"].State.Pos
@@ -1645,7 +1645,7 @@ func TestACloudHidesYouFromBothOfThem(t *testing.T) {
 	// Invincibility is expressed as a shorter target list, and Claude is stepped
 	// against the SAME list — which is the answer a player expects from something
 	// called being uncatchable.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", HookahSpots[hookahSpotOf(o)])
 	advance(o, 1)
@@ -1665,7 +1665,7 @@ func TestACloudHidesYouFromBothOfThem(t *testing.T) {
 func TestAColleagueSeesTheSlowToo(t *testing.T) {
 	// A debuff is as public as a buff: «he is slowed» is who the лысый will reach
 	// first, which is exactly the sort of thing every screen has to show.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	o.mu.Lock()
@@ -1691,7 +1691,7 @@ func TestTheTwoOfThemNeverStandInTheSamePlace(t *testing.T) {
 	// heading and cover an identical distance every tick, for ever. The floor then
 	// shows one figure where there are two, and a player is slowed by something
 	// that is not there.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	// Put them on exactly the same tile, which is the state they lock into, and
 	// let them both walk at the same person for a while.
@@ -1720,9 +1720,9 @@ func TestOnlyClaudeGivesWay(t *testing.T) {
 	// the overlap between them, how long a player has before the shift ends would
 	// depend on where a second man happened to be — and the catch, its rewind ring
 	// and every test of the chase would move underneath.
-	a := NewOffice()
+	a := newTestOffice()
 	join(t, a, "x", "s1")
-	b := NewOffice()
+	b := newTestOffice()
 	join(t, b, "x", "s2")
 	// Same office twice, except that in one of them Claude has walked into him.
 	b.mu.Lock()
@@ -1753,13 +1753,13 @@ func TestSteppingAsideKeepsHimOnTheFloorAndOutOfTheFurniture(t *testing.T) {
 		{X: OfficeW - ChaserRadius, Y: OfficeH - ChaserRadius},
 		{X: BossSpawnX, Y: BossSpawnY},
 	}, deskCorners()...) {
-		c := Separate(at, []Vec2{at}, Chaser{Pos: at}, Desks)
+		c := Separate(at, []Vec2{at}, Chaser{Pos: at}, testRects)
 		if c.Pos.X < ChaserRadius-1e-9 || c.Pos.X > OfficeW-ChaserRadius+1e-9 ||
 			c.Pos.Y < ChaserRadius-1e-9 || c.Pos.Y > OfficeH-ChaserRadius+1e-9 {
 			t.Fatalf("stepping aside from %+v put him off the floor at %+v", at, c.Pos)
 		}
-		for _, d := range Desks {
-			if insideDesk(d, c.Pos, ChaserRadius) {
+		for _, d := range testRects {
+			if insideRect(d, c.Pos, ChaserRadius) {
 				t.Fatalf("stepping aside from %+v put him inside a desk at %+v", at, c.Pos)
 			}
 		}
@@ -1772,7 +1772,7 @@ func TestSteppingAsideDoesNothingWhenThereIsRoom(t *testing.T) {
 	// figure the player is reading for direction.
 	far := Chaser{Pos: Vec2{X: 8, Y: 8}}
 	bodies := []Vec2{{X: 4, Y: 8}, {X: 8, Y: 4}}
-	if got := Separate(Vec2{X: 8, Y: 12}, bodies, far, Desks); got.Pos != far.Pos {
+	if got := Separate(Vec2{X: 8, Y: 12}, bodies, far, testRects); got.Pos != far.Pos {
 		t.Fatalf("a man four metres away was moved: %+v → %+v", far.Pos, got.Pos)
 	}
 }
@@ -1792,7 +1792,7 @@ func TestClaudeStepsOutOfAPlayerRatherThanStandingInHim(t *testing.T) {
 		{X: at.X, Y: at.Y + 0.05},
 		{X: at.X, Y: at.Y - 0.05},
 	} {
-		c := Separate(Vec2{X: 2, Y: 2}, []Vec2{at}, Chaser{Pos: from}, Desks)
+		c := Separate(Vec2{X: 2, Y: 2}, []Vec2{at}, Chaser{Pos: from}, testRects)
 		if d := math.Hypot(c.Pos.X-at.X, c.Pos.Y-at.Y); d < gap-1e-6 {
 			t.Fatalf("from %+v he is %.3f m into the player, two bodies need %.3f", from, d, gap)
 		}
@@ -1807,7 +1807,7 @@ func TestClaudeStepsOutOfAPlayerRatherThanStandingInHim(t *testing.T) {
 func TestClaudeNeverEndsATickInsideAStandingPlayer(t *testing.T) {
 	// The office-level version of the above: a player who stands perfectly still,
 	// which is the whole game, and a man walking at him for as long as it takes.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", Vec2{X: 8, Y: 11})
 	o.mu.Lock()
@@ -1844,9 +1844,9 @@ func TestOnlyClaudeGivesWayToAPlayerToo(t *testing.T) {
 	// A player's position is predicted in his own browser, so a server-side shove he
 	// never asked for is a correction that snaps him sideways. He must be exactly
 	// where he steered himself, with a man standing in him or without one.
-	a := NewOffice()
+	a := newTestOffice()
 	join(t, a, "x", "s1")
-	b := NewOffice()
+	b := newTestOffice()
 	join(t, b, "x", "s2")
 	place(t, a, "x", Vec2{X: 8, Y: 11})
 	place(t, b, "x", Vec2{X: 8, Y: 11})
@@ -1875,7 +1875,7 @@ func TestACloudDoesNotMakeAPlayerIncorporeal(t *testing.T) {
 	// standing inside one is the same bug whether or not he can land on him.
 	const gap = PlayerRadius + ChaserRadius
 	at := Vec2{X: 8, Y: 11}
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", at)
 	o.mu.Lock()
@@ -1893,8 +1893,8 @@ func TestACloudDoesNotMakeAPlayerIncorporeal(t *testing.T) {
 
 // deskCorners is every desk's four corners, for the resolution tests above.
 func deskCorners() []Vec2 {
-	out := make([]Vec2, 0, len(Desks)*4)
-	for _, d := range Desks {
+	out := make([]Vec2, 0, len(testRects)*4)
+	for _, d := range testRects {
 		out = append(out,
 			Vec2{X: d.X, Y: d.Y},
 			Vec2{X: d.X + d.W, Y: d.Y},
@@ -1908,7 +1908,7 @@ func deskCorners() []Vec2 {
 func TestClaudeIsAlwaysOnTheFrame(t *testing.T) {
 	// He is never omitted, unlike the props: an absent field would mean «he is not
 	// there», which is never true. This is what makes the budget raise honest.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	advance(o, 1)
 	raw, ok := o.SnapshotFor("a")
@@ -1925,7 +1925,7 @@ func TestClaudeIsNotRedirectable(t *testing.T) {
 	// colleague with an opinion about your tooling. He walks at the nearest person
 	// whatever anybody says, so a redirect that pointed the лысый at somebody else
 	// leaves Claude exactly where he was heading.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	place(t, o, "a", Vec2{X: 4, Y: 4})
@@ -1955,7 +1955,7 @@ func TestTheNonPlayersAreNeverTargets(t *testing.T) {
 	// map it becomes a chase target, a snapshot addressee and a slot against the
 	// occupancy cap — so a lazy player would be saved by a colleague who is not
 	// playing, which is the whole game undone by scenery.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	advance(o, 20)
 
@@ -1978,7 +1978,7 @@ func TestTheBaldManWalksPastThemToGetToYou(t *testing.T) {
 	// He is stepped against the occupants' positions and they are not in that list,
 	// so however close one of them is standing he keeps coming for the player. Put
 	// one right next to him and check he still closes on the man at the other end.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	place(t, o, "a", Vec2{X: 8, Y: 4})
 	o.mu.Lock()
@@ -2002,7 +2002,7 @@ func TestTheBaldManWalksPastThemToGetToYou(t *testing.T) {
 func TestTheyNeverTouchYourShift(t *testing.T) {
 	// They buff nobody and debuff nobody. Parked on top of the player for a full
 	// second of simulation, nothing about him may change but his own arithmetic.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	o.mu.Lock()
 	at := o.occupants["a"].State.Pos
@@ -2031,7 +2031,7 @@ func TestTheyNeverTouchYourShift(t *testing.T) {
 
 func TestTheyAmbleAndSmokeAndSaySomething(t *testing.T) {
 	// They have to actually MOVE, or they are furniture with opinions.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	start := npcsOf(o)
 	moved := false
@@ -2080,7 +2080,7 @@ func TestTheNonPlayersAreAlwaysOnTheFrame(t *testing.T) {
 	// The owner logged in and could not see them. This is the assertion that was
 	// missing: `np` is never omitted, so a real office has to put both of them on
 	// every snapshot from the first tick.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	raw, ok := o.SnapshotFor("a")
 	if !ok {
@@ -2111,7 +2111,7 @@ func TestTheNonPlayersDoNotGetStuck(t *testing.T) {
 	// Driven over a long stretch of simulated time and asserted on DISTINCT PLACES
 	// VISITED rather than on movement, because a man grinding along a desk edge is
 	// moving and still stuck.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 
 	seen := make([]map[string]bool, len(NPCCast))
@@ -2134,11 +2134,11 @@ func TestTheNonPlayersDoNotGetStuck(t *testing.T) {
 func TestAnUnreachableTargetIsGivenUpOn(t *testing.T) {
 	// The specific trap: a target inside a desk. He cannot stand there, so he can
 	// never arrive, and without a give-up he walks into it for the rest of the shift.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
-	inside := Vec2{X: Desks[0].X + Desks[0].W/2, Y: Desks[0].Y + Desks[0].H/2}
+	inside := Vec2{X: testRects[0].X + testRects[0].W/2, Y: testRects[0].Y + testRects[0].H/2}
 	o.mu.Lock()
-	o.npcs[0].Pos = Vec2{X: Desks[0].X - 2, Y: inside.Y}
+	o.npcs[0].Pos = Vec2{X: testRects[0].X - 2, Y: inside.Y}
 	o.npcs[0].To = inside
 	o.npcs[0].Pause = 0
 	o.mu.Unlock()
@@ -2183,7 +2183,7 @@ func TestTheRouterTakesClaudeOffTheFloorAndOffTheWire(t *testing.T) {
 	// THE WHOLE VERB. He is not stepped, not tested against anybody, and — the
 	// part a client depends on — not on the frame at all: an absent `cl` is what
 	// says he is not there, and `ca` is how long for.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	// Standing where he is about to be landed on, so "he stopped chasing" is a
 	// claim this test can actually make.
@@ -2220,7 +2220,7 @@ func TestTheRouterComesBackUpAndClaudeReturnsThroughTheDoor(t *testing.T) {
 	// A REPRIEVE, NOT A DELETION. He is back after RouterSeconds — and back at his
 	// SPAWN, because a man who vanishes at your desk and rematerialises at your
 	// desk has not been anywhere and the reprieve would end with him on top of you.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	// LET HIM WALK FIRST, or the claim is vacuous: he starts at his spawn, so a
 	// test that presses the button immediately proves nothing about where he
@@ -2268,7 +2268,7 @@ func TestTheRoutersCooldownBelongsToTheOfficeAndNotToTheCaller(t *testing.T) {
 	// cooldown a full floor of three would cover 36 s of absence in every 30, and
 	// Claude would simply never be on the floor again — which is a deletion rather
 	// than the reprieve this verb is meant to be.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 
@@ -2298,7 +2298,7 @@ func TestTheRoutersCooldownBelongsToTheOfficeAndNotToTheCaller(t *testing.T) {
 }
 
 func TestTheRouterIsRefusedForSomebodyWhoIsNotWorking(t *testing.T) {
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	if o.RouterDown("not-working") {
 		t.Fatal("somebody who is not on a shift used a verb")
@@ -2313,7 +2313,7 @@ func TestTheCallerSaysTheRouterFellAndNotTheOtherVerbsLine(t *testing.T) {
 	// was a hardcoded RedirectLine, which was right with one verb and would have
 	// put «ЭТО НУЖНО УТОЧНИТЬ У ДРУГОГО» over the head of somebody who pressed
 	// this one.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	if !o.RouterDown("a") {
@@ -2380,7 +2380,7 @@ func TestThereIsABottleAndAKalyanForEverybodyOnTheFloor(t *testing.T) {
 	// THE COUNT IS THE MECHANIC. One bottle in a room of three is a race the
 	// nearest man wins every time, and the other two stop walking to it — which
 	// hands the strongest effects in the game to whoever spawned near them.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	advance(o, 1)
 	if b, h := propsOf(o); len(b) != 1 || len(h) != 1 {
@@ -2419,7 +2419,7 @@ func TestAPropIsNeverSnatchedOffTheFloorWhenSomebodyLeaves(t *testing.T) {
 	// GROWTH IS IMMEDIATE, SHRINKING IS NOT. A joiner should find a prop of their
 	// own at once; one already standing must never vanish from under whoever is
 	// walking towards it. So an extra is dropped only once somebody has taken it.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	advance(o, 1)
@@ -2451,7 +2451,7 @@ func TestAPropIsNeverSnatchedOffTheFloorWhenSomebodyLeaves(t *testing.T) {
 func TestTwoPeopleCanDrinkFromTwoDifferentBottles(t *testing.T) {
 	// The whole point of the count, end to end: both of them reach a bottle of
 	// their own on the same tick, and both bottles go.
-	o := NewOffice()
+	o := newTestOffice()
 	join(t, o, "a", "s1")
 	join(t, o, "b", "s2")
 	advance(o, 1)

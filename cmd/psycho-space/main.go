@@ -152,7 +152,18 @@ func main() {
 	//
 	// The ticker is injected for the same reason both games above inject theirs —
 	// the tests drive the loop from a channel and never sleep.
-	gameFintechSvc := gamefintech.NewService(hub, gamefintech.Room, pool, gamefintech.NewPostgresRepository(), accounts)
+	//
+	// THE FLOOR IS READ ONCE, HERE, BEFORE THE LOOP STARTS. The office's furniture
+	// is data now (internal/gamefintech/layout.go), so the service is built on a
+	// layout rather than on a constant — read from Postgres, or written there on a
+	// fresh database. It is a boot-time round trip and never a per-tick one.
+	fintechRepo := gamefintech.NewPostgresRepository()
+	fintechLayout, err := gamefintech.EnsureLayout(ctx, pool, fintechRepo)
+	if err != nil {
+		slog.Error("gamefintech: could not read the office layout", "err", err)
+		os.Exit(1)
+	}
+	gameFintechSvc := gamefintech.NewService(hub, gamefintech.Room, pool, fintechRepo, accounts, fintechLayout)
 	fintechTicker := time.NewTicker(gamefintech.SimStep)
 	defer fintechTicker.Stop()
 	go gameFintechSvc.Run(hubCtx, fintechTicker.C)

@@ -207,10 +207,15 @@ export const gameVanyadumApi = {
 // deliberately only the EDGES of a shift: standing still, walking and dashing
 // all travel on the socket, because they happen ten times a second.
 export const gameFintechApi = {
-  // The catalogue: the office and its desks, the money ramp, the dash, the boss
-  // and both endings. The splash's rules cheatsheet is generated from this, so
-  // retuning a constant on the server changes what the player is told with no
-  // frontend deploy.
+  // The catalogue: the office's whole layout — everything solid in it and every
+  // pane of glazing — plus the money ramp, the dash, the boss and both endings.
+  // The splash's rules cheatsheet is generated from this, so retuning a constant
+  // on the server changes what the player is told with no frontend deploy.
+  //
+  // FETCHED ONCE, BUT NO LONGER FOR EVER. The layout is stored and can be rebuilt
+  // while a tab sits on the splash, so `office.id` is a cache key and every shift
+  // response names the layout it belongs to; a disagreement means fetch this
+  // again before entering play. See `adoptOffice` in GameFintechView.
   config: () => apiFetch<FintechConfig>('/api/game-fintech/config'),
 
   // Clocks in. 409 `shift_in_progress` when one is already going — a refusal
@@ -218,9 +223,10 @@ export const gameFintechApi = {
   // throw away a shift open on another tab. 503 `office_full` when the office
   // has reached its occupant cap.
   //
-  // No level comes back and none is needed: the office is static and already in
-  // the catalogue. Nothing is written to Postgres here either — a shift is one
-  // row, written once, when it ends.
+  // No level comes back and none is needed: the geometry is already in the
+  // catalogue, and what does come back is the ID of the layout this shift is
+  // standing in — sixteen bytes rather than a room. Nothing is written to
+  // Postgres here either: a shift is one row, written once, when it ends.
   start: () => apiFetch<FintechShift>('/api/game-fintech/shifts', { method: 'POST' }),
 
   // The shift already in progress, or 404 `no_shift`. This is the reload path:

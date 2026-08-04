@@ -24,11 +24,17 @@ const config: FintechConfig = {
   game_key: 'fintech',
   title: 'СИМУЛЯТОР ФИНТЕХА',
   office: {
+    id: 'aa11bb22cc33dd44',
     w: 16,
     h: 22,
-    desks: [{ x: 2, y: 3, w: 3.4, h: 1.2 }],
+    solids: [
+      { x: 2, y: 3, w: 3.4, h: 1.2, kind: 'desk' },
+      { x: 8, y: 14, w: 0.8, h: 0.8, kind: 'tree' },
+    ],
+    windows: [{ wall: 'top', at: 4, len: 3 }],
     player_radius: 0.35,
     boss_radius: 0.4,
+    min_gap: 1.5,
   },
   money: { base_per_second: 120, ramp_seconds: 6, max_multiplier: 3, grace_ms: 300 },
   move: {

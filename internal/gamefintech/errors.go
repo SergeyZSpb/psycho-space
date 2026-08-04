@@ -17,6 +17,11 @@ var (
 	// socket saying hello after its shift ended.
 	ErrNoShift = errors.New("gamefintech: no shift in progress")
 
+	// ErrNoLayout is returned when the floor table is empty. It is a STATE and
+	// not a failure — it is what a fresh database looks like — so the boot path
+	// answers it by installing the starting floor rather than by refusing to run.
+	ErrNoLayout = errors.New("gamefintech: no layout stored")
+
 	// ErrOfficeFull is returned when the floor already holds MaxOccupants. It is
 	// a capacity limit rather than a rate limit: this is one open-plan office
 	// shared by everybody, not a lobby that spawns another.

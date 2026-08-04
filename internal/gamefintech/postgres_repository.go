@@ -2,6 +2,8 @@ package gamefintech
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,6 +23,51 @@ func NewPostgresRepository() *PostgresRepository { return &PostgresRepository{} 
 // shiftColumns is the projection every read uses, so the scan order can only be
 // got wrong in one place.
 const shiftColumns = `id, account_id, cause, salary, seconds, created_at`
+
+// layoutBody is what a row's `body` column holds: the geometry and nothing else.
+//
+// THE ID IS NOT STORED, and that is the point of it being a content hash. It is
+// recomputed on load, so the id a client is told can never disagree with the
+// floor it describes — there is no path by which a row could carry a stale one.
+type layoutBody struct {
+	Solids  []Solid  `json:"solids"`
+	Windows []Window `json:"windows"`
+}
+
+// CurrentLayout reads the floor in force: the newest row still standing.
+func (PostgresRepository) CurrentLayout(ctx context.Context, q db.DBTX) (Layout, error) {
+	var body []byte
+	err := q.QueryRow(ctx,
+		`SELECT body FROM game_fintech_layouts
+		 WHERE deleted_at IS NULL
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT 1`).Scan(&body)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Layout{}, ErrNoLayout
+	}
+	if err != nil {
+		return Layout{}, fmt.Errorf("gamefintech: read layout: %w", err)
+	}
+	var lb layoutBody
+	if err := json.Unmarshal(body, &lb); err != nil {
+		return Layout{}, fmt.Errorf("gamefintech: decode layout: %w", err)
+	}
+	return Layout{Solids: lb.Solids, Windows: lb.Windows}.WithID(), nil
+}
+
+// InsertLayout writes a floor and makes it the current one.
+func (PostgresRepository) InsertLayout(ctx context.Context, q db.DBTX, l Layout, source string) error {
+	body, err := json.Marshal(layoutBody{Solids: l.Solids, Windows: l.Windows})
+	if err != nil {
+		return fmt.Errorf("gamefintech: encode layout: %w", err)
+	}
+	if _, err := q.Exec(ctx,
+		`INSERT INTO game_fintech_layouts (source, body) VALUES ($1, $2)`,
+		source, body); err != nil {
+		return fmt.Errorf("gamefintech: insert layout: %w", err)
+	}
+	return nil
+}
 
 // InsertShift records a finished shift.
 func (PostgresRepository) InsertShift(ctx context.Context, q db.DBTX, s Shift) error {

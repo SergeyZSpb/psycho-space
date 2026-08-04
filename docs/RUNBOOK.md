@@ -11,7 +11,7 @@ _Machine-oriented recap for an LLM continuing this work. Written for agents, not
 - **code:** service in `cmd/psycho-space` + `internal/*`; deploy assets in `deploy/`; provisioning in `scripts/bootstrap.sh`.
 - **local-dev:** see "Local development (game / backend)" below — `docker-compose.yml` (Postgres), `./dev.sh db-up|run|seed`, Vite on :5173. `cmd/dev-seed` mints a local approved session (VK can't run locally). Game section: LLM-judged (`internal/gamekhimki/llm.go`, OpenAI-compatible), content/persona in `content.go`; requires `PSYCHOSPACE_LLM_*` env to play (else `/attempt` → 503).
 - **game 2 («Ванягоччи»):** package `internal/gamevanyagotchi/`, tables `game_vanyagotchi_pets` / `_pet_stats` / `_world_objects` (`migrations/008_*`), routes `/api/game-vanyagotchi/*` — **two reads (`config`, `state`) and nothing that writes**, because a verb travels over the socket as a `vanyagotchi_do` frame and cannot be curl'd (ADR-043) — view `GameVanyagotchiView.vue` at `/app/game-vanyagotchi`. **No LLM on any path** — it costs nothing to run. Debugging it is unlike game 1 in two ways: nothing runs on a timer, so a stat's stored `(value, as_of)` is *not* what the screen shows and moving `as_of` is how you fast-forward; and **health is a consequence, not a timer** — it drains 1/hour on its own and +6/hour for each unmet need (`beer` ≤ 20, `bladder` ≥ 80), so read those two before diagnosing a dying pet. Every hand-written stat `UPDATE` must touch **all** rows with one `as_of`, or the coupling loses damage (ADR-040). See "Working on «Ванягоччи» (the pet)" below. Rates, thresholds, labels, the cast and every phrase pool are in `content.go`, not the database — so retuning, renaming, adding a regular or adding a line is a backend deploy with no migration and no client change. The **balloons** over a Ваня's head come from **five disjoint pools** (a test enforces the disjointness, so a line can only ever mean one thing) and they say different things about him: `tiredSays` — he gave up on a walk; `idleSays` — he is just standing about; `shySays` — he lost his nerve and the verb did nothing; `reekSays` — **somebody else** relieved himself near him; `enviousSays` — **somebody else** found the keys. The last two are the only lines another player's action puts in your mouth, and the regulars get them too. Idle muttering is closed-form on 12-second slots from `worldEpoch` (no timer, nothing stored, per-process key), so it changes across a restart and is silent for anyone walking, dead or asleep; the two reactions are held in memory with an expiry and dropped by the tick that finds them stale.
-- **game 4 («Симулятор финтеха»):** package `internal/gamefintech/`, table `game_fintech_shifts` (created by `migrations/013_game_karen.sql`, renamed by `014_game_fintech_rename.sql`), routes `/api/game-fintech/*`, realtime room `fintech`, view `GameFintechView.vue` at `/app/game-fintech`. **It was «СИМУЛЯТОР КАРЕНА» until 2026-07-30**, so anything older than that — a log line, a saved query, a bookmark — uses `gamekaren` / `game_karen_shifts` / `/api/game-karen/*` / room `karen` / the `karen_*` frame types. **013 keeps its old filename on purpose** (the migrator keys `schema_migrations` on it, so a renamed 013 re-runs and recreates an empty `game_karen_shifts`), and the `game_key` value is still `karen` because a `game_key` value is data, not a name. **No LLM on any path.** Debugging it is unlike every game above in one way that dominates: **almost nothing is stored.** The office, the positions, the boss, the streak and the salary live in process memory and are lost on any restart; Postgres gets **one summary row when a shift ends** and nothing else, so there is no table to look at while somebody is playing. A shift shorter than `MinShiftSeconds` is deliberately **dropped rather than written**, which is the first thing to check when somebody swears they played and there is no row. `cause` is `promoted` (the лысый reached you) or `left` (you walked out, or your socket was gone past the abandon grace) — plain `text`, so a later ending is not a migration. Every rule — the static office and its desks, the walk and dash speeds, the base rate, the ×1→×3 ramp, the grace window, the boss's speed and catch radius, the ending titles — is in `content.go`, **served** at `GET /api/game-fintech/config`, and the splash screen's cheatsheet is generated from that same payload, so the rules on screen cannot drift from the rules enforced. Playing happens entirely on the socket (`fintech_input` up, `fintech_snap` down at 10 Hz) and cannot be curl'd; the HTTP surface is only the edges of a shift. **It plays on a desktop as well as a phone**: WASD or the arrows walk, space dashes, and both write the same `axes` value the thumb-stick does — so there is one input path and neither the prediction nor the wire can tell a key from a stick. Held keys rather than key events, because a walk is a state; cleared on `blur`, or an alt-tab mid-walk leaves the office walking you into a wall until you come back. **AND TWO PEOPLE WHO ARE NOT PLAYING** — Серега and Тёма. They walk about at random, each carrying his own кальян with a cloud that never goes out, and they say what they think of your branch. That is all they do: no seeking, no arrival, no state. They are **not in the occupant map**, which is the whole of their safety — anything in that map becomes a chase target, a snapshot addressee and a slot against the three-player cap, so an NPC in there would let a lazy player be saved by scenery. They take no slot, neither man walks at them, they buff and debuff nobody, and they **never touch the office's кальян**: an earlier version had them walking to it, which was interference, because the prop is a first-taker and an NPC on his way to it was competing with a player for the strongest effect in the game. Their positions are stepped on the SERVER and ride `np` (never omitted); their cloud is not on the wire at all, because it is permanent. **They have no navigation on purpose** — they amble, and sliding along a desk is what an amble looks like — so the thing that keeps them moving is `NPCGiveUpSeconds`: a target they cannot reach is abandoned after fourteen seconds. Without it they walk at it forever, because the resolver holds them off the furniture and they never get close enough to choose again. Both of them were permanently stuck in production for exactly that reason, and the draw now also rejects a spot inside a desk. **If one of them stops moving**, that pair of mechanisms is where to look, and `TestTheNonPlayersDoNotGetStuck` is the test that measures it — distinct places visited over ninety seconds, because a man grinding along a desk edge is moving and still stuck. **If they are missing from the office**, check the served catalogue first — `GET /api/game-fintech/config` must carry a non-empty `npcs` array, and the client draws nothing at all without it. That failed in production once: the assignment never reached `BuildConfig`'s struct literal, the JSON said `"npcs":null`, and the test that was supposed to catch it only checked that the KEY appeared. **THERE ARE TWO MEN ON THE FLOOR.** The лысый ends your shift; **Claude Code** slows you down — `SlowFactor` of your walk for `SlowSeconds` — and never ends anything. He walks at exactly the лысый's speed (deliberately: `TestASlowedWalkStillOutrunsThem` pins both that and the fact a slowed walk, 5.12 m/s, still beats their 4.0), he is **not redirectable** by the verb, and the slow **does not stack** — assigned, never accumulated, because two applications would leave 4.096 against their 4.0 and three would make the game unwinnable. His frame field `cl` is the one thing in this game that is **never omitted**, since he is always on the floor; the slow rides `sl` on your own frame and `pr[].sl` on a colleague's. **`SlowLeft` is the only effect on `Player` rather than on the Occupant** ([ADR-058](adrs/)), because it multiplies the walk and therefore has to be predicted — which is why this is the one iteration that regenerated `testdata/step_vectors.json`. If a figure starts stuttering after a change here, the first suspect is the reconcile spread in `fintechPredict.ts`: a predicted timer only advances when a command is emitted, and a still player emits nothing. **There is a КАЛЬЯН as well as a bottle, and they do opposite things.** The bottle acts on the лысый (he drinks, goes green and staggers); the кальян acts on YOU — walk onto it and you are behind a cloud for `InvincibleSeconds`, during which he **cannot see you and cannot catch you**. Mechanically that is an *exclusion from his target list*, not a shield: excluding him from walking at you is what makes the reprieve buy distance, since he stops on arrival and a mere catch-guard would leave him standing on you when the cloud cleared. Two consequences worth knowing when debugging: with the only other occupant hidden he **switches to whoever is left** and will catch an idle colleague within a few seconds, and **being uncatchable is not being immortal** — the abandon path still records a shift whose tab was closed, because that guard is on the caught case alone. Neither the cloud nor the кальян is stored; both are in-memory like everything else here, and the frame carries `iv` (yours), `pr[].iv` (a colleague's — a buff only its owner can see is unfinished), `hk` and `hs`. **A shift has a PERSONA** — an index into the catalogue's `personas` (`Карен`, `Андрюха`, `Саня`, `Даша`), drawn with `crypto/rand` when the shift starts. It lives on the in-memory `Occupant` and **never on `Player`**, because `Player` is pinned to its TypeScript port by golden vectors and a field the simulation does not read would force that artefact regenerated for nothing. It rides the two shift responses and the `fintech_ready` frame, **never a snapshot** — it cannot change during a shift — and it is **not stored**: `game_fintech_shifts` has no persona column, so a finished shift does not remember who worked it. All a persona changes is the line a figure says when it introduces itself; `Карен` is index 0 and must stay there, because an omitted index, `introLine` and `player_lines[0]` all mean him. **Faces come from two different places on purpose**, which is the first thing to know if one of them is missing: a COLLEAGUE's face is fetched by his pseudonym from `GET /api/game-fintech/avatar/{peer}`, which 302s to the provider CDN and answers **404 for anybody with no picture** — the ordinary reply, drawn as a plain figure — while YOUR OWN comes straight from `avatar_url` in the session (`GET /api/auth/me`), because the server never sends you your own handle and there is nothing to withhold from you about yourself. So "I can see everyone's face but mine" means the account has no `avatar_url` (every Яндекс account, and every forgotten one), and "I can see mine but not theirs" means the redirector or the CDN, not the game. Neither ever rides a frame. **Every defect it has had so far has been the client and the server disagreeing about how far something moved**, and none of them was found by reading the code — see "«It teleports / stutters / doesn't move» — measuring a netcode complaint" for the two procedures that did find them (drive the real stack from `web/e2e-stack/` and record the socket frames beside the drawn CSS position; or track the figure in the owner's phone recording, calibrating metres per pixel off the desks). See "Working on «Симулятор финтеха» (the office)" below.
+- **game 4 («Симулятор финтеха»):** package `internal/gamefintech/`, tables `game_fintech_shifts` (created by `migrations/013_game_karen.sql`, renamed by `014_game_fintech_rename.sql`) and `game_fintech_layouts` (`migrations/016_*`, the office floor), routes `/api/game-fintech/*`, realtime room `fintech`, view `GameFintechView.vue` at `/app/game-fintech`. **It was «СИМУЛЯТОР КАРЕНА» until 2026-07-30**, so anything older than that — a log line, a saved query, a bookmark — uses `gamekaren` / `game_karen_shifts` / `/api/game-karen/*` / room `karen` / the `karen_*` frame types. **013 keeps its old filename on purpose** (the migrator keys `schema_migrations` on it, so a renamed 013 re-runs and recreates an empty `game_karen_shifts`), and the `game_key` value is still `karen` because a `game_key` value is data, not a name. **No LLM on any path.** Debugging it is unlike every game above in one way that dominates: **almost nothing is stored.** The office, the positions, the boss, the streak and the salary live in process memory and are lost on any restart; Postgres gets **one summary row when a shift ends** and **one row per office floor**, so there is no table to look at while somebody is playing. A shift shorter than `MinShiftSeconds` is deliberately **dropped rather than written**, which is the first thing to check when somebody swears they played and there is no row. `cause` is `promoted` (the лысый reached you) or `left` (you walked out, or your socket was gone past the abandon grace) — plain `text`, so a later ending is not a migration. Every rule — the walk and dash speeds, the base rate, the ×1→×3 ramp, the grace window, the boss's speed and catch radius, the ending titles — is in `content.go`, **served** at `GET /api/game-fintech/config`, and the splash screen's cheatsheet is generated from that same payload, so the rules on screen cannot drift from the rules enforced. **The FLOOR is the exception and it is data**: what furniture stands where is a stored, validated `Layout` in `game_fintech_layouts` (solids with a decorative `kind`, windows that collide with nothing), read once at boot, refused in favour of `StartingLayout` if it does not validate, and identified by a **content hash** the client compares against the `office_id` on its shift response — so "the desks moved" is now possible and «Reading the office floor in production» is how to tell what the process is actually serving ([ADR-061](adrs/ADR-061-the-office-floor-is-validated-data-not-a.md)). Nothing about geometry rides a frame, then or now. Playing happens entirely on the socket (`fintech_input` up, `fintech_snap` down at 10 Hz) and cannot be curl'd; the HTTP surface is only the edges of a shift. **It plays on a desktop as well as a phone**: WASD or the arrows walk, space dashes, and both write the same `axes` value the thumb-stick does — so there is one input path and neither the prediction nor the wire can tell a key from a stick. Held keys rather than key events, because a walk is a state; cleared on `blur`, or an alt-tab mid-walk leaves the office walking you into a wall until you come back. **AND TWO PEOPLE WHO ARE NOT PLAYING** — Серега and Тёма. They walk about at random, each carrying his own кальян with a cloud that never goes out, and they say what they think of your branch. That is all they do: no seeking, no arrival, no state. They are **not in the occupant map**, which is the whole of their safety — anything in that map becomes a chase target, a snapshot addressee and a slot against the three-player cap, so an NPC in there would let a lazy player be saved by scenery. They take no slot, neither man walks at them, they buff and debuff nobody, and they **never touch the office's кальян**: an earlier version had them walking to it, which was interference, because the prop is a first-taker and an NPC on his way to it was competing with a player for the strongest effect in the game. Their positions are stepped on the SERVER and ride `np` (never omitted); their cloud is not on the wire at all, because it is permanent. **They have no navigation on purpose** — they amble, and sliding along a desk is what an amble looks like — so the thing that keeps them moving is `NPCGiveUpSeconds`: a target they cannot reach is abandoned after fourteen seconds. Without it they walk at it forever, because the resolver holds them off the furniture and they never get close enough to choose again. Both of them were permanently stuck in production for exactly that reason, and the draw now also rejects a spot inside a desk. **If one of them stops moving**, that pair of mechanisms is where to look, and `TestTheNonPlayersDoNotGetStuck` is the test that measures it — distinct places visited over ninety seconds, because a man grinding along a desk edge is moving and still stuck. **If they are missing from the office**, check the served catalogue first — `GET /api/game-fintech/config` must carry a non-empty `npcs` array, and the client draws nothing at all without it. That failed in production once: the assignment never reached `BuildConfig`'s struct literal, the JSON said `"npcs":null`, and the test that was supposed to catch it only checked that the KEY appeared. **THERE ARE TWO MEN ON THE FLOOR.** The лысый ends your shift; **Claude Code** slows you down — `SlowFactor` of your walk for `SlowSeconds` — and never ends anything. He walks at exactly the лысый's speed (deliberately: `TestASlowedWalkStillOutrunsThem` pins both that and the fact a slowed walk, 5.12 m/s, still beats their 4.0), he is **not redirectable** by the verb, and the slow **does not stack** — assigned, never accumulated, because two applications would leave 4.096 against their 4.0 and three would make the game unwinnable. His frame field `cl` is the one thing in this game that is **never omitted**, since he is always on the floor; the slow rides `sl` on your own frame and `pr[].sl` on a colleague's. **`SlowLeft` is the only effect on `Player` rather than on the Occupant** ([ADR-058](adrs/)), because it multiplies the walk and therefore has to be predicted — which is why this is the one iteration that regenerated `testdata/step_vectors.json`. If a figure starts stuttering after a change here, the first suspect is the reconcile spread in `fintechPredict.ts`: a predicted timer only advances when a command is emitted, and a still player emits nothing. **There is a КАЛЬЯН as well as a bottle, and they do opposite things.** The bottle acts on the лысый (he drinks, goes green and staggers); the кальян acts on YOU — walk onto it and you are behind a cloud for `InvincibleSeconds`, during which he **cannot see you and cannot catch you**. Mechanically that is an *exclusion from his target list*, not a shield: excluding him from walking at you is what makes the reprieve buy distance, since he stops on arrival and a mere catch-guard would leave him standing on you when the cloud cleared. Two consequences worth knowing when debugging: with the only other occupant hidden he **switches to whoever is left** and will catch an idle colleague within a few seconds, and **being uncatchable is not being immortal** — the abandon path still records a shift whose tab was closed, because that guard is on the caught case alone. Neither the cloud nor the кальян is stored; both are in-memory like everything else here, and the frame carries `iv` (yours), `pr[].iv` (a colleague's — a buff only its owner can see is unfinished), `hk` and `hs`. **A shift has a PERSONA** — an index into the catalogue's `personas` (`Карен`, `Андрюха`, `Саня`, `Даша`), drawn with `crypto/rand` when the shift starts. It lives on the in-memory `Occupant` and **never on `Player`**, because `Player` is pinned to its TypeScript port by golden vectors and a field the simulation does not read would force that artefact regenerated for nothing. It rides the two shift responses and the `fintech_ready` frame, **never a snapshot** — it cannot change during a shift — and it is **not stored**: `game_fintech_shifts` has no persona column, so a finished shift does not remember who worked it. All a persona changes is the line a figure says when it introduces itself; `Карен` is index 0 and must stay there, because an omitted index, `introLine` and `player_lines[0]` all mean him. **Faces come from two different places on purpose**, which is the first thing to know if one of them is missing: a COLLEAGUE's face is fetched by his pseudonym from `GET /api/game-fintech/avatar/{peer}`, which 302s to the provider CDN and answers **404 for anybody with no picture** — the ordinary reply, drawn as a plain figure — while YOUR OWN comes straight from `avatar_url` in the session (`GET /api/auth/me`), because the server never sends you your own handle and there is nothing to withhold from you about yourself. So "I can see everyone's face but mine" means the account has no `avatar_url` (every Яндекс account, and every forgotten one), and "I can see mine but not theirs" means the redirector or the CDN, not the game. Neither ever rides a frame. **Every defect it has had so far has been the client and the server disagreeing about how far something moved**, and none of them was found by reading the code — see "«It teleports / stutters / doesn't move» — measuring a netcode complaint" for the two procedures that did find them (drive the real stack from `web/e2e-stack/` and record the socket frames beside the drawn CSS position; or track the figure in the owner's phone recording, calibrating metres per pixel off the furniture — whose coordinates come from the served config now, not from `content.go`). See "Working on «Симулятор финтеха» (the office)" below.
 - **naming:** game 1 is `GameKhimki` everywhere — package `internal/gamekhimki/`, table `game_khimki_runs` (art stays in the shared `game_assets` — ADR-031), routes `/api/game-khimki/*`, view `GameKhimkiView.vue` at `/app/game-khimki`. It was generic `game`/`game_runs`/`game_assets`/`/api/game/*` until `migrations/007_game_khimki_rename.sql`, so **anything older than that — a log line, a saved query, a bookmark — uses the old names.** `game_key` values are unchanged (`smalltalk_khimki`). Rule: `ARCHITECTURE.md` → ADR-030.
 - **siblings:** `ARCHITECTURE.md` (the shape of the system — logical/runtime/data/deployment views — plus §8, one paragraph per decision record saying why it is that shape, each rewritten in place when the decision moves), `../CLAUDE.md` (working rules and gates).
 - **login:** two providers, VK ID and Яндекс ID, sharing everything after the exchange. Redirect URLs are SPA **pages**, never API endpoints: `/auth/redirect` (VK) and `/auth/yandex/redirect` (Yandex). VK needs **three** copies of its URL to match byte for byte (SPA `VK_REDIRECT_PATH`, `PSYCHOSPACE_VK_REDIRECT_URI`, the VK app list); Yandex needs only **two** because the server builds its authorize URL (ADR-055). A **405 on either `/api/auth/*/callback`** means something points at the API again. See "Login — the redirect URL, and what a 405 means".
@@ -383,8 +383,11 @@ hold in your head before debugging it.** The office, where everybody is standing
 the boss, the streak, the multiplier and the salary you are watching climb all
 live in process memory and survive nothing — not a restart, not a deploy. What
 reaches Postgres is **one summary row per shift, written once, when the shift
-ends**. So there is no table to inspect while somebody is playing, and a shift in
-flight during a deploy is simply lost, exactly as an in-flight «ВАНЯДУМ» visit is.
+ends**, and **one row per office floor**, read once at boot. So there is no table
+to inspect while somebody is playing, and a shift in flight during a deploy is
+simply lost, exactly as an in-flight «ВАНЯДУМ» visit is. The floor is the one thing
+here that does outlive the process — see *Reading the office floor in production*
+below.
 
 ```bash
 # Every shift somebody has finished, most recent first.
@@ -416,14 +419,19 @@ SELECT DISTINCT ON (account_id) account_id, salary, seconds, cause
 ```
 
 **Every rule of the game is in `internal/gamefintech/content.go`, not in the
-database and not in the client.** The office layout, the desks, the walk and dash
-speeds, the base rate, the ramp, the grace window, the boss's speed and catch
-radius, and the ending titles all ship with the binary and are **served** at
-`GET /api/game-fintech/config` — which is also what the splash screen's rules
-cheatsheet is generated from. So retuning the game is a backend deploy with no
-migration and no frontend change, and the rules on the splash screen cannot drift
-from the rules the server enforces. If the cheatsheet says something the game does
-not do, the bug is in `fintechRules.ts` deriving it, never in a number typed twice.
+database and not in the client.** The walk and dash speeds, the base rate, the
+ramp, the grace window, the boss's speed and catch radius, and the ending titles
+all ship with the binary and are **served** at `GET /api/game-fintech/config` —
+which is also what the splash screen's rules cheatsheet is generated from. So
+retuning the game is a backend deploy with no migration and no frontend change,
+and the rules on the splash screen cannot drift from the rules the server
+enforces. If the cheatsheet says something the game does not do, the bug is in
+`fintechRules.ts` deriving it, never in a number typed twice.
+
+**The one exception is the FLOOR, which is data.** What furniture stands where is
+not in `content.go` any more — it is a row in `game_fintech_layouts`, read once at
+boot and served on the same `/config` payload as everything else. Read the next
+section before concluding anything about the geometry.
 
 **To see what a player is told:**
 
@@ -431,10 +439,82 @@ not do, the bug is in `fintechRules.ts` deriving it, never in a number typed twi
 curl -fsS -b "psycho_session=<token>" https://psycho-space.ru/api/game-fintech/config | jq .
 ```
 
-**The office is static.** There is no generator, no seed and no per-shift level —
-unlike «ВАНЯДУМ», every shift is the same room, and the geometry is in the
-catalogue above rather than on any frame or in any start response. So "the desks
-moved" is not a thing that can happen.
+#### Reading the office floor in production
+
+The floor is a stored, validated `Layout` rather than a compile-time constant
+([ADR-061](adrs/ADR-061-the-office-floor-is-validated-data-not-a.md)), so "the
+desks moved" **is** now a thing that can happen and there are two places to look.
+They answer different questions and disagreeing is itself a finding.
+
+**1. What the running process is actually serving.** This is the authority on what
+a player sees, because the office in memory was opened on the floor this describes:
+
+```bash
+curl -fsS -b "psycho_session=<token>" https://psycho-space.ru/api/game-fintech/config \
+  | jq '{id: .office.id, w: .office.w, h: .office.h, min_gap: .office.min_gap,
+         solids: (.office.solids | length), windows: (.office.windows | length),
+         kinds: (.office.solids | group_by(.kind) | map({(.[0].kind): length}) | add)}'
+```
+
+- **`office.id`** is a **content hash of the geometry**, not a row id. Two processes
+  serving the same floor print the same id, and a restart or a deploy that changed
+  no furniture changes nothing here. So a *changed* id means the geometry genuinely
+  changed — and it is exactly what the client compares against the `office_id` it
+  got from `POST /shifts`, refetching the catalogue when they differ. "Everybody's
+  office suddenly redrew itself" and "the id moved" are the same event.
+- **`office.solids`** is the collision list **in the order the resolver uses**, and
+  that order is part of the contract with the browser's copy of `Step`. Never
+  re-sort it when quoting it.
+- **`kind`** (`desk` · `flower` · `tree`) is a **look and never a rule** — every
+  solid collides identically — so a complaint that "the plant blocks me" is
+  correct behaviour, not a bug.
+- **`office.windows`** are spans on a wall (`wall`, `at`, `len`) and collide with
+  nothing at all. A window can never be the reason somebody is stuck.
+
+**2. What is stored.** One row per floor, newest wins, soft-deleted rows ignored:
+
+```bash
+ssh psycho "sudo -u postgres psql psychospace -c \"
+  SELECT id, source, created_at,
+         jsonb_array_length(body->'solids')  AS solids,
+         jsonb_array_length(body->'windows') AS windows
+    FROM game_fintech_layouts WHERE deleted_at IS NULL
+   ORDER BY created_at DESC, id DESC LIMIT 10\""
+```
+
+- **`source`** says where the geometry came from and is set by whatever wrote the
+  row, never by the payload — so it cannot be claimed by a body. `starting` is the
+  floor a fresh database installs for itself.
+- **The row carries no id for the layout's identity**, deliberately: the hash is
+  recomputed on load, so a row can never carry a stale one. To find out which
+  stored row the process is serving, compare `solids`/`windows` counts and
+  `created_at` against the newest row — the top row of that query *is* the one the
+  next boot will read.
+- **One row after several restarts is correct.** The starting floor is installed
+  when the table is *empty*, not on every boot.
+
+**What to conclude when they disagree.** The served id is the floor the process is
+running; the newest row is the floor it *would* read if restarted. They differ
+whenever a floor was written after the process started — which today can only mean
+somebody inserted a row by hand, since nothing yet writes one at runtime. **A
+restart is what adopts it**, and the boot log is where that is visible:
+
+```bash
+ssh psycho "sudo journalctl -u psycho-space -n 200 --no-pager | grep -i gamefintech"
+```
+
+- `gamefintech: stored layout is not playable, using the starting one` — the stored
+  row **failed validation** and was refused rather than served, so the office is on
+  `StartingLayout` and the row is still sitting in the table. The log line names the
+  first problem and the index of the object at fault (`too_close`, `off_floor`,
+  `split_floor`, `spot_blocked`, `bad_size`, `bad_kind`, `bad_window`, `too_many`).
+  This is the intended failure: a floor the single-pass resolver cannot survive
+  would strand bodies inside furniture or push them through a wall.
+- `gamefintech: could not store the starting layout` — the *write* failed on a
+  fresh database. The process stands up on the in-memory floor anyway, on purpose:
+  this table is one game's furniture and nothing else on the site depends on it.
+- The process **refuses to boot** only if reading the table failed outright, which
+  is a database problem rather than a game one.
 
 **Nothing about a shift can be curl'd while it is running.** Movement travels over
 the socket as `fintech_input` frames and the world comes back as `fintech_snap` ten
@@ -487,9 +567,11 @@ Those two numbers are the complaint, quantified: a healthy dash is one monotone
 burst of ~0.33 m per frame at 60 Hz, and the defect that shipped on 2026-07-29
 read 2.767 m and fifteen reversals.
 
-**Choose the lane deliberately, or the probe will lie to you.** Spawn is (8, 4);
-desks occupy x 2.8–5.4 and 10.6–13.2 at y 3–4, 7–8, 11–12, 15–16; the floor clamp
-is the player's 0.35 m radius. A dash is 5.5 m, so walking "somewhere" and dashing
+**Choose the lane deliberately, or the probe will lie to you.** Spawn is (8, 4),
+and on the floor this game shipped with the desks occupy x 2.8–5.4 and 10.6–13.2
+at y 3–4, 7–8, 11–12, 15–16; the floor clamp is the player's 0.35 m radius. **Take
+those rectangles from `office.solids` in the served config rather than from here**
+— the floor is data now and the numbers above describe only `StartingLayout`. A dash is 5.5 m, so walking "somewhere" and dashing
 "somewhere" mostly measures the wall clamp — the third time this project has been
 fooled by exactly that. Walk down to y ≈ 5.6 and work rightwards, where 7.65 m of
 clear floor holds a whole dash. And **the лысый is closing the whole time** (4.0
@@ -509,9 +591,11 @@ gst-launch-1.0 filesrc location=clip.mp4 ! qtdemux ! h264parse ! avdec_h264 \
 Then mask the figure by the colour of its shirt, take the largest connected
 component **inside the plane only** (the controls below and the HUD above match
 the same colours and will drag the centroid across the screen), and calibrate
-metres per pixel off the **desks**, whose world coordinates are in `content.go` —
-the two desk columns give the x scale and the four rows give the y scale, and they
-must agree. Two warnings, both of which cost a wrong diagnosis on 2026-07-29:
+metres per pixel off the **furniture**, whose world coordinates come from
+`office.solids` on the served config — on the shipped floor the two desk columns
+give the x scale and the four rows give the y scale, and they must agree. Fetch the
+config rather than reading coordinates out of `content.go`: the floor is a stored
+layout, so a recording from a different day may be of a different room. Two warnings, both of which cost a wrong diagnosis on 2026-07-29:
 **identify the figures before trusting a trace** (you have hair and a blue shirt,
 the лысый is bald with a purple one and a grin; tracking the wrong one gives a
 smooth 4 m/s walk that hides everything), and **re-extract at the native frame

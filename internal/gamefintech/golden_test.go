@@ -70,11 +70,37 @@ type goldenConstants struct {
 	MaxStepSeconds float64 `json:"max_step_seconds"`
 }
 
+// goldenRects is the furniture every vector runs against, and it is DELIBERATELY
+// NOT AN OFFICE.
+//
+// It used to be the catalogue's own desks, which was free while the office was a
+// constant and is wrong now that it is data: pinned to the live floor, every
+// regenerated office would demand a 232 kB artefact be rebuilt and the TypeScript
+// port re-blessed, for a change that has nothing to do with either implementation
+// of the resolver.
+//
+// So the vectors pin the RESOLVER, and this fixture is chosen to press it rather
+// than to look like a place people work: a long horizontal bank, a vertical desk,
+// two small solids exactly ResolverFloor apart (the closest two things may ever be
+// before a single push-out pass can hand a body from one into the other), and one
+// solid exactly ResolverFloor from the left wall (the closest anything may be
+// before a push-out puts a body outside the room, the floor clamp having already
+// run). ValidateLayout would refuse most of it — MinGap is well above
+// ResolverFloor — and that is the point: these are the boundaries the two
+// implementations have to agree on, not the ones a player will stand at.
+var goldenRects = []Rect{
+	{X: 3.0, Y: 5.0, W: 5.0, H: 1.0},
+	{X: 11.0, Y: 4.0, W: 1.0, H: 4.0},
+	{X: 3.0, Y: 12.0, W: 1.0, H: 1.0},
+	{X: 4.8, Y: 12.0, W: 1.0, H: 1.0},
+	{X: 0.8, Y: 18.0, W: 2.0, H: 1.0},
+}
+
 // goldenCase is one scenario: a start state, the furniture it runs against, the
 // raw commands, and what the simulation did with them.
 type goldenCase struct {
 	Name  string       `json:"name"`
-	Desks []Rect       `json:"desks"`
+	Rects []Rect       `json:"rects"`
 	Start goldenPlayer `json:"start"`
 	// Commands are RAW — as a client would send them. Sanitise them before
 	// stepping, exactly as Office.Enqueue does.
@@ -131,7 +157,7 @@ func (c *goldenCase) run(start Player) {
 	c.Start = toGolden(start)
 	p := start
 	for _, raw := range c.Commands {
-		p = Step(c.Desks, p, Sanitise(Command{Dt: raw.Dt, MX: raw.MX, MY: raw.MY, Dash: raw.Dash}))
+		p = Step(c.Rects, p, Sanitise(Command{Dt: raw.Dt, MX: raw.MX, MY: raw.MY, Dash: raw.Dash}))
 		c.Trace = append(c.Trace, toGolden(p))
 	}
 }
@@ -183,7 +209,7 @@ func buildGolden() goldenFile {
 	// Standing perfectly still for eight seconds: the ramp climbing to the cap
 	// and then staying there while the money keeps coming.
 	{
-		c := goldenCase{Name: "idle-ramp", Desks: Desks, Commands: still(8 * SimHz)}
+		c := goldenCase{Name: "idle-ramp", Rects: goldenRects, Commands: still(8 * SimHz)}
 		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
@@ -197,7 +223,7 @@ func buildGolden() goldenFile {
 		cmds = append(cmds, still(20)...)
 		cmds = append(cmds, walking(8, 1, 0)...) // 0.40 s — past
 		cmds = append(cmds, still(40)...)
-		c := goldenCase{Name: "grace-window", Desks: Desks, Commands: cmds}
+		c := goldenCase{Name: "grace-window", Rects: goldenRects, Commands: cmds}
 		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
@@ -214,7 +240,7 @@ func buildGolden() goldenFile {
 		cmds = append(cmds, still(int(DashCooldown*SimHz)+2)...)
 		cmds = append(cmds, goldenCmd{Dt: testDt, MX: 0, MY: -1, Dash: true}) // granted
 		cmds = append(cmds, walking(10, 0, -1)...)
-		c := goldenCase{Name: "dash-cycle", Desks: Desks, Commands: cmds}
+		c := goldenCase{Name: "dash-cycle", Rects: goldenRects, Commands: cmds}
 		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
@@ -228,7 +254,7 @@ func buildGolden() goldenFile {
 		cmds = append(cmds, walking(40, -1, 0)...)
 		cmds = append(cmds, walking(40, 0, -1)...)
 		cmds = append(cmds, walking(40, -1, -1)...)
-		c := goldenCase{Name: "desk-push-out", Desks: Desks, Commands: cmds}
+		c := goldenCase{Name: "desk-push-out", Rects: goldenRects, Commands: cmds}
 		c.run(start)
 		f.Cases = append(f.Cases, c)
 	}
@@ -240,7 +266,7 @@ func buildGolden() goldenFile {
 		var cmds []goldenCmd
 		cmds = append(cmds, walking(60, -1, 1)...)
 		cmds = append(cmds, walking(60, 1, 1)...)
-		c := goldenCase{Name: "floor-clamp", Desks: Desks, Commands: cmds}
+		c := goldenCase{Name: "floor-clamp", Rects: goldenRects, Commands: cmds}
 		c.run(start)
 		f.Cases = append(f.Cases, c)
 	}
@@ -260,7 +286,7 @@ func buildGolden() goldenFile {
 		cmds = append(cmds, walking(20, 1, 0)...)
 		// Past the end of the slow, at ordinary speed again.
 		cmds = append(cmds, walking(80, 1, 0)...)
-		c := goldenCase{Name: "slowed-walk", Desks: Desks, Commands: cmds}
+		c := goldenCase{Name: "slowed-walk", Rects: goldenRects, Commands: cmds}
 		c.run(start)
 		f.Cases = append(f.Cases, c)
 	}
@@ -273,7 +299,7 @@ func buildGolden() goldenFile {
 		cmds = append(cmds, walking(20, 1, 1)...)
 		cmds = append(cmds, walking(20, 0.5, 0)...)
 		cmds = append(cmds, walking(20, 0.3, -0.4)...)
-		c := goldenCase{Name: "diagonal-and-analogue", Desks: Desks, Commands: cmds}
+		c := goldenCase{Name: "diagonal-and-analogue", Rects: goldenRects, Commands: cmds}
 		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
@@ -282,7 +308,7 @@ func buildGolden() goldenFile {
 	// thing from a command the server reads as another and the correction never
 	// settles.
 	{
-		c := goldenCase{Name: "hostile-clamping", Desks: Desks, Commands: []goldenCmd{
+		c := goldenCase{Name: "hostile-clamping", Rects: goldenRects, Commands: []goldenCmd{
 			{Dt: 1e6, MY: 1e6},
 			{Dt: -5, MY: 1},
 			{Dt: testDt, MX: 50, MY: -50},
@@ -309,7 +335,7 @@ func buildGolden() goldenFile {
 				Dash: r.IntN(40) == 0,
 			})
 		}
-		c := goldenCase{Name: "wander", Desks: Desks, Commands: cmds}
+		c := goldenCase{Name: "wander", Rects: goldenRects, Commands: cmds}
 		c.run(atSpawn())
 		f.Cases = append(f.Cases, c)
 	}
