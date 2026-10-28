@@ -9,6 +9,22 @@ import (
 	"github.com/SergeyZSpb/psycho-space/internal/db"
 )
 
+// ConsentVersion is the edition of the personal-data consent this server
+// serves, and the only one a login is recorded under (ADR-008). The texts it
+// names live in the SPA (web/src/views/ConsentView.vue), which carries the same
+// value in web/src/constants.ts; consent_test.go fails when the two disagree,
+// because a mismatch would refuse every login.
+//
+// Bump it whenever the consent's text changes — the data set, its source, a
+// processor, the purpose. A bump makes every browser still holding the old
+// text get 409 consent_outdated rather than a record it never agreed to.
+//
+//	v2: the full vkid.personal_info set (пол, дата рождения).
+//	v3: Яндекс ID beside VK ID — a second source of the same data.
+//	v4: the consent is given by a box of its own (152-ФЗ ст. 9 ч. 1), and the
+//	    hosting provider is named as a processor.
+const ConsentVersion = "v4"
+
 // Service is the account business logic: encrypt on write, decrypt on read,
 // blind-index for lookups.
 type Service struct {
@@ -23,8 +39,8 @@ func NewService(q db.DBTX, repo Repository, enc *crypto.Encryptor, bi *crypto.Bl
 	return &Service{q: q, repo: repo, enc: enc, bi: bi}
 }
 
-// LoginInput is the profile pulled from the login provider plus the consent
-// version. AutoApprove (open-registration mode) approves a NEW account
+// LoginInput is the profile pulled from the login provider. Consent is recorded
+// under ConsentVersion, never under a value the caller supplies. AutoApprove (open-registration mode) approves a NEW account
 // immediately with the standard user role; it never affects an existing account.
 //
 // Sex and Birthday arrive already normalised — "male"/"female"/"" and ISO
@@ -38,12 +54,11 @@ type LoginInput struct {
 	Avatar         string
 	Sex            string
 	Birthday       string
-	ConsentVersion string
 	AutoApprove    bool
 }
 
 // UpsertOnLogin creates or refreshes the account for one provider identity and
-// records consent.
+// records consent under ConsentVersion.
 //
 // The blind index is taken over the provider's RAW user id, never a namespaced
 // string: the provider is carried in its own column instead. Changing what goes
@@ -88,7 +103,7 @@ func (s *Service) UpsertOnLogin(ctx context.Context, in LoginInput) (*Account, e
 		AvatarEnc:      avEnc,
 		SexEnc:         sexEnc,
 		BirthdayEnc:    bdEnc,
-		ConsentVersion: in.ConsentVersion,
+		ConsentVersion: ConsentVersion,
 		DefaultStatus:  defaultStatus,
 	})
 	if err != nil {

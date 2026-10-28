@@ -10,7 +10,10 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/SergeyZSpb/psycho-space/internal/account"
 )
 
 type callbackBody struct {
@@ -61,7 +64,7 @@ func TestVKLoginFlow(t *testing.T) {
 	// First login → pending (allowlist gate).
 	state := getState(t, cli, app.URL)
 	status, resp := postCallback(t, cli, app.URL, callbackBody{
-		Code: "c", DeviceID: "d", State: state, CodeVerifier: "v", ConsentVersion: "v1",
+		Code: "c", DeviceID: "d", State: state, CodeVerifier: "v", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusOK || resp["status"] != "pending" {
 		t.Fatalf("first login: status=%d body=%v; want pending", status, resp)
@@ -95,7 +98,7 @@ func TestVKLoginFlow(t *testing.T) {
 	// Second login → approved + session cookie.
 	state2 := getState(t, cli, app.URL)
 	status, resp = postCallback(t, cli, app.URL, callbackBody{
-		Code: "c", DeviceID: "d", State: state2, CodeVerifier: "v", ConsentVersion: "v1",
+		Code: "c", DeviceID: "d", State: state2, CodeVerifier: "v", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusOK || resp["status"] != "approved" {
 		t.Fatalf("second login: status=%d body=%v; want approved", status, resp)
@@ -182,6 +185,58 @@ func TestConsentRequired(t *testing.T) {
 	}
 }
 
+// TestConsentEditionIsTheServers pins the second half of ADR-008: the edition a
+// login is recorded under is the server's, never whatever the browser sent. An
+// edition the server does not publish — the previous one from a tab left open
+// across a deploy, or one that never existed — is refused before the provider
+// is contacted, so no record can claim agreement to a text the server is not
+// serving. Each stale case runs against a fresh state, so the refusal cannot be
+// the CSRF check answering instead.
+func TestConsentEditionIsTheServers(t *testing.T) {
+	vk := fakeVK("889", "A", "B")
+	defer vk.Close()
+	var providerCalls atomic.Int32
+	vkSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		vk.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer vkSrv.Close()
+	app := httptest.NewServer(buildApp(vkSrv.URL))
+	defer app.Close()
+	jar, _ := cookiejar.New(nil)
+	cli := &http.Client{Jar: jar}
+
+	for _, stale := range []string{"v3", "v999"} {
+		state := getState(t, cli, app.URL)
+		status, resp := postCallback(t, cli, app.URL, callbackBody{
+			Code: "c", DeviceID: "d", State: state, CodeVerifier: "v", ConsentVersion: stale,
+		})
+		if status != http.StatusConflict || resp["error"] != "consent_outdated" {
+			t.Fatalf("edition %q: status=%d body=%v; want 409 consent_outdated", stale, status, resp)
+		}
+	}
+	if n := providerCalls.Load(); n != 0 {
+		t.Fatalf("a refused login reached the provider %d times; want 0", n)
+	}
+
+	state := getState(t, cli, app.URL)
+	status, resp := postCallback(t, cli, app.URL, callbackBody{
+		Code: "c", DeviceID: "d", State: state, CodeVerifier: "v", ConsentVersion: account.ConsentVersion,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("current edition: status=%d body=%v; want 200", status, resp)
+	}
+	id, _ := resp["account"].(map[string]any)["id"].(string)
+	var stored string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT consent_version FROM accounts WHERE id = $1::uuid`, id).Scan(&stored); err != nil {
+		t.Fatalf("read consent_version: %v", err)
+	}
+	if stored != account.ConsentVersion {
+		t.Fatalf("stored edition = %q, want the server's %q", stored, account.ConsentVersion)
+	}
+}
+
 func TestBadState(t *testing.T) {
 	vkSrv := fakeVK("999", "A", "B")
 	defer vkSrv.Close()
@@ -192,7 +247,7 @@ func TestBadState(t *testing.T) {
 
 	_ = getState(t, cli, app.URL) // sets the cookie
 	status, resp := postCallback(t, cli, app.URL, callbackBody{
-		Code: "c", DeviceID: "d", State: "wrong-state", CodeVerifier: "v", ConsentVersion: "v1",
+		Code: "c", DeviceID: "d", State: "wrong-state", CodeVerifier: "v", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusBadRequest || resp["error"] != "bad_state" {
 		t.Fatalf("bad-state: status=%d body=%v; want 400 bad_state", status, resp)

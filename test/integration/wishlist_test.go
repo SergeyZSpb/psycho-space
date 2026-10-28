@@ -9,6 +9,8 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/SergeyZSpb/psycho-space/internal/account"
 )
 
 // loginPending drives state+callback for uid (code = uid) and returns the client
@@ -17,7 +19,7 @@ func loginPending(t *testing.T, cli *http.Client, base, uid string) map[string]a
 	t.Helper()
 	state := getState(t, cli, base)
 	status, resp := postCallback(t, cli, base, callbackBody{
-		Code: uid, DeviceID: "d", State: state, CodeVerifier: "v", ConsentVersion: "v1",
+		Code: uid, DeviceID: "d", State: state, CodeVerifier: "v", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("login %s: status %d body %v", uid, status, resp)

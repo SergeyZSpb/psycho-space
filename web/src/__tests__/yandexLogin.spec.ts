@@ -30,6 +30,7 @@ vi.mock('../lib/pkce', () => ({
 
 import { useYandexLogin } from '../composables/useYandexLogin';
 import { ApiError } from '../api/client';
+import { CONSENT_VERSION } from '../constants';
 
 // What the backend answers with. The client id inside it is the SERVER's, and
 // the fact that it appears only here — never in a constant, never in a query
@@ -126,6 +127,9 @@ describe('useYandexLogin().start()', () => {
 
     expect(sessionStorage.getItem('ps-pkce-verifier-yandex')).toBe('test-verifier-value');
     expect(sessionStorage.getItem('ps-oauth-state-yandex')).toBe('server-state');
+    // The edition whose text was on screen when the box was ticked rides along,
+    // so the return trip can send it even if a deploy replaced the bundle.
+    expect(sessionStorage.getItem('ps-consent-yandex')).toBe(CONSENT_VERSION);
     // The whole reason the keys are per provider.
     expect(sessionStorage.getItem('ps-pkce-verifier-vk')).toBe('vk-verifier');
     expect(sessionStorage.getItem('ps-oauth-state-vk')).toBe('vk-state');

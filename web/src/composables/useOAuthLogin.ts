@@ -19,8 +19,8 @@ import { authApi } from '../api/endpoints';
 import type { OAuthCallbackBody } from '../api/endpoints';
 import { useAuthStore } from '../stores/auth';
 import {
-  CONSENT_VERSION,
   HOME_ROUTE_NAME,
+  ssConsentKey,
   ssStateKey,
   ssVerifierKey,
   type OAuthProvider,
@@ -37,18 +37,23 @@ export function useOAuthLogin(provider: OAuthProvider) {
    * `deviceId` is VK's alone: it is sent for VK and the field is simply absent
    * from a Yandex body, because Yandex has no such concept and a field that
    * means nothing to a provider should not appear on its request.
+   *
+   * `consentVersion` is the edition of the text that was on screen when the box
+   * was ticked — the caller's to say, because only the caller knows whether the
+   * page has been reloaded since. The server refuses any edition but its own.
    */
   async function finishLogin(
     code: string,
     deviceId: string,
     state: string,
     codeVerifier: string,
+    consentVersion: string,
   ): Promise<void> {
     const body: OAuthCallbackBody = {
       code,
       state,
       code_verifier: codeVerifier,
-      consent_version: CONSENT_VERSION,
+      consent_version: consentVersion,
     };
     if (provider === 'vk') body.device_id = deviceId;
 
@@ -81,9 +86,10 @@ export function useOAuthLogin(provider: OAuthProvider) {
     const trip = parseOAuthRedirect(provider, query, {
       state: sessionStorage.getItem(ssStateKey(provider)),
       codeVerifier: sessionStorage.getItem(ssVerifierKey(provider)),
+      consentVersion: sessionStorage.getItem(ssConsentKey(provider)),
     });
     if (trip.kind === 'failed') return trip.message;
-    await finishLogin(trip.code, trip.deviceId, trip.state, trip.codeVerifier);
+    await finishLogin(trip.code, trip.deviceId, trip.state, trip.codeVerifier, trip.consentVersion);
     return null;
   }
 

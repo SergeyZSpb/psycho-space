@@ -182,7 +182,7 @@ for (const theme of THEMES) {
       await expect(page.getByRole('heading', { name: 'психоспасе' })).toBeVisible();
       await expect(page.getByRole('checkbox')).toBeVisible();
       // cookie banner present (not dismissed) — its width must fit the viewport
-      await expect(page.getByText(/Мы используем куки/)).toBeVisible();
+      await expect(page.getByTestId('cookie-notice')).toBeVisible();
 
       await expectNoOverflow(page, `landing ${theme}`);
       if (isMobile(page)) {
@@ -225,6 +225,50 @@ for (const theme of THEMES) {
       }
     });
 
+    test('landing: the consent box links the consent alone, the policy is only read', async ({ page }) => {
+      // 152-ФЗ ст. 9 ч. 1 (from 01.09.2025): a consent is given apart from any
+      // other document the person confirms. So the box's label may link the
+      // consent and nothing else, and the policy sits outside the box — linked
+      // to be read, never agreed to by the tick.
+      await blockProviderOrigins(page);
+      await seedClient(page, theme);
+      await stubBackend(page, 'anon');
+      await page.goto('/');
+
+      const box = page.getByTestId('consent-box');
+      await expect(box).toContainText('Даю согласие на обработку моих персональных данных');
+      const boxLinks = box.getByRole('link');
+      await expect(boxLinks).toHaveCount(1);
+      await expect(boxLinks).toHaveAttribute('href', '/consent');
+      await expect(box).not.toContainText(/Политик/);
+
+      const policy = page.getByTestId('policy-note').getByRole('link');
+      await expect(policy).toHaveText('Политике обработки персональных данных');
+      await expect(policy).toHaveAttribute('href', '/privacy');
+
+      await expectNoOverflow(page, `landing consent box ${theme}`);
+    });
+
+    test('cookie notice informs and claims no consent', async ({ page }) => {
+      // Only strictly necessary cookies are set, which is owed an explanation
+      // and not a consent — so the notice must not say that staying on the page
+      // is agreement, and its link is named as the page it opens is titled.
+      await seedClient(page, theme, /* dismissCookie */ false);
+      await stubBackend(page, 'anon');
+      await page.goto('/');
+
+      const notice = page.getByTestId('cookie-notice');
+      await expect(notice).toBeVisible();
+      await expect(notice).toContainText('необходимые');
+      await expect(notice).not.toContainText(/соглаш/i);
+      const link = notice.getByRole('link');
+      await expect(link).toHaveText('Политике обработки персональных данных');
+      await expect(link).toHaveAttribute('href', '/privacy');
+
+      await page.getByRole('button', { name: 'Понятно' }).click();
+      await expect(notice).toBeHidden();
+    });
+
     test('pending + blocked (handle from /me, auto-refresh + Проверить)', async ({ page }) => {
       // Pending users now have a session; handle/status come from /api/auth/me.
       await seedClient(page, theme);
@@ -260,6 +304,30 @@ for (const theme of THEMES) {
       await page.goto('/consent');
       await expect(page.getByRole('heading', { name: /Согласие на обработку/ })).toBeVisible();
       await expectNoOverflow(page, `consent ${theme}`);
+    });
+
+    test('privacy + consent name the processor, and the consent stands alone', async ({ page }) => {
+      // The texts are what the person agrees to, so what they claim is a test
+      // surface: the hosting provider is a processor and is named in both, the
+      // old «не передаются третьим лицам, за исключением…» sentence that left it
+      // out is gone, and the policy points at the consent as a separate act.
+      await seedClient(page, theme);
+      await stubBackend(page, 'anon');
+
+      await page.goto('/consent');
+      await expect(page.getByText(/Редакция v\d+/)).toBeVisible();
+      await expect(page.locator('.policy')).toContainText('HOSTKEY');
+      await expect(page.locator('.policy')).not.toContainText('за исключением выбранного');
+      await expect(page.locator('.policy')).not.toContainText('Политик');
+
+      await page.goto('/privacy');
+      const policy = page.locator('.policy');
+      await expect(policy).toContainText('HOSTKEY');
+      await expect(policy).toContainText('ознакомление с настоящей Политикой согласием не является');
+      await expect(policy.getByRole('link', { name: 'Согласием на обработку персональных данных' })).toHaveAttribute(
+        'href',
+        '/consent',
+      );
     });
 
     test('wishlist: cards, upvote, add-idea, comments expanded by default, delete, toggle', async ({ page }) => {

@@ -795,7 +795,7 @@ async function stubBackend(page: Page, pet: PetStub = {}): Promise<PetCalls> {
   await page.addInitScript(() => {
     try {
       localStorage.setItem('ps-theme', 'dark');
-      localStorage.setItem('ps-cookie-consent', '1');
+      localStorage.setItem('ps-cookie-notice', '1');
     } catch {
       /* ignore */
     }

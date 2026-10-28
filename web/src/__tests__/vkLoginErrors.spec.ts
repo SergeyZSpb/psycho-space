@@ -71,6 +71,8 @@ vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('../stores/auth', () => ({ useAuthStore: () => ({ setAccount: vi.fn() }) }));
 
 import { useVkLogin } from '../composables/useVkLogin';
+import { authApi } from '../api/endpoints';
+import { CONSENT_VERSION } from '../constants';
 
 describe('the OneTap widget’s two failure paths are separate', () => {
   beforeEach(() => {
@@ -115,5 +117,30 @@ describe('the OneTap widget’s two failure paths are separate', () => {
     // share a dialog that asks the user to quote a trace id.
     expect(err.code).toBe('internal');
     expect(err.traceId).toBe('trace-abc');
+  });
+});
+
+describe('the consent edition a VK login carries', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(events)) delete events[k];
+    vi.clearAllMocks();
+    sessionStorage.clear();
+  });
+
+  it('stashes this bundle’s edition for a redirect-mode return and sends it in place', async () => {
+    const { mountOneTap } = useVkLogin();
+    await mountOneTap(document.createElement('div'), {
+      onWidgetError: vi.fn(),
+      onExchangeError: vi.fn(),
+    });
+    // Stashed at the start, so a full-page return trip sends the edition that
+    // was on screen when the box was ticked rather than the reloaded bundle's.
+    expect(sessionStorage.getItem('ps-consent-vk')).toBe(CONSENT_VERSION);
+
+    events.login_success({ code: 'vk-code', device_id: 'vk-device' });
+    await vi.waitFor(() => expect(authApi.vkCallback).toHaveBeenCalledTimes(1));
+    expect(authApi.vkCallback).toHaveBeenCalledWith(
+      expect.objectContaining({ consent_version: CONSENT_VERSION }),
+    );
   });
 });

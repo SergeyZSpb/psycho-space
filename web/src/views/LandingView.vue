@@ -22,19 +22,33 @@
             <!-- CONSENT GATE. Neither provider is reachable until this is ticked:
                  consent has to precede any processing of personal data, and both
                  login paths start that processing. The VK widget is not even
-                 mounted, and the Яндекс button is not on screen. -->
-            <v-checkbox v-model="consented" density="comfortable" hide-details class="mb-2">
+                 mounted, and the Яндекс button is not on screen.
+
+                 THE BOX IS THE CONSENT AND NOTHING ELSE. Since 01.09.2025 a consent
+                 must be given apart from any other document the person confirms
+                 (152-ФЗ ст. 9 ч. 1), so its label links the consent alone; the
+                 policy is linked underneath as something to read, never as
+                 something the tick agrees to (ADR-008). -->
+            <v-checkbox
+              v-model="consented"
+              data-testid="consent-box"
+              density="comfortable"
+              hide-details
+              class="mb-1"
+            >
               <template #label>
                 <span class="text-body-2">
-                  Я соглашаюсь с
-                  <router-link class="consent-link" :to="{ name: 'privacy' }" target="_blank">
-                    Политикой обработки ПД</router-link>
-                  и
+                  Даю
                   <router-link class="consent-link" :to="{ name: 'consent' }" target="_blank">
-                    Согласием на обработку ПД</router-link>
+                    согласие на обработку моих персональных данных</router-link>
                 </span>
               </template>
             </v-checkbox>
+            <p class="text-caption text-medium-emphasis mb-2" data-testid="policy-note">
+              Как мы обращаемся с данными — в
+              <router-link class="consent-link" :to="{ name: 'privacy' }" target="_blank">
+                Политике обработки персональных данных</router-link>.
+            </p>
 
             <div v-show="consented" class="mt-4">
               <!-- VK OneTap mounts here once consent is given. -->

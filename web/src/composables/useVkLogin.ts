@@ -43,7 +43,14 @@ import * as VKID from '@vkid/sdk';
 import { createPkce } from '../lib/pkce';
 import { authApi } from '../api/endpoints';
 import { useOAuthLogin } from './useOAuthLogin';
-import { ssStateKey, ssVerifierKey, VK_APP_ID, VK_REDIRECT_PATH } from '../constants';
+import {
+  CONSENT_VERSION,
+  ssConsentKey,
+  ssStateKey,
+  ssVerifierKey,
+  VK_APP_ID,
+  VK_REDIRECT_PATH,
+} from '../constants';
 
 // Minimal shape we read off the OneTap LOGIN_SUCCESS payload (VKID.RedirectPayload).
 interface OneTapSuccessPayload {
@@ -87,6 +94,7 @@ export function useVkLogin() {
     // Persist for the redirect-mode fallback (survives a full-page round trip).
     // Keyed to VK alone, so a Yandex login open in another tab is untouched.
     sessionStorage.setItem(ssVerifierKey('vk'), codeVerifier);
+    sessionStorage.setItem(ssConsentKey('vk'), CONSENT_VERSION);
 
     // Obtain + set the backend CSRF state cookie; echo THIS state to VK.
     const { state } = await authApi.vkState();
@@ -108,7 +116,8 @@ export function useVkLogin() {
 
     oneTap.on(VKID.WidgetEvents.ERROR, (err: unknown) => handlers.onWidgetError(err));
     oneTap.on(VKID.OneTapInternalEvents.LOGIN_SUCCESS, (payload: OneTapSuccessPayload) => {
-      finishLogin(payload.code, payload.device_id, state, codeVerifier).catch(
+      // In place, so the text on screen is this bundle's own edition.
+      finishLogin(payload.code, payload.device_id, state, codeVerifier, CONSENT_VERSION).catch(
         handlers.onExchangeError,
       );
     });

@@ -88,7 +88,6 @@ func main() {
 		Provider:       *provider,
 		ProviderUserID: *providerID,
 		FirstName:      *name,
-		ConsentVersion: "dev-seed",
 		AutoApprove:    true,
 	})
 	if err != nil {

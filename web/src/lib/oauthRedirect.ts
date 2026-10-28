@@ -24,6 +24,8 @@ export type QueryLike = Record<string, string | null | (string | null)[] | undef
 export interface StoredPkce {
   state: string | null;
   codeVerifier: string | null;
+  /** The consent edition ticked when the flow started (see `ssConsentKey`). */
+  consentVersion: string | null;
 }
 
 /**
@@ -33,7 +35,14 @@ export interface StoredPkce {
  * for why that difference is a rule here rather than a tolerance.
  */
 export type OAuthRedirectOutcome =
-  | { kind: 'ready'; code: string; deviceId: string; state: string; codeVerifier: string }
+  | {
+      kind: 'ready';
+      code: string;
+      deviceId: string;
+      state: string;
+      codeVerifier: string;
+      consentVersion: string;
+    }
   | { kind: 'failed'; reason: 'provider_error' | 'incomplete' | 'lost_verifier'; message: string };
 
 /**
@@ -107,5 +116,16 @@ export function parseOAuthRedirect(
     };
   }
 
-  return { kind: 'ready', code, deviceId, state, codeVerifier: stored.codeVerifier };
+  // An edition missing beside a verifier that is present means the flow was
+  // started by a bundle that did not stash one. It is sent empty rather than
+  // filled in from this bundle: the server answers consent_required, and the
+  // person is asked to tick the box again under the text actually on screen.
+  return {
+    kind: 'ready',
+    code,
+    deviceId,
+    state,
+    codeVerifier: stored.codeVerifier,
+    consentVersion: stored.consentVersion ?? '',
+  };
 }

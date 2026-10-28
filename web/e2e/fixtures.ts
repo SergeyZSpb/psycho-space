@@ -291,7 +291,7 @@ export async function seedClient(page: Page, theme: 'light' | 'dark', dismissCoo
     ([t, dismiss]) => {
       try {
         localStorage.setItem('ps-theme', t as string);
-        if (dismiss) localStorage.setItem('ps-cookie-consent', '1');
+        if (dismiss) localStorage.setItem('ps-cookie-notice', '1');
       } catch {
         /* ignore */
       }

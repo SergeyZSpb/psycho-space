@@ -135,7 +135,6 @@ func TestExistingAccountsSurvivetheIdentityMigration(t *testing.T) {
 		ProviderUserID: vkUserID,
 		FirstName:      "Пред",
 		LastName:       "Существовавший",
-		ConsentVersion: "v3",
 	})
 	if err != nil {
 		t.Fatalf("log the pre-existing account in again: %v", err)

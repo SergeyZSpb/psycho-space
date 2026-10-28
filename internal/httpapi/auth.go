@@ -75,9 +75,21 @@ func (s *Server) handleOAuthCallback(p oauthProvider) http.HandlerFunc {
 			writeError(w, r, http.StatusBadRequest, "bad_request")
 			return
 		}
-		// Consent must precede any personal-data processing.
+		// Consent must precede any personal-data processing, and it must be
+		// consent to the text this server serves: an edition the browser kept
+		// from before a deploy is refused rather than recorded (ADR-008).
 		if req.ConsentVersion == "" {
 			writeError(w, r, http.StatusBadRequest, "consent_required")
+			return
+		}
+		if req.ConsentVersion != account.ConsentVersion {
+			sent := req.ConsentVersion
+			if len(sent) > 16 { // client-controlled; a short prefix identifies a stale bundle
+				sent = sent[:16]
+			}
+			slog.InfoContext(ctx, "login refused: stale consent edition",
+				"provider", p.Name(), "sent", sent, "current", account.ConsentVersion)
+			writeError(w, r, http.StatusConflict, "consent_outdated")
 			return
 		}
 		if req.Code == "" || req.CodeVerifier == "" {
@@ -134,7 +146,6 @@ func (s *Server) handleOAuthCallback(p oauthProvider) http.HandlerFunc {
 			Avatar:         info.Avatar,
 			Sex:            info.Sex,
 			Birthday:       info.Birthday,
-			ConsentVersion: req.ConsentVersion,
 			AutoApprove:    autoApprove,
 		})
 		if err != nil {

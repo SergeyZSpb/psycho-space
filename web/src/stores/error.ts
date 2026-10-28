@@ -18,6 +18,16 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   // A login provider with no credentials configured on the server. Nothing the
   // user can do, and nothing wrong with their account — the other provider
   // still works, so say that rather than leaving them retrying this one.
+  // The edition of the consent text changed between ticking the box and the
+  // login finishing — a deploy in between, or a tab left open since before one.
+  // The server refuses to record agreement to a text that was not on screen.
+  consent_outdated:
+    'Текст согласия на обработку данных обновился, пока ты входил. ' +
+    'Вернись на главную, обнови страницу, прочитай согласие и поставь галочку заново.',
+  consent_required:
+    'Согласие на обработку данных не дошло до сервера. ' +
+    'Вернись на главную, обнови страницу и поставь галочку заново.',
+
   oauth_not_configured:
     'Этот способ входа сейчас недоступен — на сервере не настроен провайдер. ' +
     'Попробуй войти другим способом, а этот код отправь Сергею.',

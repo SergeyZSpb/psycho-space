@@ -191,7 +191,7 @@ This exists because the audience is a handful of friends who will open the thing
 - All security randomness via `crypto/rand`. Never log personal data or tokens (log the `identity_ref` hex if you must correlate).
 - **Secrets never enter the repo.** They live only in GitHub Actions `prod` environment secrets and, on the server, in `/etc/psycho-space/app.env` (chmod 600). `.env` is gitignored.
 - **No test/dev-only code in production paths** — no test endpoints, mock handlers, or debug backdoors. Tests use real flows or direct DB setup.
-- Consent (152-ФЗ) is captured before any PD processing: the VK widget is gated behind an explicit consent checkbox; `consent_at`/`consent_version` are recorded.
+- Consent (152-ФЗ) is captured before any PD processing: both login affordances are gated behind a consent box **of its own** — its label links the consent document alone, the policy is only linked beside it (ст. 9 ч. 1). The edition is the **server's** (`account.ConsentVersion`, mirrored by `CONSENT_VERSION` in `web/src/constants.ts` and pinned equal by a test): the callback refuses any other with `409 consent_outdated` and records only its own. A change to the consent's substance — data, source, processor, purpose — bumps both copies and the texts together (ADR-008).
 
 **Never print a secret in CI — the logs are public**
 

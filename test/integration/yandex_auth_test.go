@@ -15,6 +15,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/SergeyZSpb/psycho-space/internal/account"
 	"github.com/SergeyZSpb/psycho-space/internal/config"
 	"github.com/SergeyZSpb/psycho-space/internal/gameassets"
 	"github.com/SergeyZSpb/psycho-space/internal/httpapi"
@@ -177,7 +178,7 @@ func TestYandexLoginFlow(t *testing.T) {
 	}
 
 	status, body := postYandexCallback(t, cli, app.URL, callbackBody{
-		Code: "555", State: state, CodeVerifier: "verifier", ConsentVersion: "v3",
+		Code: "555", State: state, CodeVerifier: "verifier", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("callback: status %d body %v", status, body)
@@ -202,7 +203,7 @@ func TestYandexLoginFlow(t *testing.T) {
 	// (provider, identity_ref) and finds the row it wrote a moment ago.
 	state2, _ := yandexState(t, cli, app.URL)
 	status, body = postYandexCallback(t, cli, app.URL, callbackBody{
-		Code: "555", State: state2, CodeVerifier: "verifier", ConsentVersion: "v3",
+		Code: "555", State: state2, CodeVerifier: "verifier", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("second callback: status %d body %v", status, body)
@@ -233,7 +234,7 @@ func TestSameUserIdAtTwoProvidersIsTwoAccounts(t *testing.T) {
 	vkCli := &http.Client{Jar: vkJar}
 	status, body := postCallback(t, vkCli, app.URL, callbackBody{
 		Code: sharedID, DeviceID: "dev", State: getState(t, vkCli, app.URL),
-		CodeVerifier: "verifier", ConsentVersion: "v3",
+		CodeVerifier: "verifier", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("vk callback: status %d body %v", status, body)
@@ -244,7 +245,7 @@ func TestSameUserIdAtTwoProvidersIsTwoAccounts(t *testing.T) {
 	yCli := &http.Client{Jar: yJar}
 	state, _ := yandexState(t, yCli, app.URL)
 	status, body = postYandexCallback(t, yCli, app.URL, callbackBody{
-		Code: sharedID, State: state, CodeVerifier: "verifier", ConsentVersion: "v3",
+		Code: sharedID, State: state, CodeVerifier: "verifier", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("yandex callback: status %d body %v", status, body)
@@ -295,7 +296,7 @@ func TestYandexBadState(t *testing.T) {
 	_, _ = yandexState(t, cli, app.URL)
 
 	status, body := postYandexCallback(t, cli, app.URL, callbackBody{
-		Code: "1", State: "not-the-state", CodeVerifier: "verifier", ConsentVersion: "v3",
+		Code: "1", State: "not-the-state", CodeVerifier: "verifier", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusBadRequest || body["error"] != "bad_state" {
 		t.Fatalf("want 400 bad_state, got %d %v", status, body)
@@ -325,7 +326,7 @@ func TestYandexStateCookieIsSeparateFromVKs(t *testing.T) {
 
 	status, body := postCallback(t, cli, app.URL, callbackBody{
 		Code: "9001", DeviceID: "dev", State: vkStateValue,
-		CodeVerifier: "verifier", ConsentVersion: "v3",
+		CodeVerifier: "verifier", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("the VK login was broken by starting a Yandex one: %d %v", status, body)
@@ -347,7 +348,7 @@ func TestYandexNotConfigured(t *testing.T) {
 
 	jar, _ := cookiejar.New(nil)
 	status, body := postYandexCallback(t, &http.Client{Jar: jar}, app.URL, callbackBody{
-		Code: "1", State: "x", CodeVerifier: "v", ConsentVersion: "v3",
+		Code: "1", State: "x", CodeVerifier: "v", ConsentVersion: account.ConsentVersion,
 	})
 	if status != http.StatusServiceUnavailable || body["error"] != "oauth_not_configured" {
 		t.Fatalf("callback: want 503 oauth_not_configured, got %d %v", status, body)

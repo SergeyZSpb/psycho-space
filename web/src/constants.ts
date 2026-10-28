@@ -41,19 +41,28 @@ export const YANDEX_REDIRECT_PATH = '/auth/yandex/redirect';
 // section. Changing this changes all of them.
 export const HOME_ROUTE_NAME = 'game-vanyagotchi';
 
-// Consent version recorded on login (152-ФЗ). Bump when the consent text changes.
+// The edition of the consent text this bundle shows (152-ФЗ). The server owns
+// the edition — `account.ConsentVersion` in internal/account/service.go — and
+// refuses a login carrying any other with 409 consent_outdated, so the two must
+// move together; a Go test (internal/account/consent_test.go) fails when they
+// disagree. Bump both when the consent text changes.
 // v2: disclose the full vkid.personal_info set (added пол + дата рождения).
 // v3: a second login provider — the text now names VK ID *or* Яндекс ID, states
 //     each provider's granted rights, and says the email address is neither
 //     requested nor stored.
-export const CONSENT_VERSION = 'v3';
+// v4: the consent is given by a box of its own, apart from the policy (152-ФЗ
+//     ст. 9 ч. 1), and the hosting provider is named as a processor.
+export const CONSENT_VERSION = 'v4';
 
 // Brand accent (teal). Kept in sync with the Vuetify dark-theme primary color.
 export const BRAND_ACCENT = '#2dd4bf';
 
 // localStorage keys.
 export const LS_THEME = 'ps-theme';
-export const LS_COOKIE_CONSENT = 'ps-cookie-consent';
+// The cookie NOTICE's "seen it" flag. Only strictly necessary cookies are set,
+// which needs informing rather than consent, so this records that the notice
+// was read and nothing more.
+export const LS_COOKIE_NOTICE = 'ps-cookie-notice';
 
 /**
  * sessionStorage keys used by a login flow — they survive the full-page round
@@ -73,6 +82,14 @@ export const LS_COOKIE_CONSENT = 'ps-cookie-consent';
  */
 export const ssVerifierKey = (p: OAuthProvider): string => `ps-pkce-verifier-${p}`;
 export const ssStateKey = (p: OAuthProvider): string => `ps-oauth-state-${p}`;
+/**
+ * The consent edition the person ticked, stashed beside the verifier. A
+ * redirect-mode trip reloads the SPA, and the bundle that loads on return may
+ * be newer than the one whose text was on screen when the box was ticked; the
+ * callback must carry the edition that was SHOWN, so a deploy in between ends
+ * in 409 consent_outdated rather than in a record of a text nobody read.
+ */
+export const ssConsentKey = (p: OAuthProvider): string => `ps-consent-${p}`;
 
 // Operator (152-ФЗ) — shown on the privacy/consent pages.
 export const OPERATOR_NAME = 'Зобнин Сергей Сергеевич';

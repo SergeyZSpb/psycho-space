@@ -25,7 +25,7 @@
 
 import { createPkce } from '../lib/pkce';
 import { authApi } from '../api/endpoints';
-import { ssStateKey, ssVerifierKey } from '../constants';
+import { CONSENT_VERSION, ssConsentKey, ssStateKey, ssVerifierKey } from '../constants';
 
 export function useYandexLogin() {
   /**
@@ -41,6 +41,7 @@ export function useYandexLogin() {
     // verifier stashed only on the happy path would be missing in exactly the
     // case where the browser navigated anyway.
     sessionStorage.setItem(ssVerifierKey('yandex'), codeVerifier);
+    sessionStorage.setItem(ssConsentKey('yandex'), CONSENT_VERSION);
 
     const { state, authorize_url: authorizeUrl } = await authApi.yandexState(codeChallenge);
     sessionStorage.setItem(ssStateKey('yandex'), state);

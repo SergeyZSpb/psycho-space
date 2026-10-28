@@ -14,14 +14,14 @@
     </v-main>
 
     <AppFooter />
-    <CookieConsent />
+    <CookieNotice />
   </div>
 </template>
 
 <script setup lang="ts">
 import ThemeToggle from '../ThemeToggle.vue';
 import AppFooter from '../AppFooter.vue';
-import CookieConsent from '../CookieConsent.vue';
+import CookieNotice from '../CookieNotice.vue';
 </script>
 
 <style scoped>

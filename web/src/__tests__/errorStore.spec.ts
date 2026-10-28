@@ -24,6 +24,19 @@ describe('error store', () => {
     expect(store.message).not.toContain('фильтр');
   });
 
+  it.each(['consent_outdated', 'consent_required'])(
+    'sends the person back to tick the consent again on %s',
+    (code) => {
+      // Both mean the server will not record agreement to the text that was on
+      // screen — a deploy changed it mid-login, or the edition never arrived.
+      // Nothing is broken and nobody needs the trace id: ticking again works.
+      const store = useErrorStore();
+      store.report(new ApiError(code, code === 'consent_outdated' ? 409 : 400, 'trace-c'));
+      expect(store.message).toContain('поставь галочку заново');
+      expect(store.message).toContain('Вернись на главную');
+    },
+  );
+
   it('leaves the message empty for codes with no special wording', () => {
     const store = useErrorStore();
     store.report(new ApiError('llm_error', 502, 'trace-xyz'));

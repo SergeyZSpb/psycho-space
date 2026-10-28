@@ -85,7 +85,8 @@ sequenceDiagram
     participant Y as oauth/login.yandex.ru
     participant P as PostgreSQL
 
-    Note over B: consent checkbox must be ticked before<br/>EITHER provider is reachable (152-ФЗ)
+    Note over B: consent checkbox must be ticked before<br/>EITHER provider is reachable (152-ФЗ) —<br/>the ticked edition is stashed with the PKCE verifier
+    Note over A: each callback checks consent_version FIRST:<br/>absent → 400 consent_required, ≠ server's → 409 consent_outdated,<br/>before the provider is contacted — the server's edition is recorded
     alt VK ID — the SDK builds the authorize URL in the browser
         B->>A: GET /api/auth/vk/state
         A-->>B: state (+ httpOnly psycho_oauth_state_vk)
@@ -952,7 +953,7 @@ Three properties are load-bearing here, and the first two are the same rules the
 | Request size | 1 MiB body cap on every route | `bodyLimit` |
 | Error disclosure | Stable codes + trace id; `err.Error()` never reaches a client | `internal/httpapi/respond.go` |
 | Asset content type | Allowlisted image types + `nosniff` | `internal/httpapi/gamekhimki.go` — `imageContentType` |
-| Consent (152-ФЗ) | Checkbox gates **both** providers — neither the VK widget nor the Yandex button is reachable until it is ticked; `consent_at` + `consent_version` persisted. Adding a second source bumped the version to `v3` | SPA + `accounts` |
+| Consent (152-ФЗ) | A box of its own — linking the consent document alone, the policy beside it only to read (ст. 9 ч. 1) — gates **both** providers: neither the VK widget nor the Yandex button is reachable until it is ticked. The edition is the server's (`account.ConsentVersion`, `v4`): any other is refused with `409 consent_outdated` and only the server's is recorded in `consent_version` beside `consent_at`. The hosting provider is named in the texts as a processor | SPA + `internal/httpapi/auth.go` + `accounts` |
 | Data minimisation | Yandex's `default_email`, `emails`, `default_phone`, `psuid` and `display_name` are **not decoded**, let alone stored: the allowlist is not keyed by email, so collecting one would be personal data taken for no purpose | `internal/yandex` — `UserInfo` |
 | Login CSRF | Per-provider `state` cookie (`psycho_oauth_state_<provider>`), httpOnly, 10 min, compared in constant time. Per provider so two half-finished logins in two tabs cannot invalidate each other | `internal/httpapi/auth.go` |
 | Erasure (152-ФЗ) | `POST /api/admin/accounts/{id}/forget` — superadmin only, irreversible. Overwrites the blind index with `crypto/rand`, empties every `*_enc` field, clears consent, blocks the row and stamps `forgotten_at`, so the person is gone while what they wrote survives with an anonymous author ([ADR-053](#adr-053--forgetting-a-person-is-anonymisation-not-deletion)) | `internal/account` — `Forget` · `internal/httpapi/admin.go` |
@@ -1085,7 +1086,7 @@ A cookie is issued even to `pending` and `blocked` accounts, because the SPA nee
 
 _Accepted · 2026-07-25_
 
-Neither login affordance is reachable until the consent box is ticked — the VK widget is not mounted and the Yandex button does nothing — and `consent_at` / `consent_version` are recorded server-side. Consent has to precede processing to mean anything; mounting the widget first and recording consent afterwards would reverse that order. The version bumps when the disclosed set changes **or when its source does**, which is why adding Yandex took it to `v3`.
+Neither login affordance is reachable until the consent box is ticked — the VK widget is not mounted and the Yandex button is not on screen — and `consent_at` / `consent_version` are recorded server-side. Consent has to precede processing to mean anything; mounting the widget first and recording consent afterwards would reverse that order. **The box is the consent and nothing else** (152-ФЗ ст. 9 ч. 1): it links the consent document alone, and the policy is a link to read beside it. **The edition is the server's**: a constant the callback compares for equality — `400 consent_required` when absent, `409 consent_outdated` when different, both before the provider is contacted — and the only value ever recorded, because storing what the browser sent made the record one the subject wrote. The SPA sends the edition that was on screen when the box was ticked, stashed beside the PKCE verifier, so a deploy during a redirect-mode login ends in a `409` rather than in agreement to a text nobody read; a Go test pins the SPA's copy to the server's. The version bumps when the disclosed set, its source, a processor or the purpose changes — Yandex took it to `v3`, the separate box and the named hosting provider to `v4`.
 
 [Full record → `docs/adrs/ADR-008-consent-is-a-gate-not-a-checkbox-on-a-form.md`](adrs/ADR-008-consent-is-a-gate-not-a-checkbox-on-a-form.md)
 

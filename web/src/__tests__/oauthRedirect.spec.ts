@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { firstQueryValue, parseOAuthRedirect } from '../lib/oauthRedirect';
 
-const stored = { state: 'stored-state', codeVerifier: 'verifier-123' };
+const stored = { state: 'stored-state', codeVerifier: 'verifier-123', consentVersion: 'v-ticked' };
 
 describe('firstQueryValue', () => {
   it('takes the first value of a repeated parameter', () => {
@@ -24,6 +24,7 @@ describe('parseOAuthRedirect — VK', () => {
       deviceId: 'd1',
       state: 'from-vk',
       codeVerifier: 'verifier-123',
+      consentVersion: 'v-ticked',
     });
   });
 
@@ -58,7 +59,7 @@ describe('parseOAuthRedirect — VK', () => {
     ['no device_id', { code: 'c1', state: 's' }],
     ['no state anywhere', { code: 'c1', device_id: 'd1' }],
   ])('calls the trip incomplete when there is %s', (_name, query) => {
-    const withoutState = { state: null, codeVerifier: 'verifier-123' };
+    const withoutState = { state: null, codeVerifier: 'verifier-123', consentVersion: 'v-ticked' };
     const out = parseOAuthRedirect('vk', query, withoutState);
     expect(out).toMatchObject({ kind: 'failed', reason: 'incomplete' });
     expect(out).toHaveProperty('message', 'ссылка возврата из ВК неполная — начни вход заново');
@@ -68,7 +69,7 @@ describe('parseOAuthRedirect — VK', () => {
     const out = parseOAuthRedirect(
       'vk',
       { code: 'c1', device_id: 'd1', state: 's' },
-      { state: 's', codeVerifier: null },
+      { state: 's', codeVerifier: null, consentVersion: 'v-ticked' },
     );
     expect(out).toMatchObject({ kind: 'failed', reason: 'lost_verifier' });
   });
@@ -85,6 +86,7 @@ describe('parseOAuthRedirect — Yandex', () => {
       deviceId: '',
       state: 'from-yandex',
       codeVerifier: 'verifier-123',
+      consentVersion: 'v-ticked',
     });
   });
 
@@ -115,7 +117,7 @@ describe('parseOAuthRedirect — Yandex', () => {
     ['no code', { state: 's' }],
     ['no state anywhere', { code: 'c1' }],
   ])('calls the trip incomplete when there is %s, in the genitive', (_name, query) => {
-    const withoutState = { state: null, codeVerifier: 'verifier-123' };
+    const withoutState = { state: null, codeVerifier: 'verifier-123', consentVersion: 'v-ticked' };
     const out = parseOAuthRedirect('yandex', query, withoutState);
     expect(out).toMatchObject({ kind: 'failed', reason: 'incomplete' });
     expect(out).toHaveProperty(
@@ -130,12 +132,33 @@ describe('parseOAuthRedirect — Yandex', () => {
     const out = parseOAuthRedirect(
       'yandex',
       { code: 'c1', state: 's' },
-      { state: 's', codeVerifier: null },
+      { state: 's', codeVerifier: null, consentVersion: 'v-ticked' },
     );
     expect(out).toMatchObject({ kind: 'failed', reason: 'lost_verifier' });
     expect(out).toHaveProperty(
       'message',
       'вход начался в другой вкладке — вернись на главную и войди заново',
     );
+  });
+});
+
+describe('parseOAuthRedirect — the consent edition', () => {
+  // A redirect-mode trip reloads the SPA, so the bundle finishing the login may
+  // be newer than the one whose text was on screen when the box was ticked. The
+  // edition sent is the one stashed at the start, never this bundle's own.
+  it.each(['vk', 'yandex'] as const)('carries the ticked edition for %s, not the running bundle’s', (provider) => {
+    const out = parseOAuthRedirect(provider, { code: 'c1', device_id: 'd1', state: 's' }, stored);
+    expect(out).toMatchObject({ kind: 'ready', consentVersion: 'v-ticked' });
+  });
+
+  it('sends an empty edition rather than inventing one when none was stashed', () => {
+    // The server answers consent_required, and the person ticks the box again
+    // under the text actually on screen.
+    const out = parseOAuthRedirect(
+      'yandex',
+      { code: 'c1', state: 's' },
+      { state: 's', codeVerifier: 'verifier-123', consentVersion: null },
+    );
+    expect(out).toMatchObject({ kind: 'ready', consentVersion: '' });
   });
 });
